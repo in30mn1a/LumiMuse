@@ -877,14 +877,21 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       const nextMeta = { ...workingMeta, generatedImages: updater(currentImages) };
       workingMeta = nextMeta;
 
-      await fetch(`/api/messages/${messageId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata: nextMeta }),
-      });
-
+      // 先更新本地 state，确保即使后端 PUT 失败（断网/超时），prompt 也不会从 UI 上丢失，
+      // 用户点击重试时仍能拿到上一阶段已生成的 prompt。
       skipScrollRef.current = true;
       setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: nextMeta } : m));
+
+      try {
+        await fetch(`/api/messages/${messageId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ metadata: nextMeta }),
+        });
+      } catch (err) {
+        // 持久化失败仅记录，不抛出 —— 让生图流程继续，本地 state 已是最新的
+        console.warn('[image-gen] 元数据持久化失败，已保留本地状态：', err);
+      }
       return nextMeta;
     };
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -646,11 +647,14 @@ function ImageLightbox({
     right: 'calc(env(safe-area-inset-right, 0px) + 1rem)',
   };
 
-  return (
+  // 仅在客户端 portal，避免 SSR 报 document undefined
+  if (typeof document === 'undefined') return null;
+
+  const content = (
     <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm" onClick={onClose}>
-      {/* 顶部工具栏 */}
+      {/* 顶部工具栏：在 portal body 下不再被 surface-panel 的 backdrop-filter 困住，absolute 即可 */}
       <div
-        className="pointer-events-none fixed z-[120] flex justify-end"
+        className="pointer-events-none absolute z-[120] flex justify-end"
         style={safeAreaToolbarStyle}
       >
         <div
@@ -732,6 +736,8 @@ function ImageLightbox({
       </div>
     </div>
   );
+
+  return createPortal(content, document.body);
 }
 
 /** 单张生成图片卡片 */

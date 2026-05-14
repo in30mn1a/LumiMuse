@@ -852,6 +852,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const handleGenerateImage = async (messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => {
     const targetConversationId = conversationIdOverride || activeConvId;
     if (!targetConversationId || !character) return;
+    showToast('正在生成图片...', 'info');
 
     type ImageStatus = 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
     type ImageEntry = {
@@ -897,8 +898,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
     };
 
+    let generatedPrompt = existingPrompt || '';
+
     try {
-      let generatedPrompt = existingPrompt || '';
 
       const initialStatus: ImageStatus = generatedPrompt ? 'pending_image' : 'pending_prompt';
       await upsertPlaceholder({
@@ -957,7 +959,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     } catch (err) {
       const message = err instanceof Error ? err.message : '生图失败';
       await upsertPlaceholder({
-        prompt: existingPrompt || undefined,
+        prompt: generatedPrompt,
         status: 'failed',
         error: message,
       });
@@ -2213,8 +2215,4 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     </div>
   );
 }
-
-
-
-
 

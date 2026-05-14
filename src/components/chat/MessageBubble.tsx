@@ -640,16 +640,25 @@ function ImageLightbox({
 
   const lightboxButton = 'flex h-10 w-10 items-center justify-center touch-manipulation rounded-xl bg-white/10 text-white/80 backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-white disabled:opacity-30 disabled:hover:bg-white/10 disabled:hover:text-white/80';
   const lightboxAccentButton = 'flex h-10 w-10 items-center justify-center touch-manipulation rounded-xl bg-accent/85 text-white backdrop-blur-sm transition-colors hover:bg-accent';
+  const safeAreaToolbarStyle: React.CSSProperties = {
+    top: 'max(1rem, calc(env(safe-area-inset-top, 0px) + 0.75rem))',
+    left: 'calc(env(safe-area-inset-left, 0px) + 1rem)',
+    right: 'calc(env(safe-area-inset-right, 0px) + 1rem)',
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm" onClick={onClose}>
       {/* 顶部工具栏 */}
       <div
-        className="absolute right-4 z-[110] flex items-center gap-2"
-        style={{ top: 'calc(1rem + env(safe-area-inset-top, 0px))' }}
-        onClick={e => e.stopPropagation()}
-        onPointerDown={e => e.stopPropagation()}
+        className="pointer-events-none fixed z-[120] flex justify-end"
+        style={safeAreaToolbarStyle}
       >
+        <div
+          className="pointer-events-auto flex max-w-full flex-wrap justify-end gap-2"
+          onClick={e => e.stopPropagation()}
+          onPointerDown={e => e.stopPropagation()}
+          onTouchStart={e => e.stopPropagation()}
+        >
         {total > 1 && (
           <>
             <button
@@ -704,6 +713,7 @@ function ImageLightbox({
         >
           ✕
         </button>
+        </div>
       </div>
 
       {/* 图片：移动端点左半边上一张，点右半边下一张；左右滑动也可切换 */}

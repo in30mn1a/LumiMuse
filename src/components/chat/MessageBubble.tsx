@@ -38,7 +38,12 @@ type GeneratedImageVersion = {
   prompt: string;
 };
 
-type GeneratedImage = GeneratedImageVersion & {
+type GeneratedImage = {
+  id: string;
+  url?: string;
+  prompt: string;
+  status?: 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
+  error?: string;
   versions?: Array<GeneratedImageVersion>;
   activeVersion?: number;
 };
@@ -49,13 +54,13 @@ function formatTime(iso: string): string {
 }
 
 function getImageVersions(img: GeneratedImage): Array<GeneratedImageVersion> {
-  return img.versions && img.versions.length > 0
-    ? img.versions
-    : [{ id: img.id, url: img.url, prompt: img.prompt }];
+  if (img.versions && img.versions.length > 0) return img.versions;
+  return img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
 }
 
 function getActiveImageIndex(img: GeneratedImage): number {
   const versions = getImageVersions(img);
+  if (versions.length === 0) return 0;
 
   if (typeof img.activeVersion === 'number' && img.activeVersion >= 0 && img.activeVersion < versions.length) {
     return img.activeVersion;
@@ -640,7 +645,8 @@ function ImageLightbox({
     <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm" onClick={onClose}>
       {/* 顶部工具栏 */}
       <div
-        className="absolute right-4 top-4 z-[110] flex items-center gap-2"
+        className="absolute right-4 z-[110] flex items-center gap-2"
+        style={{ top: 'calc(1rem + env(safe-area-inset-top, 0px))' }}
         onClick={e => e.stopPropagation()}
         onPointerDown={e => e.stopPropagation()}
       >
@@ -742,6 +748,7 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
   if (editingPrompt) {
     return (
       <div className="editor-surface-wide rounded-xl border border-border-light bg-white/90 p-3 shadow-sm dark:bg-[rgba(30,25,45,0.9)]">
+        <div className="mb-2 text-xs font-medium text-text-secondary">查看 / 编辑提示词</div>
         <textarea
           value={promptValue}
           onChange={e => setPromptValue(e.target.value)}
@@ -752,6 +759,61 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
           <button onClick={() => setEditingPrompt(false)} className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-black/5">取消</button>
           <button onClick={handleSavePrompt} className="rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20">保存</button>
           <button onClick={() => { handleSavePrompt(); onRegenerate?.(messageId, promptValue, img.id); }} className="rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20">保存并重新生成</button>
+        </div>
+      </div>
+    );
+  }
+
+  const isPending = img.status === 'pending_prompt' || img.status === 'pending_image';
+  const isFailed = img.status === 'failed';
+  const handleRetry = () => onRegenerate?.(messageId, img.prompt || undefined, img.id);
+
+  if (isPending || isFailed || !img.url) {
+    return (
+      <div className="generated-image-card group/img relative w-full max-w-[20rem] rounded-xl border border-border-light bg-white/82 p-3 shadow-sm backdrop-blur-sm dark:bg-white/8">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium text-text-secondary">
+              {isFailed ? '图片生成失败' : img.status === 'pending_prompt' ? '生成提示词中' : '图片生成中'}
+            </div>
+            {isPending && (
+              <div className="mt-2 flex items-center gap-1.5 py-1">
+                <span className="typing-dot" style={{ animationDelay: '0ms' }} />
+                <span className="typing-dot" style={{ animationDelay: '160ms' }} />
+                <span className="typing-dot" style={{ animationDelay: '320ms' }} />
+              </div>
+            )}
+            {img.prompt && <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-text-muted">{img.prompt}</p>}
+            {isFailed && <p className="mt-2 text-xs leading-relaxed text-red-500">{img.error || '上游图片生成失败，请稍后重试'}</p>}
+          </div>
+          <div className="flex shrink-0 gap-1">
+            <button
+              onClick={() => { setPromptValue(img.prompt); setEditingPrompt(true); }}
+              className="rounded-lg bg-black/5 p-1.5 text-text-muted transition-colors hover:bg-black/10 hover:text-text-primary"
+              title="查看 / 编辑提示词"
+              aria-label="查看 / 编辑提示词"
+            >
+              <PencilIcon className="h-3.5 w-3.5" />
+            </button>
+            {isFailed && (
+              <button
+                onClick={handleRetry}
+                className="rounded-lg bg-accent/10 p-1.5 text-accent-dark transition-colors hover:bg-accent/20"
+                title="重试生成"
+                aria-label="重试生成"
+              >
+                <RefreshIcon className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <button
+              onClick={() => onDelete?.(messageId, img.id)}
+              className="rounded-lg bg-red-500/10 p-1.5 text-red-500 transition-colors hover:bg-red-500/20"
+              title="删除占位卡片"
+              aria-label="删除占位卡片"
+            >
+              <TrashIcon className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -813,3 +875,4 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
 
 const MessageBubble = memo(MessageBubbleInner);
 export default MessageBubble;
+

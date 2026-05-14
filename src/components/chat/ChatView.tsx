@@ -852,87 +852,130 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const handleGenerateImage = async (messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => {
     const targetConversationId = conversationIdOverride || activeConvId;
     if (!targetConversationId || !character) return;
-    showToast('正在生成图片...', 'info');
+
+    type ImageStatus = 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
+    type ImageEntry = {
+      id: string;
+      url?: string;
+      prompt: string;
+      status?: ImageStatus;
+      error?: string;
+      versions?: Array<{ url: string; prompt: string; id: string }>;
+      activeVersion?: number;
+    };
+
+    const targetIdx = messages.findIndex(m => m.id === messageId);
+    if (targetIdx < 0) return;
+
+    const targetMsg = messages[targetIdx];
+    let workingMeta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
+    const placeholderId = replaceImageId || Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+    const persistImages = async (updater: (images: ImageEntry[]) => ImageEntry[]) => {
+      const currentImages = (workingMeta.generatedImages as ImageEntry[]) || [];
+      const nextMeta = { ...workingMeta, generatedImages: updater(currentImages) };
+      workingMeta = nextMeta;
+
+      await fetch(`/api/messages/${messageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata: nextMeta }),
+      });
+
+      skipScrollRef.current = true;
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: nextMeta } : m));
+      return nextMeta;
+    };
+
+    const upsertPlaceholder = async (patch: Partial<ImageEntry>) => {
+      await persistImages(images => {
+        const existingIndex = images.findIndex(img => img.id === placeholderId);
+        if (existingIndex >= 0) {
+          return images.map(img => img.id === placeholderId ? { ...img, ...patch, id: placeholderId } : img);
+        }
+        return [...images, { id: placeholderId, prompt: '', ...patch }];
+      });
+    };
 
     try {
-      const targetIdx = messages.findIndex(m => m.id === messageId);
-      if (targetIdx < 0) return;
-
       let generatedPrompt = existingPrompt || '';
 
+      const initialStatus: ImageStatus = generatedPrompt ? 'pending_image' : 'pending_prompt';
+      await upsertPlaceholder({
+        prompt: generatedPrompt,
+        status: initialStatus,
+        error: undefined,
+      });
+
       if (!generatedPrompt) {
-        // 调用 AI 生成正面 prompt，传 message_id 让 API 取该消息及之前共 4 条作为上下文
         const promptRes = await fetch('/api/image-gen/prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ conversation_id: targetConversationId, message_id: messageId }),
         });
         const promptData = await promptRes.json();
-        if (promptData.error) { showToast(promptData.error); return; }
+        if (promptData.error) throw new Error(promptData.error);
         generatedPrompt = promptData.prompt || '';
-        if (!generatedPrompt) { showToast('AI 未能生成有效的提示词'); return; }
+        if (!generatedPrompt) throw new Error('AI 未能生成有效的提示词');
+
+        await upsertPlaceholder({
+          prompt: generatedPrompt,
+          status: 'pending_image',
+          error: undefined,
+        });
       }
 
-      // 调用生图 API（负面提示词从设置中读取，不需要前端传，API 内部会用 cfg.nai_negative_prompt）
       const imgRes = await fetch('/api/image-gen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: generatedPrompt }),
       });
       const imgData = await imgRes.json();
-      if (imgData.error) { showToast(imgData.error); return; }
-      if (!imgData.url) { showToast('生图未返回图片'); return; }
+      if (imgData.error) throw new Error(imgData.error);
+      if (!imgData.url) throw new Error('生图未返回图片');
 
-      // 将图片信息写入目标消息的 metadata.generatedImages
-      const imgId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      const newImage = { url: imgData.url, prompt: generatedPrompt, id: imgId };
-      const targetMsg = messages[targetIdx];
-      const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-      const existingImages = (meta.generatedImages as Array<{ url: string; prompt: string; id: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
-      if (replaceImageId && existingImages.some(img => img.id === replaceImageId)) {
-        meta.generatedImages = existingImages.map(img => {
-          if (img.id !== replaceImageId) return img;
-          const existingVersions = img.versions && img.versions.length > 0 ? img.versions : [{ id: img.id, url: img.url, prompt: img.prompt }];
-          return {
-            ...img,
-            url: newImage.url,
-            prompt: newImage.prompt,
-            versions: [...existingVersions, newImage],
-            activeVersion: existingVersions.length,
-          };
-        });
-      } else {
-        meta.generatedImages = [...existingImages, newImage];
-      }
+      const newImage = { url: imgData.url, prompt: generatedPrompt, id: placeholderId, status: 'ready' as const };
+      await persistImages(images => {
+        if (replaceImageId && images.some(img => img.id === replaceImageId && img.url)) {
+          return images.map(img => {
+            if (img.id !== replaceImageId) return img;
+            const existingVersions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
+            return {
+              ...img,
+              url: newImage.url,
+              prompt: newImage.prompt,
+              status: 'ready',
+              error: undefined,
+              versions: [...existingVersions, { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), url: newImage.url, prompt: newImage.prompt }],
+              activeVersion: existingVersions.length,
+            };
+          });
+        }
 
-      // 保存到数据库
-      await fetch(`/api/messages/${messageId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata: meta }),
+        return images.map(img => img.id === placeholderId ? newImage : img);
       });
-
-      // 更新本地状态
-      skipScrollRef.current = true;
-      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
-      showToast('图片生成成功', 'info');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '生图失败');
+      const message = err instanceof Error ? err.message : '生图失败';
+      await upsertPlaceholder({
+        prompt: existingPrompt || undefined,
+        status: 'failed',
+        error: message,
+      });
+      showToast(message);
     }
   };
-
   // 删除消息中的某张生成图片
   const handleDeleteImage = async (messageId: string, imgId: string, versionId?: string) => {
     const targetMsg = messages.find(m => m.id === messageId);
     if (!targetMsg) return;
     const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-    const existingImages = (meta.generatedImages as Array<{ url: string; prompt: string; id: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
+    const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
     let toDeleteUrl: string | undefined;
 
     meta.generatedImages = existingImages.flatMap(img => {
       if (img.id !== imgId) return [img];
 
-      const versions = img.versions && img.versions.length > 0 ? img.versions : [{ id: img.id, url: img.url, prompt: img.prompt }];
+      const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
       const activeVersion = versionId
         ? versions.findIndex(version => version.id === versionId)
         : typeof img.activeVersion === 'number' && img.activeVersion >= 0 && img.activeVersion < versions.length
@@ -980,7 +1023,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     const targetMsg = messages.find(m => m.id === messageId);
     if (!targetMsg) return;
     const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-    const existingImages = (meta.generatedImages as Array<{ url: string; prompt: string; id: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
+    const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
     meta.generatedImages = existingImages.map(img => {
       if (img.id !== imgId) return img;
 
@@ -1012,11 +1055,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     const targetMsg = messages.find(m => m.id === messageId);
     if (!targetMsg) return;
     const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-    const existingImages = (meta.generatedImages as Array<{ url: string; prompt: string; id: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
+    const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
     meta.generatedImages = existingImages.map(img => {
       if (img.id !== imgId) return img;
 
-      const versions = img.versions && img.versions.length > 0 ? img.versions : [{ id: img.id, url: img.url, prompt: img.prompt }];
+      const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
       const versionIndex = versions.findIndex(version => version.id === versionId);
       if (versionIndex < 0) return img;
       const selected = versions[versionIndex];
@@ -2170,3 +2213,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     </div>
   );
 }
+
+
+
+
+

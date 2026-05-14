@@ -55,6 +55,5 @@ AGENTS.md
 dev.err.log
 dev.out.log
 test-results/
-Start.bat
 public/generated/
 public/avatars/

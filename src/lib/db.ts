@@ -170,6 +170,22 @@ function migrate(db: Database.Database): void {
     db.exec(`ALTER TABLE characters ADD COLUMN image_tags TEXT NOT NULL DEFAULT ''`);
   }
 
+  // 增量迁移：characters 表补 sort_order 列（侧边栏拖拽排序，越小越靠前）
+  if (!charCols.some(c => c.name === 'sort_order')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`);
+    // 旧数据按 updated_at DESC 回填，保持当前观感不变
+    db.exec(`
+      UPDATE characters
+      SET sort_order = (
+        SELECT rn FROM (
+          SELECT id, ROW_NUMBER() OVER (ORDER BY updated_at DESC) AS rn FROM characters
+        ) AS ranked
+        WHERE ranked.id = characters.id
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_characters_sort_order ON characters(sort_order)`);
+  }
+
   // 增量迁移：conversations 表补 ignore_memory 列（忽略记忆提取）
   const convCols = db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
   if (!convCols.some(c => c.name === 'ignore_memory')) {

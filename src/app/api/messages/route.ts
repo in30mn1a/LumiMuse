@@ -1,0 +1,89 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { Message } from '@/types';
+
+function serializeMessages(messages: Message[]): Message[] {
+  for (const message of messages) {
+    const record = message as unknown as Record<string, unknown>;
+    if (typeof record.metadata === 'string') {
+      try {
+        record.metadata = JSON.parse(record.metadata as string);
+      } catch {
+        record.metadata = {};
+      }
+    }
+  }
+  return messages;
+}
+
+export async function GET(request: NextRequest) {
+  const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
+  const all = request.nextUrl.searchParams.get('all') === '1';
+  const wantsPaged = request.nextUrl.searchParams.has('limit') || request.nextUrl.searchParams.has('before_seq');
+  const limitParam = Number(request.nextUrl.searchParams.get('limit') || '80');
+  const beforeSeqParam = request.nextUrl.searchParams.get('before_seq');
+  const beforeSeq = beforeSeqParam ? Number(beforeSeqParam) : null;
+
+  if (!conversationId) {
+    return NextResponse.json({ error: 'Missing conversation_id' }, { status: 400 });
+  }
+
+  const db = getDb();
+  if (all || !wantsPaged) {
+    const messages = db.prepare(
+      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC',
+    ).all(conversationId) as Message[];
+
+    return NextResponse.json(serializeMessages(messages));
+  }
+
+  const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 80, 1), 200);
+  const pageLimit = limit + 1;
+  const rawMessages = beforeSeq !== null && Number.isFinite(beforeSeq)
+    ? db.prepare(
+        'SELECT * FROM messages WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?',
+      ).all(conversationId, beforeSeq, pageLimit) as Message[]
+    : db.prepare(
+        'SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?',
+      ).all(conversationId, pageLimit) as Message[];
+
+  const hasMore = rawMessages.length > limit;
+  const messages = rawMessages.slice(0, limit).reverse();
+
+  return NextResponse.json({
+    messages: serializeMessages(messages),
+    hasMore,
+    oldestSeq: messages[0]?.seq ?? null,
+  });
+}
+
+export async function POST(request: NextRequest) {
+  const { conversation_id, role, content, token_count, metadata } = await request.json() as {
+    conversation_id?: string;
+    role: string;
+    content: string;
+    token_count?: number;
+    metadata?: Record<string, unknown>;
+  };
+
+  if (!conversation_id) {
+    return NextResponse.json({ error: 'Missing conversation_id' }, { status: 400 });
+  }
+
+  const db = getDb();
+  const { v4: uuidv4 } = await import('uuid');
+  const msgId = uuidv4().slice(0, 8);
+  const now = new Date().toISOString();
+  const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
+  const metaStr = metadata ? JSON.stringify(metadata) : '{}';
+
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(msgId, conversation_id, role, content, token_count || 0, now, nextSeq, metaStr);
+
+  db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
+
+  const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(msgId) as Message;
+  return NextResponse.json(serializeMessages([message])[0], { status: 201 });
+}

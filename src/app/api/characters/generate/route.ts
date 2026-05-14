@@ -1,0 +1,88 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { chatCompletion } from '@/lib/api-client';
+import { getDb } from '@/lib/db';
+import { Character, DEFAULT_SETTINGS, Settings } from '@/types';
+
+const CHARACTER_GENERATION_SYSTEM = `你是 LumiMuse 的角色卡创作助手。
+请根据用户要求生成一个适合聊天陪伴工具使用的原创角色。
+
+输出要求：
+- 只输出 JSON，不要 Markdown，不要解释。
+- 所有界面可见文本使用中文。
+- image_tags 必须使用英文 Danbooru 风格标签，逗号分隔，用于图片生成。
+- system_prompt 要简洁，强调角色扮演边界、语气和互动方式。
+- example_dialogue 使用 {{user}} 和 {{char}} 标记。
+
+JSON 字段必须完整包含：
+{
+  "name": "角色名称",
+  "personality": "性格、说话方式、习惯、外貌与情绪节奏",
+  "scenario": "关系设定、世界观或相处背景",
+  "greeting": "新对话开场白",
+  "example_dialogue": "示例对话",
+  "system_prompt": "系统提示词",
+  "image_tags": "english tags, comma separated"
+}`;
+
+function loadSettings(): Settings {
+  const db = getDb();
+  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
+  const map: Record<string, unknown> = {};
+  for (const row of rows) {
+    try { map[row.key] = JSON.parse(row.value); } catch { map[row.key] = row.value; }
+  }
+  return { ...DEFAULT_SETTINGS, ...map } as Settings;
+}
+
+function parseGeneratedCharacter(text: string): Partial<Character> {
+  const cleaned = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+  const result: Partial<Character> = {};
+
+  for (const field of ['name', 'personality', 'scenario', 'greeting', 'example_dialogue', 'system_prompt', 'image_tags'] as const) {
+    if (typeof parsed[field] === 'string') {
+      result[field] = parsed[field].trim();
+    }
+  }
+
+  return result;
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { requirement, current_character } = await request.json() as {
+      requirement?: string;
+      current_character?: Partial<Character>;
+    };
+
+    if (!requirement?.trim()) {
+      return NextResponse.json({ error: '请输入角色要求' }, { status: 400 });
+    }
+
+    const settings = loadSettings();
+    if (!settings.api_base || !settings.api_key || !settings.model) {
+      return NextResponse.json({ error: '请先在设置中配置 API 地址、密钥和模型' }, { status: 400 });
+    }
+
+    const currentContext = current_character
+      ? `\n\n当前表单内容（可参考，也可以按用户要求重写）：\n${JSON.stringify(current_character, null, 2)}`
+      : '';
+
+    const result = await chatCompletion(settings, [
+      { role: 'system', content: CHARACTER_GENERATION_SYSTEM },
+      { role: 'user', content: `用户要求：${requirement.trim()}${currentContext}` },
+    ]);
+
+    return NextResponse.json(parseGeneratedCharacter(result));
+  } catch (err) {
+    console.error('[characters/generate] 生成角色失败:', err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : '生成角色失败' },
+      { status: 500 },
+    );
+  }
+}

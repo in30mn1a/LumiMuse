@@ -6,8 +6,6 @@ import { useRouter } from 'next/navigation';
 import {
   DndContext,
   DragEndEvent,
-  DragOverlay,
-  DragStartEvent,
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
@@ -53,8 +51,8 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    // 拖拽中原卡片隐藏（opacity:0），由 DragOverlay 渲染浮动幽灵
-    opacity: isDragging ? 0 : 1,
+    // 拖拽中的卡片轻微提亮，让其他卡片让位时视觉更清晰
+    opacity: isDragging ? 0.6 : 1,
     zIndex: isDragging ? 5 : 'auto',
     touchAction: 'manipulation',
   };
@@ -122,9 +120,6 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
   const router = useRouter();
   const [characters, setCharacters] = useState<Character[]>([]);
   const { t } = useTranslation();
-  // 正在拖拽的角色 ID（用于渲染 DragOverlay 幽灵卡）
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const draggingCharacter = characters.find(c => c.id === draggingId) || null;
 
   // 桌面端鼠标按下后移动 5px 才进入拖拽，避免误触；
   // 移动端长按 220ms 进入拖拽，避免和列表纵向滚动冲突
@@ -150,10 +145,6 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
     router.push(`/characters/${newCharacter.id}`);
   };
 
-  const handleDragStart = (event: DragStartEvent) => {
-    setDraggingId(String(event.active.id));
-  };
-
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -166,7 +157,6 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
     const next = arrayMove(characters, oldIndex, newIndex);
     // 乐观更新：先改本地，再 PUT；失败则回滚
     setCharacters(next);
-    setDraggingId(null);
     try {
       const res = await fetch('/api/characters/reorder', {
         method: 'PUT',
@@ -199,7 +189,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
           </div>
         )}
 
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={characters.map(c => c.id)} strategy={verticalListSortingStrategy}>
             <div className="space-y-2">
               {characters.map(character => (
@@ -213,24 +203,6 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
               ))}
             </div>
           </SortableContext>
-
-          {/* 拖拽幽灵卡：浮动克隆，放大 + 深阴影增强拖拽感 */}
-          <DragOverlay dropAnimation={{ duration: 180, easing: 'ease' }}>
-            {draggingCharacter ? (
-              <div className="flex w-full items-center gap-3 rounded-[1.25rem] border border-accent/30 bg-white px-3 py-3 shadow-xl ring-2 ring-accent/20" style={{ transform: 'scale(1.03)', opacity: 0.96 }}>
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-accent to-accent-dark text-white ring-1 ring-accent/20">
-                  {draggingCharacter.avatar_url ? (
-                    <img src={draggingCharacter.avatar_url} alt={draggingCharacter.name} className="h-full w-full object-cover" draggable={false} />
-                  ) : (
-                    <span className="text-sm font-semibold">{draggingCharacter.name[0]}</span>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <span className="truncate text-sm font-medium text-text-primary">{draggingCharacter.name}</span>
-                </div>
-              </div>
-            ) : null}
-          </DragOverlay>
         </DndContext>
       </div>
     </div>

@@ -9,18 +9,23 @@ const CHARACTER_GENERATION_SYSTEM = `你是 LumiMuse 的角色卡创作助手。
 输出要求：
 - 只输出 JSON，不要 Markdown，不要解释。
 - 所有界面可见文本使用中文。
+- basic_info 用于填写身份、年龄、外貌、职业、关系等基础资料。
+- personality 只写性格、说话方式、习惯和情绪节奏，不要重复 basic_info。
 - image_tags 必须使用英文 Danbooru 风格标签，逗号分隔，用于图片生成。
+- other_info 用于补充不适合放入性格、场景或开场白的其他角色信息。
 - system_prompt 要简洁，强调角色扮演边界、语气和互动方式。
 - example_dialogue 使用 {{user}} 和 {{char}} 标记。
 
 JSON 字段必须完整包含：
 {
   "name": "角色名称",
-  "personality": "性格、说话方式、习惯、外貌与情绪节奏",
+  "basic_info": "身份、年龄、外貌、职业、关系等基础资料",
+  "personality": "性格、说话方式、习惯与情绪节奏",
   "scenario": "关系设定、世界观或相处背景",
   "greeting": "新对话开场白",
   "example_dialogue": "示例对话",
   "system_prompt": "系统提示词",
+  "other_info": "其他补充信息",
   "image_tags": "english tags, comma separated"
 }`;
 
@@ -43,7 +48,7 @@ function parseGeneratedCharacter(text: string): Partial<Character> {
   const parsed = JSON.parse(cleaned) as Record<string, unknown>;
   const result: Partial<Character> = {};
 
-  for (const field of ['name', 'personality', 'scenario', 'greeting', 'example_dialogue', 'system_prompt', 'image_tags'] as const) {
+  for (const field of ['name', 'basic_info', 'personality', 'scenario', 'greeting', 'example_dialogue', 'system_prompt', 'other_info', 'image_tags'] as const) {
     if (typeof parsed[field] === 'string') {
       result[field] = parsed[field].trim();
     }

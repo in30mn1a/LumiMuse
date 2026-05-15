@@ -28,8 +28,16 @@ function stripTimestampPrefix(text: string): string {
 function buildSystemPrompt(character: Character, memoryText: string, timeContext?: ChatTimeContext): string {
   let prompt = '';
 
+  if (character.name) {
+    prompt += `## 角色名称\n${character.name}\n\n`;
+  }
+
   if (character.system_prompt) {
     prompt += `${character.system_prompt}\n\n`;
+  }
+
+  if (character.basic_info) {
+    prompt += `## 基本信息\n${character.basic_info}\n\n`;
   }
 
   if (character.personality) {
@@ -38,6 +46,10 @@ function buildSystemPrompt(character: Character, memoryText: string, timeContext
 
   if (character.scenario) {
     prompt += `## 场景设定\n${character.scenario}\n\n`;
+  }
+
+  if (character.other_info) {
+    prompt += `## 其他补充信息\n${character.other_info}\n\n`;
   }
 
   if (memoryText) {

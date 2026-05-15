@@ -28,17 +28,19 @@ export async function PUT(
   const now = new Date().toISOString();
   db.prepare(`
     UPDATE characters SET
-      name = ?, avatar_url = ?, personality = ?, scenario = ?,
-      greeting = ?, example_dialogue = ?, system_prompt = ?, image_tags = ?, updated_at = ?
+      name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
+      greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, updated_at = ?
     WHERE id = ?
   `).run(
     body.name ?? existing.name,
     body.avatar_url ?? existing.avatar_url,
+    body.basic_info ?? existing.basic_info ?? '',
     body.personality ?? existing.personality,
     body.scenario ?? existing.scenario,
     body.greeting ?? existing.greeting,
     body.example_dialogue ?? existing.example_dialogue,
     body.system_prompt ?? existing.system_prompt,
+    body.other_info ?? existing.other_info ?? '',
     body.image_tags ?? existing.image_tags ?? '',
     now,
     id,

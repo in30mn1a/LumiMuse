@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeMemoryCategory } from '@/lib/memory-category';
+import { normalizeCharacterCard } from '@/lib/character-card-import';
 import { v4 as uuidv4 } from 'uuid';
 
 interface ImportPayload {
@@ -49,9 +50,10 @@ export async function POST(request: NextRequest) {
     messagesImported: 0,
   };
 
-  // 统一成数组处理
+  // 统一成数组处理，也兼容 Chara Card v2 等第三方单角色卡格式
+  const normalizedCard = normalizeCharacterCard(payload);
   const charactersToImport: Record<string, unknown>[] = payload.characters
-    ?? (payload.character ? [payload.character] : []);
+    ?? (payload.character ? [payload.character] : normalizedCard ? [normalizedCard] : []);
   const memoriesToImport: Record<string, unknown>[] = payload.memories ?? [];
   const conversationsToImport: ConversationWithMessages[] = payload.conversations ?? [];
 
@@ -62,26 +64,28 @@ export async function POST(request: NextRequest) {
     const existingByName = db.prepare('SELECT id FROM characters WHERE name = ?').get(char.name as string) as { id: string } | undefined;
 
     if (existingByName) {
-      idMap.set(char.id as string, existingByName.id);
+      if (char.id) idMap.set(char.id as string, existingByName.id);
       results.skipped++;
       continue;
     }
 
     const newId = uuidv4().slice(0, 8);
-    idMap.set(char.id as string, newId);
+    if (char.id) idMap.set(char.id as string, newId);
 
     db.prepare(`
-      INSERT INTO characters (id, name, avatar_url, personality, scenario, greeting, example_dialogue, system_prompt, image_tags, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       newId,
       char.name || '导入角色',
       char.avatar_url || null,
+      char.basic_info || '',
       char.personality || '',
       char.scenario || '',
       char.greeting || '',
       char.example_dialogue || '',
       char.system_prompt || '',
+      char.other_info || '',
       char.image_tags || '',
       char.created_at || now,
       now,
@@ -124,18 +128,13 @@ export async function POST(request: NextRequest) {
       const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
       if (!charExists) continue;
 
-      // 对话按 id 去重（同一份备份重复导入时跳过）
-      const convExists = db.prepare('SELECT id FROM conversations WHERE id = ?').get(conv.id);
-      if (convExists) {
-        results.conversationsSkipped++;
-        continue;
-      }
+      const newConvId = uuidv4().slice(0, 8);
 
       db.prepare(`
         INSERT INTO conversations (id, character_id, title, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
       `).run(
-        conv.id,
+        newConvId,
         newCharId,
         conv.title || '导入的对话',
         conv.created_at || now,
@@ -147,8 +146,7 @@ export async function POST(request: NextRequest) {
       const messages = conv.messages ?? [];
       let seq = 1;
       for (const msg of messages) {
-        const msgExists = db.prepare('SELECT id FROM messages WHERE id = ?').get(msg.id as string);
-        if (msgExists) continue;
+        const newMsgId = uuidv4().slice(0, 8);
 
         // metadata 可能是对象或字符串，统一序列化为字符串存储
         const metaStr = typeof msg.metadata === 'string'
@@ -159,8 +157,8 @@ export async function POST(request: NextRequest) {
           INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, metadata, seq)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          msg.id,
-          conv.id,
+          newMsgId,
+          newConvId,
           msg.role,
           msg.content,
           typeof msg.token_count === 'number' ? msg.token_count : 0,

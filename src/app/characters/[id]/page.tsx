@@ -2,6 +2,7 @@
 
 import { useState, useEffect, use, useRef, useMemo, type ChangeEvent } from 'react';
 import { Character } from '@/types';
+import { normalizeCharacterCard } from '@/lib/character-card-import';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
@@ -19,6 +20,112 @@ function previewText(text: string, fallback: string, maxLength = 90): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
+function ExportDialog({ characterId, onClose }: { characterId: string; onClose: () => void }) {
+  const { t } = useTranslation();
+  const [includeCharacter, setIncludeCharacter] = useState(true);
+  const [includeMemories, setIncludeMemories] = useState(true);
+  const [includeConversations, setIncludeConversations] = useState(true);
+
+  const handleExport = () => {
+    const params = new URLSearchParams({ type: 'character', id: characterId });
+    if (!includeCharacter) params.set('include_characters', '0');
+    if (!includeMemories) params.set('include_memories', '0');
+    if (!includeConversations) params.set('include_conversations', '0');
+    const a = document.createElement('a');
+    a.href = '/api/export?' + params.toString();
+    a.download = '';
+    a.click();
+    onClose();
+  };
+
+  const nothingSelected = !includeCharacter && !includeMemories && !includeConversations;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+      <div className="absolute inset-0 bg-black/35 backdrop-blur-sm" onClick={onClose} />
+      <div className="surface-hero relative z-10 w-full max-w-sm px-6 py-6">
+        <h2 className="section-title mb-1 text-lg">{t('export.characterTitle')}</h2>
+        <p className="mb-5 text-sm text-text-muted">{t('export.characterHint')}</p>
+        <div className="space-y-2">
+          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
+            {t('export.includeCharacters')}
+          </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
+            {t('export.includeMemories')}
+          </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
+            {t('export.includeConversations')}
+          </label>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onClose} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
+          <button
+            onClick={handleExport}
+            disabled={nothingSelected}
+            className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('export.download')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function ImportDialog({
+  fileName,
+  onCancel,
+  onConfirm,
+}: {
+  fileName: string;
+  onCancel: () => void;
+  onConfirm: (options: { includeCharacter: boolean; includeMemories: boolean; includeConversations: boolean }) => void;
+}) {
+  const { t } = useTranslation();
+  const [includeCharacter, setIncludeCharacter] = useState(true);
+  const [includeMemories, setIncludeMemories] = useState(true);
+  const [includeConversations, setIncludeConversations] = useState(true);
+  const nothingSelected = !includeCharacter && !includeMemories && !includeConversations;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+      <div className="absolute inset-0 bg-black/35 backdrop-blur-sm" onClick={onCancel} />
+      <div className="surface-hero relative z-10 w-full max-w-sm px-6 py-6">
+        <h2 className="section-title mb-1 text-lg">{t('import.characterTitle')}</h2>
+        <p className="mb-3 text-sm text-text-muted">{t('import.characterHint')}</p>
+        <p className="mb-5 truncate rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-xs text-text-muted">{fileName}</p>
+        <div className="space-y-2">
+          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
+            {t('export.includeCharacters')}
+          </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
+            {t('export.includeMemories')}
+          </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
+            {t('export.includeConversations')}
+          </label>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onCancel} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
+          <button
+            onClick={() => onConfirm({ includeCharacter, includeMemories, includeConversations })}
+            disabled={nothingSelected}
+            className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('import.apply')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 export default function CharacterEditor({ params }: Props) {
   const { id } = use(params);
   const router = useRouter();
@@ -26,9 +133,13 @@ export default function CharacterEditor({ params }: Props) {
   const [saving, setSaving] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [showAiGenerator, setShowAiGenerator] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [aiRequirement, setAiRequirement] = useState('');
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [pendingImport, setPendingImport] = useState<{ fileName: string; payload: Record<string, unknown> } | null>(null);
+  const characterImportRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
 
@@ -100,6 +211,72 @@ export default function CharacterEditor({ params }: Props) {
     }
   };
 
+  const handleImportCharacterCard = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !character) return;
+
+    try {
+      const json = JSON.parse(await file.text()) as Record<string, unknown>;
+      if (json.character || json.memories || json.conversations) {
+        setPendingImport({ fileName: file.name, payload: json });
+        return;
+      }
+
+      const draft = normalizeCharacterCard(json);
+      if (!draft) throw new Error(t('editor.importError'));
+      setCharacter({ ...character, ...draft });
+      setImportMsg({ type: 'ok', text: t('editor.importDraftSuccess') });
+    } catch {
+      setImportMsg({ type: 'err', text: t('editor.importError') });
+    } finally {
+      if (characterImportRef.current) characterImportRef.current.value = '';
+      setTimeout(() => setImportMsg(null), 5000);
+    }
+  };
+
+  const applyPendingImport = async (options: { includeCharacter: boolean; includeMemories: boolean; includeConversations: boolean }) => {
+    if (!pendingImport || !character) return;
+    const sourceCharacter = (pendingImport.payload.character && typeof pendingImport.payload.character === 'object')
+      ? pendingImport.payload.character as Record<string, unknown>
+      : {};
+    const draft = normalizeCharacterCard({ character: sourceCharacter });
+
+    if (options.includeCharacter && draft) {
+      setCharacter({ ...character, ...draft });
+    }
+
+    const conversations = options.includeConversations && Array.isArray(pendingImport.payload.conversations)
+      ? pendingImport.payload.conversations.map(item => ({ ...(item as Record<string, unknown>), character_id: character.id }))
+      : [];
+    const memories = options.includeMemories && Array.isArray(pendingImport.payload.memories)
+      ? pendingImport.payload.memories.map(item => ({ ...(item as Record<string, unknown>), character_id: character.id }))
+      : [];
+
+    if (memories.length === 0 && conversations.length === 0) {
+      setImportMsg({ type: 'ok', text: t('editor.importDraftSuccess') });
+      setPendingImport(null);
+      if (characterImportRef.current) characterImportRef.current.value = '';
+      setTimeout(() => setImportMsg(null), 5000);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: pendingImport.payload.version, memories, conversations }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(t('editor.importError'));
+      setImportMsg({ type: 'ok', text: t('import.characterSuccess').replace('{memories}', String(data.memoriesImported || 0)).replace('{conversations}', String(data.conversationsImported || 0)) });
+    } catch {
+      setImportMsg({ type: 'err', text: t('editor.importError') });
+    } finally {
+      setPendingImport(null);
+      if (characterImportRef.current) characterImportRef.current.value = '';
+      setTimeout(() => setImportMsg(null), 5000);
+    }
+  };
   const handleGenerateCharacter = async () => {
     if (!character || !aiRequirement.trim()) return;
     setAiGenerating(true);
@@ -122,11 +299,13 @@ export default function CharacterEditor({ params }: Props) {
       setCharacter({
         ...character,
         name: data.name ?? character.name,
+        basic_info: data.basic_info ?? character.basic_info,
         personality: data.personality ?? character.personality,
         scenario: data.scenario ?? character.scenario,
         greeting: data.greeting ?? character.greeting,
         example_dialogue: data.example_dialogue ?? character.example_dialogue,
         system_prompt: data.system_prompt ?? character.system_prompt,
+        other_info: data.other_info ?? character.other_info,
         image_tags: data.image_tags ?? character.image_tags,
       });
     } catch (err) {
@@ -147,6 +326,14 @@ export default function CharacterEditor({ params }: Props) {
 
   return (
     <div className="app-shell min-h-screen px-4 py-4">
+      {exportOpen && <ExportDialog characterId={id} onClose={() => setExportOpen(false)} />}
+      {pendingImport && (
+        <ImportDialog
+          fileName={pendingImport.fileName}
+          onCancel={() => setPendingImport(null)}
+          onConfirm={applyPendingImport}
+        />
+      )}
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
         <header className="surface-hero px-5 py-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -181,19 +368,24 @@ export default function CharacterEditor({ params }: Props) {
                 <TrashIcon className="h-4 w-4" />
                 {t('editor.delete')}
               </button>
-              <a
-                href={`/api/export?type=character&id=${id}`}
-                download
-                className="soft-button soft-button-secondary"
-              >
-                {t('editor.export')}
-              </a>
+              <button type="button" onClick={() => characterImportRef.current?.click()} className="soft-button soft-button-secondary">
+                              {t('editor.importTitle')}
+                            </button>
+                            <input ref={characterImportRef} type="file" accept=".json,application/json" onChange={handleImportCharacterCard} className="hidden" />
+                            <button type="button" onClick={() => setExportOpen(true)} className="soft-button soft-button-secondary">
+                              {t('editor.export')}
+                            </button>
               <button onClick={handleSave} disabled={saving} className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-50">
                 <SparkIcon className="h-4 w-4" />
                 {saving ? t('editor.saving') : t('editor.save')}
               </button>
             </div>
           </div>
+          {importMsg && (
+            <div className={`mt-4 rounded-2xl px-4 py-3 text-sm ${importMsg.type === 'ok' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+              {importMsg.text}
+            </div>
+          )}
           {showAiGenerator && (
             <div data-role="aiGeneratorPanel" className="mt-4 flex w-full flex-col gap-2 rounded-2xl border border-border-light bg-white/70 p-3 shadow-sm lg:ml-auto lg:max-w-[38rem] lg:self-end">
               <div className="flex flex-col gap-2 sm:flex-row">
@@ -227,21 +419,23 @@ export default function CharacterEditor({ params }: Props) {
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
           <main className="space-y-4">
             <section className="surface-panel p-5">
-              <div className="flex items-start gap-5">
-                <div className="relative">
+              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.identityInfo')}</h2>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-3xl bg-gradient-to-br from-accent/15 to-accent-light/25 shadow-inner">
+                  {character.avatar_url ? (
+                    <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-3xl font-semibold text-accent-dark">
+                      {character.name[0]}
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="group relative flex h-24 w-24 items-center justify-center overflow-hidden rounded-[1.5rem] bg-gradient-to-br from-accent/18 to-accent-light/28 ring-2 ring-border-light transition-all duration-200 hover:ring-accent/30"
+                    className="absolute inset-0 flex items-center justify-center bg-black/20 text-white opacity-0 transition hover:opacity-100"
+                    title={t('editor.changeAvatar')}
                   >
-                    {character.avatar_url ? (
-                      <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" loading="lazy" />
-                    ) : (
-                      <span className="text-3xl font-semibold text-accent-dark">{character.name[0] || '?'}</span>
-                    )}
-                    <span className="absolute inset-0 flex items-center justify-center bg-black/35 text-white opacity-0 transition-opacity group-hover:opacity-100">
-                      <CameraIcon className="h-6 w-6" />
-                    </span>
+                    <CameraIcon className="h-6 w-6" />
                   </button>
                   <input
                     ref={fileInputRef}
@@ -265,65 +459,85 @@ export default function CharacterEditor({ params }: Props) {
             </section>
 
             <section className="surface-panel p-5">
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.personality')}</label>
-                  <textarea
-                    value={character.personality}
-                    onChange={e => update('personality', e.target.value)}
-                    rows={4}
-                    placeholder={t('editor.personalityPlaceholder')}
-                    className="textarea-rich"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.scenario')}</label>
-                  <textarea
-                    value={character.scenario}
-                    onChange={e => update('scenario', e.target.value)}
-                    rows={4}
-                    placeholder={t('editor.scenarioPlaceholder')}
-                    className="textarea-rich"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.greeting')}</label>
-                  <textarea
-                    value={character.greeting}
-                    onChange={e => update('greeting', e.target.value)}
-                    rows={3}
-                    placeholder={t('editor.greetingPlaceholder')}
-                    className="textarea-rich"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.exampleDialogue')}</label>
-                  <textarea
-                    value={character.example_dialogue}
-                    onChange={e => update('example_dialogue', e.target.value)}
-                    rows={6}
-                    placeholder={t('editor.dialoguePlaceholder')}
-                    className="textarea-rich font-mono"
-                  />
-                </div>
-              </div>
+              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.basicInfo')}</h2>
+              <textarea
+                value={character.basic_info || ''}
+                onChange={e => update('basic_info', e.target.value)}
+                rows={6}
+                placeholder={t('editor.basicInfoPlaceholder')}
+                className="textarea-rich"
+              />
             </section>
 
+            <section className="surface-panel p-5">
+              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.personality')}</h2>
+              <textarea
+                value={character.personality}
+                onChange={e => update('personality', e.target.value)}
+                rows={6}
+                placeholder={t('editor.personalityPlaceholder')}
+                className="textarea-rich"
+              />
+            </section>
+
+            <section className="surface-panel p-5">
+              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.scenario')}</h2>
+              <textarea
+                value={character.scenario}
+                onChange={e => update('scenario', e.target.value)}
+                rows={6}
+                placeholder={t('editor.scenarioPlaceholder')}
+                className="textarea-rich"
+              />
+            </section>
+
+            <section className="surface-panel p-5">
+              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.greeting')}</h2>
+              <textarea
+                value={character.greeting}
+                onChange={e => update('greeting', e.target.value)}
+                rows={5}
+                placeholder={t('editor.greetingPlaceholder')}
+                className="textarea-rich"
+              />
+            </section>
+
+            <section className="surface-panel p-5">
+              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.other')}</h2>
+              <textarea
+                value={character.other_info || ''}
+                onChange={e => update('other_info', e.target.value)}
+                rows={6}
+                placeholder={t('editor.otherPlaceholder')}
+                className="textarea-rich"
+              />
+            </section>
+
+            <section className="surface-panel p-5">
+              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.exampleDialogue')}</h2>
+              <textarea
+                value={character.example_dialogue}
+                onChange={e => update('example_dialogue', e.target.value)}
+                rows={8}
+                placeholder={t('editor.dialoguePlaceholder')}
+                className="textarea-rich font-mono"
+              />
+            </section>
             <details className="surface-panel overflow-hidden">
               <summary className="cursor-pointer px-5 py-4 text-sm font-medium text-text-primary">
                 {t('editor.advanced')}
               </summary>
               <div className="border-t border-border-light px-5 pb-5 pt-4 space-y-4">
-                <textarea
-                  value={character.system_prompt}
-                  onChange={e => update('system_prompt', e.target.value)}
-                  rows={8}
-                  placeholder={t('editor.systemPromptPlaceholder')}
-                  className="textarea-rich font-mono"
-                />
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.systemPrompt')}</label>
+                  <textarea
+                    value={character.system_prompt}
+                    onChange={e => update('system_prompt', e.target.value)}
+                    rows={8}
+                    placeholder={t('editor.systemPromptPlaceholder')}
+                    className="textarea-rich font-mono"
+                  />
+                </div>
                 <div>
                   <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.imageTags')}</label>
                   <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.imageTagsHint')}</p>

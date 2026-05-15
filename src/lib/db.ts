@@ -37,6 +37,7 @@ function migrate(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       avatar_url TEXT,
+      basic_info TEXT NOT NULL DEFAULT '',
       personality TEXT NOT NULL DEFAULT '',
       scenario TEXT NOT NULL DEFAULT '',
       greeting TEXT NOT NULL DEFAULT '',
@@ -166,6 +167,16 @@ function migrate(db: Database.Database): void {
 
   // 增量迁移：characters 表补 image_tags 列（角色生图标签）
   const charCols = db.prepare("PRAGMA table_info(characters)").all() as { name: string }[];
+
+  // 增量迁移：characters 表补 basic_info 列（角色基本信息）
+  if (!charCols.some(c => c.name === 'basic_info')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN basic_info TEXT NOT NULL DEFAULT ''`);
+  }
+
+  // 增量迁移：characters 表补 other_info 列（角色其他补充信息）
+  if (!charCols.some(c => c.name === 'other_info')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN other_info TEXT NOT NULL DEFAULT ''`);
+  }
   if (!charCols.some(c => c.name === 'image_tags')) {
     db.exec(`ALTER TABLE characters ADD COLUMN image_tags TEXT NOT NULL DEFAULT ''`);
   }

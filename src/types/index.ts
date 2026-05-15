@@ -2,11 +2,13 @@ export interface Character {
   id: string;
   name: string;
   avatar_url: string | null;
+  basic_info: string;
   personality: string;
   scenario: string;
   greeting: string;
   example_dialogue: string;
   system_prompt: string;
+  other_info: string;
   image_tags: string;
   created_at: string;
   updated_at: string;

@@ -21,17 +21,19 @@ export async function POST(request: NextRequest) {
   const nextSort = minRow.min_sort === null ? 0 : minRow.min_sort - 1;
 
   db.prepare(`
-    INSERT INTO characters (id, name, avatar_url, personality, scenario, greeting, example_dialogue, system_prompt, image_tags, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     body.name || 'New Character',
     body.avatar_url || null,
+    body.basic_info || '',
     body.personality || '',
     body.scenario || '',
     body.greeting || '',
     body.example_dialogue || '',
     body.system_prompt || '',
+    body.other_info || '',
     body.image_tags || '',
     nextSort,
     now,

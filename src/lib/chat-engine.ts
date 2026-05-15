@@ -93,6 +93,8 @@ export function assemblePrompt(
   if (settings.example_dialogue) {
     usedTokens += estimateTokens(character.example_dialogue);
   }
+  // 预留 AI 回复的 token 空间，避免 prompt 填满整个 context_window
+  const availableBudget = settings.context_window - settings.max_tokens;
 
   const history: ChatMessage[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -106,7 +108,7 @@ export function assemblePrompt(
     }
 
     const messageTokens = message.token_count || estimateTokens(message.content);
-    if (usedTokens + messageTokens > settings.context_window) break;
+    if (usedTokens + messageTokens > availableBudget) break;
     usedTokens += messageTokens;
 
     let content: ChatMessageContent = message.content;
@@ -290,8 +292,10 @@ export async function runChat(
 
   let memoryContents: string[] = [];
   if (settings.memory_inject) {
+    // 重新生成时 userContent 为空，改用最近几条消息内容作为相关性查询
+    const queryText = userContent || contextMessages.slice(-4).map(m => m.content).join(' ');
     const relevantMemories = retrieveRelevantMemories(
-      userContent,
+      queryText,
       conversation.character_id,
       settings.limit_inject ? settings.memory_max_inject : 9999,
     );

@@ -68,6 +68,7 @@ type MessagesResponse = {
   messages: Message[];
   hasMore: boolean;
   oldestSeq: number | null;
+  unextractedCount?: number;
 };
 
 function messagesUrl(conversationId: string, options?: { limit?: number; beforeSeq?: number | null; all?: boolean }): string {
@@ -134,6 +135,15 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [resetSelectedIds, setResetSelectedIds] = useState<Set<string>>(new Set());
   const RESET_PAGE_SIZE = 30;
   const [resetVisibleCount, setResetVisibleCount] = useState(RESET_PAGE_SIZE);
+  // 服务端返回的真实未提取消息数量（不受前端分页限制）
+  const [serverUnextractedCount, setServerUnextractedCount] = useState<number>(0);
+  // 弹窗中加载的全部消息（打开弹窗时从服务端获取完整列表）
+  // null 表示正在加载中，空数组表示加载完成但无消息
+  const [allDialogMessages, setAllDialogMessages] = useState<Message[] | null>(null);
+  // 记忆提取状态：'idle' | 'extracting' | 'done' | 'failed'
+  const [memoryExtractStatus, setMemoryExtractStatus] = useState<'idle' | 'extracting' | 'done' | 'failed'>('idle');
+  // 提取状态自动隐藏定时器
+  const extractStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 移动端对话列表抽屉
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
   // 移动端工具栏展开（拉片）
@@ -229,14 +239,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   const tokenCount = messageTokens + systemPromptTokens;
 
-  // 未提取记忆的用户消息数
-  const unextractedCount = useMemo(() => {
-    return messages.filter(m => {
-      if (m.role !== 'user') return false;
-      const meta = m.metadata as Record<string, unknown> || {};
-      return !meta.memory_extracted;
-    }).length;
-  }, [messages]);
+  // 未提取记忆的用户消息数（使用服务端返回的真实数量，不受前端分页限制）
+  const unextractedCount = serverUnextractedCount;
   const loadCharacterState = async (characterId: string, preferredConversationId: string | null) => {
     setLoadingThread(true);
     try {
@@ -308,10 +312,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     const ctl = new AbortController();
     const needsTarget = Boolean(targetMessageId);
     fetchMessagesPage(activeConvId, { limit: PAGE_SIZE, all: needsTarget, signal: ctl.signal })
-      .then(({ messages: msgs, hasMore, oldestSeq }) => {
+      .then(({ messages: msgs, hasMore, oldestSeq, unextractedCount: uc }) => {
         setMessages(msgs);
         setHasOlderMessages(hasMore);
         setOldestLoadedSeq(oldestSeq);
+        if (uc !== undefined) setServerUnextractedCount(uc);
 
         if (targetMessageId) {
           const idx = msgs.findIndex(m => m.id === targetMessageId);
@@ -395,10 +400,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     if (activeConvId && prev.has(activeConvId) && !activeStreams.has(activeConvId)) {
       // 当前对话的流刚完成，刷新消息
       fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) })
-        .then(({ messages: freshMessages, hasMore, oldestSeq }) => {
+        .then(({ messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc }) => {
           setMessages(freshMessages);
           setHasOlderMessages(hasMore);
           setOldestLoadedSeq(oldestSeq);
+          if (uc !== undefined) setServerUnextractedCount(uc);
         })
         .catch(() => {});
     }
@@ -423,17 +429,19 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   const refreshMessages = useCallback(async () => {
     if (!activeConvId) return;
-    const { messages: freshMessages, hasMore, oldestSeq } = await fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) });
+    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) });
     setMessages(freshMessages);
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
+    if (uc !== undefined) setServerUnextractedCount(uc);
   }, [activeConvId, messages.length]);
 
   const refreshMessagesForConversation = useCallback(async (conversationIdToRefresh: string) => {
-    const { messages: freshMessages, hasMore, oldestSeq } = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(PAGE_SIZE, messages.length) });
+    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(PAGE_SIZE, messages.length) });
     setMessages(freshMessages);
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
+    if (uc !== undefined) setServerUnextractedCount(uc);
   }, [messages.length]);
 
   const loadOlderMessages = useCallback(async () => {
@@ -470,12 +478,16 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   }, [loadOlderMessages, messages.length]); // messages 变化时重新绑定（对话切换后哨兵位置变了）
 
   const pollMemoryTask = useCallback(async (convId: string) => {
+    // 显示提取中状态
+    setMemoryExtractStatus('extracting');
+    if (extractStatusTimerRef.current) { clearTimeout(extractStatusTimerRef.current); extractStatusTimerRef.current = null; }
+
     const pollOnce = async (): Promise<boolean> => {
       const response = await fetch(`/api/memory-tasks?conversation_id=${encodeURIComponent(convId)}`);
       if (!response.ok) return false;
 
       const parsed = await response.json() as { status: string; mergeCount: number; updatedAt: string | null };
-      if (parsed.status === 'extracting') {
+      if (parsed.status === 'extracting' || parsed.status === 'processing' || parsed.status === 'pending') {
         return false;
       }
 
@@ -488,12 +500,26 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       return parsed.status === 'done' || parsed.status === 'failed' || parsed.status === 'idle';
     };
 
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       const finished = await pollOnce();
-      if (finished) return;
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (finished) {
+        // 提取完成，显示结果状态后自动隐藏
+        setMemoryExtractStatus('done');
+        // 刷新未提取数量
+        if (activeConvId) {
+          fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) })
+            .then(({ unextractedCount: uc }) => { if (uc !== undefined) setServerUnextractedCount(uc); })
+            .catch(() => {});
+        }
+        extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
     }
-  }, [showToast]);
+    // 超时也标记失败
+    setMemoryExtractStatus('failed');
+    extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
+  }, [showToast, activeConvId, messages.length]);
 
   const refreshConversationState = async (nextActiveId?: string | null) => {
     if (!character) return;
@@ -1156,30 +1182,79 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     }
   }, [selectedImageKeys, character, loadCharacterImages, activeConvId, showToast, refreshMessages]);
 
-  // 重置提取状态：重置指定消息（传空表示全部重置）
-  const handleResetExtraction = async (messageIds?: string[]) => {
+  // 切换提取状态弹窗打开时，加载该对话的全部消息
+  useEffect(() => {
+    if (!resetExtractionOpen || !activeConvId) return;
+    let cancelled = false;
+    // 使用 all=1 获取全部消息
+    fetchMessagesPage(activeConvId, { all: true })
+      .then(({ messages: allMsgs }) => {
+        if (!cancelled) setAllDialogMessages(allMsgs);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [resetExtractionOpen, activeConvId]);
+
+  // 切换提取状态：重置或标记指定消息
+  const handleResetExtraction = async (messageIds?: string[], action: 'reset' | 'mark' = 'reset') => {
     if (!activeConvId) return;
     try {
       const res = await fetch(`/api/conversations/${activeConvId}/reset-extraction`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messageIds }),
+        body: JSON.stringify({ messageIds, action }),
       });
-      if (!res.ok) throw new Error('重置失败');
+      if (!res.ok) throw new Error('操作失败');
       const { resetCount } = await res.json() as { resetCount: number };
       // 更新本地消息的 metadata
       const targetSet = messageIds ? new Set(messageIds) : null;
-      setMessages(prev => prev.map(m => {
+      const updateMeta = (m: Message) => {
+        if (m.role !== 'user') return m;
         if (targetSet && !targetSet.has(m.id)) return m;
         const meta = { ...(m.metadata as Record<string, unknown> || {}) };
-        delete meta.memory_extracted;
+        if (action === 'mark') {
+          meta.memory_extracted = true;
+        } else {
+          delete meta.memory_extracted;
+        }
         return { ...m, metadata: meta };
-      }));
+      };
+      setMessages(prev => prev.map(updateMeta));
+      setAllDialogMessages(prev => prev ? prev.map(updateMeta) : prev);
+      // 更新服务端未提取数量
+      if (action === 'mark') {
+        setServerUnextractedCount(prev => Math.max(0, prev - resetCount));
+      } else {
+        setServerUnextractedCount(prev => prev + resetCount);
+      }
       setResetExtractionOpen(false);
       setResetSelectedIds(new Set());
-      showToast(`已重置 ${resetCount} 条消息的提取状态`, 'info');
+      setAllDialogMessages(null);
+      const actionText = action === 'mark' ? '标记已提取' : '重置';
+      showToast(`已${actionText} ${resetCount} 条消息`, 'info');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '重置失败');
+      showToast(err instanceof Error ? err.message : '操作失败');
+    }
+  };
+
+  // 手动触发记忆提取
+  const handleManualExtract = async () => {
+    if (!activeConvId || memoryExtractStatus === 'extracting') return;
+    try {
+      const res = await fetch('/api/memory-tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: activeConvId }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || '触发提取失败');
+        return;
+      }
+      // 开始轮询提取状态
+      void pollMemoryTask(activeConvId);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '触发提取失败');
     }
   };
 
@@ -1652,6 +1727,20 @@ export default function ChatView({ character, conversationId, targetMessageId, o
                   {t('chat.manageExtraction')}
                 </button>
               )}
+              {/* 记忆提取状态 chip — 仅在提取触发时显示 */}
+              {memoryExtractStatus !== 'idle' && (
+                <span className={`chip text-[10px] md:text-xs transition-opacity ${
+                  memoryExtractStatus === 'extracting'
+                    ? 'text-purple-600 border-purple-200 bg-purple-50/80 animate-pulse'
+                    : memoryExtractStatus === 'done'
+                    ? 'text-green-600 border-green-200 bg-green-50/80'
+                    : 'text-red-500 border-red-200 bg-red-50/80'
+                }`}>
+                  {memoryExtractStatus === 'extracting' ? t('chat.extracting')
+                    : memoryExtractStatus === 'done' ? t('chat.extractDone')
+                    : t('chat.extractFailed')}
+                </span>
+              )}
               <span className="chip text-[10px] md:text-xs">≈{tokenCount} {t('status.tokens')}</span>
             </div>
           </div>
@@ -1834,7 +1923,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
               <div className="flex gap-2">
                 <button
                   onClick={() => {
-                    const userMsgs = messages.filter(m => m.role === 'user');
+                    const userMsgs = (allDialogMessages || []).filter(m => m.role === 'user');
                     setResetSelectedIds(new Set(userMsgs.map(m => m.id)));
                   }}
                   className="text-xs text-accent-dark hover:underline"
@@ -1851,8 +1940,12 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             </div>
 
             {/* 消息列表（只显示用户消息，从新到旧，分页加载） */}
-            {(() => {
-              const userMsgs = messages.filter(m => m.role === 'user').reverse();
+            {allDialogMessages === null ? (
+              <div className="mt-2 flex items-center justify-center py-8 text-sm text-text-muted">
+                加载中...
+              </div>
+            ) : (() => {
+              const userMsgs = allDialogMessages.filter(m => m.role === 'user').reverse();
               const visible = userMsgs.slice(0, resetVisibleCount);
               const hasMore = userMsgs.length > resetVisibleCount;
               return (
@@ -1928,21 +2021,37 @@ export default function ChatView({ character, conversationId, targetMessageId, o
               >
                 {activeConversation?.ignore_memory ? '✓ 已忽略' : '忽略提取'}
               </button>
+              {/* 手动提取按钮 */}
+              <button
+                onClick={() => { setResetExtractionOpen(false); setAllDialogMessages(null); handleManualExtract(); }}
+                disabled={memoryExtractStatus === 'extracting' || serverUnextractedCount === 0}
+                className="soft-button soft-button-primary px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                title="立即触发记忆提取"
+              >
+                {memoryExtractStatus === 'extracting' ? t('chat.extracting') : t('chat.manualExtract')}
+              </button>
               <div className="flex-1" />
               <button
-                onClick={() => { setResetExtractionOpen(false); setResetSelectedIds(new Set()); setResetVisibleCount(RESET_PAGE_SIZE); }}
+                onClick={() => { setResetExtractionOpen(false); setResetSelectedIds(new Set()); setResetVisibleCount(RESET_PAGE_SIZE); setAllDialogMessages(null); }}
                 className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
               >
                 {t('chat.cancel')}
               </button>
               <button
-                onClick={() => handleResetExtraction()}
+                onClick={() => handleResetExtraction(undefined, 'reset')}
                 className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
               >
                 {t('chat.resetAll')}
               </button>
               <button
-                onClick={() => handleResetExtraction([...resetSelectedIds])}
+                onClick={() => handleResetExtraction([...resetSelectedIds], 'mark')}
+                disabled={resetSelectedIds.size === 0}
+                className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                标记已提取 ({resetSelectedIds.size})
+              </button>
+              <button
+                onClick={() => handleResetExtraction([...resetSelectedIds], 'reset')}
                 disabled={resetSelectedIds.size === 0}
                 className="soft-button soft-button-primary px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
               >

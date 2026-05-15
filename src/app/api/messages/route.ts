@@ -50,10 +50,18 @@ export async function GET(request: NextRequest) {
   const hasMore = rawMessages.length > limit;
   const messages = rawMessages.slice(0, limit).reverse();
 
+  // 从数据库查询真实的未提取用户消息数量（不受分页限制）
+  const unextractedRow = db.prepare(
+    `SELECT COUNT(*) as cnt FROM messages
+     WHERE conversation_id = ? AND role = 'user'
+     AND (metadata IS NULL OR metadata = '{}' OR json_extract(metadata, '$.memory_extracted') IS NULL)`
+  ).get(conversationId) as { cnt: number };
+
   return NextResponse.json({
     messages: serializeMessages(messages),
     hasMore,
     oldestSeq: messages[0]?.seq ?? null,
+    unextractedCount: unextractedRow.cnt,
   });
 }
 

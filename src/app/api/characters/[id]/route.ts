@@ -60,7 +60,11 @@ export async function DELETE(
     const existing = db.prepare('SELECT id FROM characters WHERE id = ?').get(id);
     if (!existing) return 0;
 
+    // 级联删除：记忆任务、消息、对话、记忆
     db.prepare('DELETE FROM memory_tasks WHERE character_id = ? OR conversation_id IN (SELECT id FROM conversations WHERE character_id = ?)').run(id, id);
+    db.prepare('DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE character_id = ?)').run(id);
+    db.prepare('DELETE FROM conversations WHERE character_id = ?').run(id);
+    db.prepare('DELETE FROM memories WHERE character_id = ?').run(id);
     const result = db.prepare('DELETE FROM characters WHERE id = ?').run(id);
     return result.changes;
   });

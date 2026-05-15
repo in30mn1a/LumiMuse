@@ -133,21 +133,21 @@ export async function POST(request: NextRequest) {
     // 获取消息上下文：基于触发生图的消息，取该消息及之前共 4 条
     let messages: Pick<Message, 'role' | 'content'>[];
     if (message_id) {
-      // 先找到目标消息的 created_at
+      // 先找到目标消息的 seq
       const targetMsg = db.prepare(
-        'SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?'
-      ).get(message_id, conversation_id) as { created_at: string } | undefined;
+        'SELECT seq FROM messages WHERE id = ? AND conversation_id = ?'
+      ).get(message_id, conversation_id) as { seq: number } | undefined;
       if (targetMsg) {
         messages = db.prepare(
-          'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') AND created_at <= ? ORDER BY created_at DESC LIMIT 4'
-        ).all(conversation_id, targetMsg.created_at) as Pick<Message, 'role' | 'content'>[];
+          'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') AND seq <= ? ORDER BY seq DESC LIMIT 4'
+        ).all(conversation_id, targetMsg.seq) as Pick<Message, 'role' | 'content'>[];
       } else {
         messages = [];
       }
     } else {
       // 兜底：取最新 4 条
       messages = db.prepare(
-        'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') ORDER BY created_at DESC LIMIT 4'
+        'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') ORDER BY seq DESC LIMIT 4'
       ).all(conversation_id) as Pick<Message, 'role' | 'content'>[];
     }
     messages.reverse();

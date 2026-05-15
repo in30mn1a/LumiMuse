@@ -96,9 +96,13 @@ async function processQueue(): Promise<void> {
       ).all(...messageIds) as Array<{ id: string; role: string; content: string; metadata: string; created_at: string }>;
 
       if (messages.length > 0) {
+        // 查询角色名称，用于拼装对话文本
+        const charRow = db.prepare('SELECT name FROM characters WHERE id = ?').get(task.character_id) as { name: string } | undefined;
+        const characterName = charRow?.name || '角色';
+
         const convText = messages
           .map(m => {
-            const speaker = m.role === 'user' ? '用户' : '角色';
+            const speaker = m.role === 'user' ? '用户' : characterName;
             // 格式化时间戳：2026/3/30 02:01
             const d = new Date(m.created_at);
             const ts = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -106,16 +110,19 @@ async function processQueue(): Promise<void> {
           })
           .join('\n');
 
-        const { mergeCount } = await extractMemories(task.character_id, convText, settings);
+        const { mergeCount, newEntries } = await extractMemories(task.character_id, convText, settings);
 
-        // 成功后标记用户消息为已提取（assistant 消息不参与触发计数，无需标记）
-        for (const msg of messages) {
-          if (msg.role !== 'user') continue;
-          let meta: Record<string, unknown> = {};
-          try { meta = JSON.parse(msg.metadata); } catch { meta = {}; }
-          meta.memory_extracted = true;
-          db.prepare('UPDATE messages SET metadata = ? WHERE id = ?')
-            .run(JSON.stringify(meta), msg.id);
+        // 只有实际产生了提取结果（新条目或合并）才标记消息为已提取
+        // 如果 AI 返回空结果（认为没有值得记忆的内容），不标记，下次仍可重新提取
+        if (newEntries.length > 0 || mergeCount > 0) {
+          for (const msg of messages) {
+            if (msg.role !== 'user') continue;
+            let meta: Record<string, unknown> = {};
+            try { meta = JSON.parse(msg.metadata); } catch { meta = {}; }
+            meta.memory_extracted = true;
+            db.prepare('UPDATE messages SET metadata = ? WHERE id = ?')
+              .run(JSON.stringify(meta), msg.id);
+          }
         }
 
         // 把合并数量写回任务，供外部轮询

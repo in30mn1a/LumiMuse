@@ -20,6 +20,9 @@ export async function DELETE(
   const db = getDb();
   const result = db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
   if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  // 级联删除该对话下的所有消息和记忆任务
+  db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
+  db.prepare('DELETE FROM memory_tasks WHERE conversation_id = ?').run(id);
   return NextResponse.json({ ok: true });
 }
 

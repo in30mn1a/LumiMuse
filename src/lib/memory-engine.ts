@@ -225,7 +225,15 @@ export async function extractMemories(
   const existingMemories = db.prepare('SELECT * FROM memories WHERE character_id = ?').all(characterId) as Memory[];
   const normalizedExisting = existingMemories.map(normalizeMemory);
 
-  const relevantExisting = retrieveRelevantMemories(conversationText, characterId, 30);
+  // 提取时给 AI 参考的已有记忆：未启用注入限制时发送全部，启用时按相关性截取
+  let relevantExisting: Memory[];
+  if (!settings.limit_inject) {
+    // 不限制：全部已有记忆都发给 AI 参考，避免重复提取
+    relevantExisting = normalizedExisting;
+  } else {
+    // 启用限制：按相关性检索，最多 memory_max_inject 条
+    relevantExisting = retrieveRelevantMemories(conversationText, characterId, settings.memory_max_inject || 30);
+  }
   const existingSummary = relevantExisting.length > 0
     ? relevantExisting.map(memory => `- [${memory.category}] ${memory.content}`).join('\n')
     : '暂无';

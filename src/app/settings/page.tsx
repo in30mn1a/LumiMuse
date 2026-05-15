@@ -491,6 +491,8 @@ export default function SettingsPage() {
             </section>
 
             <ImageGenSettingsSection settings={settings} update={update} parseNumber={parseNumber} t={t} />
+
+            <MaintenanceSection t={t} />
           </main>
         </div>
       </div>
@@ -736,6 +738,91 @@ function ImageGenSettingsSection({
               </div>
             )}
           </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ========== 数据库维护子组件 ==========
+function MaintenanceSection({ t }: { t: (key: string) => string }) {
+  const [status, setStatus] = useState<'idle' | 'checking' | 'previewed' | 'cleaning' | 'done'>('idle');
+  const [previewCount, setPreviewCount] = useState(0);
+  const [cleanedCount, setCleanedCount] = useState(0);
+
+  const handlePreview = async () => {
+    setStatus('checking');
+    try {
+      const res = await fetch('/api/maintenance');
+      const data = await res.json() as { total: number };
+      setPreviewCount(data.total);
+      setStatus('previewed');
+    } catch {
+      setStatus('idle');
+    }
+  };
+
+  const handleCleanup = async () => {
+    setStatus('cleaning');
+    try {
+      const res = await fetch('/api/maintenance', { method: 'POST' });
+      const data = await res.json() as { deleted: number };
+      setCleanedCount(data.deleted);
+      setStatus('done');
+    } catch {
+      setStatus('idle');
+    }
+  };
+
+  const getMessage = () => {
+    if (status === 'checking') return t('settings.cleanupRunning');
+    if (status === 'cleaning') return t('settings.cleanupRunning');
+    if (status === 'done') {
+      if (cleanedCount === 0) return t('settings.cleanupClean');
+      return t('settings.cleanupResult').replace('{count}', String(cleanedCount));
+    }
+    if (status === 'previewed') {
+      if (previewCount === 0) return t('settings.cleanupClean');
+      return t('settings.cleanupPreview').replace('{count}', String(previewCount));
+    }
+    return null;
+  };
+
+  const msg = getMessage();
+
+  return (
+    <section className="surface-panel p-5">
+      <div className="mb-4">
+        <h2 className="section-title text-lg">{t('settings.maintenance')}</h2>
+        <p className="mt-1 text-xs text-text-muted">{t('settings.maintenanceHint')}</p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          onClick={handlePreview}
+          disabled={status === 'checking' || status === 'cleaning'}
+          className="soft-button soft-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {status === 'checking' ? t('settings.cleanupRunning') : t('settings.cleanupDryRun')}
+        </button>
+
+        {status === 'previewed' && previewCount > 0 && (
+          <button
+            onClick={handleCleanup}
+            className="soft-button soft-button-danger"
+          >
+            {t('settings.cleanupConfirm')}
+          </button>
+        )}
+
+        {msg && (
+          <span className={`text-sm ${
+            status === 'done' && cleanedCount > 0 ? 'text-green-600'
+            : status === 'previewed' && previewCount > 0 ? 'text-amber-600'
+            : 'text-text-muted'
+          }`}>
+            {msg}
+          </span>
         )}
       </div>
     </section>

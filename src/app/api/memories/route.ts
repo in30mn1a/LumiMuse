@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
   const total = db.prepare(`SELECT COUNT(*) as count FROM (${sql})`).get(...params) as { count: number };
 
-  sql += sort === 'oldest' ? ' ORDER BY updated_at ASC' : ' ORDER BY updated_at DESC';
+  sql += sort === 'oldest' ? ' ORDER BY created_at ASC, rowid ASC' : ' ORDER BY created_at DESC, rowid DESC';
   if (shouldPaginate) {
     sql += ' LIMIT ? OFFSET ?';
     params.push(limit, offset);

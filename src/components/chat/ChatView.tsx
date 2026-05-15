@@ -334,6 +334,19 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     return () => ctl.abort();
   }, [activeConvId, targetMessageId]);
 
+  // 页面重新可见时刷新未提取数量（处理后台提取完成但前端不知道的情况）
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && activeConvId) {
+        fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) })
+          .then(({ unextractedCount: uc }) => { if (uc !== undefined) setServerUnextractedCount(uc); })
+          .catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [activeConvId, messages.length]);
+
   // messages 变化后，处理两种滚动需求：
   // 1. 搜索跳转到目标消息
   // 2. 初始加载/切换对话后滚到底部（用 instant 避免 IntersectionObserver 扩展时的抖动）
@@ -505,12 +518,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       if (finished) {
         // 提取完成，显示结果状态后自动隐藏
         setMemoryExtractStatus('done');
-        // 刷新未提取数量
-        if (activeConvId) {
-          fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) })
-            .then(({ unextractedCount: uc }) => { if (uc !== undefined) setServerUnextractedCount(uc); })
-            .catch(() => {});
-        }
+        // 刷新未提取数量（用传入的 convId，不依赖闭包中的 activeConvId）
+        fetchMessagesPage(convId, { limit: Math.max(PAGE_SIZE, messages.length) })
+          .then(({ unextractedCount: uc }) => { if (uc !== undefined) setServerUnextractedCount(uc); })
+          .catch(() => {});
         extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
         return;
       }
@@ -519,7 +530,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     // 超时也标记失败
     setMemoryExtractStatus('failed');
     extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
-  }, [showToast, activeConvId, messages.length]);
+  }, [showToast, messages.length]);
 
   const refreshConversationState = async (nextActiveId?: string | null) => {
     if (!character) return;

@@ -212,6 +212,17 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     () => conversations.find(conversation => conversation.id === activeConvId) || null,
     [activeConvId, conversations],
   );
+  const visibleMessages = useMemo(
+    () => activeConvId ? messages.filter(message => message.conversation_id === activeConvId) : [],
+    [activeConvId, messages],
+  );
+  const versionInfoByMessageId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getVersionInfo>>();
+    for (const message of visibleMessages) {
+      map.set(message.id, getVersionInfo(message));
+    }
+    return map;
+  }, [visibleMessages]);
 
   const memoryCount = memories.length;
   const recentMemories = useMemo(() => memories.slice(0, 2), [memories]);
@@ -226,13 +237,13 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const messageTokens = useMemo(() => {
     // 有 summary 消息时，只计算最后一条 summary 及其之后的消息 token
     // 这样 token 数才能反映实际发送给 AI 的上下文大小
-    const lastSummaryIdx = messages.findLastIndex(m => {
+    const lastSummaryIdx = visibleMessages.findLastIndex(m => {
       const meta = (m.metadata || {}) as Record<string, unknown>;
       return meta.isSummary === true;
     });
-    const relevant = lastSummaryIdx >= 0 ? messages.slice(lastSummaryIdx) : messages;
+    const relevant = lastSummaryIdx >= 0 ? visibleMessages.slice(lastSummaryIdx) : visibleMessages;
     return relevant.reduce((sum, m) => sum + (m.token_count || 0), 0);
-  }, [messages]);
+  }, [visibleMessages]);
 
   const systemPromptTokens = useMemo(() => {
     if (!character) return 0;
@@ -393,7 +404,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
       return () => cancelAnimationFrame(raf);
     }
-  }, [messages]);
+  }, [visibleMessages]);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -1766,7 +1777,36 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 md:py-5">
-            {messages.length === 0 && !streamingText && !isStreamingHere && (
+            {/* 对话切换加载骨架屏：消息为空但对话存在时显示，比空白更流畅 */}
+            {visibleMessages.length === 0 && !streamingText && !isStreamingHere && activeConvId && (
+              <div className="flex flex-col gap-5 py-2" aria-hidden="true">
+                {/* AI 气泡骨架（左侧） */}
+                <div className="flex gap-3">
+                  <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" />
+                  <div className="flex flex-col gap-1.5">
+                    <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" />
+                    <div className="h-16 w-56 animate-pulse rounded-2xl border border-border-light bg-white/80" style={{ animationDelay: '60ms' }} />
+                  </div>
+                </div>
+                {/* 用户气泡骨架（右侧） */}
+                <div className="flex flex-row-reverse gap-3">
+                  <div className="flex flex-col items-end gap-1.5">
+                    <div className="h-3 w-10 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '120ms' }} />
+                    <div className="h-10 w-44 animate-pulse rounded-2xl bg-accent/15" style={{ animationDelay: '120ms' }} />
+                  </div>
+                </div>
+                {/* AI 气泡骨架（左侧，更宽） */}
+                <div className="flex gap-3">
+                  <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" style={{ animationDelay: '180ms' }} />
+                  <div className="flex flex-col gap-1.5">
+                    <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '180ms' }} />
+                    <div className="h-20 w-72 animate-pulse rounded-2xl border border-border-light bg-white/80" style={{ animationDelay: '180ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {visibleMessages.length === 0 && !streamingText && !isStreamingHere && !activeConvId && (
               <div className="flex h-full min-h-[18rem] items-center justify-center">
                 <div className="max-w-md text-center">
                   <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[1.4rem] bg-gradient-to-br from-accent/15 to-accent-light/25 text-accent-dark empty-breathe">
@@ -1781,7 +1821,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             )}
 
             {(() => {
-              const filtered = messages.filter(m => m.id !== hiddenMessageId || m.id === streamingTargetId);
+              const filtered = visibleMessages.filter(m => m.id !== hiddenMessageId || m.id === streamingTargetId);
               return (
                 <>
                   {/* 顶部哨兵：进入视口时触发加载更多 */}
@@ -1823,7 +1863,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
                             characterName={activeCharacter.name}
                             avatarUrl={activeCharacter.avatar_url}
                             showTimestamps={showTimestamps}
-                            versionInfo={getVersionInfo(message)}
+                            versionInfo={versionInfoByMessageId.get(message.id)}
                             onEdit={handleEditMessage}
                             onDelete={handleDeleteMessage}
                             onRegenerate={handleRegenerate}

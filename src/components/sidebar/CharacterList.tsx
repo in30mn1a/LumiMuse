@@ -27,13 +27,13 @@ import { PencilIcon, PlusIcon, SparkIcon } from '@/components/ui/icons';
 
 interface Props {
   selectedId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, character: Character) => void;
 }
 
 interface CardProps {
   character: Character;
   selected: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, character: Character) => void;
   editLabel: string;
 }
 
@@ -71,7 +71,7 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
       {...listeners}
       onClick={() => {
         if (isDragging) return;
-        onSelect(character.id);
+        onSelect(character.id, character);
       }}
       role="button"
       tabIndex={0}
@@ -141,7 +141,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
     });
     const newCharacter = await response.json();
     setCharacters(prev => [newCharacter, ...prev]);
-    onSelect(newCharacter.id);
+    onSelect(newCharacter.id, newCharacter);
     router.push(`/characters/${newCharacter.id}`);
   };
 

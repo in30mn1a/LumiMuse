@@ -6,12 +6,13 @@ import CharacterList from './CharacterList';
 import { useTranslation } from '@/lib/i18n-context';
 import { MemoryIcon, SearchIcon, SettingsIcon, SparkIcon, ClockIcon } from '@/components/ui/icons';
 import { useMessageSearch, type MessageSearchResult } from '@/hooks/use-message-search';
+import type { Character } from '@/types';
 
 type SearchResult = MessageSearchResult;
 
 interface Props {
   selectedCharacterId: string | null;
-  onCharacterSelect: (id: string) => void;
+  onCharacterSelect: (id: string, character: Character) => void;
   onConversationSelect?: (characterId: string, conversationId: string, messageId: string) => void;
   onSearchOpen?: () => void;
 }

@@ -289,6 +289,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     previousCharacterIdRef.current = character.id;
 
     if (isCharacterChanged) {
+      // 先设 loadingThread=true，让消息区开始渐隐，再清空内容，避免白屏闪烁
+      setLoadingThread(true);
       queueMicrotask(() => {
         setMessages([]);
         setStreamingText('');
@@ -1756,7 +1758,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 md:py-5">
+          <div className={`min-h-0 flex-1 overflow-y-auto px-3 py-4 transition-opacity duration-200 md:px-5 md:py-5 ${loadingThread ? 'opacity-0' : 'opacity-100'}`}>
             {messages.length === 0 && !streamingText && !isStreamingHere && (
               <div className="flex h-full min-h-[18rem] items-center justify-center">
                 <div className="max-w-md text-center">
@@ -2099,29 +2101,38 @@ export default function ChatView({ character, conversationId, targetMessageId, o
                 </button>
               </div>
               <div className="max-h-[55dvh] space-y-2 overflow-y-auto pb-1">
-                {conversations.map(conversation => (
-                  <button
-                    key={conversation.id}
-                    onClick={() => {
-                      setActiveConvId(conversation.id);
-                      setConvDrawerOpen(false);
-                    }}
-                    className={`w-full rounded-2xl border px-3 py-3 text-left transition-all duration-200 ${
-                      activeConvId === conversation.id
-                        ? 'border-accent/25 bg-[rgba(155,124,240,0.10)]'
-                        : 'border-border-light bg-white/75 hover:bg-white'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium text-text-primary">{conversation.title}</span>
-                      <span className="shrink-0 text-[11px] text-text-muted">{formatShortDate(conversation.updated_at)}</span>
-                    </div>
-                    <div className="mt-1 flex items-center gap-1.5 text-xs text-text-muted">
-                      <ClockIcon className="h-3.5 w-3.5" />
-                      {formatDateTime(conversation.updated_at)}
-                    </div>
-                  </button>
-                ))}
+                {conversations.map(conversation => {
+                  const isActive = activeConvId === conversation.id;
+                  return (
+                    <button
+                      key={conversation.id}
+                      onClick={() => {
+                        setActiveConvId(conversation.id);
+                        setConvDrawerOpen(false);
+                      }}
+                      className={`relative w-full overflow-hidden rounded-2xl border px-3 py-3 pl-4 text-left transition-all duration-200 ${
+                        isActive
+                          ? 'border-accent/25 bg-[rgba(155,124,240,0.10)]'
+                          : 'border-border-light bg-white/75 hover:bg-white'
+                      }`}
+                    >
+                      {/* 当前对话：左侧紫色竖条 */}
+                      {isActive && (
+                        <span className="absolute inset-y-0 left-0 w-1 rounded-l-2xl bg-accent" />
+                      )}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={`truncate text-sm font-medium ${
+                          isActive ? 'text-accent-dark' : 'text-text-primary'
+                        }`}>{conversation.title}</span>
+                        <span className="shrink-0 text-[11px] text-text-muted">{formatShortDate(conversation.updated_at)}</span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5 text-xs text-text-muted">
+                        <ClockIcon className="h-3.5 w-3.5" />
+                        {formatDateTime(conversation.updated_at)}
+                      </div>
+                    </button>
+                  );
+                })}
                 {conversations.length === 0 && (
                   <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
                     {t('chat.noConversationBody')}

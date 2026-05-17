@@ -66,10 +66,10 @@ async function processQueue(): Promise<void> {
 
     // 内存层去重
     if (inFlightConversations.has(task.conversation_id)) {
-      // 跳过这条，继续看下一条（避免死循环：标记为跳过后继续）
+      // 内存层去重：跳过这条任务，继续处理下一条
       db.prepare("UPDATE memory_tasks SET status = 'pending', updated_at = ? WHERE id = ?")
         .run(new Date().toISOString(), task.id);
-      break; // 等下次触发
+      continue; // 跳过当前任务，继续处理队列中其他任务
     }
 
     inFlightConversations.add(task.conversation_id);

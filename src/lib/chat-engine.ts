@@ -106,7 +106,7 @@ export function assemblePrompt(
     usedTokens += estimateTokens(character.example_dialogue);
   }
   // 预留 AI 回复的 token 空间，避免 prompt 填满整个 context_window
-  const availableBudget = settings.context_window - settings.max_tokens;
+  const availableBudget = Math.max(0, settings.context_window - settings.max_tokens);
 
   const history: ChatMessage[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {

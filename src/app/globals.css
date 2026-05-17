@@ -536,7 +536,7 @@
 /* ── 移动端 safe-area 适配 ── */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .chat-input-safe {
-    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+    padding-bottom: calc(0.2rem + env(safe-area-inset-bottom));
   }
 }
 

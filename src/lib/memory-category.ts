@@ -1,12 +1,12 @@
 import { MemoryCategory } from '@/types';
 
 const CATEGORY_PATTERNS: Array<[RegExp, MemoryCategory]> = [
-  [/关系|鍏崇郴/, '关系动态'],
-  [/话题|璇濋/, '话题历史'],
-  [/基础|鍩虹/, '基础信息'],
-  [/偏好|鍋忓ソ/, '偏好习惯'],
-  [/人格|浜烘牸/, '人格特质'],
-  [/重要|閲嶈/, '重要事件'],
+  [/关系/, '关系动态'],
+  [/话题/, '话题历史'],
+  [/基础/, '基础信息'],
+  [/偏好/, '偏好习惯'],
+  [/人格/, '人格特质'],
+  [/重要/, '重要事件'],
 ];
 
 export function normalizeMemoryCategory(value: string): MemoryCategory {

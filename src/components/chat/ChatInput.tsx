@@ -177,7 +177,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const canSend = (text.trim().length > 0 || attachments.length > 0) && !disabled;
 
   return (
-    <div className="chat-input-safe border-t border-border-light bg-[rgba(248,244,255,0.82)] px-4 py-2 md:py-4 backdrop-blur-xl dark:bg-[rgba(25,20,37,0.82)]">
+    <div className="chat-input-safe border-t border-border-light bg-[rgba(248,244,255,0.82)] px-4 pb-1.5 pt-2 md:py-4 backdrop-blur-xl dark:bg-[rgba(25,20,37,0.82)]">
       <div className="mx-auto max-w-6xl">
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
@@ -264,7 +264,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
         </div>
 
         {/* 模型切换栏 */}
-        <div className="relative mt-1.5 flex items-center justify-between px-1" ref={modelPickerRef}>
+        <div className="relative mt-1 flex items-center justify-between px-1" ref={modelPickerRef}>
           <button
             onClick={handleOpenModelPicker}
             className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"

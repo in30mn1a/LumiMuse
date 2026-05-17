@@ -533,13 +533,6 @@
   }
 }
 
-/* ── 移动端 safe-area 适配 ── */
-@supports (padding-bottom: env(safe-area-inset-bottom)) {
-  .chat-input-safe {
-    padding-bottom: calc(0.2rem + env(safe-area-inset-bottom));
-  }
-}
-
 /* ── 移动端：触屏设备操作按钮始终可见（低透明度） ── */
 @media (hover: none) and (pointer: coarse) {
   .message-card .group-hover\:opacity-100 {

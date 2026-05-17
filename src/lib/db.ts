@@ -165,6 +165,22 @@ function migrate(db: Database.Database): void {
     );
   `);
 
+  // 增量迁移：API 供应商表（支持保存多个 API 配置并切换）
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS api_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      api_base TEXT NOT NULL DEFAULT '',
+      api_key TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      temperature REAL NOT NULL DEFAULT 1,
+      max_tokens INTEGER NOT NULL DEFAULT 4096,
+      context_window INTEGER NOT NULL DEFAULT 131072,
+      json_mode INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
   // 增量迁移：characters 表补 image_tags 列（角色生图标签）
   const charCols = db.prepare("PRAGMA table_info(characters)").all() as { name: string }[];
 

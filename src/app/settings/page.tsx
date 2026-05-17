@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle } from '@/types';
+import { useEffect, useState, useCallback } from 'react';
+import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle, ApiProvider } from '@/types';
 import { applyFontStyle } from '@/lib/font-stacks';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
@@ -15,18 +15,27 @@ export default function SettingsPage() {
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
   const [authEnabled, setAuthEnabled] = useState(false);
+  const [providers, setProviders] = useState<ApiProvider[]>([]);
+  const [activeProviderId, setActiveProviderId] = useState('');
+  const [editingProvider, setEditingProvider] = useState<Partial<ApiProvider> | null>(null);
   const { t, setLang } = useTranslation();
+
+  const loadProviders = useCallback(() => {
+    fetch('/api/providers').then(r => r.json()).then(data => {
+      setProviders(data.providers || []);
+      setActiveProviderId(data.active_provider_id || '');
+    });
+  }, []);
 
   useEffect(() => {
     fetch('/api/settings').then(r => r.json()).then(s => {
       setSettings({ ...DEFAULT_SETTINGS, ...s });
       document.documentElement.classList.toggle('dark', s.theme === 'dark');
-      // 应用字体设置
       applyFontStyle((s.font_style || 'wenkai') as FontStyle);
     });
-    // 检查是否启用了密码保护
     fetch('/api/auth').then(r => r.json()).then(d => setAuthEnabled(d.authEnabled)).catch(() => {});
-  }, []);
+    loadProviders();
+  }, [loadProviders]);
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     if (typeof value === 'number' && !Number.isFinite(value)) return;
@@ -38,15 +47,14 @@ export default function SettingsPage() {
     return Number.isFinite(parsed) ? parsed : 0;
   };
 
-  const fetchModels = async () => {
+  const fetchModels = async (apiBase?: string, apiKey?: string) => {
     setModelLoading(true);
     setModelError(null);
     try {
-      // 用当前表单里的值（未保存也能用），加 refresh=1 跳过缓存
       const params = new URLSearchParams({ refresh: '1' });
-      if (settings.api_base) params.set('api_base', settings.api_base);
-      // 脱敏掩码不发，让后端回退到数据库中保存的真实密钥
-      if (settings.api_key && settings.api_key !== '********') params.set('api_key', settings.api_key);
+      if (apiBase || settings.api_base) params.set('api_base', apiBase || settings.api_base);
+      if (apiKey && apiKey !== '********') params.set('api_key', apiKey);
+      else if (settings.api_key && settings.api_key !== '********') params.set('api_key', settings.api_key);
       const response = await fetch(`/api/models?${params}`);
       const data = await response.json();
       if (data.error) {
@@ -70,7 +78,6 @@ export default function SettingsPage() {
     });
     setLang(settings.language);
     document.documentElement.classList.toggle('dark', settings.theme === 'dark');
-    // 应用字体设置
     applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
     setSaving('saved');
     window.setTimeout(() => setSaving('idle'), 1200);
@@ -80,6 +87,83 @@ export default function SettingsPage() {
     if (!window.confirm(t('auth.logoutConfirm'))) return;
     await fetch('/api/auth', { method: 'DELETE' });
     router.replace('/login');
+  };
+
+  const handleActivateProvider = async (id: string) => {
+    await fetch('/api/providers/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const res = await fetch('/api/settings');
+    const s = await res.json();
+    setSettings({ ...DEFAULT_SETTINGS, ...s });
+    setActiveProviderId(id);
+    setModelList([]);
+    setModelError(null);
+  };
+
+  const handleDeleteProvider = async (id: string) => {
+    if (!window.confirm(t('settings.providerDeleteConfirm'))) return;
+    await fetch(`/api/providers?id=${id}`, { method: 'DELETE' });
+    loadProviders();
+  };
+
+  const handleSaveProvider = async () => {
+    if (!editingProvider) return;
+    const isEdit = !!editingProvider.id;
+    const method = isEdit ? 'PUT' : 'POST';
+    await fetch('/api/providers', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...editingProvider, save_as_current: true }),
+    });
+    setEditingProvider(null);
+    loadProviders();
+    const res = await fetch('/api/settings');
+    const s = await res.json();
+    setSettings({ ...DEFAULT_SETTINGS, ...s });
+  };
+
+  const handleSaveCurrentAsProvider = async () => {
+    const name = window.prompt(t('settings.providerNamePrompt'));
+    if (!name) return;
+    await fetch('/api/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        api_base: settings.api_base,
+        api_key: settings.api_key,
+        model: settings.model,
+        temperature: settings.temperature,
+        max_tokens: settings.max_tokens,
+        context_window: settings.context_window,
+        json_mode: settings.json_mode,
+        save_as_current: true,
+      }),
+    });
+    loadProviders();
+  };
+
+  const handleUpdateCurrentProvider = async () => {
+    if (!activeProviderId) return;
+    await fetch('/api/providers', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: activeProviderId,
+        api_base: settings.api_base,
+        api_key: settings.api_key,
+        model: settings.model,
+        temperature: settings.temperature,
+        max_tokens: settings.max_tokens,
+        context_window: settings.context_window,
+        json_mode: settings.json_mode,
+        save_as_current: true,
+      }),
+    });
+    loadProviders();
   };
 
   return (
@@ -120,49 +204,171 @@ export default function SettingsPage() {
         </header>
 
         <div className="space-y-4">
-          <section className="surface-panel p-5">
-            <h2 className="section-title text-lg">{t('settings.overview')}</h2>
-            <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <div className="stat-tile">
-                <div className="label-small">{t('settings.apiStatus')}</div>
-                <div className="mt-2 text-base font-semibold text-text-primary">
-                  {settings.api_base && settings.model ? t('settings.connected') : t('settings.notConfigured')}
-                </div>
-                <div className="mt-1 text-xs text-text-muted">{settings.model || t('settings.modelPlaceholder')}</div>
-              </div>
-
-              <div className="stat-tile">
-                <div className="label-small">{t('settings.themeStatus')}</div>
-                <div className="mt-2 text-base font-semibold text-text-primary">
-                  {settings.theme === 'dark' ? t('settings.themeDark') : t('settings.themeLight')}
-                </div>
-                <div className="mt-1 text-xs text-text-muted">{t('settings.display')}</div>
-              </div>
-
-              <div className="stat-tile">
-                <div className="label-small">{t('settings.languageStatus')}</div>
-                <div className="mt-2 text-base font-semibold text-text-primary">
-                  {settings.language === 'zh' ? '中文' : 'English'}
-                </div>
-                <div className="mt-1 text-xs text-text-muted">{t('settings.display')}</div>
-              </div>
-
-              <div className="stat-tile">
-                <div className="label-small">{t('settings.memoryStatus')}</div>
-                <div className="mt-2 text-base font-semibold text-text-primary">
-                  {settings.memory_inject ? t('settings.connected') : t('settings.notConfigured')}
-                </div>
-                <div className="mt-1 text-xs text-text-muted">
-                  {settings.limit_inject ? settings.memory_max_inject : '不限'} {t('settings.maxMemoriesInject')}
-                </div>
-              </div>
-            </div>
-          </section>
-
           <main className="space-y-4">
+            {/* 供应商管理 */}
+            <section className="surface-panel p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="section-title text-lg">{t('settings.providerManage')}</h2>
+                <div className="flex gap-2">
+                  {activeProviderId && (
+                    <button
+                      onClick={handleUpdateCurrentProvider}
+                      className="soft-button soft-button-secondary text-xs"
+                    >
+                      {t('settings.providerUpdateCurrent')}
+                    </button>
+                  )}
+                  <button
+                    onClick={handleSaveCurrentAsProvider}
+                    className="soft-button soft-button-primary text-xs"
+                  >
+                    {t('settings.providerSaveCurrent')}
+                  </button>
+                </div>
+              </div>
+
+              {providers.length === 0 ? (
+                <p className="text-sm text-text-muted">{t('settings.providerEmpty')}</p>
+              ) : (
+                <div className="space-y-2">
+                  {providers.map(p => (
+                    <div
+                      key={p.id}
+                      className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
+                        p.id === activeProviderId
+                          ? 'border-accent/30 bg-accent/8'
+                          : 'border-border-light bg-white/70 hover:border-accent/20'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-text-primary">{p.name}</span>
+                          {p.id === activeProviderId && (
+                            <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-medium text-accent-dark">
+                              {t('settings.providerActive')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-0.5 text-xs text-text-muted truncate">
+                          {p.api_base} · {p.model || t('settings.modelPlaceholder')}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 gap-1.5">
+                        {p.id !== activeProviderId && (
+                          <button
+                            onClick={() => handleActivateProvider(p.id)}
+                            className="soft-button soft-button-primary px-2.5 py-1 text-xs"
+                          >
+                            {t('settings.providerSwitch')}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setEditingProvider({ ...p })}
+                          className="soft-button soft-button-secondary px-2.5 py-1 text-xs"
+                        >
+                          {t('common.edit')}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteProvider(p.id)}
+                          className="soft-button soft-button-danger px-2.5 py-1 text-xs"
+                        >
+                          {t('common.delete')}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {editingProvider && (
+                <div className="mt-4 space-y-3 rounded-2xl border border-accent/20 bg-white/80 px-4 py-4">
+                  <h3 className="text-sm font-medium text-text-primary">
+                    {editingProvider.id ? t('settings.providerEdit') : t('settings.providerNew')}
+                  </h3>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.providerName')}</label>
+                    <input
+                      value={editingProvider.name || ''}
+                      onChange={e => setEditingProvider(prev => prev ? { ...prev, name: e.target.value } : null)}
+                      className="input-rich"
+                      placeholder="OpenAI"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.apiBase')}</label>
+                    <input
+                      value={editingProvider.api_base || ''}
+                      onChange={e => setEditingProvider(prev => prev ? { ...prev, api_base: e.target.value } : null)}
+                      className="input-rich"
+                      placeholder={t('settings.apiBasePlaceholder')}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.apiKey')}</label>
+                    <input
+                      type="password"
+                      value={editingProvider.api_key || ''}
+                      onChange={e => setEditingProvider(prev => prev ? { ...prev, api_key: e.target.value } : null)}
+                      className="input-rich"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.model')}</label>
+                    <input
+                      value={editingProvider.model || ''}
+                      onChange={e => setEditingProvider(prev => prev ? { ...prev, model: e.target.value } : null)}
+                      className="input-rich"
+                      placeholder={t('settings.modelPlaceholder')}
+                    />
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.temperature')}</label>
+                      <input
+                        type="number" min="0" max="2" step="0.1"
+                        value={editingProvider.temperature ?? 1}
+                        onChange={e => setEditingProvider(prev => prev ? { ...prev, temperature: parseNumber(e.target.value) } : null)}
+                        className="input-rich"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.maxTokens')}</label>
+                      <input
+                        type="number" min="1"
+                        value={editingProvider.max_tokens ?? 4096}
+                        onChange={e => setEditingProvider(prev => prev ? { ...prev, max_tokens: parseNumber(e.target.value) } : null)}
+                        className="input-rich"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.contextWindow')}</label>
+                      <input
+                        type="number" min="1"
+                        value={editingProvider.context_window ?? 131072}
+                        onChange={e => setEditingProvider(prev => prev ? { ...prev, context_window: parseNumber(e.target.value) } : null)}
+                        className="input-rich"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={handleSaveProvider} className="soft-button soft-button-primary text-xs">
+                      {t('common.save')}
+                    </button>
+                    <button onClick={() => setEditingProvider(null)} className="soft-button soft-button-secondary text-xs">
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* 当前接口配置 */}
             <section className="surface-panel p-5">
               <div className="mb-4">
                 <h2 className="section-title text-lg">{t('settings.api')}</h2>
+                {activeProviderId && (
+                  <p className="mt-1 text-xs text-text-muted">{t('settings.apiFromProvider')}</p>
+                )}
               </div>
 
               <div className="space-y-4">
@@ -211,7 +417,7 @@ export default function SettingsPage() {
                     )}
                     <button
                       type="button"
-                      onClick={fetchModels}
+                      onClick={() => fetchModels()}
                       disabled={modelLoading}
                       className="soft-button soft-button-secondary shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
                     >

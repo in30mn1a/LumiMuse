@@ -111,6 +111,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   // 当前活跃的流式 convId ref（闭包内用来判断自己是否还是最新流，控制 streamingText 写入）
   const activeStreamConvRef = useRef<string | null>(null);
   const [showTimestamps, setShowTimestamps] = useState(true);
+  const [currentModel, setCurrentModel] = useState('');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(conversationId);
@@ -409,7 +410,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   useEffect(() => {
     fetch('/api/settings')
       .then(r => r.json())
-      .then(s => setShowTimestamps(s.show_timestamps ?? true));
+      .then(s => {
+        setShowTimestamps(s.show_timestamps ?? true);
+        setCurrentModel(s.model || '');
+      });
   }, []);
 
   useEffect(() => {
@@ -1888,7 +1892,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             <div ref={messagesEndRef} />
           </div>
 
-          <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreamingHere} isGenerating={isStreamingHere} />
+          <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreamingHere} isGenerating={isStreamingHere} currentModel={currentModel} onModelChange={async (model: string) => { setCurrentModel(model); await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) }); }} />
         </section>
 
         <aside className="hidden min-h-0 flex-col gap-4 lg:flex">

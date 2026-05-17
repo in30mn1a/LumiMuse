@@ -139,6 +139,19 @@ export const DEFAULT_IMAGE_GEN_SETTINGS: ImageGenSettings = {
 
 export type FontStyle = 'wenkai' | 'system' | 'serif';
 
+export interface ApiProvider {
+  id: string;
+  name: string;
+  api_base: string;
+  api_key: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  context_window: number;
+  json_mode: boolean;
+  created_at: string;
+}
+
 export interface Settings {
   api_base: string;
   api_key: string;
@@ -162,6 +175,7 @@ export interface Settings {
   limit_inject: boolean;
   language: 'zh' | 'en';
   font_style: FontStyle;
+  active_provider_id: string;
   // 生图设置
   image_gen: ImageGenSettings;
 }
@@ -189,6 +203,7 @@ export const DEFAULT_SETTINGS: Settings = {
   limit_inject: false,
   language: 'zh',
   font_style: 'wenkai',
+  active_provider_id: '',
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
 };
 

@@ -5,21 +5,22 @@ import { useTranslation } from '@/lib/i18n-context';
 import { SparkIcon, StopIcon } from '@/components/ui/icons';
 import type { AttachmentItem } from '@/lib/chat-engine';
 
-// 支持的文件类型
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png'];
 const ACCEPTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/xml', 'text/xml', 'text/html'];
 const ACCEPTED_TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'csv', 'json', 'xml', 'html', 'htm', 'log', 'yaml', 'yml', 'toml', 'ini', 'env']);
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const MAX_TEXT_SIZE = 200 * 1024; // 文本文件最大 200KB（避免 token 爆炸）
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_TEXT_SIZE = 200 * 1024;
 
 interface Props {
   onSend: (content: string, attachments?: AttachmentItem[]) => void;
   onStop?: () => void;
   disabled: boolean;
   isGenerating?: boolean;
+  currentModel?: string;
+  onModelChange?: (model: string) => void;
+  modelList?: string[];
 }
 
-// 附件图标
 function PaperclipIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
@@ -36,19 +37,71 @@ function XIcon({ className }: { className?: string }) {
   );
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isGenerating }: Props) {
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList }: Props) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   const [attachError, setAttachError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<string[]>([]);
+  const [modelLoading, setModelLoading] = useState(false);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
+
+  const modelList = externalModelList && externalModelList.length > 0 ? externalModelList : fetchedModels;
 
   useEffect(() => {
     if (!textareaRef.current) return;
     textareaRef.current.style.height = '0px';
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
   }, [text]);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setModelPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [modelPickerOpen]);
+
+  const handleOpenModelPicker = async () => {
+    if (modelPickerOpen) {
+      setModelPickerOpen(false);
+      return;
+    }
+    setModelPickerOpen(true);
+    if (fetchedModels.length === 0 && !modelLoading && (!externalModelList || externalModelList.length === 0)) {
+      setModelLoading(true);
+      try {
+        const res = await fetch('/api/models');
+        const data = await res.json();
+        if (data.models && data.models.length > 0) {
+          setFetchedModels(data.models);
+        }
+      } catch {
+        // 静默失败
+      } finally {
+        setModelLoading(false);
+      }
+    }
+  };
+
+  const handleSelectModel = (model: string) => {
+    onModelChange?.(model);
+    setModelPickerOpen(false);
+  };
 
   const handleSubmit = () => {
     const trimmed = text.trim();
@@ -69,7 +122,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating }: Pr
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-    e.target.value = ''; // 允许重复选同一文件
+    e.target.value = '';
 
     setAttachError('');
     const newAttachments: AttachmentItem[] = [];
@@ -85,7 +138,6 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating }: Pr
       const isText = ACCEPTED_TEXT_TYPES.some(t => file.type.startsWith(t)) || ACCEPTED_TEXT_EXTS.has(ext);
 
       if (isImage) {
-        // 图片转 base64 data URL
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result as string);
@@ -105,7 +157,6 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating }: Pr
       } else if (isText) {
         if (file.size > MAX_TEXT_SIZE) {
           setAttachError(`${file.name} 文本文件超过 200KB，可能导致 token 过多`);
-          // 警告但继续上传
         }
         const text = await file.text();
         newAttachments.push({ type: 'text', name: file.name, data: text, mimeType: file.type || 'text/plain' });
@@ -128,7 +179,6 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating }: Pr
   return (
     <div className="chat-input-safe border-t border-border-light bg-[rgba(248,244,255,0.82)] px-4 py-2 md:py-4 backdrop-blur-xl dark:bg-[rgba(25,20,37,0.82)]">
       <div className="mx-auto max-w-6xl">
-        {/* 附件预览区 */}
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {attachments.map((att, i) => (
@@ -156,13 +206,11 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating }: Pr
           </div>
         )}
 
-        {/* 错误提示 */}
         {attachError && (
           <p className="mb-2 text-xs text-red-500">{attachError}</p>
         )}
 
         <div className="flex items-center gap-2 rounded-[1.25rem] border border-border-light bg-white/70 px-3 py-2 shadow-[0_8px_22px_rgba(92,74,139,0.04)]">
-          {/* 附件按钮 */}
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -212,6 +260,41 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating }: Pr
               <SparkIcon className="h-4 w-4" />
               <span className="hidden md:inline">{t('input.send')}</span>
             </button>
+          )}
+        </div>
+
+        {/* 模型切换栏 */}
+        <div className="relative mt-1.5 flex items-center justify-between px-1" ref={modelPickerRef}>
+          <button
+            onClick={handleOpenModelPicker}
+            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
+          >
+            <span className="max-w-[12rem] truncate">{currentModel || t('settings.modelPlaceholder')}</span>
+            <ChevronDownIcon className="h-3 w-3" />
+          </button>
+
+          {modelPickerOpen && (
+            <div className="absolute bottom-full left-0 z-50 mb-1 max-h-60 w-72 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]">
+              <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                {modelLoading ? t('common.loading') : t('input.modelSelect')}
+              </div>
+              {modelList.length === 0 && !modelLoading && (
+                <div className="px-3 py-2 text-xs text-text-muted">{t('input.noModels')}</div>
+              )}
+              {modelList.map(model => (
+                <button
+                  key={model}
+                  onClick={() => handleSelectModel(model)}
+                  className={`w-full px-3 py-1.5 text-left text-xs transition-colors ${
+                    model === currentModel
+                      ? 'bg-accent/10 text-accent-dark font-medium'
+                      : 'text-text-secondary hover:bg-accent/5'
+                  }`}
+                >
+                  <span className="block truncate">{model}</span>
+                </button>
+              ))}
+            </div>
           )}
         </div>
       </div>

@@ -152,12 +152,6 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
         )}
       </div>
 
-      <div className="border-b border-border-light px-4 py-4">
-        <div className="surface-panel-quiet p-4">
-          <p className="label-small">{t('sidebar.characters')}</p>
-        </div>
-      </div>
-
       <div className="min-h-0 flex-1 overflow-hidden pt-1">
         <CharacterList selectedId={selectedCharacterId} onSelect={onCharacterSelect} />
       </div>

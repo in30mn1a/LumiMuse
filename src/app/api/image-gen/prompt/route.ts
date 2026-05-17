@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { DEFAULT_SETTINGS, Settings, Message } from '@/types';
+import { Message } from '@/types';
+import { loadSettings } from '@/lib/settings';
 import { chatCompletion } from '@/lib/api-client';
 
 /**
@@ -86,16 +87,6 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 
 # 输出格式（严格遵守，不输出任何解释文字）
 POSITIVE: <所有正面 Tag，逗号分隔，≥70个>`;
-
-function loadSettings(): Settings {
-  const db = getDb();
-  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const map: Record<string, unknown> = {};
-  for (const row of rows) {
-    try { map[row.key] = JSON.parse(row.value); } catch { map[row.key] = row.value; }
-  }
-  return { ...DEFAULT_SETTINGS, ...map } as Settings;
-}
 
 export async function POST(request: NextRequest) {
   try {

@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { runChat, AttachmentItem } from '@/lib/chat-engine';
 import { getDb } from '@/lib/db';
-import { Settings, DEFAULT_SETTINGS, Message } from '@/types';
+import { Settings, Message } from '@/types';
+import { loadSettings } from '@/lib/settings';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
 
@@ -22,16 +23,7 @@ export async function POST(request: NextRequest) {
   }
 
   const db = getDb();
-  const settingsRows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const settingsMap: Record<string, unknown> = {};
-  for (const row of settingsRows) {
-    try {
-      settingsMap[row.key] = JSON.parse(row.value);
-    } catch {
-      settingsMap[row.key] = row.value;
-    }
-  }
-  const settings = { ...DEFAULT_SETTINGS, ...settingsMap } as Settings;
+  const settings = loadSettings();
   const timeContext: ChatTimeContext = {
     clientNowIso: client_now_iso,
     timeZone: client_timezone,

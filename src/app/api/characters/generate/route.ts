@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { chatCompletion } from '@/lib/api-client';
 import { getDb } from '@/lib/db';
-import { Character, DEFAULT_SETTINGS, Settings } from '@/types';
+import { Character } from '@/types';
+import { loadSettings } from '@/lib/settings';
 
 const CHARACTER_GENERATION_SYSTEM = `你是 LumiMuse 的角色卡创作助手。
 请根据用户要求生成一个适合聊天陪伴工具使用的原创角色。
@@ -29,15 +30,6 @@ JSON 字段必须完整包含：
   "image_tags": "english tags, comma separated"
 }`;
 
-function loadSettings(): Settings {
-  const db = getDb();
-  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const map: Record<string, unknown> = {};
-  for (const row of rows) {
-    try { map[row.key] = JSON.parse(row.value); } catch { map[row.key] = row.value; }
-  }
-  return { ...DEFAULT_SETTINGS, ...map } as Settings;
-}
 
 function parseGeneratedCharacter(text: string): Partial<Character> {
   const cleaned = text

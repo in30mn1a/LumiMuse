@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
-import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS } from '@/types';
+import { loadSettings } from '@/lib/settings';
+import { ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS } from '@/types';
 import { writeFile, mkdir } from 'fs/promises';
 import { inflateRawSync } from 'zlib';
 import path from 'path';
@@ -11,16 +11,6 @@ import { v4 as uuid } from 'uuid';
  * POST body: { prompt: string; negative_prompt?: string; override?: Partial<ImageGenSettings> }
  * 返回: { url: string } 或 { error: string }
  */
-
-function loadSettings(): Settings {
-  const db = getDb();
-  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const map: Record<string, unknown> = {};
-  for (const row of rows) {
-    try { map[row.key] = JSON.parse(row.value); } catch { map[row.key] = row.value; }
-  }
-  return { ...DEFAULT_SETTINGS, ...map } as Settings;
-}
 
 // 确保生图输出目录存在
 async function ensureOutputDir(): Promise<string> {

@@ -1,20 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { DEFAULT_SETTINGS } from '@/types';
+import { loadSettings } from '@/lib/settings';
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 分钟
 
 export async function GET(request: NextRequest) {
   const db = getDb();
-  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const map: Record<string, string> = {};
-  for (const row of rows) {
-    try { map[row.key] = JSON.parse(row.value); } catch { map[row.key] = row.value; }
-  }
+  const settings = loadSettings();
 
   // query 参数优先（用户填了但未保存时直接用），否则回退到数据库值
-  const apiBase = request.nextUrl.searchParams.get('api_base') || map.api_base || DEFAULT_SETTINGS.api_base;
-  const apiKey  = request.nextUrl.searchParams.get('api_key')  || map.api_key  || DEFAULT_SETTINGS.api_key;
+  const apiBase = request.nextUrl.searchParams.get('api_base') || settings.api_base;
+  const apiKey  = request.nextUrl.searchParams.get('api_key')  || settings.api_key;
 
   if (!apiBase || !apiKey) {
     return NextResponse.json({ models: [], error: '请先配置 API 地址和密钥' });

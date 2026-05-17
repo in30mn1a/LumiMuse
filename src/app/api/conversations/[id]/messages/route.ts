@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
+import { serializeMessage, serializeTypedMessages } from '@/lib/messages';
 
 export async function GET(
   _request: NextRequest,
@@ -12,15 +13,7 @@ export async function GET(
     'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
   ).all(id) as Message[];
 
-  // 解析消息元数据
-  for (const message of messages) {
-    const record = message as unknown as Record<string, unknown>;
-    if (typeof record.metadata === 'string') {
-      record.metadata = JSON.parse(record.metadata as string);
-    }
-  }
-
-  return NextResponse.json(messages);
+  return NextResponse.json(serializeTypedMessages(messages));
 }
 
 export async function POST(
@@ -51,8 +44,5 @@ export async function POST(
   db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, id);
 
   const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(msgId) as Record<string, unknown>;
-  if (typeof message.metadata === 'string') {
-    message.metadata = JSON.parse(message.metadata as string);
-  }
-  return NextResponse.json(message, { status: 201 });
+  return NextResponse.json(serializeMessage(message), { status: 201 });
 }

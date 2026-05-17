@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-
-/** 把从 SQLite 读出的 message 行统一序列化：metadata 解析为对象 */
-function serializeMessage(row: Record<string, unknown>): Record<string, unknown> {
-  if (typeof row.metadata === 'string') {
-    try { row.metadata = JSON.parse(row.metadata); } catch { row.metadata = {}; }
-  }
-  return row;
-}
+import { parseMessageMetadata, serializeMessage } from '@/lib/messages';
 
 export async function PUT(
   request: NextRequest,
@@ -22,7 +15,7 @@ export async function PUT(
 
   if (body.activeVersion !== undefined) {
     let meta: Record<string, unknown> = {};
-    try { meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata) : (existing.metadata as Record<string, unknown> || {}); } catch { meta = {}; }
+    meta = parseMessageMetadata(existing.metadata);
     const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
     if (versions && body.activeVersion >= 0 && body.activeVersion < versions.length) {
       meta.activeVersion = body.activeVersion;
@@ -36,7 +29,7 @@ export async function PUT(
 
     // 同步更新 metadata.versions 里当前激活版本的内容，防止切换版本时覆盖编辑
     let meta: Record<string, unknown> = {};
-    try { meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata) : (existing.metadata as Record<string, unknown> || {}); } catch { meta = {}; }
+    meta = parseMessageMetadata(existing.metadata);
     const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
 
     // 如果传了 attachments，更新 metadata 里的附件
@@ -82,7 +75,7 @@ export async function DELETE(
 
   // 如果消息有多个版本，只删除当前激活版本，保留其他版本
   let meta: Record<string, unknown> = {};
-  try { meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata) : (existing.metadata as Record<string, unknown> || {}); } catch { meta = {}; }
+  meta = parseMessageMetadata(existing.metadata);
   const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
 
   if (versions && versions.length > 1) {

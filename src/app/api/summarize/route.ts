@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { getDb } from '@/lib/db';
-import { Settings, DEFAULT_SETTINGS, Message, Character } from '@/types';
+import { Settings, Message, Character } from '@/types';
+import { loadSettings } from '@/lib/settings';
 import { estimateTokens } from '@/lib/token-counter';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -13,12 +14,7 @@ export async function POST(request: NextRequest) {
   const db = getDb();
 
   // 读取设置
-  const settingsRows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const settingsMap: Record<string, unknown> = {};
-  for (const row of settingsRows) {
-    try { settingsMap[row.key] = JSON.parse(row.value); } catch { settingsMap[row.key] = row.value; }
-  }
-  const settings = { ...DEFAULT_SETTINGS, ...settingsMap } as Settings;
+  const settings = loadSettings();
 
   // 获取对话和角色信息
   const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation_id) as { character_id: string; title: string } | undefined;

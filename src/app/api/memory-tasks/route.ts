@@ -1,17 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { enqueueExtraction } from '@/lib/memory-queue';
-import { Message, DEFAULT_SETTINGS, Settings } from '@/types';
+import { Message } from '@/types';
+import { loadSettings } from '@/lib/settings';
 
-function loadSettings(): Settings {
-  const db = getDb();
-  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const map: Record<string, unknown> = {};
-  for (const row of rows) {
-    try { map[row.key] = JSON.parse(row.value); } catch { map[row.key] = row.value; }
-  }
-  return { ...DEFAULT_SETTINGS, ...map };
-}
 
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();

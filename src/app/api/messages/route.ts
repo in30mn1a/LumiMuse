@@ -1,20 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
-
-function serializeMessages(messages: Message[]): Message[] {
-  for (const message of messages) {
-    const record = message as unknown as Record<string, unknown>;
-    if (typeof record.metadata === 'string') {
-      try {
-        record.metadata = JSON.parse(record.metadata as string);
-      } catch {
-        record.metadata = {};
-      }
-    }
-  }
-  return messages;
-}
+import { serializeTypedMessages } from '@/lib/messages';
 
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
@@ -34,7 +21,7 @@ export async function GET(request: NextRequest) {
       'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC',
     ).all(conversationId) as Message[];
 
-    return NextResponse.json(serializeMessages(messages));
+    return NextResponse.json(serializeTypedMessages(messages));
   }
 
   const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 80, 1), 200);
@@ -58,7 +45,7 @@ export async function GET(request: NextRequest) {
   ).get(conversationId) as { cnt: number };
 
   return NextResponse.json({
-    messages: serializeMessages(messages),
+    messages: serializeTypedMessages(messages),
     hasMore,
     oldestSeq: messages[0]?.seq ?? null,
     unextractedCount: unextractedRow.cnt,
@@ -93,5 +80,5 @@ export async function POST(request: NextRequest) {
   db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
 
   const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(msgId) as Message;
-  return NextResponse.json(serializeMessages([message])[0], { status: 201 });
+  return NextResponse.json(serializeTypedMessages([message])[0], { status: 201 });
 }

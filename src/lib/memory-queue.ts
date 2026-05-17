@@ -6,21 +6,13 @@
  */
 import { extractMemories } from '@/lib/memory-engine';
 import { getDb } from '@/lib/db';
-import { Message, DEFAULT_SETTINGS, Settings } from '@/types';
+import { Message } from '@/types';
+import { loadSettings } from '@/lib/settings';
 
 let processing = false;
 // 正在处理中的 conversationId，防止同一对话并发重复提取
 const inFlightConversations = new Set<string>();
 
-function loadSettings(): Settings {
-  const db = getDb();
-  const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-  const map: Record<string, unknown> = {};
-  for (const row of rows) {
-    try { map[row.key] = JSON.parse(row.value); } catch { map[row.key] = row.value; }
-  }
-  return { ...DEFAULT_SETTINGS, ...map };
-}
 
 /** 把任务写入数据库，如果该对话已有 pending/processing 任务则跳过 */
 export function enqueueExtraction(

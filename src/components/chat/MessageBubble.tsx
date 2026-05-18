@@ -782,9 +782,10 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
 
   const isPending = img.status === 'pending_prompt' || img.status === 'pending_image';
   const isFailed = img.status === 'failed';
+  const hasFallbackUrl = isFailed && !!img.url;
   const handleRetry = () => onRegenerate?.(messageId, img.prompt || undefined, img.id);
 
-  if (isPending || isFailed || !img.url) {
+  if ((isPending || (isFailed && !hasFallbackUrl)) && !img.url) {
     return (
       <div className="generated-image-card group/img relative w-full max-w-[20rem] rounded-xl border border-border-light bg-white/82 p-3 shadow-sm backdrop-blur-sm dark:bg-white/8">
         <div className="flex items-start justify-between gap-3">
@@ -841,6 +842,17 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
   return (
     <>
       <div className="generated-image-card group/img relative inline-block overflow-hidden rounded-xl border border-border-light shadow-sm">
+        {hasFallbackUrl && (
+          <div className="flex items-center gap-2 rounded-t-xl border-b border-red-200/60 bg-red-50/90 px-3 py-1.5 text-xs text-red-600 backdrop-blur-sm">
+            <span className="min-w-0 flex-1 truncate">{img.error || '重新生成失败'}</span>
+            <button
+              onClick={handleRetry}
+              className="shrink-0 font-medium text-red-500 transition-colors hover:text-red-700"
+            >
+              重试
+            </button>
+          </div>
+        )}
         <img
           src={img.url}
           alt=""

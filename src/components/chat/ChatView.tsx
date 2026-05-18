@@ -1032,6 +1032,25 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         error: message,
       });
       showToast(message);
+
+      if (replaceImageId) {
+        setTimeout(async () => {
+          const currentMsg = messages.find(m => m.id === messageId);
+          if (!currentMsg) return;
+          const currentMeta = { ...(currentMsg.metadata as Record<string, unknown> || {}) };
+          const currentImages = (currentMeta.generatedImages as ImageEntry[]) || [];
+          const targetImg = currentImages.find((img: ImageEntry) => img.id === replaceImageId);
+          if (targetImg && targetImg.status === 'failed') {
+            await persistImages(images =>
+              images.map(img =>
+                img.id === replaceImageId
+                  ? { ...img, status: 'ready' as const, error: undefined }
+                  : img
+              )
+            );
+          }
+        }, 5000);
+      }
     }
   };
   // 删除消息中的某张生成图片

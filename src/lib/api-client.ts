@@ -124,39 +124,86 @@ export async function chatCompletion(
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): Promise<string> {
-  const body: Record<string, unknown> = {
-    model: settings.model,
-    messages,
-    max_tokens: settings.max_tokens,
-    temperature: settings.temperature,
-    stream: false,
-  };
+  return new Promise((resolve, reject) => {
+    const body: Record<string, unknown> = {
+      model: settings.model,
+      messages,
+      max_tokens: settings.max_tokens,
+      temperature: settings.temperature,
+      stream: true,
+    };
 
-  if (settings.json_mode) {
-    body.response_format = { type: 'json_object' };
-  }
+    if (settings.json_mode) {
+      body.response_format = { type: 'json_object' };
+    }
 
-  const timeoutSignal = AbortSignal.timeout(120_000);
-  const combinedSignal = signal
-    ? AbortSignal.any([signal, timeoutSignal])
-    : timeoutSignal;
+    const timeoutSignal = AbortSignal.timeout(300_000); // 5分钟
+    const combinedSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
 
-  const response = await fetch(`${settings.api_base}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.api_key}`,
-    },
-    body: JSON.stringify(body),
-    signal: combinedSignal,
+    fetch(`${settings.api_base}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.api_key}`,
+      },
+      body: JSON.stringify(body),
+      signal: combinedSignal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`API error ${response.status}: ${text.slice(0, 200)}`);
+        }
+
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        let buffer = '';
+
+        const read = async () => {
+          try {
+            const { done, value } = await reader.read();
+            if (done) {
+              resolve(fullText);
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop()!;
+
+            for (const part of parts) {
+              for (const line of part.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed === 'data: [DONE]') continue;
+                if (!trimmed.startsWith('data: ')) continue;
+
+                try {
+                  const json = JSON.parse(trimmed.slice(6));
+                  const delta = json.choices?.[0]?.delta?.content;
+                  if (delta) {
+                    fullText += delta;
+                  }
+                } catch {
+                  // 跳过格式不完整的分片
+                }
+              }
+            }
+
+            await read();
+          } catch (err) {
+            if (err instanceof Error && (err.name === 'AbortError' || combinedSignal?.aborted)) {
+              resolve(fullText);
+              return;
+            }
+            reject(err);
+          }
+        };
+
+        read();
+      })
+      .catch(reject);
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`API error ${response.status}: ${text.slice(0, 200)}`);
-  }
-
-  const data = await response.json();
-  const message = data.choices?.[0]?.message;
-  return message?.content || message?.reasoning_content || '';
 }

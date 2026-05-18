@@ -124,7 +124,7 @@ export async function chatCompletion(
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
+  try {
     const body: Record<string, unknown> = {
       model: settings.model,
       messages,
@@ -142,7 +142,7 @@ export async function chatCompletion(
       ? AbortSignal.any([signal, timeoutSignal])
       : timeoutSignal;
 
-    fetch(`${settings.api_base}/chat/completions`, {
+    const response = await fetch(`${settings.api_base}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -150,60 +150,59 @@ export async function chatCompletion(
       },
       body: JSON.stringify(body),
       signal: combinedSignal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(`API error ${response.status}: ${text.slice(0, 200)}`);
-        }
+    });
 
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        let buffer = '';
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`API error ${response.status}: ${text.slice(0, 200)}`);
+    }
 
-        const read = async () => {
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop()!;
+
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          if (!trimmed.startsWith('data: ')) continue;
+
           try {
-            const { done, value } = await reader.read();
-            if (done) {
-              resolve(fullText);
-              return;
+            const json = JSON.parse(trimmed.slice(6));
+            const delta = json.choices?.[0]?.delta?.content;
+            if (delta) {
+              fullText += delta;
             }
-
-            buffer += decoder.decode(value, { stream: true });
-            const parts = buffer.split('\n\n');
-            buffer = parts.pop()!;
-
-            for (const part of parts) {
-              for (const line of part.split('\n')) {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed === 'data: [DONE]') continue;
-                if (!trimmed.startsWith('data: ')) continue;
-
-                try {
-                  const json = JSON.parse(trimmed.slice(6));
-                  const delta = json.choices?.[0]?.delta?.content;
-                  if (delta) {
-                    fullText += delta;
-                  }
-                } catch {
-                  // 跳过格式不完整的分片
-                }
-              }
-            }
-
-            await read();
-          } catch (err) {
-            if (err instanceof Error && (err.name === 'AbortError' || combinedSignal?.aborted)) {
-              resolve(fullText);
-              return;
-            }
-            reject(err);
+          } catch {
+            // 跳过格式不完整的分片
           }
-        };
+        }
+      }
+    }
 
-        read();
-      })
-      .catch(reject);
-  });
+    return fullText;
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
+      throw new Error('请求超时，请检查网络连接或更换模型重试');
+    }
+    if (err instanceof Error && err.message.includes('fetch failed')) {
+      throw new Error('无法连接到 API 服务器，请检查网络和 API 配置');
+    }
+    throw err;
+  }
 }

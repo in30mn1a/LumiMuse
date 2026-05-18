@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
       ? `\n\n当前表单内容（可参考，也可以按用户要求重写）：\n${JSON.stringify(current_character, null, 2)}`
       : '';
 
-    const result = await chatCompletion(settings, [
+    const result = await chatCompletion({ ...settings, json_mode: false }, [
       { role: 'system', content: CHARACTER_GENERATION_SYSTEM },
       { role: 'user', content: `用户要求：${requirement.trim()}${currentContext}` },
     ]);

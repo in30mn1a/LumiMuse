@@ -136,6 +136,11 @@ export async function chatCompletion(
     body.response_format = { type: 'json_object' };
   }
 
+  const timeoutSignal = AbortSignal.timeout(120_000);
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+
   const response = await fetch(`${settings.api_base}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -143,7 +148,7 @@ export async function chatCompletion(
       Authorization: `Bearer ${settings.api_key}`,
     },
     body: JSON.stringify(body),
-    signal,
+    signal: combinedSignal,
   });
 
   if (!response.ok) {
@@ -152,5 +157,6 @@ export async function chatCompletion(
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? '';
+  const message = data.choices?.[0]?.message;
+  return message?.content || message?.reasoning_content || '';
 }

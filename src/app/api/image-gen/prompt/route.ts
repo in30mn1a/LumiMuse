@@ -167,10 +167,13 @@ export async function POST(request: NextRequest) {
 
     context += `\n请根据以上信息，生成一张插图的 Tag。重点捕捉最近对话中最具画面感的瞬间。`;
 
-    const result = await chatCompletion(settings, [
-      { role: 'system', content: PROMPT_GENERATION_SYSTEM },
-      { role: 'user', content: context },
-    ]);
+    const result = await chatCompletion(
+      { ...settings, json_mode: false },
+      [
+        { role: 'system', content: PROMPT_GENERATION_SYSTEM },
+        { role: 'user', content: context },
+      ],
+    );
 
     // 解析输出
     let positive = '';
@@ -193,9 +196,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ prompt: positive, negative_prompt: negative });
   } catch (err) {
     console.error('[image-gen/prompt] 生成 prompt 失败:', err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : '生成 prompt 失败' },
-      { status: 500 }
-    );
+    let message = '生成 prompt 失败';
+    if (err instanceof Error) {
+      if (err.name === 'AbortError' || err.name === 'TimeoutError') {
+        message = '生成 prompt 超时，请检查网络连接或更换模型重试';
+      } else if (err.cause && String(err.cause).includes('SocketError')) {
+        message = '网络连接被中断，请检查代理设置或 API 地址是否正确';
+      } else if (err.message.includes('fetch failed')) {
+        message = '无法连接到 API 服务器，请检查网络和 API 配置';
+      } else {
+        message = err.message;
+      }
+    }
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -52,8 +52,8 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
 # 创建数据目录并设置权限
-RUN mkdir -p /app/data /app/public/generated /app/public/avatars \
-    && chown -R nextjs:nodejs /app/data /app/public/generated /app/public/avatars
+RUN mkdir -p /app/data /app/public/generated /app/public/avatars /app/public/attachments \
+    && chown -R nextjs:nodejs /app/data /app/public/generated /app/public/avatars /app/public/attachments
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh

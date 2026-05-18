@@ -27,7 +27,7 @@ export function proxy(request: NextRequest) {
   }
 
   // 兼容旧数据：/avatars/xxx 和 /generated/xxx 重写到 /api/files/...
-  if (pathname.startsWith('/avatars/') || pathname.startsWith('/generated/')) {
+  if (pathname.startsWith('/avatars/') || pathname.startsWith('/generated/') || pathname.startsWith('/attachments/')) {
     const rewriteUrl = new URL(`/api/files${pathname}`, request.url);
     return NextResponse.rewrite(rewriteUrl);
   }

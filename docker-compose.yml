@@ -15,3 +15,4 @@ services:
       # 持久化生成的图片和上传的头像
       - ./public/generated:/app/public/generated
       - ./public/avatars:/app/public/avatars
+      - ./public/attachments:/app/public/attachments

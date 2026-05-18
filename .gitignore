@@ -57,3 +57,5 @@ dev.out.log
 test-results/
 public/generated/
 public/avatars/
+public/attachments/
+lumimuse_flutter/

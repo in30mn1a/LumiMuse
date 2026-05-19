@@ -990,22 +990,36 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
     }
   };
 
+  const getTotalOrphans = () => {
+    if (!orphanFiles) return previewCount;
+    return previewCount + (orphanFiles.avatars?.orphans || 0) + (orphanFiles.attachments?.orphans || 0) + (orphanFiles.generated?.orphans || 0);
+  };
+
+  const getTotalCleaned = () => {
+    if (!fileResults) return cleanedCount;
+    return cleanedCount + (fileResults.avatars?.deleted || 0) + (fileResults.attachments?.deleted || 0) + (fileResults.generated?.deleted || 0);
+  };
+
   const getMessage = () => {
     if (status === 'checking') return t('settings.cleanupRunning');
     if (status === 'cleaning') return t('settings.cleanupRunning');
     if (status === 'done') {
-      if (cleanedCount === 0 && !fileResults) return t('settings.cleanupClean');
-      return t('settings.cleanupResult').replace('{count}', String(cleanedCount));
+      const total = getTotalCleaned();
+      if (total === 0) return t('settings.cleanupClean');
+      return t('settings.cleanupResult').replace('{count}', String(total));
     }
     if (status === 'previewed') {
-      if (previewCount === 0 && !orphanFiles) return t('settings.cleanupClean');
-      return t('settings.cleanupPreview').replace('{count}', String(previewCount));
+      const total = getTotalOrphans();
+      if (total === 0) return t('settings.cleanupClean');
+      return t('settings.cleanupPreview').replace('{count}', String(total));
     }
     return null;
   };
 
   const hasFileOrphans = orphanFiles && (orphanFiles.avatars?.orphans || orphanFiles.attachments?.orphans || orphanFiles.generated?.orphans);
   const hasFileResults = fileResults && (fileResults.avatars?.deleted || fileResults.attachments?.deleted || fileResults.generated?.deleted);
+  const totalOrphans = previewCount + (orphanFiles?.avatars?.orphans || 0) + (orphanFiles?.attachments?.orphans || 0) + (orphanFiles?.generated?.orphans || 0);
+  const totalCleaned = cleanedCount + (fileResults?.avatars?.deleted || 0) + (fileResults?.attachments?.deleted || 0) + (fileResults?.generated?.deleted || 0);
 
   const msg = getMessage();
 
@@ -1025,7 +1039,7 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
           {status === 'checking' ? t('settings.cleanupRunning') : t('settings.cleanupDryRun')}
         </button>
 
-        {status === 'previewed' && (previewCount > 0 || hasFileOrphans) && (
+        {status === 'previewed' && totalOrphans > 0 && (
           <button
             onClick={handleCleanup}
             className="soft-button soft-button-danger"
@@ -1036,8 +1050,8 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
 
         {msg && (
           <span className={`text-sm ${
-            status === 'done' && cleanedCount > 0 ? 'text-green-600'
-            : status === 'previewed' && previewCount > 0 ? 'text-amber-600'
+            status === 'done' && totalCleaned > 0 ? 'text-green-600'
+            : status === 'previewed' && totalOrphans > 0 ? 'text-amber-600'
             : 'text-text-muted'
           }`}>
             {msg}

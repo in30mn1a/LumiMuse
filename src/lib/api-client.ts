@@ -152,5 +152,15 @@ export async function chatCompletion(
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? '';
+  const choice = data.choices?.[0];
+  const content = choice?.message?.content;
+  if (!content || (typeof content === 'string' && content.trim() === '')) {
+    const reason = choice?.finish_reason;
+    const hasReasoning = !!choice?.message?.reasoning_content;
+    if (reason === 'length' && hasReasoning) {
+      throw new Error('推理模型思考消耗了全部 token，最终未生成内容。请增大 max_tokens（建议 ≥16384）');
+    }
+    throw new Error('LLM 返回了空内容，请检查模型是否支持当前请求格式');
+  }
+  return content;
 }

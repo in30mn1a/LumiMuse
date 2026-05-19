@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
     }
 
     const db = getDb();
-    const settings = loadSettings();
+    const settings = { ...loadSettings(), json_mode: false, max_tokens: 16384 };
 
     if (!settings.api_base || !settings.model) {
       return NextResponse.json({ error: '请先配置 LLM API' }, { status: 400 });
@@ -145,13 +145,27 @@ export async function POST(request: NextRequest) {
 
     // 构建上下文
     let context = '';
+    let strippedTags = '';
     if (character) {
       context += `【角色信息】\n`;
       context += `角色名：${character.name}\n`;
       if (character.personality) context += `性格/外貌描述：${character.personality.slice(0, 400)}\n`;
       if (character.scenario) context += `世界观/场景设定：${character.scenario.slice(0, 300)}\n`;
       if (character.image_tags) {
-        context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${character.image_tags}\n`;
+        const isGemini = /gemini/i.test(settings.model);
+        if (isGemini) {
+          // Gemini 安全过滤较严，分离敏感标签（loli/shota/child），
+          // 生图时再拼回 prompt，确保角色外貌完整
+          const allTags = character.image_tags.split(',').map(t => t.trim()).filter(Boolean);
+          const sensitive = allTags.filter(t => /^loli$|^shota$|^child$/i.test(t));
+          const safe = allTags.filter(t => !/^loli$|^shota$|^child$/i.test(t));
+          strippedTags = sensitive.join(', ');
+          if (safe.length > 0) {
+            context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${safe.join(', ')}\n`;
+          }
+        } else {
+          context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${character.image_tags}\n`;
+        }
       }
     }
 
@@ -188,6 +202,11 @@ export async function POST(request: NextRequest) {
     // 如果解析失败，整个结果作为正面 prompt
     if (!positive) {
       positive = result.replace(/POSITIVE:|NEGATIVE:.*$/gm, '').trim();
+    }
+
+    // 将被过滤的敏感标签拼回 prompt 开头，确保生图时角色外貌完整
+    if (strippedTags) {
+      positive = strippedTags + ', ' + positive;
     }
 
     return NextResponse.json({ prompt: positive, negative_prompt: negative });

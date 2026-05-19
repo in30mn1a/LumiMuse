@@ -4,6 +4,11 @@ import { readdir, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 
+interface OrphanFileStats {
+  total: number;
+  orphanCount: number;
+}
+
 interface OrphanStats {
   orphanMessages: number;
   orphanConversations: number;
@@ -12,9 +17,9 @@ interface OrphanStats {
   orphanFts: number;
   total: number;
   orphanFiles?: {
-    avatars: { total: number; orphans: number };
-    attachments: { total: number; orphans: number };
-    generated: { total: number; orphans: number };
+    avatars: OrphanFileStats;
+    attachments: OrphanFileStats;
+    generated: OrphanFileStats;
   };
 }
 
@@ -176,10 +181,15 @@ async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphan
  */
 export async function GET(_request: NextRequest) {
   const dbStats = countOrphans();
-  const orphanFiles = {
+  const scanResults = {
     avatars: await scanOrphanFiles('avatars'),
     attachments: await scanOrphanFiles('attachments'),
     generated: await scanOrphanFiles('generated'),
+  };
+  const orphanFiles = {
+    avatars: { total: scanResults.avatars.total, orphanCount: scanResults.avatars.orphans.length },
+    attachments: { total: scanResults.attachments.total, orphanCount: scanResults.attachments.orphans.length },
+    generated: { total: scanResults.generated.total, orphanCount: scanResults.generated.orphans.length },
   };
   return NextResponse.json({ ...dbStats, orphanFiles });
 }

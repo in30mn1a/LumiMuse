@@ -953,7 +953,7 @@ function ImageGenSettingsSection({
 // ========== 数据库维护子组件 ==========
 interface OrphanFileInfo {
   total: number;
-  orphans: number;
+  orphanCount: number;
 }
 
 function MaintenanceSection({ t }: { t: (key: string) => string }) {
@@ -990,36 +990,24 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
     }
   };
 
-  const getTotalOrphans = () => {
-    if (!orphanFiles) return previewCount;
-    return previewCount + (orphanFiles.avatars?.orphans || 0) + (orphanFiles.attachments?.orphans || 0) + (orphanFiles.generated?.orphans || 0);
-  };
-
-  const getTotalCleaned = () => {
-    if (!fileResults) return cleanedCount;
-    return cleanedCount + (fileResults.avatars?.deleted || 0) + (fileResults.attachments?.deleted || 0) + (fileResults.generated?.deleted || 0);
-  };
+  const fileOrphanCount = (orphanFiles?.avatars?.orphanCount || 0) + (orphanFiles?.attachments?.orphanCount || 0) + (orphanFiles?.generated?.orphanCount || 0);
+  const totalOrphans = previewCount + fileOrphanCount;
+  const fileCleanedCount = (fileResults?.avatars?.deleted || 0) + (fileResults?.attachments?.deleted || 0) + (fileResults?.generated?.deleted || 0);
+  const totalCleaned = cleanedCount + fileCleanedCount;
 
   const getMessage = () => {
     if (status === 'checking') return t('settings.cleanupRunning');
     if (status === 'cleaning') return t('settings.cleanupRunning');
     if (status === 'done') {
-      const total = getTotalCleaned();
-      if (total === 0) return t('settings.cleanupClean');
-      return t('settings.cleanupResult').replace('{count}', String(total));
+      if (totalCleaned === 0) return t('settings.cleanupClean');
+      return t('settings.cleanupResult').replace('{count}', String(totalCleaned));
     }
     if (status === 'previewed') {
-      const total = getTotalOrphans();
-      if (total === 0) return t('settings.cleanupClean');
-      return t('settings.cleanupPreview').replace('{count}', String(total));
+      if (totalOrphans === 0) return t('settings.cleanupClean');
+      return t('settings.cleanupPreview').replace('{count}', String(totalOrphans));
     }
     return null;
   };
-
-  const hasFileOrphans = orphanFiles && (orphanFiles.avatars?.orphans || orphanFiles.attachments?.orphans || orphanFiles.generated?.orphans);
-  const hasFileResults = fileResults && (fileResults.avatars?.deleted || fileResults.attachments?.deleted || fileResults.generated?.deleted);
-  const totalOrphans = previewCount + (orphanFiles?.avatars?.orphans || 0) + (orphanFiles?.attachments?.orphans || 0) + (orphanFiles?.generated?.orphans || 0);
-  const totalCleaned = cleanedCount + (fileResults?.avatars?.deleted || 0) + (fileResults?.attachments?.deleted || 0) + (fileResults?.generated?.deleted || 0);
 
   const msg = getMessage();
 
@@ -1059,17 +1047,13 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
         )}
       </div>
 
-      {/* 文件孤儿预览 */}
-      {status === 'previewed' && orphanFiles && (
+      {status === 'previewed' && orphanFiles && fileOrphanCount > 0 && (
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-muted">
-          {orphanFiles.avatars !== undefined && (
-            <span>{t('settings.cleanupFilePreview').replace('{a}', `${orphanFiles.avatars.orphans}/${orphanFiles.avatars.total}`).replace('{at}', `${orphanFiles.attachments.orphans}/${orphanFiles.attachments.total}`).replace('{g}', `${orphanFiles.generated.orphans}/${orphanFiles.generated.total}`)}</span>
-          )}
+          <span>{t('settings.cleanupFilePreview').replace('{a}', `${orphanFiles.avatars.orphanCount}/${orphanFiles.avatars.total}`).replace('{at}', `${orphanFiles.attachments.orphanCount}/${orphanFiles.attachments.total}`).replace('{g}', `${orphanFiles.generated.orphanCount}/${orphanFiles.generated.total}`)}</span>
         </div>
       )}
 
-      {/* 清理结果 */}
-      {status === 'done' && fileResults && hasFileResults && (
+      {status === 'done' && fileResults && fileCleanedCount > 0 && (
         <div className="mt-3 text-xs text-green-600">
           {t('settings.cleanupFileResult').replace('{a}', String(fileResults.avatars?.deleted ?? 0)).replace('{at}', String(fileResults.attachments?.deleted ?? 0)).replace('{g}', String(fileResults.generated?.deleted ?? 0))}
         </div>

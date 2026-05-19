@@ -138,16 +138,16 @@ export function collectLocalAssetUrlsFromContent(content: string | null): Set<st
 }
 
 export function collectCharacterLocalAssetUrls(db: Database, characterId: string): Set<string> {
-	const urls = new Set<string>();
-	const character = db.prepare('SELECT avatar_url FROM characters WHERE id = ?').get(characterId) as { avatar_url: string | null } | undefined;
-	if (character?.avatar_url && resolveLocalAssetUrl(character.avatar_url)) urls.add(character.avatar_url);
+  const urls = new Set<string>();
+  const character = db.prepare('SELECT avatar_url FROM characters WHERE id = ?').get(characterId) as { avatar_url: string | null } | undefined;
+  if (character?.avatar_url && resolveLocalAssetUrl(character.avatar_url)) urls.add(character.avatar_url);
 
-	const rows = db.prepare(`
-	  SELECT messages.metadata, messages.content
-	  FROM messages
-	  INNER JOIN conversations ON conversations.id = messages.conversation_id
-	  WHERE conversations.character_id = ?
-	`).all(characterId) as (MessageRow & { content: string | null })[];
+  const rows = db.prepare(`
+    SELECT messages.metadata, messages.content
+    FROM messages
+    INNER JOIN conversations ON conversations.id = messages.conversation_id
+    WHERE conversations.character_id = ?
+  `).all(characterId) as (MessageRow & { content: string | null })[];
 
   for (const row of rows) {
     for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {

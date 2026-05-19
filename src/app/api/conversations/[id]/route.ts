@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { collectConversationLocalAssetUrls, collectAllLocalAssetUrls, deleteLocalAssetUrls } from '@/lib/character-file-utils';
 
 export async function GET(
   _request: NextRequest,
@@ -18,11 +19,18 @@ export async function DELETE(
 ) {
   const { id } = await params;
   const db = getDb();
+  const fileUrls = collectConversationLocalAssetUrls(db, id);
+
   const result = db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
   if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  // 级联删除该对话下的所有消息和记忆任务
   db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
   db.prepare('DELETE FROM memory_tasks WHERE conversation_id = ?').run(id);
+
+  // 清理该对话独有的本地文件
+  const remainingUrls = collectAllLocalAssetUrls(db);
+  const orphanUrls = [...fileUrls].filter(url => !remainingUrls.has(url));
+  await deleteLocalAssetUrls(orphanUrls);
+
   return NextResponse.json({ ok: true });
 }
 

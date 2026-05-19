@@ -122,20 +122,54 @@ export function collectLocalAssetUrlsFromMetadata(metadata: unknown): Set<string
   return urls;
 }
 
-export function collectCharacterLocalAssetUrls(db: Database, characterId: string): Set<string> {
-  const urls = new Set<string>();
-  const character = db.prepare('SELECT avatar_url FROM characters WHERE id = ?').get(characterId) as { avatar_url: string | null } | undefined;
-  if (character?.avatar_url && resolveLocalAssetUrl(character.avatar_url)) urls.add(character.avatar_url);
+/**
+ * 从消息内容中提取本地资源 URL（处理嵌入在文本中的图片等）
+ */
+const ASSET_URL_REGEX = /\/api\/files\/(avatars|generated|attachments)\/([a-f0-9-]+\.\w+)/gi;
 
-  const rows = db.prepare(`
-    SELECT messages.metadata
-    FROM messages
-    INNER JOIN conversations ON conversations.id = messages.conversation_id
-    WHERE conversations.character_id = ?
-  `).all(characterId) as MessageRow[];
+export function collectLocalAssetUrlsFromContent(content: string | null): Set<string> {
+  const urls = new Set<string>();
+  if (!content) return urls;
+  let match: RegExpExecArray | null;
+  while ((match = ASSET_URL_REGEX.exec(content)) !== null) {
+    urls.add(match[0]);
+  }
+  return urls;
+}
+
+export function collectCharacterLocalAssetUrls(db: Database, characterId: string): Set<string> {
+	const urls = new Set<string>();
+	const character = db.prepare('SELECT avatar_url FROM characters WHERE id = ?').get(characterId) as { avatar_url: string | null } | undefined;
+	if (character?.avatar_url && resolveLocalAssetUrl(character.avatar_url)) urls.add(character.avatar_url);
+
+	const rows = db.prepare(`
+	  SELECT messages.metadata, messages.content
+	  FROM messages
+	  INNER JOIN conversations ON conversations.id = messages.conversation_id
+	  WHERE conversations.character_id = ?
+	`).all(characterId) as (MessageRow & { content: string | null })[];
 
   for (const row of rows) {
     for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
+      urls.add(url);
+    }
+    for (const url of collectLocalAssetUrlsFromContent(row.content)) {
+      urls.add(url);
+    }
+  }
+
+  return urls;
+}
+
+export function collectConversationLocalAssetUrls(db: Database, conversationId: string): Set<string> {
+  const urls = new Set<string>();
+  const rows = db.prepare('SELECT metadata, content FROM messages WHERE conversation_id = ?').all(conversationId) as (MessageRow & { content: string | null })[];
+
+  for (const row of rows) {
+    for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
+      urls.add(url);
+    }
+    for (const url of collectLocalAssetUrlsFromContent(row.content)) {
       urls.add(url);
     }
   }
@@ -150,9 +184,12 @@ export function collectAllLocalAssetUrls(db: Database): Set<string> {
     if (character.avatar_url && resolveLocalAssetUrl(character.avatar_url)) urls.add(character.avatar_url);
   }
 
-  const messages = db.prepare('SELECT metadata FROM messages').all() as MessageRow[];
+  const messages = db.prepare('SELECT metadata, content FROM messages').all() as (MessageRow & { content: string | null })[];
   for (const message of messages) {
     for (const url of collectLocalAssetUrlsFromMetadata(message.metadata)) {
+      urls.add(url);
+    }
+    for (const url of collectLocalAssetUrlsFromContent(message.content)) {
       urls.add(url);
     }
   }

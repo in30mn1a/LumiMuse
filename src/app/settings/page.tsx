@@ -951,17 +951,26 @@ function ImageGenSettingsSection({
 }
 
 // ========== 数据库维护子组件 ==========
+interface OrphanFileInfo {
+  total: number;
+  orphans: number;
+}
+
 function MaintenanceSection({ t }: { t: (key: string) => string }) {
   const [status, setStatus] = useState<'idle' | 'checking' | 'previewed' | 'cleaning' | 'done'>('idle');
   const [previewCount, setPreviewCount] = useState(0);
   const [cleanedCount, setCleanedCount] = useState(0);
+  const [orphanFiles, setOrphanFiles] = useState<Record<string, OrphanFileInfo> | null>(null);
+  const [fileResults, setFileResults] = useState<Record<string, { deleted: number; errors: number }> | null>(null);
 
   const handlePreview = async () => {
     setStatus('checking');
     try {
       const res = await fetch('/api/maintenance');
-      const data = await res.json() as { total: number };
+      const data = await res.json() as { total: number; orphanFiles: Record<string, OrphanFileInfo> };
       setPreviewCount(data.total);
+      setOrphanFiles(data.orphanFiles);
+      setFileResults(null);
       setStatus('previewed');
     } catch {
       setStatus('idle');
@@ -972,8 +981,9 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
     setStatus('cleaning');
     try {
       const res = await fetch('/api/maintenance', { method: 'POST' });
-      const data = await res.json() as { deleted: number };
-      setCleanedCount(data.deleted);
+      const data = await res.json() as { dbDeleted: number; fileResults: Record<string, { deleted: number; errors: number }> };
+      setCleanedCount(data.dbDeleted);
+      setFileResults(data.fileResults);
       setStatus('done');
     } catch {
       setStatus('idle');
@@ -984,15 +994,18 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
     if (status === 'checking') return t('settings.cleanupRunning');
     if (status === 'cleaning') return t('settings.cleanupRunning');
     if (status === 'done') {
-      if (cleanedCount === 0) return t('settings.cleanupClean');
+      if (cleanedCount === 0 && !fileResults) return t('settings.cleanupClean');
       return t('settings.cleanupResult').replace('{count}', String(cleanedCount));
     }
     if (status === 'previewed') {
-      if (previewCount === 0) return t('settings.cleanupClean');
+      if (previewCount === 0 && !orphanFiles) return t('settings.cleanupClean');
       return t('settings.cleanupPreview').replace('{count}', String(previewCount));
     }
     return null;
   };
+
+  const hasFileOrphans = orphanFiles && (orphanFiles.avatars?.orphans || orphanFiles.attachments?.orphans || orphanFiles.generated?.orphans);
+  const hasFileResults = fileResults && (fileResults.avatars?.deleted || fileResults.attachments?.deleted || fileResults.generated?.deleted);
 
   const msg = getMessage();
 
@@ -1012,7 +1025,7 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
           {status === 'checking' ? t('settings.cleanupRunning') : t('settings.cleanupDryRun')}
         </button>
 
-        {status === 'previewed' && previewCount > 0 && (
+        {status === 'previewed' && (previewCount > 0 || hasFileOrphans) && (
           <button
             onClick={handleCleanup}
             className="soft-button soft-button-danger"
@@ -1031,6 +1044,22 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
           </span>
         )}
       </div>
+
+      {/* 文件孤儿预览 */}
+      {status === 'previewed' && orphanFiles && (
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-muted">
+          {orphanFiles.avatars !== undefined && (
+            <span>{t('settings.cleanupFilePreview').replace('{a}', `${orphanFiles.avatars.orphans}/${orphanFiles.avatars.total}`).replace('{at}', `${orphanFiles.attachments.orphans}/${orphanFiles.attachments.total}`).replace('{g}', `${orphanFiles.generated.orphans}/${orphanFiles.generated.total}`)}</span>
+          )}
+        </div>
+      )}
+
+      {/* 清理结果 */}
+      {status === 'done' && fileResults && hasFileResults && (
+        <div className="mt-3 text-xs text-green-600">
+          {t('settings.cleanupFileResult').replace('{a}', String(fileResults.avatars?.deleted ?? 0)).replace('{at}', String(fileResults.attachments?.deleted ?? 0)).replace('{g}', String(fileResults.generated?.deleted ?? 0))}
+        </div>
+      )}
     </section>
   );
 }

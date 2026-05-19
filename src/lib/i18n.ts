@@ -301,6 +301,8 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.cleanupResult': '已清理 {count} 条孤儿数据',
     'settings.cleanupPreview': '发现 {count} 条孤儿数据，点击"清理"执行',
     'settings.cleanupConfirm': '确认清理',
+    'settings.cleanupFilePreview': '磁盘文件: 头像 {a} 附件 {at} 生图 {g}',
+    'settings.cleanupFileResult': '头像 {a} 附件 {at} 生图 {g}',
 
     'auth.logout': '退出登录',
     'auth.logoutConfirm': '确定要退出登录吗？',
@@ -621,6 +623,8 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.cleanupResult': 'Cleaned up {count} orphaned records',
     'settings.cleanupPreview': 'Found {count} orphaned records, click "Clean up" to remove',
     'settings.cleanupConfirm': 'Clean up',
+    'settings.cleanupFilePreview': 'Files: avatars {a} attachments {at} generated {g}',
+    'settings.cleanupFileResult': 'Avatars {a} Attachments {at} Generated {g}',
 
     'auth.logout': 'Log out',
     'auth.logoutConfirm': 'Are you sure you want to log out?',

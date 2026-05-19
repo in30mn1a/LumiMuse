@@ -263,22 +263,29 @@ export async function extractMemories(
 
   if (newEntries.length === 0) return { newEntries: [], mergeCount: 0 };
 
-  const existingIds = new Set(normalizedExisting.map(m => m.id));
+  const existingMap = new Map(normalizedExisting.map(m => [m.id, m]));
   const merged = mergeMemories(normalizedExisting, newEntries);
 
   // 统计被合并（更新）的旧条目数量
   let mergeCount = 0;
 
   for (const entry of merged) {
-    const exists = db.prepare('SELECT id FROM memories WHERE id = ?').get(entry.id);
-    if (exists) {
-      // 已存在的条目被更新 = 发生了合并
-      if (existingIds.has(entry.id)) mergeCount++;
-      db.prepare(`
-        UPDATE memories
-        SET content = ?, confidence = ?, tags = ?, updated_at = ?
-        WHERE id = ?
-      `).run(entry.content, entry.confidence, JSON.stringify(entry.tags), entry.updated_at, entry.id);
+    const existing = existingMap.get(entry.id);
+    if (existing) {
+      // 检查是否真的发生了修改以避免多余的更新和错误的计数
+      const isChanged =
+        existing.content !== entry.content ||
+        existing.confidence !== entry.confidence ||
+        JSON.stringify(existing.tags) !== JSON.stringify(entry.tags);
+
+      if (isChanged) {
+        mergeCount++;
+        db.prepare(`
+          UPDATE memories
+          SET content = ?, confidence = ?, tags = ?, updated_at = ?
+          WHERE id = ?
+        `).run(entry.content, entry.confidence, JSON.stringify(entry.tags), entry.updated_at, entry.id);
+      }
     } else {
       db.prepare(`
         INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)

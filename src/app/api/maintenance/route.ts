@@ -3,6 +3,11 @@ import { getDb } from '@/lib/db';
 import { readdir, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+import {
+  collectLocalAssetUrlsFromMetadata,
+  collectLocalAssetUrlsFromContent,
+  resolveLocalAssetUrl,
+} from '@/lib/character-file-utils';
 
 interface OrphanFileStats {
   total: number;
@@ -66,21 +71,11 @@ function countOrphans(): OrphanStats {
   };
 }
 
-/**
- * 从 URL 中提取文件名（如 /api/files/avatars/abc.png → abc.png）
- */
-function extractFilename(url: string, dirName: string): string | null {
-  const pattern = `/api/files/${dirName}/`;
-  const idx = url.indexOf(pattern);
-  if (idx === -1) return null;
-  const filename = url.slice(idx + pattern.length).split('?')[0]; // 去掉可能的 query string
-  if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) return null;
-  return filename;
+function addReferencedFromUrl(url: string, dirName: string, set: Set<string>) {
+  const asset = resolveLocalAssetUrl(url);
+  if (asset && asset.dir === dirName) set.add(asset.filename);
 }
 
-/**
- * 获取指定目录中被 DB 引用的文件集合
- */
 function getReferencedFiles(dirName: string): Set<string> {
   const db = getDb();
   const referenced = new Set<string>();
@@ -88,70 +83,16 @@ function getReferencedFiles(dirName: string): Set<string> {
   if (dirName === 'avatars') {
     const rows = db.prepare('SELECT avatar_url FROM characters WHERE avatar_url IS NOT NULL').all() as { avatar_url: string }[];
     for (const row of rows) {
-      const filename = extractFilename(row.avatar_url, 'avatars');
-      if (filename) referenced.add(filename);
+      addReferencedFromUrl(row.avatar_url, dirName, referenced);
     }
-  } else if (dirName === 'attachments') {
-    const rows = db.prepare("SELECT metadata FROM messages WHERE metadata IS NOT NULL AND metadata != ''").all() as { metadata: string }[];
+  } else {
+    const rows = db.prepare('SELECT content, metadata FROM messages').all() as { content: string | null; metadata: string | null }[];
     for (const row of rows) {
-      try {
-        const meta = JSON.parse(row.metadata);
-        // 检查顶层 attachments
-        const attachments = meta.attachments as Array<{ url?: string }> | undefined;
-        if (attachments) {
-          for (const att of attachments) {
-            if (att.url) {
-              const filename = extractFilename(att.url, 'attachments');
-              if (filename) referenced.add(filename);
-            }
-          }
-        }
-        // 也检查版本历史中的 attachments
-        const versions = meta.versions as Array<{ content?: string; attachments?: Array<{ url?: string }> }> | undefined;
-        if (versions) {
-          for (const ver of versions) {
-            if (ver.attachments) {
-              for (const att of ver.attachments) {
-                if (att.url) {
-                  const filename = extractFilename(att.url, 'attachments');
-                  if (filename) referenced.add(filename);
-                }
-              }
-            }
-          }
-        }
-      } catch {
-        // 跳过 JSON 解析失败的行
+      for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
+        addReferencedFromUrl(url, dirName, referenced);
       }
-    }
-  } else if (dirName === 'generated') {
-    // 从消息内容和版本历史中提取 /api/files/generated/xxx.png 引用
-    const rows = db.prepare("SELECT content, metadata FROM messages WHERE content LIKE '%/api/files/generated/%' OR metadata LIKE '%/generated/%'").all() as { content: string; metadata: string | null }[];
-    const regex = /\/api\/files\/generated\/([a-f0-9-]+\.\w+)/gi;
-
-    for (const row of rows) {
-      // 扫描消息内容
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(row.content)) !== null) {
-        referenced.add(match[1]);
-      }
-
-      // 扫描版本历史中的图片
-      if (row.metadata) {
-        try {
-          const meta = JSON.parse(row.metadata);
-          const versions = meta.versions as Array<{ content?: string }> | undefined;
-          if (versions) {
-            for (const ver of versions) {
-              if (ver.content) {
-                let vm: RegExpExecArray | null;
-                while ((vm = regex.exec(ver.content)) !== null) {
-                  referenced.add(vm[1]);
-                }
-              }
-            }
-          }
-        } catch { /* skip */ }
+      for (const url of collectLocalAssetUrlsFromContent(row.content)) {
+        addReferencedFromUrl(url, dirName, referenced);
       }
     }
   }

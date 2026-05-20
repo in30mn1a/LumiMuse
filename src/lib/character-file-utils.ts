@@ -23,7 +23,7 @@ function getPublicRoot(): string {
   return path.resolve(process.cwd(), 'public');
 }
 
-function resolveLocalAssetUrl(url: unknown): { dir: LocalAssetDir; filename: string; filePath: string } | null {
+export function resolveLocalAssetUrl(url: unknown): { dir: LocalAssetDir; filename: string; filePath: string } | null {
   if (typeof url !== 'string' || !url.startsWith('/')) return null;
 
   for (const dir of LOCAL_ASSET_DIRS) {

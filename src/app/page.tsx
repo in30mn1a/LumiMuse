@@ -68,13 +68,13 @@ export default function Home() {
     <div className="app-shell flex h-dvh">
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/35 md:hidden"
+          className="fixed inset-0 z-30 bg-black/35 backdrop-blur-[2px] md:hidden animate-fadeIn"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <div
-        className={`fixed z-40 h-full py-4 pl-4 transition-transform duration-300 ease-out md:static md:translate-x-0 ${
+        className={`fixed z-40 h-full py-4 pl-4 transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] will-change-transform md:static md:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
         }`}
       >

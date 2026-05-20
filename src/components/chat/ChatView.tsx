@@ -4,21 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import { Character, Conversation, Message, Memory } from '@/types';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
+import ChatHeader from './ChatHeader';
+import ChatToolbar from './ChatToolbar';
+import ChatMessageList from './ChatMessageList';
 import { useTranslation } from '@/lib/i18n-context';
 import { estimateTokens } from '@/lib/token-counter';
-import { formatDateLabel, formatDateTime, formatShortDate, getVersionInfo, isSameDay } from '@/lib/chat-view-utils';
+import { formatDateTime, formatShortDate, getVersionInfo } from '@/lib/chat-view-utils';
 import {
-  ChevronDownIcon,
   ClockIcon,
-  DuplicateIcon,
   ImageIcon,
-  ListIcon,
-  MemoryIcon,
   MenuIcon,
-  PencilIcon,
-  PlusIcon,
-  SparkIcon,
-  SummaryIcon,
   TrashIcon,
 } from '@/components/ui/icons';
 
@@ -35,6 +30,8 @@ function buildClientTimePayload() {
 /* ── 轻量 Toast ─────────────────────────────────────────── */
 interface ToastItem { id: number; message: string; type: 'error' | 'info' }
 
+const TOAST_DURATION_MS = 4000;
+
 function Toast({ items, onDismiss }: { items: ToastItem[]; onDismiss: (id: number) => void }) {
   if (items.length === 0) return null;
   return (
@@ -43,13 +40,18 @@ function Toast({ items, onDismiss }: { items: ToastItem[]; onDismiss: (id: numbe
         <div
           key={item.id}
           onClick={() => onDismiss(item.id)}
-          className={`pointer-events-auto flex cursor-pointer items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm shadow-lg backdrop-blur-xl transition-all ${
+          className={`pointer-events-auto relative flex cursor-pointer items-center gap-2 overflow-hidden rounded-2xl border px-4 py-2.5 text-sm shadow-lg backdrop-blur-xl transition-all ${
             item.type === 'error'
               ? 'border-red-200/60 bg-red-50/90 text-red-700'
               : 'border-accent/20 bg-white/90 text-text-primary'
           }`}
         >
           {item.message}
+          <span
+            className="toast-progress"
+            style={{ animationDuration: `${TOAST_DURATION_MS}ms` }}
+            aria-hidden="true"
+          />
         </div>
       ))}
     </div>
@@ -202,7 +204,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const showToast = useCallback((message: string, type: ToastItem['type'] = 'error') => {
     const id = ++toastIdRef.current;
     setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), TOAST_DURATION_MS);
   }, []);
 
   const dismissToast = useCallback((id: number) => {
@@ -1567,349 +1569,65 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col gap-2 px-2 py-2 md:gap-4 md:px-4 md:py-4">
-      {/* === 移动端：可收起的紧凑工具栏 === */}
-      <section className="surface-hero px-3 py-2 md:hidden">
-        {/* 收起状态：一行显示角色名 + 核心按钮 + 展开拉片 */}
-        <div className="flex items-center gap-2">
-          {/* 侧边栏入口 */}
-          {onOpenSidebar && (
-            <button
-              onClick={onOpenSidebar}
-              className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label="打开角色列表"
-            >
-              <MenuIcon className="h-4 w-4" />
-            </button>
-          )}
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
-            {activeCharacter.avatar_url ? (
-              <img src={activeCharacter.avatar_url} alt={activeCharacter.name} className="h-full w-full object-cover" loading="lazy" />
-            ) : (
-              <span className="text-xs font-semibold text-accent-dark">{activeCharacter.name[0]}</span>
-            )}
-          </div>
-          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">{activeCharacter.name}</h2>
-          <div className="flex shrink-0 items-center gap-0.5">
-            <button
-              onClick={() => setConvDrawerOpen(true)}
-              className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label="切换对话"
-            >
-              <ListIcon className="h-4 w-4" />
-            </button>
-            <button
-              onClick={handleNewChat}
-              disabled={creating}
-              className="rounded-xl bg-accent p-2 text-white shadow-sm disabled:opacity-50"
-              aria-label="新对话"
-            >
-              <PlusIcon className="h-4 w-4" />
-            </button>
-            {onOpenSearch && (
-              <button
-                onClick={onOpenSearch}
-                className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-                aria-label="搜索"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
-                  <circle cx="11" cy="11" r="6.5" /><path d="M16 16l5 5" />
-                </svg>
-              </button>
-            )}
-            <button
-              onClick={() => setToolbarExpanded(!toolbarExpanded)}
-              className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label={toolbarExpanded ? '收起工具栏' : '展开工具栏'}
-            >
-              <ChevronDownIcon className={`h-4 w-4 transition-transform duration-200 ${toolbarExpanded ? 'rotate-180' : ''}`} />
-            </button>
-          </div>
-        </div>
-        {/* 展开状态：显示更多操作按钮 */}
-        {toolbarExpanded && (
-          <div className="mt-1.5 border-t border-border-light/60 pt-1.5">
-            {/* chip + 按钮同一行 */}
-            <div className="flex items-center gap-1.5">
-              <span className="chip whitespace-nowrap text-[10px]">{conversations.length} {t('chat.quickResume')}</span>
-              <span className="chip whitespace-nowrap text-[10px]">{memoryCount} {t('memory.count')}</span>
-              <div className="flex-1" />
-              <button
-                onClick={() => { openRename(); setToolbarExpanded(false); }}
-                disabled={!activeConversation}
-                className="rounded-xl p-2 text-text-secondary hover:bg-warm-100 disabled:opacity-40"
-                aria-label={t('common.edit')}
-              >
-                <PencilIcon className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => { handleSummarize(); setToolbarExpanded(false); }}
-                disabled={!activeConversation || isStreamingHere || summarizing}
-                className="rounded-xl p-2 text-text-secondary hover:bg-warm-100 disabled:opacity-40"
-                aria-label={t('chat.summarize')}
-              >
-                <SummaryIcon className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => { handleDuplicateConv(); setToolbarExpanded(false); }}
-                disabled={!activeConversation || duplicating}
-                className="rounded-xl p-2 text-text-secondary hover:bg-warm-100 disabled:opacity-40"
-                aria-label={t('chat.duplicate')}
-              >
-                <DuplicateIcon className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => { openImageManager(); setToolbarExpanded(false); }}
-                className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-                aria-label="图片管理"
-              >
-                <ImageIcon className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => { setDeleteOpen(true); setToolbarExpanded(false); }}
-                disabled={!activeConversation}
-                className="rounded-xl p-2 text-red-400 hover:bg-red-50 disabled:opacity-40"
-                aria-label={t('common.delete')}
-              >
-                <TrashIcon className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* === PC 端：完整工具栏（保持原样） === */}
-      <section className="surface-hero hidden px-5 py-5 md:block">
-        <div className="flex items-center gap-3 lg:justify-between">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
-              {activeCharacter.avatar_url ? (
-                <img src={activeCharacter.avatar_url} alt={activeCharacter.name} className="h-full w-full object-cover" loading="lazy" />
-              ) : (
-                <span className="text-xl font-semibold text-accent-dark">{activeCharacter.name[0]}</span>
-              )}
-            </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-xl font-semibold text-text-primary">{activeCharacter.name}</h2>
-                <span className="chip chip-active text-[11px]">{t('chat.profile')}</span>
-                <span className="chip text-[11px]">{conversations.length} {t('chat.quickResume')}</span>
-                <span className="chip text-[11px]">{memoryCount} {t('memory.count')}</span>
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button onClick={handleNewChat} disabled={creating} className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50">
-              <PlusIcon className="h-4 w-4" />
-              <span>{t('chat.newChat')}</span>
-            </button>
-            <button
-              onClick={openRename}
-              disabled={!activeConversation}
-              className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <PencilIcon className="h-4 w-4" />
-              <span>{t('common.edit')}</span>
-            </button>
-            <button
-              onClick={handleSummarize}
-              disabled={!activeConversation || isStreamingHere || summarizing}
-              className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title="总结当前上下文，之前的消息将不再发送给 AI"
-            >
-              <SummaryIcon className="h-4 w-4" />
-              <span>{summarizing ? t('chat.summarizing') : t('chat.summarize')}</span>
-            </button>
-            <button
-              onClick={handleDuplicateConv}
-              disabled={!activeConversation || duplicating}
-              className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title="复制这段对话为副本"
-            >
-              <DuplicateIcon className="h-4 w-4" />
-              <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
-            </button>
-            <button
-              onClick={openImageManager}
-              className="soft-button soft-button-secondary px-4 py-2 text-sm"
-              title="查看和管理所有生成图片"
-            >
-              <ImageIcon className="h-4 w-4" />
-              <span>图片管理</span>
-            </button>
-            <button
-              onClick={() => setDeleteOpen(true)}
-              disabled={!activeConversation}
-              className="soft-button soft-button-danger px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <TrashIcon className="h-4 w-4" />
-              <span>{t('common.delete')}</span>
-            </button>
-          </div>
-        </div>
-      </section>
+      <ChatHeader
+        character={activeCharacter}
+        activeConversation={activeConversation}
+        conversationsCount={conversations.length}
+        memoryCount={memoryCount}
+        isStreamingHere={isStreamingHere}
+        creating={creating}
+        summarizing={summarizing}
+        duplicating={duplicating}
+        toolbarExpanded={toolbarExpanded}
+        onToggleToolbar={() => setToolbarExpanded(!toolbarExpanded)}
+        onOpenSidebar={onOpenSidebar}
+        onOpenSearch={onOpenSearch}
+        onOpenConvDrawer={() => setConvDrawerOpen(true)}
+        onNewChat={handleNewChat}
+        onRename={() => { openRename(); setToolbarExpanded(false); }}
+        onSummarize={() => { handleSummarize(); setToolbarExpanded(false); }}
+        onDuplicate={() => { handleDuplicateConv(); setToolbarExpanded(false); }}
+        onOpenImageManager={() => { openImageManager(); setToolbarExpanded(false); }}
+        onRequestDelete={() => { setDeleteOpen(true); setToolbarExpanded(false); }}
+      />
 
       <div className="grid min-h-0 flex-1 gap-2 md:gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="surface-panel flex min-h-0 flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-border-light px-3 py-2.5 text-sm text-text-secondary md:px-5 md:py-4">
-            <div className="flex min-w-0 items-center gap-2">
-              <SparkIcon className="h-4 w-4 text-accent" />
-              <span className="truncate text-xs md:text-sm">{activeConversation?.title || t('chat.noConversationTitle')}</span>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
-              {activeConversation?.ignore_memory ? (
-                <button
-                  onClick={() => { setResetExtractionOpen(true); setResetVisibleCount(RESET_PAGE_SIZE); }}
-                  className="chip cursor-pointer text-[10px] md:text-xs text-text-muted border-border-light opacity-60 hover:opacity-90"
-                  title="本对话已忽略记忆提取，点击管理"
-                >
-                  已忽略提取
-                </button>
-              ) : unextractedCount > 0 ? (
-                <button
-                  onClick={() => { setResetExtractionOpen(true); setResetVisibleCount(RESET_PAGE_SIZE); }}
-                  className="chip cursor-pointer text-amber-600 border-amber-200 bg-amber-50/80 hover:bg-amber-100/80 text-[10px] md:text-xs"
-                  title={t('chat.resetExtraction')}
-                >
-                  {unextractedCount} {t('chat.unextracted')}
-                </button>
-              ) : (
-                <button
-                  onClick={() => { setResetExtractionOpen(true); setResetVisibleCount(RESET_PAGE_SIZE); }}
-                  className="chip cursor-pointer text-[10px] md:text-xs opacity-50 hover:opacity-80"
-                  title={t('chat.resetExtraction')}
-                >
-                  {t('chat.manageExtraction')}
-                </button>
-              )}
-              {/* 记忆提取状态 chip — 仅在提取触发时显示 */}
-              {memoryExtractStatus !== 'idle' && (
-                <span className={`chip text-[10px] md:text-xs transition-opacity ${
-                  memoryExtractStatus === 'extracting'
-                    ? 'text-purple-600 border-purple-200 bg-purple-50/80 animate-pulse'
-                    : memoryExtractStatus === 'done'
-                    ? 'text-green-600 border-green-200 bg-green-50/80'
-                    : 'text-red-500 border-red-200 bg-red-50/80'
-                }`}>
-                  {memoryExtractStatus === 'extracting' ? t('chat.extracting')
-                    : memoryExtractStatus === 'done' ? t('chat.extractDone')
-                    : t('chat.extractFailed')}
-                </span>
-              )}
-              <span className="chip text-[10px] md:text-xs">≈{tokenCount} {t('status.tokens')}</span>
-            </div>
-          </div>
+          <ChatToolbar
+            activeConversation={activeConversation}
+            unextractedCount={unextractedCount}
+            memoryExtractStatus={memoryExtractStatus}
+            tokenCount={tokenCount}
+            onOpenResetExtraction={() => { setResetExtractionOpen(true); setResetVisibleCount(RESET_PAGE_SIZE); }}
+          />
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 md:py-5">
-            {/* 对话切换加载骨架屏：消息为空但对话存在时显示，比空白更流畅 */}
-            {visibleMessages.length === 0 && !streamingText && !isStreamingHere && activeConvId && (
-              <div className="flex flex-col gap-5 py-2" aria-hidden="true">
-                {/* AI 气泡骨架（左侧） */}
-                <div className="flex gap-3">
-                  <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" />
-                  <div className="flex flex-col gap-1.5">
-                    <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" />
-                    <div className="h-16 w-56 animate-pulse rounded-2xl border border-border-light bg-white/80" style={{ animationDelay: '60ms' }} />
-                  </div>
-                </div>
-                {/* 用户气泡骨架（右侧） */}
-                <div className="flex flex-row-reverse gap-3">
-                  <div className="flex flex-col items-end gap-1.5">
-                    <div className="h-3 w-10 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '120ms' }} />
-                    <div className="h-10 w-44 animate-pulse rounded-2xl bg-accent/15" style={{ animationDelay: '120ms' }} />
-                  </div>
-                </div>
-                {/* AI 气泡骨架（左侧，更宽） */}
-                <div className="flex gap-3">
-                  <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" style={{ animationDelay: '180ms' }} />
-                  <div className="flex flex-col gap-1.5">
-                    <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '180ms' }} />
-                    <div className="h-20 w-72 animate-pulse rounded-2xl border border-border-light bg-white/80" style={{ animationDelay: '180ms' }} />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {visibleMessages.length === 0 && !streamingText && !isStreamingHere && !activeConvId && (
-              <div className="flex h-full min-h-[18rem] items-center justify-center">
-                <div className="max-w-md text-center">
-                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[1.4rem] bg-gradient-to-br from-accent/15 to-accent-light/25 text-accent-dark empty-breathe">
-                    <MemoryIcon className="h-6 w-6" />
-                  </div>
-                  <p className="text-base font-medium text-text-primary">{t('chat.emptyConversation')}</p>
-                  <p className="mt-2 text-sm text-text-muted">{t('chat.emptyConversationBody')}</p>
-
-
-                </div>
-              </div>
-            )}
-
-            {(() => {
-              const filtered = visibleMessages.filter(m => m.id !== hiddenMessageId || m.id === streamingTargetId);
-              return (
-                <>
-                  {/* 顶部哨兵：进入视口时触发加载更多 */}
-                  <div ref={topSentinelRef} className="h-px" />
-
-                  {/* 还有更多历史消息时显示提示 */}
-                  {hasOlderMessages && (
-                    <div className="mb-4 flex items-center justify-center">
-                      <button
-                        onClick={() => void loadOlderMessages()}
-                        disabled={loadingOlderMessages}
-                        className="chip cursor-pointer text-xs hover:border-accent/30 hover:bg-accent/8 hover:text-accent-dark"
-                      >
-                        {loadingOlderMessages ? '正在加载更早消息...' : '↑ 加载更早消息'}
-                      </button>
-                    </div>
-                  )}
-
-                  {filtered.map((message, index, arr) => {
-                    const prevMessage = index > 0 ? arr[index - 1] : null;
-                    // 跨天分隔线：第一条已加载消息只在没有更早消息时显示
-                    const isFirstVisible = index === 0;
-                    const showDateDivider = isFirstVisible
-                      ? !hasOlderMessages
-                      : !isSameDay(prevMessage!.created_at, message.created_at);
-                    const isStreamingTarget = isStreamingHere && streamingTargetId === message.id;
-                    return (
-                      <div key={message.id} id={`msg-${message.id}`} className={`mb-4 rounded-2xl transition-all duration-500 ${highlightedId === message.id ? 'ring-2 ring-accent/40 ring-offset-2 bg-accent/5' : ''}`}>
-                        {showDateDivider && (
-                          <div className="mb-4 flex items-center gap-3">
-                            <div className="h-px flex-1 bg-border-light" />
-                            <span className="text-[11px] text-text-muted">{formatDateLabel(message.created_at)}</span>
-                            <div className="h-px flex-1 bg-border-light" />
-                          </div>
-                        )}
-                        {isStreamingTarget ? streamingBubble : (
-                          <MessageBubble
-                            message={message}
-                            characterName={activeCharacter.name}
-                            avatarUrl={activeCharacter.avatar_url}
-                            showTimestamps={showTimestamps}
-                            versionInfo={versionInfoByMessageId.get(message.id)}
-                            onEdit={handleEditMessage}
-                            onDelete={handleDeleteMessage}
-                            onRegenerate={handleRegenerate}
-                            onRegenerateFromHere={handleRegenerateFromHere}
-                            onSwitchVersion={handleSwitchVersion}
-                            onGenerateImage={handleGenerateImage}
-                            onDeleteImage={handleDeleteImage}
-                            onEditImagePrompt={handleEditImagePrompt}
-                            onSetPrimaryImage={handleSetPrimaryImage}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-                </>
-              );
-            })()}
-
-            {/* 正在生成时显示占位气泡：无流式文字时三点跳动，有流式文字时显示内容 */}
-            {isStreamingHere && !streamingTargetId && streamingBubble}
-
-            <div ref={messagesEndRef} />
-          </div>
+          <ChatMessageList
+            ref={messagesEndRef}
+            visibleMessages={visibleMessages}
+            hiddenMessageId={hiddenMessageId}
+            streamingTargetId={streamingTargetId}
+            highlightedId={highlightedId}
+            isStreamingHere={isStreamingHere}
+            hasOlderMessages={hasOlderMessages}
+            loadingOlderMessages={loadingOlderMessages}
+            showTimestamps={showTimestamps}
+            activeConvId={activeConvId}
+            streamingText={streamingText}
+            character={activeCharacter}
+            streamingBubble={streamingBubble}
+            versionInfoByMessageId={versionInfoByMessageId}
+            topSentinelRef={topSentinelRef}
+            onLoadOlder={() => void loadOlderMessages()}
+            onEdit={handleEditMessage}
+            onDelete={handleDeleteMessage}
+            onRegenerate={handleRegenerate}
+            onRegenerateFromHere={handleRegenerateFromHere}
+            onSwitchVersion={handleSwitchVersion}
+            onGenerateImage={handleGenerateImage}
+            onDeleteImage={handleDeleteImage}
+            onEditImagePrompt={handleEditImagePrompt}
+            onSetPrimaryImage={handleSetPrimaryImage}
+          />
 
           <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreamingHere} isGenerating={isStreamingHere} currentModel={currentModel} onModelChange={async (model: string) => { setCurrentModel(model); await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) }); }} />
         </section>
@@ -2150,11 +1868,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         <>
           {/* 遮罩 */}
           <div
-            className="fixed inset-0 z-50 bg-black/35 lg:hidden"
+            className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
             onClick={() => setConvDrawerOpen(false)}
           />
           {/* 底部抽屉 */}
-          <div className="fixed bottom-0 left-0 right-0 z-50 lg:hidden">
+          <div className="fixed bottom-0 left-0 right-0 z-50 animate-slideUp lg:hidden">
             <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4">
               {/* 拖拽把手 */}
               <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-border-light" />

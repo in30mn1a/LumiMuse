@@ -191,6 +191,11 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.connected': '已配置',
     'settings.notConfigured': '未配置',
 
+    'settings.tabApi': '接口',
+    'settings.tabGeneration': '生成',
+    'settings.tabMemory': '记忆与显示',
+    'settings.tabAdvanced': '生图与维护',
+
     'settings.providerManage': '供应商管理',
     'settings.providerSaveCurrent': '保存当前配置',
     'settings.providerUpdateCurrent': '更新当前供应商',
@@ -512,6 +517,11 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.memoryStatus': 'Memory sync',
     'settings.connected': 'Configured',
     'settings.notConfigured': 'Not configured',
+
+    'settings.tabApi': 'API',
+    'settings.tabGeneration': 'Generation',
+    'settings.tabMemory': 'Memory & Display',
+    'settings.tabAdvanced': 'Image & Maintenance',
 
     'settings.providerManage': 'Provider Management',
     'settings.providerSaveCurrent': 'Save Current Config',

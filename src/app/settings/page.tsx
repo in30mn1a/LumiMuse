@@ -18,6 +18,7 @@ export default function SettingsPage() {
   const [providers, setProviders] = useState<ApiProvider[]>([]);
   const [activeProviderId, setActiveProviderId] = useState('');
   const [editingProvider, setEditingProvider] = useState<Partial<ApiProvider> | null>(null);
+  const [activeTab, setActiveTab] = useState<'api' | 'generation' | 'memory' | 'advanced'>('api');
   const { t, setLang } = useTranslation();
 
   const loadProviders = useCallback(() => {
@@ -194,9 +195,17 @@ export default function SettingsPage() {
               <button
                 onClick={handleSave}
                 disabled={saving !== 'idle'}
-                className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-50"
+                className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <SparkIcon className="h-4 w-4" />
+                {saving === 'saving' ? (
+                  <span className="spinner-sm" aria-hidden="true" />
+                ) : saving === 'saved' ? (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                    <path d="M5 12l5 5L20 7" />
+                  </svg>
+                ) : (
+                  <SparkIcon className="h-4 w-4" />
+                )}
                 {saving === 'saved' ? t('settings.saved') : saving === 'saving' ? t('settings.saving') : t('settings.save')}
               </button>
             </div>
@@ -204,7 +213,32 @@ export default function SettingsPage() {
         </header>
 
         <div className="space-y-4">
+          {/* 分组导航 Tab */}
+          <nav className="surface-panel flex gap-1 overflow-x-auto p-1.5" aria-label={t('settings.title')}>
+            {([
+              { key: 'api', label: t('settings.tabApi') },
+              { key: 'generation', label: t('settings.tabGeneration') },
+              { key: 'memory', label: t('settings.tabMemory') },
+              { key: 'advanced', label: t('settings.tabAdvanced') },
+            ] as const).map(tab => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`flex-1 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-medium transition-all ${
+                  activeTab === tab.key
+                    ? 'bg-accent/15 text-accent-dark shadow-sm'
+                    : 'text-text-secondary hover:bg-warm-100 hover:text-text-primary'
+                }`}
+                aria-pressed={activeTab === tab.key}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+
           <main className="space-y-4">
+            {activeTab === 'api' && (<>
             {/* 供应商管理 */}
             <section className="surface-panel p-5">
               <div className="mb-4 flex items-center justify-between">
@@ -442,7 +476,9 @@ export default function SettingsPage() {
                 </div>
               </div>
             </section>
+            </>)}
 
+            {activeTab === 'generation' && (<>
             <section className="surface-panel p-5">
               <div className="mb-4">
                 <h2 className="section-title text-lg">{t('settings.modelParams')}</h2>
@@ -520,7 +556,9 @@ export default function SettingsPage() {
                 </label>
               </div>
             </section>
+            </>)}
 
+            {activeTab === 'memory' && (<>
             <section className="surface-panel p-5">
               <div className="mb-4">
                 <h2 className="section-title text-lg">{t('settings.memoryEngine')}</h2>
@@ -695,10 +733,13 @@ export default function SettingsPage() {
                 </label>
               </div>
             </section>
+            </>)}
 
+            {activeTab === 'advanced' && (<>
             <ImageGenSettingsSection settings={settings} update={update} parseNumber={parseNumber} t={t} />
 
             <MaintenanceSection t={t} />
+            </>)}
           </main>
         </div>
       </div>

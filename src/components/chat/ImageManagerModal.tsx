@@ -5,6 +5,7 @@ import type { Character } from '@/types';
 import { ImageIcon, TrashIcon } from '@/components/ui/icons';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
+import JSZip from 'jszip';
 
 const PAGE_SIZE = 12;
 
@@ -51,6 +52,7 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [page, setPage] = useState(0);
+  const [downloading, setDownloading] = useState(false);
 
   const reload = useCallback(async () => {
     if (!character) return;
@@ -113,6 +115,44 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
     }
   };
 
+  const handleDownload = async () => {
+    if (selected.size === 0) return;
+    setDownloading(true);
+    try {
+      const zip = new JSZip();
+      const selectedImages = images.filter(img => {
+        const key = `${img.messageId}::${img.imageId}::${img.versionId}`;
+        return selected.has(key);
+      });
+      const blobs = await Promise.all(
+        selectedImages.map(async img => {
+          const res = await fetch(img.url);
+          if (!res.ok) throw new Error(`Failed to load ${img.url}`);
+          return { blob: await res.blob(), url: img.url };
+        })
+      );
+      for (const { blob, url } of blobs) {
+        const ext = url.split('.').pop()?.split('?')[0] ?? 'png';
+        const name = url.split('/').pop()?.split('?')[0] ?? `image.${ext}`;
+        zip.file(name, blob);
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const downloadUrl = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `lumimuse-images-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(downloadUrl);
+      showToast(`已下载 ${blobs.length} 张图片`, 'info');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '下载失败');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const totalPages = Math.max(1, Math.ceil(images.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
   const pageImages = images.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
@@ -135,13 +175,26 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
           </div>
           <div className="flex items-center gap-2">
             {selected.size > 0 && (
-              <button
-                onClick={() => void handleBatchDelete()}
-                className="soft-button soft-button-danger px-3 py-1.5 text-sm"
-              >
-                <TrashIcon className="h-3.5 w-3.5" />
-                <span>删除选中 ({selected.size})</span>
-              </button>
+              <>
+                <button
+                  onClick={() => void handleDownload()}
+                  disabled={downloading}
+                  className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
+                >
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
+                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                  </svg>
+                  <span>{downloading ? '打包中...' : `下载选中 (${selected.size})`}</span>
+                </button>
+                <button
+                  onClick={() => void handleBatchDelete()}
+                  className="soft-button soft-button-danger px-3 py-1.5 text-sm"
+                >
+                  <TrashIcon className="h-3.5 w-3.5" />
+                  <span>删除选中 ({selected.size})</span>
+                </button>
+              </>
             )}
             {images.length > 0 && (
               <button

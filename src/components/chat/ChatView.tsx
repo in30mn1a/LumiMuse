@@ -1472,7 +1472,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <div className="home-glow" />
         </div>
-        <div className="relative flex flex-col items-center">
+        <div className="relative flex -translate-y-16 flex-col items-center md:translate-y-0">
           <h1
             className="home-title bg-gradient-to-br from-accent-dark via-accent to-accent-light bg-clip-text text-5xl font-semibold tracking-tight text-transparent md:text-6xl"
             style={{ fontFamily: 'var(--font-display)' }}

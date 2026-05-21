@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle, ApiProvider, ArtistString } from '@/types';
 import { applyFontStyle } from '@/lib/font-stacks';
 import { useRouter } from 'next/navigation';
@@ -786,6 +786,19 @@ function ImageGenSettingsSection({
   const artistStrings: ArtistString[] = settings.artist_strings || [];
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [presetName, setPresetName] = useState('');
+  const presetSynced = useRef(false);
+
+  // 页面加载时，根据当前画师串内容自动匹配预设
+  useEffect(() => {
+    if (presetSynced.current) return;
+    if (artistStrings.length > 0 && imgGen.nai_artist_tags.trim()) {
+      const matched = artistStrings.find(a => a.tags === imgGen.nai_artist_tags);
+      if (matched) {
+        setSelectedPresetId(matched.id);
+      }
+    }
+    presetSynced.current = true;
+  }, [artistStrings, imgGen.nai_artist_tags]);
 
   const handleSelectPreset = (id: string) => {
     if (!id) { setSelectedPresetId(''); return; }

@@ -19,13 +19,25 @@ export function getDb(): Database.Database {
   _db.pragma('foreign_keys = ON');
   migrate(_db);
 
+  // 生产环境未设置访问密码时发出警告：proxy.ts 与 /api/auth 都会在 ACCESS_PASSWORD 缺失时直接放行，
+  // 这是本地开发模式的有意设计；但生产部署若忘记配置，会导致整个应用无鉴权暴露。
+  if (process.env.NODE_ENV === 'production' && !process.env.ACCESS_PASSWORD) {
+    console.warn(
+      '[lumimuse] WARNING: ACCESS_PASSWORD is not set in production mode. ' +
+      'All routes are publicly accessible. Set ACCESS_PASSWORD env var to enable authentication.'
+    );
+  }
+
   // 服务启动时把上次崩溃遗留的 processing 任务重置为 pending
   // 延迟 import 避免循环依赖（memory-queue → db → memory-queue）
   setImmediate(() => {
     import('@/lib/memory-queue').then(({ recoverStaleTasks, triggerQueue }) => {
       recoverStaleTasks();
       triggerQueue();
-    }).catch(() => {});
+    }).catch((err) => {
+      // 不静默吞错：启动期失败必须可见，否则记忆队列恢复出问题用户根本无从察觉
+      console.error('[db] memory-queue boot failed:', err);
+    });
   });
 
   return _db;

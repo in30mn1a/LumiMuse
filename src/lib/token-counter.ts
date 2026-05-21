@@ -1,7 +1,7 @@
 // 粗略 token 估算
 // 估算依据（与主流 BPE tokenizer 行为对齐的近似规则）：
 // - CJK（中日韩）字符：1.5 token/char（一个汉字常被拆成多个 byte 级 token）
-// - 拉丁单词：约 1 token/词（英文 BPE 大致每个常见词一个 token，原先 0.25 严重低估）
+// - 拉丁单词：按字符数 / 4 估算（BPE 平均约 4 字符 1 token；长单词如 internationalization 实际 5+ token）
 // - 标点符号：单独算 1 token
 // - 数字串：每 4 位算 1 token（数字常被合并为短 token）
 // - 其他（如全角符号、emoji 等）：1 token/char
@@ -31,7 +31,8 @@ export function estimateTokens(text: string): number {
       continue;
     }
 
-    // 3. ASCII 字母：贪心匹配整个单词，按词计 1 token
+    // 3. ASCII 字母：贪心匹配整个单词，按 ⌈len/4⌉ 估算 token 数
+    //    短词（≤4 字母）记 1 token，长词如 "internationalization"(20) 记 5 token
     if ((codePoint >= 0x41 && codePoint <= 0x5a) || (codePoint >= 0x61 && codePoint <= 0x7a)) {
       let j = i;
       while (j < len) {
@@ -40,7 +41,8 @@ export function estimateTokens(text: string): number {
         if (!isLetter) break;
         j += 1;
       }
-      count += 1;
+      const wordLen = j - i;
+      count += Math.ceil(wordLen / 4);
       i = j;
       continue;
     }

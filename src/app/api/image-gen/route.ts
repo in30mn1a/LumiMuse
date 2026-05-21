@@ -3,7 +3,7 @@ import { loadSettings } from '@/lib/settings';
 import { ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS } from '@/types';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { writeFile, mkdir } from 'fs/promises';
-import { inflateRawSync } from 'zlib';
+import JSZip from 'jszip';
 import path from 'path';
 import { v4 as uuid } from 'uuid';
 
@@ -178,36 +178,20 @@ async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGen
   const isZip = uint8[0] === 0x50 && uint8[1] === 0x4B && uint8[2] === 0x03 && uint8[3] === 0x04;
 
   if (isZip) {
-    // 解析 zip Local File Header
-    // offset 8: compression method (2 bytes LE) — 0=stored, 8=deflate
-    const compressionMethod = uint8[8] | (uint8[9] << 8);
-    // offset 18: compressed size (4 bytes LE)
-    const compressedSize = uint8[18] | (uint8[19] << 8) | (uint8[20] << 16) | (uint8[21] << 24);
-    // offset 26: filename length (2 bytes LE)
-    const filenameLen = uint8[26] | (uint8[27] << 8);
-    // offset 28: extra field length (2 bytes LE)
-    const extraLen = uint8[28] | (uint8[29] << 8);
-    // 文件数据起始位置
-    const dataStart = 30 + filenameLen + extraLen;
-    const dataEnd = compressedSize > 0 ? dataStart + compressedSize : uint8.length;
-    const compressedData = uint8.slice(dataStart, dataEnd);
-
-    let fileData: Buffer;
-    if (compressionMethod === 0) {
-      // stored（未压缩），直接使用
-      fileData = Buffer.from(compressedData);
-    } else if (compressionMethod === 8) {
-      // deflate 压缩，用 inflateRawSync 解压
-      fileData = inflateRawSync(Buffer.from(compressedData));
-    } else {
-      throw new Error(`NovelAI zip 使用了不支持的压缩方式: ${compressionMethod}`);
+    // 用 jszip 解析（替代手写 Local File Header 解析）：自动处理多文件、ZIP64、不同压缩方式等边界情况
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    // NAI 返回的 zip 通常只含一张 png；取第一个非目录条目
+    const firstEntry = Object.values(zip.files).find(f => !f.dir);
+    if (!firstEntry) {
+      throw new Error('NovelAI zip 中未找到图片文件');
     }
+    const fileData = await firstEntry.async('nodebuffer');
 
     const dir = await ensureOutputDir();
     const filename = `${uuid()}.png`;
     const filepath = path.join(dir, filename);
     await writeFile(filepath, fileData);
-    console.log('[image-gen/nai] 从 zip 解压成功, 压缩方式:', compressionMethod, '解压后大小:', fileData.length);
+    console.log('[image-gen/nai] 从 zip 解压成功, 文件名:', firstEntry.name, '解压后大小:', fileData.length);
     return `/api/files/generated/${filename}`;
   }
 

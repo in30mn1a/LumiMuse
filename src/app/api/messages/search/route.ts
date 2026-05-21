@@ -22,7 +22,7 @@ function parseDateRange(input: string): [string, string] | null {
 
 
   if (!match) {
-    match = input.match(new RegExp('^(\\d{4})\\u5e74(\\d{1,2})\\u6708(\\d{1,2})\\u65e5?$'));
+    match = input.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日?$/);
     if (match) {
       year = parseInt(match[1]);
       month = parseInt(match[2]);
@@ -115,7 +115,7 @@ export async function GET(request: NextRequest) {
     const normalized = q.replace(/"/g, '""');
     const ftsQuery = normalized.includes(' ') ? `"${normalized}"` : normalized;
     const shouldUseLikeFirst = /[\u4e00-\u9fff]/.test(q);
-    const searchLike = () => db.prepare(`
+    const searchLike = (): typeof rows => db.prepare(`
       SELECT
         m.id        AS message_id,
         m.content   AS content,
@@ -136,31 +136,32 @@ export async function GET(request: NextRequest) {
 
     if (shouldUseLikeFirst) {
       rows = searchLike();
-    } else try {
-      rows = db.prepare(`
-        SELECT
-          m.id        AS message_id,
-          m.content   AS content,
-          m.role      AS role,
-          m.created_at AS created_at,
-          c.id        AS conversation_id,
-          c.title     AS conversation_title,
-          ch.id       AS character_id,
-          ch.name     AS character_name,
-          ch.avatar_url AS avatar_url
-        FROM messages_fts fts
-        JOIN messages m      ON m.id = fts.id
-        JOIN conversations c ON m.conversation_id = c.id
-        JOIN characters ch   ON c.character_id = ch.id
-        WHERE messages_fts MATCH ? AND m.role IN ('user', 'assistant')
-        ORDER BY m.created_at DESC
-        LIMIT ? OFFSET ?
-      `).all(ftsQuery, pageSize, offset) as typeof rows;
-      if (rows.length === 0) {
+    } else {
+      // 非中文走 FTS5；FTS query 解析错误或零结果（unicode61 把 query 全过滤掉）回退到 LIKE
+      try {
+        const ftsRows = db.prepare(`
+          SELECT
+            m.id        AS message_id,
+            m.content   AS content,
+            m.role      AS role,
+            m.created_at AS created_at,
+            c.id        AS conversation_id,
+            c.title     AS conversation_title,
+            ch.id       AS character_id,
+            ch.name     AS character_name,
+            ch.avatar_url AS avatar_url
+          FROM messages_fts fts
+          JOIN messages m      ON m.id = fts.id
+          JOIN conversations c ON m.conversation_id = c.id
+          JOIN characters ch   ON c.character_id = ch.id
+          WHERE messages_fts MATCH ? AND m.role IN ('user', 'assistant')
+          ORDER BY m.created_at DESC
+          LIMIT ? OFFSET ?
+        `).all(ftsQuery, pageSize, offset) as typeof rows;
+        rows = ftsRows.length === 0 ? searchLike() : ftsRows;
+      } catch {
         rows = searchLike();
       }
-    } catch {
-      rows = searchLike();
     }
   }
 

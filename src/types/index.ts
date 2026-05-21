@@ -137,6 +137,12 @@ export const DEFAULT_IMAGE_GEN_SETTINGS: ImageGenSettings = {
   auto_generate_keywords: '画,生图,来一张,看看',
 };
 
+export interface ArtistString {
+  id: string;
+  name: string;
+  tags: string;
+}
+
 export type FontStyle = 'wenkai' | 'system' | 'serif';
 
 export interface ApiProvider {
@@ -178,6 +184,8 @@ export interface Settings {
   active_provider_id: string;
   // 生图设置
   image_gen: ImageGenSettings;
+  // 画师串管理
+  artist_strings: ArtistString[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -205,8 +213,8 @@ export const DEFAULT_SETTINGS: Settings = {
   font_style: 'wenkai',
   active_provider_id: '',
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
+  artist_strings: [],
 };
-
 export interface ChatRequest {
   conversation_id: string;
   content: string;

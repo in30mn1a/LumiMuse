@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle, ApiProvider } from '@/types';
+import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle, ApiProvider, ArtistString } from '@/types';
 import { applyFontStyle } from '@/lib/font-stacks';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
@@ -782,6 +782,52 @@ function ImageGenSettingsSection({
     update('image_gen', { ...imgGen, [key]: value });
   };
 
+  // 画师串预设管理
+  const artistStrings: ArtistString[] = settings.artist_strings || [];
+  const [selectedPresetId, setSelectedPresetId] = useState('');
+  const [presetName, setPresetName] = useState('');
+
+  const handleSelectPreset = (id: string) => {
+    if (!id) { setSelectedPresetId(''); return; }
+    const preset = artistStrings.find(a => a.id === id);
+    if (preset) {
+      setSelectedPresetId(id);
+      updateImg('nai_artist_tags', preset.tags);
+    }
+  };
+
+  const handleSaveAsPreset = () => {
+    const name = presetName.trim() || window.prompt(t('settings.artistStringsNamePrompt'));
+    if (!name) return;
+    const newPreset: ArtistString = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name,
+      tags: imgGen.nai_artist_tags,
+    };
+    update('artist_strings', [...artistStrings, newPreset]);
+    setSelectedPresetId(newPreset.id);
+    setPresetName('');
+  };
+
+  const handleUpdatePreset = () => {
+    if (!selectedPresetId) return;
+    update('artist_strings', artistStrings.map(a =>
+      a.id === selectedPresetId ? { ...a, tags: imgGen.nai_artist_tags } : a
+    ));
+  };
+
+  const handleDeletePreset = () => {
+    if (!selectedPresetId) return;
+    if (!window.confirm(t('settings.artistStringsDeleteConfirm'))) return;
+    update('artist_strings', artistStrings.filter(a => a.id !== selectedPresetId));
+    setSelectedPresetId('');
+  };
+
+  const handleArtistTagsChange = (value: string) => {
+    updateImg('nai_artist_tags', value);
+    if (selectedPresetId) setSelectedPresetId('');
+  };
+
   return (
     <section className="surface-panel p-5">
       <div className="mb-4 flex items-center gap-3">
@@ -924,7 +970,64 @@ function ImageGenSettingsSection({
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIArtist')}</label>
                   <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenNAIArtistHint')}</p>
-                  <textarea value={imgGen.nai_artist_tags} onChange={e => updateImg('nai_artist_tags', e.target.value)} rows={2} placeholder="" className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm" />
+                  {/* 画师串预设管理 */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={selectedPresetId}
+                        onChange={e => handleSelectPreset(e.target.value)}
+                        className="select-rich flex-1"
+                      >
+                        <option value="">{t('settings.artistStringsCustom')}</option>
+                        {artistStrings.map(a => (
+                          <option key={a.id} value={a.id}>{a.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <textarea
+                      value={imgGen.nai_artist_tags}
+                      onChange={e => handleArtistTagsChange(e.target.value)}
+                      rows={2}
+                      className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm"
+                    />
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1 flex-1">
+                        <input
+                          value={presetName}
+                          onChange={e => setPresetName(e.target.value)}
+                          placeholder={t('settings.artistStringsNamePrompt')}
+                          className="input-rich flex-1 text-xs"
+                          onKeyDown={e => { if (e.key === 'Enter') handleSaveAsPreset(); }}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSaveAsPreset}
+                          disabled={!imgGen.nai_artist_tags.trim()}
+                          className="rounded-lg bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20 transition disabled:opacity-40"
+                        >
+                          {t('settings.artistStringsSaveAs')}
+                        </button>
+                      </div>
+                      {selectedPresetId && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleUpdatePreset}
+                            className="rounded-lg bg-blue-100 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-200 transition"
+                          >
+                            {t('settings.artistStringsUpdate')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDeletePreset}
+                            className="rounded-lg bg-red-100 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-200 transition"
+                          >
+                            {t('settings.artistStringsDelete')}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
                 </div>
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAINeg')}</label>

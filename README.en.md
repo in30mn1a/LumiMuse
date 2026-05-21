@@ -42,14 +42,16 @@ English · [中文](README.md)
 
 | | Feature | Description |
 |:---:|------|------|
-| 🎭 | **Character System** | Unique personality, greeting, example dialogue, image tags — each character has independent conversations and memories |
+| 🎭 | **Character System** | Unique personality, greeting, example dialogue, image tags — each character has independent conversations and memories, with drag-to-reorder |
 | 💬 | **Chat Experience** | Streaming output, message edit/delete/multi-version regeneration, image & text attachments, manual summarization |
 | 🧠 | **Long-term Memory** | Automatically extract memories from conversations and inject into context — three trigger modes: message count, time interval, keyword |
 | 🎨 | **AI Image Generation** | SD WebUI / NovelAI / ComfyUI / Custom API support, with version history and image management |
+| 🔌 | **Multi-provider** | Save multiple API configs and switch with one click; pick a model per chat right from the input bar |
 | 🔍 | **Search & Navigation** | Global message search, date search, CJK inclusive search, jump-to-result with highlight |
-| 📦 | **Import & Export** | Export characters, memories, and conversation records on demand — lightweight backup or full migration |
+| 📦 | **Import & Export** | Export characters, memories, and conversation records on demand; can import SillyTavern-style character card JSON |
+| 🧹 | **Maintenance Panel** | Built into Settings — orphan-file detection & cleanup; deleting a character/conversation also cleans up its avatars, generated images, and attachments |
 | 📱 | **Mobile** | Responsive layout, iOS safe-area support, touch-optimized interactions |
-| 🔒 | **Access Protection** | Optional access password — transparent locally, recommended for public deployments |
+| 🔒 | **Access Protection** | Optional password, signed token + constant-time comparison + SSRF guard, public-deployment friendly |
 
 ---
 
@@ -61,6 +63,8 @@ English · [中文](README.md)
 - Configure avatar, personality, scenario, greeting, example dialogue, and system prompt
 - Image generation tag field — save character art style, appearance, and fixed elements alongside the character
 - Each character has independent conversations and memories, suitable for maintaining different relationship arcs
+- Drag-to-reorder in the sidebar so frequently used characters can stay on top
+- Import SillyTavern-style character card JSON (JSON files only — PNG-embedded cards are not supported); common fields like name, description, personality, scenario, greeting, example dialogue, system prompt, and tags are mapped over
 
 ### 💬 Chat Experience
 
@@ -91,6 +95,13 @@ English · [中文](README.md)
 - Image version history — regeneration never discards old images
 - In-conversation image preview, previous/next switching, delete current version
 - Bulk delete and version retention in character image management
+- Placeholder and progress hints during generation; old images are kept on failure to avoid accidental loss
+
+### 🔌 Multi-provider Configuration
+
+- Settings page lets you save multiple API configs (different providers, models, keys)
+- The chat input bar can switch the model used for the current session, making A/B comparisons easy
+- Switching providers does not modify existing message history
 
 ### 🔍 Search & Navigation
 
@@ -105,7 +116,14 @@ English · [中文](README.md)
 - Export characters, memories, conversation records, and messages
 - Choose what to export — lightweight backup or full migration
 - Import backup files for easy migration between local and server environments
+- Import SillyTavern-style character card JSON for common fields (JSON only — PNG-embedded metadata is not parsed; extension fields like character book or detailed parameters may not round-trip cleanly)
 - SQLite database (single-file), automatically saved at `data/lumimuse.db`
+
+### 🧹 Maintenance Panel
+
+- The Settings page contains a Maintenance section that can manually scan for orphan files (avatars / generated images / attachments no longer referenced by any character or message)
+- One-click cleanup after scanning, so unused files don't pile up after long-term use
+- Deleting a character or conversation also cleans up its associated images and attachments — no leftovers
 
 ### 📱 Mobile & Desktop
 
@@ -120,6 +138,10 @@ English · [中文](README.md)
 - Optional `ACCESS_PASSWORD` for access protection
 - Without a password, the app is accessible without login — ideal for personal use on your own computer
 - Setting a password is strongly recommended when deploying to the public internet
+- After login, the app issues an HMAC-SHA256 signed token (the password is no longer stored in the cookie). Set `AUTH_SECRET` to keep tokens valid across multiple replicas
+- Password verification uses constant-time comparison to prevent timing attacks
+- Outbound requests (image generation, model list, summarization, chat completion) go through an SSRF guard with DNS resolution and per-redirect re-validation, so external URLs cannot be redirected toward your internal network
+- Self-hosting local LLM / SD WebUI? Set `ALLOW_LOCAL_NETWORK=1` to explicitly opt into private network addresses
 
 ---
 
@@ -132,7 +154,7 @@ English · [中文](README.md)
 | Language | TypeScript (typed JavaScript) |
 | Styling | Tailwind CSS v4 (utility-first CSS framework) |
 | Database | SQLite + better-sqlite3 (local single-file database & Node.js driver) |
-| AI | OpenAI Chat Completions API format (universal chat completion interface) |
+| AI | OpenAI Chat Completions API format (multi-provider config switching) |
 | Fonts | Quicksand + LXGW WenKai Screen |
 | Container | Docker + Docker Compose (container deployment tools) |
 
@@ -227,6 +249,13 @@ Edit `.env.local`:
 ```env
 # Access password (strongly recommended when deploying to the public internet)
 ACCESS_PASSWORD=your_password_here
+
+# Optional: HMAC token signing secret (derived from ACCESS_PASSWORD by default)
+# Set this explicitly for multi-replica deployments or to keep cookies valid across restarts
+# AUTH_SECRET=use_a_long_random_string_here
+
+# Optional: explicitly allow private network addresses for self-hosted local LLM / SD WebUI
+# ALLOW_LOCAL_NETWORK=1
 ```
 
 Without `ACCESS_PASSWORD`, the app won't require login. This mode is only recommended for personal use on your own computer or a trusted LAN.
@@ -248,10 +277,11 @@ Visit [http://localhost:3000](http://localhost:3000) after startup.
 | `./data` | `/app/data` | SQLite database |
 | `./public/generated` | `/app/public/generated` | Generated images |
 | `./public/avatars` | `/app/public/avatars` | Character avatars |
+| `./public/attachments` | `/app/public/attachments` | Conversation attachments (images / text) |
 
-As long as these directories remain, data survives container rebuilds. On startup, the container automatically fixes bind-mounted directory permissions so SQLite can write even when Linux creates host directories as root.
+As long as these directories remain, data survives container rebuilds. The container runs as a non-root user (UID 1001:1001) to reduce attack surface, so on Linux the bind-mounted directories must be owned by that UID: with named volumes Docker aligns ownership automatically; with bind mounts like `./data`, either set `user: "1001:1001"` in `docker-compose.yml`, or run `sudo chown -R 1001:1001 data public/generated public/avatars public/attachments` once.
 
-If this is your first Linux deployment, you can run `docker compose up -d --build` directly without manually `chown`ing these directories.
+On Windows / macOS, Docker Desktop handles permissions automatically — `docker compose up -d --build` is enough.
 
 ### 4. Update
 
@@ -260,7 +290,7 @@ git pull
 docker compose up -d --build
 ```
 
-Before updating, it's recommended to export a backup from within the app, or manually back up `data/`, `public/generated/`, and `public/avatars/`.
+Before updating, it's recommended to export a backup from within the app, or manually back up `data/`, `public/generated/`, `public/avatars/`, and `public/attachments/`.
 
 ---
 
@@ -330,6 +360,7 @@ LumiMuse stores all core data on your own machine or server:
 - SQLite database: `data/lumimuse.db`
 - Generated images: `public/generated/`
 - Character avatars: `public/avatars/`
+- Conversation attachments: `public/attachments/`
 
 The app itself does not upload your characters, conversations, or memories to any LumiMuse author's server. The only outbound requests come from the model API and image generation API you configure yourself.
 
@@ -337,7 +368,7 @@ When deploying to the public internet, be sure to:
 
 - Set `ACCESS_PASSWORD`
 - Use HTTPS — preferably behind a reverse proxy
-- Regularly back up `data/`, `public/generated/`, and `public/avatars/`
+- Regularly back up `data/`, `public/generated/`, `public/avatars/`, and `public/attachments/`
 - Never commit `.env.local`, database files, or personal backups to a public repository
 
 ---
@@ -358,6 +389,7 @@ If you're comfortable with file-level backups, you can also directly back up the
 data/
 public/generated/
 public/avatars/
+public/attachments/
 ```
 
 ---
@@ -420,7 +452,8 @@ LumiMuse/
 │  └─ types/               # TypeScript type definitions
 ├─ public/
 │  ├─ avatars/             # Character avatars
-│  └─ generated/           # Generated images
+│  ├─ generated/           # Generated images
+│  └─ attachments/         # Conversation attachments (images / text)
 ├─ data/                   # SQLite database directory
 ├─ Dockerfile              # Docker image build config
 ├─ docker-compose.yml      # Docker Compose deployment config

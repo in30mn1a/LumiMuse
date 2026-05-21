@@ -42,14 +42,16 @@
 
 | | 功能 | 说明 |
 |:---:|------|------|
-| 🎭 | **角色系统** | 独立性格、开场白、示例对话、生图标签，每个角色拥有独立对话与记忆 |
+| 🎭 | **角色系统** | 独立性格、开场白、示例对话、生图标签，每个角色拥有独立对话与记忆，支持拖拽排序 |
 | 💬 | **聊天体验** | 流式输出、消息编辑/删除/多版本重新生成、图片与文本附件、手动总结 |
 | 🧠 | **长期记忆** | 自动从对话中提取记忆并注入上下文，支持消息数/时间/关键词三种触发方式 |
-| 🎨 | **AI 生图** | 支持 SD WebUI / NovelAI / ComfyUI / 自定义 API，版本历史与图片管理 |
+| 🎨 | **AI 生图** | 支持 SD WebUI / NovelAI / ComfyUI / 自定义 API,版本历史与图片管理 |
+| 🔌 | **多供应商** | 保存多套 API 配置一键切换,聊天输入框直接切模型,适合在不同模型间对比 |
 | 🔍 | **搜索导航** | 全局消息搜索、日期搜索、中文包含搜索、结果定位高亮 |
-| 📦 | **导入导出** | 角色与记忆和对话记录按需导出，轻量备份或完整迁移 |
+| 📦 | **导入导出** | 角色与记忆和对话记录按需导出,轻量备份或完整迁移,可导入 SillyTavern 风格角色卡 JSON |
+| 🧹 | **维护面板** | 设置页内置孤儿文件检测与清理,删除角色/对话时同步清理头像、生图、附件 |
 | 📱 | **移动端** | 响应式布局、iOS 安全区域适配、触屏操作优化 |
-| 🔒 | **访问保护** | 可选访问密码，本地免密，公网部署建议开启 |
+| 🔒 | **访问保护** | 可选访问密码,签名 token + 常量时间比较 + SSRF 防护,公网部署友好 |
 
 ---
 
@@ -61,6 +63,8 @@
 - 可配置头像、性格、场景、开场白、示例对话和系统提示词（给 AI 的基础设定）
 - 支持生图标签字段，角色的画风、外貌和固定元素可以随角色一起保存
 - 每个角色拥有独立对话和记忆，适合维护不同关系线
+- 侧边栏支持拖拽排序，常用角色可以放在前面
+- 支持导入 SillyTavern 风格的角色卡 JSON（仅 JSON 文件，不支持 PNG 内嵌格式），会读取常用字段如名称、描述、性格、场景、开场白、示例对话、系统提示词、标签等
 
 ### 💬 聊天体验
 
@@ -91,6 +95,13 @@
 - 支持图片版本历史，重新生成不会直接丢掉旧图
 - 支持对话内图片预览、上一张 / 下一张切换、删除当前版本
 - 支持角色图片管理中的批量删除和版本保留
+- 生图过程中显示占位图与进度提示，失败时保留旧图避免误删
+
+### 🔌 多供应商配置
+
+- 设置页支持保存多套 API 配置（不同服务商、不同模型、不同密钥）
+- 聊天输入框可临时切换当前会话使用的模型，方便对比效果
+- 切换供应商不会改动已有的消息历史
 
 ### 🔍 搜索与导航
 
@@ -105,7 +116,14 @@
 - 支持导出角色、记忆、对话记录和消息
 - 支持按需选择导出内容，便于轻量备份或完整迁移
 - 支持导入备份文件，适合在本地环境和服务器环境之间迁移
+- 兼容 SillyTavern 风格角色卡 JSON 的常用字段一键导入（仅 JSON，不读 PNG 内嵌元数据；character book、深度参数等扩展字段不一定能完整还原）
 - 数据库使用 SQLite（单文件数据库），默认保存在 `data/lumimuse.db`
+
+### 🧹 维护面板
+
+- 设置页提供维护区块，可手动检测孤儿文件（不再被任何角色或消息引用的头像、生成图、附件）
+- 检测后可一键清理，避免长期使用后磁盘空间被无用文件占满
+- 删除角色或对话时会同步清理对应的图片与附件，不再留垃圾
 
 ### 📱 移动端与桌面端
 
@@ -120,6 +138,10 @@
 - 支持通过 `ACCESS_PASSWORD` 设置访问密码
 - 不设置访问密码时，应用透明访问，适合只在自己电脑上使用
 - 部署到公网时建议一定设置访问密码
+- 登录后下发 HMAC-SHA256 签名 token（不再把密码原文写入 cookie），可选配 `AUTH_SECRET` 让 token 在多副本部署时通用
+- 密码校验使用常量时间比较，避免通过响应耗时差推测密码
+- 出站请求（生图、模型列表、总结、对话补全）经过 SSRF 防护，会做 DNS 解析与重定向逐跳校验，避免被外部地址引导到内网
+- 自部署本地 LLM / SD WebUI 时可设置 `ALLOW_LOCAL_NETWORK=1` 显式放开内网地址
 
 ---
 
@@ -132,7 +154,7 @@
 | 语言 | TypeScript（带类型检查的 JavaScript） |
 | 样式 | Tailwind CSS v4（工具类 CSS 框架） |
 | 数据库 | SQLite + better-sqlite3（本地单文件数据库和 Node.js 驱动） |
-| AI 接入 | OpenAI Chat Completions API 格式（通用聊天补全接口） |
+| AI 接入 | OpenAI Chat Completions API 格式（多供应商配置切换） |
 | 字体 | Quicksand + LXGW WenKai Screen（霞鹜文楷屏幕版） |
 | 容器化 | Docker + Docker Compose（容器部署工具） |
 
@@ -227,6 +249,13 @@ cp .env.local.example .env.local
 ```env
 # 访问密码（部署到公网时强烈建议设置）
 ACCESS_PASSWORD=your_password_here
+
+# 可选：HMAC token 签名密钥（默认会从 ACCESS_PASSWORD 派生）
+# 多副本部署或希望 cookie 跨重启不失效时建议显式设置
+# AUTH_SECRET=use_a_long_random_string_here
+
+# 可选：自部署本地 LLM / SD WebUI 时显式允许内网地址
+# ALLOW_LOCAL_NETWORK=1
 ```
 
 如果不设置 `ACCESS_PASSWORD`，应用不会要求登录。这个模式只建议在自己电脑或可信局域网内使用。
@@ -248,10 +277,11 @@ docker compose up -d --build
 | `./data` | `/app/data` | 保存 SQLite 数据库 |
 | `./public/generated` | `/app/public/generated` | 保存生成图片 |
 | `./public/avatars` | `/app/public/avatars` | 保存角色头像 |
+| `./public/attachments` | `/app/public/attachments` | 保存对话附件（图片 / 文本） |
 
-只要这些目录还在，容器重建后数据也不会丢。首次启动时会自动修复绑定挂载目录权限，避免 Linux 环境下宿主机目录由 root 创建后导致 SQLite（轻量级本地数据库）无法写入。
+只要这些目录还在，容器重建后数据也不会丢。容器以非 root 用户（UID 1001:1001）启动以减少攻击面，绑定挂载的目录在 Linux 上需要由对应 UID 拥有：使用 named volume 时 Docker 会自动对齐属主；使用 `./data` 这类 bind mount 时，可在 `docker-compose.yml` 用 `user: "1001:1001"`，或先执行 `sudo chown -R 1001:1001 data public/generated public/avatars public/attachments` 一次。
 
-如果你是第一次在 Linux 上部署，直接执行 `docker compose up -d --build` 就可以，不需要手动 `chown`（修改属主）这些目录。
+Windows / macOS 下 Docker Desktop 会自动处理权限，直接 `docker compose up -d --build` 即可。
 
 ### 4. 更新版本
 
@@ -330,6 +360,7 @@ LumiMuse 的核心数据保存在你自己的本机或服务器中：
 - SQLite 数据库：`data/lumimuse.db`
 - 生成图片：`public/generated/`
 - 角色头像：`public/avatars/`
+- 对话附件：`public/attachments/`
 
 应用本身不会把你的角色、对话或记忆上传到 LumiMuse 作者的服务器。实际会发出的外部请求主要来自你自己配置的模型接口和生图接口。
 
@@ -337,7 +368,7 @@ LumiMuse 的核心数据保存在你自己的本机或服务器中：
 
 - 设置 `ACCESS_PASSWORD`
 - 使用 HTTPS（加密访问协议），建议放在反向代理后面
-- 定期备份 `data/`、`public/generated/` 和 `public/avatars/`
+- 定期备份 `data/`、`public/generated/`、`public/avatars/` 和 `public/attachments/`
 - 不要把 `.env.local`、数据库文件或个人备份提交到公开仓库
 
 ---
@@ -358,6 +389,7 @@ LumiMuse 的核心数据保存在你自己的本机或服务器中：
 data/
 public/generated/
 public/avatars/
+public/attachments/
 ```
 
 ---
@@ -420,7 +452,8 @@ LumiMuse/
 │  └─ types/               # TypeScript 类型定义
 ├─ public/
 │  ├─ avatars/             # 角色头像
-│  └─ generated/           # 生成图片
+│  ├─ generated/           # 生成图片
+│  └─ attachments/         # 对话附件（图片 / 文本）
 ├─ data/                   # SQLite 数据库目录
 ├─ Dockerfile              # Docker 镜像构建配置
 ├─ docker-compose.yml      # Docker Compose 部署配置

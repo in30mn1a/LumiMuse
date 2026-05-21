@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readFile } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import path from 'path';
 
 // 只允许访问这两个目录，防止路径穿越
@@ -21,7 +21,7 @@ const MIME: Record<string, string> = {
  * 通过此路由读取磁盘文件并返回。
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   const segments = (await params).path;
@@ -49,6 +49,23 @@ export async function GET(
   }
 
   try {
+    const fileStat = await stat(filePath);
+    const etag = `"${fileStat.size.toString(16)}-${fileStat.mtimeMs.toString(16)}"`;
+    const lastModified = new Date(fileStat.mtime).toUTCString();
+
+    // 如果浏览器带了 ETag 且匹配，直接返回 304 不传文件内容
+    const ifNoneMatch = request.headers.get('if-none-match');
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      return new NextResponse(null, {
+        status: 304,
+        headers: {
+          'Cache-Control': 'public, max-age=604800, immutable',
+          'ETag': etag,
+          'Last-Modified': lastModified,
+        },
+      });
+    }
+
     const buffer = await readFile(filePath);
     const ext = filename.split('.').pop()?.toLowerCase() ?? '';
     const contentType = MIME[ext] ?? 'application/octet-stream';
@@ -56,8 +73,9 @@ export async function GET(
     return new NextResponse(buffer, {
       headers: {
         'Content-Type': contentType,
-        // 缓存 7 天，头像不会频繁变动
         'Cache-Control': 'public, max-age=604800, immutable',
+        'ETag': etag,
+        'Last-Modified': lastModified,
       },
     });
   } catch {

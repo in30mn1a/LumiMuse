@@ -6,6 +6,12 @@ import { getDb } from '@/lib/db';
  * 支持格式：2026/3/30、2026-03-30、3月30日、3/30 等
  * 返回 [startISO, endISO] 或 null
  */
+function isValidParsedDate(year: number, month: number, day: number, startDate: Date): boolean {
+  return startDate.getFullYear() === year
+    && startDate.getMonth() === month - 1
+    && startDate.getDate() === day;
+}
+
 function parseDateRange(input: string): [string, string] | null {
   const now = new Date();
   let year: number | null = null;
@@ -55,6 +61,7 @@ function parseDateRange(input: string): [string, string] | null {
 
   // 用本地时间构造当天 00:00 和 23:59:59，toISOString 会自动转为 UTC
   const startDate = new Date(year, month - 1, day, 0, 0, 0, 0);
+  if (!isValidParsedDate(year, month, day, startDate)) return null;
   const endDate = new Date(year, month - 1, day, 23, 59, 59, 999);
   return [startDate.toISOString(), endDate.toISOString()];
 }

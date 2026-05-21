@@ -100,6 +100,72 @@ async function fetchMessagesPage(conversationId: string, options?: { limit?: num
   return data as MessagesResponse;
 }
 
+type ChatSseHandlers = {
+  onChunk: (text: string) => void;
+  onMemoryExtracting: () => void;
+  getErrorMessage: () => string;
+};
+
+function parseChatSsePart(part: string): { eventType: string; eventData: string } {
+  let eventType = '';
+  const eventDataLines: string[] = [];
+
+  for (const line of part.split('\n')) {
+    if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+    if (line.startsWith('data: ')) eventDataLines.push(line.slice(6));
+  }
+
+  return { eventType, eventData: eventDataLines.join('\n') };
+}
+
+function handleChatSseEvent(eventType: string, eventData: string, handlers: ChatSseHandlers): void {
+  if (!eventData) return;
+
+  let parsed: { text?: unknown; status?: unknown; message?: unknown };
+  try {
+    parsed = JSON.parse(eventData) as typeof parsed;
+  } catch (parseErr) {
+    if (parseErr instanceof Error && parseErr.message !== 'Unexpected end of JSON input') {
+      throw parseErr;
+    }
+    return;
+  }
+
+  if ((eventType === 'chunk' || eventType === '') && typeof parsed.text === 'string' && parsed.text) {
+    handlers.onChunk(parsed.text);
+  } else if (eventType === 'memory' && parsed.status === 'extracting') {
+    handlers.onMemoryExtracting();
+  } else if (eventType === 'error') {
+    throw new Error(typeof parsed.message === 'string' ? parsed.message : handlers.getErrorMessage());
+  }
+}
+
+async function readChatSseStream(body: ReadableStream<Uint8Array>, handlers: ChatSseHandlers): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() || '';
+
+    for (const part of parts) {
+      const { eventType, eventData } = parseChatSsePart(part);
+      handleChatSseEvent(eventType, eventData, handlers);
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    const { eventType, eventData } = parseChatSsePart(buffer);
+    handleChatSseEvent(eventType, eventData, handlers);
+  }
+}
+
 export default function ChatView({ character, conversationId, targetMessageId, onOpenSidebar, onOpenSearch }: Props) {
   const { t } = useTranslation();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -729,71 +795,22 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         throw new Error(errMsg);
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
       let fullText = '';
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-
-        for (const part of parts) {
-          let eventType = '';
-          let eventData = '';
-          for (const line of part.split('\n')) {
-            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-            if (line.startsWith('data: ')) eventData = line.slice(6);
+      await readChatSseStream(response.body, {
+        onChunk: text => {
+          fullText += text;
+          // 竞态保护：仅当本流仍是「最后启动的流」且「用户当前正在看本对话」时才更新 UI 文本。
+          // 用户切到别的对话后，本流剩余 chunk 不再写入 streamingText（避免在错误的对话上残留文字）。
+          // fullText 在闭包内继续累积，保证后端持久化的内容完整。
+          if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
+            scheduleStreamingText(fullText);
           }
-
-          if (!eventData) continue;
-
-          try {
-            const parsed = JSON.parse(eventData);
-            if (eventType === 'chunk' && parsed.text) {
-              fullText += parsed.text;
-              // 竞态保护：仅当本流仍是「最后启动的流」且「用户当前正在看本对话」时才更新 UI 文本。
-              // 用户切到别的对话后，本流剩余 chunk 不再写入 streamingText（避免在错误的对话上残留文字）。
-              // fullText 在闭包内继续累积，保证后端持久化的内容完整。
-              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
-                scheduleStreamingText(fullText);
-              }
-            } else if (eventType === 'memory' && parsed.status === 'extracting') {
-              void pollMemoryTask(myConvId);
-            } else if (eventType === 'error') {
-              throw new Error(parsed.message || t('chat.errorGeneral'));
-            }
-          } catch (parseErr) {
-            if (parseErr instanceof Error && parseErr.message !== 'Unexpected end of JSON input') {
-              throw parseErr;
-            }
-          }
-        }
-      }
-
-      if (buffer.trim()) {
-        let eventData = '';
-        for (const line of buffer.split('\n')) {
-          if (line.startsWith('data: ')) eventData = line.slice(6);
-        }
-        if (eventData) {
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.text) {
-              fullText += parsed.text;
-              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
-                scheduleStreamingText(fullText);
-              }
-            }
-          } catch {
-            // 忽略尾部碎片
-          }
-        }
-      }
+        },
+        onMemoryExtracting: () => {
+          void pollMemoryTask(myConvId);
+        },
+        getErrorMessage: () => t('chat.errorGeneral'),
+      });
 
       if (regenerateAssistantId) skipScrollRef.current = true;
       await refreshMessages();
@@ -1332,69 +1349,20 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         throw new Error(errMsg);
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
       let fullText = '';
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-
-        for (const part of parts) {
-          let eventType = '';
-          let eventData = '';
-          for (const line of part.split('\n')) {
-            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-            if (line.startsWith('data: ')) eventData = line.slice(6);
+      await readChatSseStream(response.body, {
+        onChunk: text => {
+          fullText += text;
+          // 同 callChatStream：双重守卫，避免在用户切走后写到错误的对话上
+          if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
+            scheduleStreamingText(fullText);
           }
-
-          if (!eventData) continue;
-
-          try {
-            const parsed = JSON.parse(eventData);
-            if (eventType === 'chunk' && parsed.text) {
-              fullText += parsed.text;
-              // 同 callChatStream：双重守卫，避免在用户切走后写到错误的对话上
-              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
-                scheduleStreamingText(fullText);
-              }
-            } else if (eventType === 'memory' && parsed.status === 'extracting') {
-              void pollMemoryTask(myConvId);
-            } else if (eventType === 'error') {
-              throw new Error(parsed.message || t('chat.errorGeneral'));
-            }
-          } catch (parseErr) {
-            if (parseErr instanceof Error && parseErr.message !== 'Unexpected end of JSON input') {
-              throw parseErr;
-            }
-          }
-        }
-      }
-
-      if (buffer.trim()) {
-        let eventData = '';
-        for (const line of buffer.split('\n')) {
-          if (line.startsWith('data: ')) eventData = line.slice(6);
-        }
-        if (eventData) {
-          try {
-            const parsed = JSON.parse(eventData);
-            if (parsed.text) {
-              fullText += parsed.text;
-              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
-                scheduleStreamingText(fullText);
-              }
-            }
-          } catch {
-            // 忽略尾部碎片
-          }
-        }
-      }
+        },
+        onMemoryExtracting: () => {
+          void pollMemoryTask(myConvId);
+        },
+        getErrorMessage: () => t('chat.errorGeneral'),
+      });
 
       await refreshMessagesForConversation(myConvId);
       // 刷新列表但不重置 active
@@ -1667,4 +1635,3 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     </div>
   );
 }
-

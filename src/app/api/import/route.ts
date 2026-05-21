@@ -112,77 +112,77 @@ export async function POST(request: NextRequest) {
   const memoriesToImport: Record<string, unknown>[] = payload.memories ?? [];
   const conversationsToImport: ConversationWithMessages[] = payload.conversations ?? [];
 
-  // ── 导入角色 ────────────────────────────────────────────────
-  // 用 asString / asArray 替换原先的 `as string` 断言，确保即使输入 JSON
-  // 把字段类型恶意改成对象 / 数字，也不会污染 SQLite 参数或导致运行时异常。
   const idMap = new Map<string, string>(); // 原 id → 新 id
 
-  for (const char of charactersToImport) {
-    const charName = asString(char.name);
-    const charId = asString(char.id);
+  const importAll = db.transaction(() => {
+    // ── 导入角色 ────────────────────────────────────────────────
+    // 用 asString / asArray 替换原先的 `as string` 断言，确保即使输入 JSON
+    // 把字段类型恶意改成对象 / 数字，也不会污染 SQLite 参数或导致运行时异常。
+    for (const char of charactersToImport) {
+      const charName = asString(char.name);
+      const charId = asString(char.id);
 
-    const existingByName = charName
-      ? db.prepare('SELECT id FROM characters WHERE name = ?').get(charName) as { id: string } | undefined
-      : undefined;
+      const existingByName = charName
+        ? db.prepare('SELECT id FROM characters WHERE name = ?').get(charName) as { id: string } | undefined
+        : undefined;
 
-    if (existingByName) {
-      if (charId) idMap.set(charId, existingByName.id);
-      results.skipped++;
-      continue;
+      if (existingByName) {
+        if (charId) idMap.set(charId, existingByName.id);
+        results.skipped++;
+        continue;
+      }
+
+      const newId = uuidv4().slice(0, 8);
+      if (charId) idMap.set(charId, newId);
+
+      db.prepare(`
+        INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        newId,
+        charName || '导入角色',
+        asString(char.avatar_url) || null,
+        asString(char.basic_info),
+        asString(char.personality),
+        asString(char.scenario),
+        asString(char.greeting),
+        asString(char.example_dialogue),
+        asString(char.system_prompt),
+        asString(char.other_info),
+        asString(char.image_tags),
+        asString(char.created_at) || now,
+        now,
+      );
+      results.imported++;
     }
 
-    const newId = uuidv4().slice(0, 8);
-    if (charId) idMap.set(charId, newId);
+    // ── 导入记忆 ────────────────────────────────────────────────
+    for (const mem of memoriesToImport) {
+      const originalCharId = asString(mem.character_id);
+      const newCharId = idMap.get(originalCharId) ?? originalCharId;
 
-    db.prepare(`
-      INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      newId,
-      charName || '导入角色',
-      asString(char.avatar_url) || null,
-      asString(char.basic_info),
-      asString(char.personality),
-      asString(char.scenario),
-      asString(char.greeting),
-      asString(char.example_dialogue),
-      asString(char.system_prompt),
-      asString(char.other_info),
-      asString(char.image_tags),
-      asString(char.created_at) || now,
-      now,
-    );
-    results.imported++;
-  }
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
+      if (!charExists) continue;
 
-  // ── 导入记忆 ────────────────────────────────────────────────
-  for (const mem of memoriesToImport) {
-    const originalCharId = asString(mem.character_id);
-    const newCharId = idMap.get(originalCharId) ?? originalCharId;
+      const newMemId = uuidv4().slice(0, 8);
+      db.prepare(`
+        INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
+      `).run(
+        newMemId,
+        newCharId,
+        normalizeMemoryCategory(asString(mem.category) || '话题历史'),
+        asString(mem.content),
+        typeof mem.confidence === 'number' ? mem.confidence : 0.8,
+        JSON.stringify(asArray<unknown>(mem.tags)),
+        asString(mem.created_at) || now,
+        now,
+      );
+      results.memoriesImported++;
+    }
 
-    const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
-    if (!charExists) continue;
-
-    const newMemId = uuidv4().slice(0, 8);
-    db.prepare(`
-      INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
-    `).run(
-      newMemId,
-      newCharId,
-      normalizeMemoryCategory(asString(mem.category) || '话题历史'),
-      asString(mem.content),
-      typeof mem.confidence === 'number' ? mem.confidence : 0.8,
-      JSON.stringify(asArray<unknown>(mem.tags)),
-      asString(mem.created_at) || now,
-      now,
-    );
-    results.memoriesImported++;
-  }
-
-  // ── 导入对话和消息 ──────────────────────────────────────────
-  const importConversations = db.transaction((convs: ConversationWithMessages[]) => {
-    for (const conv of convs) {
+    // ── 导入对话和消息 ──────────────────────────────────────────
+    for (const conv of conversationsToImport) {
       // 解析 character_id：优先用 idMap 映射后的新 id
       const convCharId = asString(conv.character_id);
       const newCharId = idMap.get(convCharId) ?? convCharId;
@@ -234,7 +234,7 @@ export async function POST(request: NextRequest) {
     }
   });
 
-  importConversations(conversationsToImport);
+  importAll();
 
   return NextResponse.json({ ok: true, ...results });
 }

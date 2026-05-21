@@ -191,6 +191,50 @@ interface RawMemoryData {
   tags: string[];
 }
 
+function parseMemoryPayload(value: unknown): RawMemoryData[] {
+  if (Array.isArray(value)) return value as RawMemoryData[];
+  if (!value || typeof value !== 'object') return [];
+
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.memories)) return record.memories as RawMemoryData[];
+  if (record.category) return [record as unknown as RawMemoryData];
+  return [];
+}
+
+function findBalancedJsonSnippet(text: string, startIdx: number): string | null {
+  const first = text[startIdx];
+  if (first !== '{' && first !== '[') return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = startIdx; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === '{' || ch === '[') depth += 1;
+    if (ch === '}' || ch === ']') {
+      depth -= 1;
+      if (depth === 0) return text.slice(startIdx, i + 1);
+    }
+  }
+
+  return null;
+}
+
 function parseExtractionResponse(response: string): RawMemoryData[] {
   let text = response.trim();
   if (text.startsWith('```')) {
@@ -202,46 +246,35 @@ function parseExtractionResponse(response: string): RawMemoryData[] {
 
   try {
     const result = JSON.parse(text);
-    if (result.memories && Array.isArray(result.memories)) return result.memories;
-    if (Array.isArray(result)) return result;
-    if (result.category) return [result];
-    return [];
+    return parseMemoryPayload(result);
   } catch {
     // 回退策略：从 "memories" 关键字位置出发，向前找最近的 '{' 作为对象起点，
     // 然后向后做花括号配对扫描（考虑字符串与转义），找到匹配的 '}' 截取再尝试 JSON.parse。
     // 这样比贪婪正则更稳健，避免越过同一响应中的多个 JSON 块。
+    const candidates: number[] = [];
+
     const keywordIdx = text.indexOf('"memories"');
-    if (keywordIdx === -1) return [];
-
-    let startIdx = -1;
-    for (let i = keywordIdx; i >= 0; i -= 1) {
-      if (text[i] === '{') { startIdx = i; break; }
-    }
-    if (startIdx === -1) return [];
-
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    let endIdx = -1;
-    for (let i = startIdx; i < text.length; i += 1) {
-      const ch = text[i];
-      if (escape) { escape = false; continue; }
-      if (ch === '\\') { escape = true; continue; }
-      if (ch === '"') { inString = !inString; continue; }
-      if (inString) continue;
-      if (ch === '{') depth += 1;
-      else if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) { endIdx = i; break; }
+    if (keywordIdx !== -1) {
+      for (let i = keywordIdx; i >= 0; i -= 1) {
+        if (text[i] === '{') {
+          candidates.push(i);
+          break;
+        }
       }
     }
-    if (endIdx === -1) return [];
 
-    try {
-      const parsed = JSON.parse(text.slice(startIdx, endIdx + 1));
-      if (Array.isArray(parsed.memories)) return parsed.memories;
-    } catch {
-      return [];
+    const arrayIdx = text.indexOf('[');
+    if (arrayIdx !== -1) candidates.push(arrayIdx);
+
+    for (const startIdx of candidates) {
+      const snippet = findBalancedJsonSnippet(text, startIdx);
+      if (!snippet) continue;
+      try {
+        const parsed = parseMemoryPayload(JSON.parse(snippet));
+        if (parsed.length > 0) return parsed;
+      } catch {
+        continue;
+      }
     }
     return [];
   }

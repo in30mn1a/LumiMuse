@@ -6,6 +6,22 @@ import { randomUUID } from 'crypto';
 
 const API_KEY_MASK = '********';
 
+async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
+  if (!process.env.ACCESS_PASSWORD) return null;
+  const token = request.cookies.get('lumimuse_auth')?.value;
+  const { verifyAuthToken } = await import('@/lib/auth-token');
+  const valid = await verifyAuthToken(token);
+  if (!valid) {
+    return NextResponse.json({ error: '未授权' }, { status: 401 });
+  }
+  return null;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function rowToProvider(row: Record<string, unknown>): ApiProvider {
   return {
     id: row.id as string,
@@ -30,10 +46,13 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const body = await request.json() as Partial<ApiProvider> & { save_as_current?: boolean };
   const db = getDb();
 
-  const id = body.id || randomUUID();
+  const id = randomUUID();
   const apiKey = body.api_key === API_KEY_MASK ? '' : (body.api_key || '');
 
   db.prepare(`
@@ -72,10 +91,13 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const body = await request.json() as Partial<ApiProvider> & { save_as_current?: boolean };
   const db = getDb();
 
-  if (!body.id) {
+  if (!isUuid(body.id)) {
     return NextResponse.json({ error: '缺少供应商 ID' }, { status: 400 });
   }
 
@@ -122,8 +144,11 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const id = request.nextUrl.searchParams.get('id');
-  if (!id) {
+  if (!isUuid(id)) {
     return NextResponse.json({ error: '缺少供应商 ID' }, { status: 400 });
   }
 

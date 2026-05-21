@@ -1,9 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 
+async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
+  if (!process.env.ACCESS_PASSWORD) return null;
+  const token = request.cookies.get('lumimuse_auth')?.value;
+  const { verifyAuthToken } = await import('@/lib/auth-token');
+  const valid = await verifyAuthToken(token);
+  if (!valid) {
+    return NextResponse.json({ error: '未授权' }, { status: 401 });
+  }
+  return null;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export async function POST(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const { id } = await request.json() as { id: string };
-  if (!id) {
+  if (!isUuid(id)) {
     return NextResponse.json({ error: '缺少供应商 ID' }, { status: 400 });
   }
 

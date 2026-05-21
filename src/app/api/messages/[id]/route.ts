@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { parseMessageMetadata, serializeMessage } from '@/lib/messages';
 
+function mergeMessageMetadata(
+  current: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...current, ...incoming };
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -55,8 +62,15 @@ export async function PUT(
     }
   }
 
-  if (body.metadata !== undefined && body.activeVersion === undefined) {
-    db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(body.metadata), id);
+  const shouldMergeIncomingMetadata = body.metadata !== undefined && body.activeVersion === undefined;
+  if (shouldMergeIncomingMetadata) {
+    const latest = db.prepare('SELECT metadata FROM messages WHERE id = ?').get(id) as { metadata: unknown } | undefined;
+    const currentMeta = parseMessageMetadata(latest?.metadata ?? existing.metadata);
+    const incomingMeta = body.metadata ?? {};
+    // body.content !== undefined && body.metadata !== undefined 时，
+    // currentMeta 已是上方刚写入的最新 versions/attachments。
+    const mergedMeta = mergeMessageMetadata(currentMeta, incomingMeta);
+    db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(mergedMeta), id);
   }
 
   const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;

@@ -8,6 +8,7 @@ import { formatTemplate } from '@/lib/i18n';
 import JSZip from 'jszip';
 
 const PAGE_SIZE = 12;
+const DOWNLOAD_CONCURRENCY = 5;
 
 interface CharacterImage {
   messageId: string;
@@ -27,6 +28,24 @@ interface Props {
   onAfterBatchDelete?: () => void | Promise<void>;
   /** 显示 toast，由父组件提供（沿用原有提示机制） */
   showToast: (message: string, type?: 'error' | 'info') => void;
+}
+
+async function fetchImagesWithConcurrency(images: CharacterImage[]): Promise<Array<{ blob: Blob; url: string }>> {
+  const results: Array<{ blob: Blob; url: string }> = [];
+
+  for (let i = 0; i < images.length; i += DOWNLOAD_CONCURRENCY) {
+    const batch = images.slice(i, i + DOWNLOAD_CONCURRENCY);
+    const blobs = await Promise.all(
+      batch.map(async img => {
+        const res = await fetch(img.url);
+        if (!res.ok) throw new Error(`Failed to load ${img.url}`);
+        return { blob: await res.blob(), url: img.url };
+      }),
+    );
+    results.push(...blobs);
+  }
+
+  return results;
 }
 
 /**
@@ -124,13 +143,7 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
         const key = `${img.messageId}::${img.imageId}::${img.versionId}`;
         return selected.has(key);
       });
-      const blobs = await Promise.all(
-        selectedImages.map(async img => {
-          const res = await fetch(img.url);
-          if (!res.ok) throw new Error(`Failed to load ${img.url}`);
-          return { blob: await res.blob(), url: img.url };
-        })
-      );
+      const blobs = await fetchImagesWithConcurrency(selectedImages);
       for (const { blob, url } of blobs) {
         const ext = url.split('.').pop()?.split('?')[0] ?? 'png';
         const name = url.split('/').pop()?.split('?')[0] ?? `image.${ext}`;

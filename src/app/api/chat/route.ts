@@ -1,10 +1,11 @@
 import { NextRequest } from 'next/server';
 import { runChat, AttachmentItem } from '@/lib/chat-engine';
 import { getDb } from '@/lib/db';
-import { Settings, Message } from '@/types';
+import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
+import { serializeTypedMessages } from '@/lib/messages';
 
 export async function POST(request: NextRequest) {
   const { conversation_id, content, regenerate_assistant_id, skip_user_insert, attachments, client_now_iso, client_timezone, client_utc_offset_minutes } = await request.json() as {
@@ -86,21 +87,16 @@ export async function POST(request: NextRequest) {
             // 尽快下发、流尽快关闭；消息保存仍由 runChat 内部同步完成，不会丢消息。
             queueMicrotask(() => {
               try {
-                const allMessages = db.prepare(
-                  'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-                ).all(conversation_id) as Message[];
-
-                for (const msg of allMessages) {
-                  if (typeof (msg as Record<string, unknown>).metadata === 'string') {
-                    (msg as Record<string, unknown>).metadata = JSON.parse((msg as Record<string, unknown>).metadata as string);
-                  }
-                }
+                const allMessages = serializeTypedMessages(
+                  db.prepare(
+                    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
+                  ).all(conversation_id) as Message[]
+                );
 
                 // 未提取的用户消息（排除 summary 类型）
-                const unextracted = allMessages.filter(message => {
-                  const meta = message.metadata as Record<string, unknown> || {};
-                  return message.role === 'user' && !meta.memory_extracted;
-                });
+                const unextracted = allMessages.filter(
+                  message => message.role === 'user' && !message.metadata.memory_extracted
+                );
 
                 if (unextracted.length === 0) return;
 
@@ -110,14 +106,12 @@ export async function POST(request: NextRequest) {
                 const extractionMessages: Message[] = [];
                 let includeNext = false;
                 for (const msg of allMessages) {
-                  const msgMeta = (msg.metadata || {}) as Record<string, unknown>;
-                  if (msgMeta.isSummary) continue;
+                  if (msg.metadata.isSummary) continue;
                   if (unextractedIds.has(msg.id)) {
                     extractionMessages.push(msg);
                     includeNext = true; // 下一条 assistant 消息也要带上
                   } else if (includeNext && msg.role === 'assistant') {
-                    const meta = msg.metadata as Record<string, unknown> || {};
-                    if (!meta.memory_extracted) {
+                    if (!msg.metadata.memory_extracted) {
                       extractionMessages.push(msg);
                     }
                     includeNext = false;
@@ -147,10 +141,7 @@ export async function POST(request: NextRequest) {
                 if (!shouldExtract && settings.memory_trigger_time_enabled && unextracted.length > 0) {
                   const hours = settings.memory_trigger_time_hours || 24;
                   const lastExtractedMsg = allMessages
-                    .filter(m => {
-                      const meta = m.metadata as Record<string, unknown> || {};
-                      return m.role === 'user' && meta.memory_extracted;
-                    })
+                    .filter(m => m.role === 'user' && m.metadata.memory_extracted)
                     .pop();
                   const lastExtractedTime = lastExtractedMsg ? new Date(lastExtractedMsg.created_at).getTime() : 0;
                   const now = Date.now();

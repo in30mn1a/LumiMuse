@@ -38,7 +38,8 @@ export async function POST(request: NextRequest) {
   const transaction = db.transaction(() => {
     upsert.run('active_provider_id', JSON.stringify(id));
     upsert.run('api_base', JSON.stringify(provider.api_base || ''));
-    if (provider.api_key) upsert.run('api_key', JSON.stringify(provider.api_key));
+    // 切换 provider 时必须同步 api_key（包括空字符串），避免旧密钥残留到新 api_base。
+    upsert.run('api_key', JSON.stringify(provider.api_key || ''));
     upsert.run('model', JSON.stringify(provider.model || ''));
     upsert.run('temperature', JSON.stringify(provider.temperature ?? 1));
     upsert.run('max_tokens', JSON.stringify(provider.max_tokens ?? 4096));

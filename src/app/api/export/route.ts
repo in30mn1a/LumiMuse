@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeMemoryCategory } from '@/lib/memory-category';
+import { EXPORT_VERSION } from '@/lib/export-version';
 
 /**
  * GET /api/export?type=character&id=xxx  — 导出单个角色（含记忆和对话）
@@ -37,7 +38,7 @@ export async function GET(request: NextRequest) {
       : [];
 
     const payload = {
-      version: 2,
+      version: EXPORT_VERSION,
       exported_at: new Date().toISOString(),
       character,
       memories,
@@ -68,7 +69,7 @@ export async function GET(request: NextRequest) {
     : [];
 
   const payload = {
-    version: 2,
+    version: EXPORT_VERSION,
     exported_at: new Date().toISOString(),
     characters,
     memories,

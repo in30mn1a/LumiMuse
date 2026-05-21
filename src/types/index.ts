@@ -23,6 +23,38 @@ export interface Conversation {
   updated_at: string;
 }
 
+/** 消息附件（与 chat-engine.AttachmentItem 对齐，二者结构兼容） */
+export interface MessageAttachment {
+  type: 'image' | 'text';
+  name: string;
+  data?: string;
+  url?: string;
+  mimeType: string;
+}
+
+/** 消息历史版本（重新生成时旧内容存入 metadata.versions） */
+export interface MessageVersion {
+  content: string;
+  token_count: number;
+}
+
+/**
+ * 消息 metadata 的正式类型。所有字段都是可选的，因为不同消息形态用到的字段不同：
+ *   - summary 消息：isSummary + summarizedIds
+ *   - 用户消息：attachments + memory_extracted
+ *   - 助手消息：versions + memory_extracted
+ *
+ * 仍保留索引签名以兼容历史字段或第三方扩展，但新代码应优先访问正式字段。
+ */
+export interface MessageMetadata {
+  isSummary?: boolean;
+  summarizedIds?: string[];
+  memory_extracted?: boolean;
+  attachments?: MessageAttachment[];
+  versions?: MessageVersion[];
+  [key: string]: unknown;
+}
+
 export interface Message {
   [key: string]: unknown;
   id: string;
@@ -31,7 +63,7 @@ export interface Message {
   content: string;
   token_count: number;
   created_at: string;
-  metadata: Record<string, unknown>;
+  metadata: MessageMetadata;
 }
 
 export interface Memory {

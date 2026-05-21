@@ -8,81 +8,37 @@ import { extractMemories } from '@/lib/memory-engine';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
-import { estimateTokens } from '@/lib/token-counter';
 
 let processing = false;
 // 正在处理中的 conversationId，防止同一对话并发重复提取
 const inFlightConversations = new Set<string>();
-const MAX_EXTRACTION_TOKENS = 12_000;
 
 function formatExtractionMessage(
   message: { role: string; content: string; created_at: string },
   characterName: string,
-  contentOverride?: string,
 ): string {
   const speaker = message.role === 'user' ? '用户' : characterName;
   const d = new Date(message.created_at);
   const ts = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return `${speaker} (${ts}): ${contentOverride ?? message.content}`;
-}
-
-function trimContentToBudget(
-  message: { role: string; content: string; created_at: string },
-  characterName: string,
-  budget: number,
-): string {
-  let low = 0;
-  let high = message.content.length;
-  let best = '';
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2);
-    const candidate = message.content.slice(0, mid);
-    const tokens = estimateTokens(formatExtractionMessage(message, characterName, candidate));
-    if (tokens <= budget) {
-      best = candidate;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-
-  return best;
+  return `${speaker} (${ts}): ${message.content}`;
 }
 
 function buildExtractionText(
   messages: Array<{ id: string; role: string; content: string; created_at: string }>,
   characterName: string,
-  maxTokens = MAX_EXTRACTION_TOKENS,
-): { text: string; includedCompleteUserIds: Set<string>; truncatedUserIds: Set<string> } {
+): { text: string; includedCompleteUserIds: Set<string> } {
   const lines: string[] = [];
   const includedCompleteUserIds = new Set<string>();
-  const truncatedUserIds = new Set<string>();
-  let usedTokens = 0;
 
   for (const message of messages) {
     if (!message.content) continue;
 
     const line = formatExtractionMessage(message, characterName);
-    const tokens = estimateTokens(line);
-    if (usedTokens + tokens > maxTokens) {
-      const remaining = maxTokens - usedTokens;
-      if (remaining > 0 && lines.length === 0) {
-        const trimmed = trimContentToBudget(message, characterName, remaining);
-        if (trimmed) {
-          lines.push(formatExtractionMessage(message, characterName, trimmed));
-          if (message.role === 'user') truncatedUserIds.add(message.id);
-        }
-      }
-      break;
-    }
-
     lines.push(line);
-    usedTokens += tokens;
     if (message.role === 'user') includedCompleteUserIds.add(message.id);
   }
 
-  return { text: lines.join('\n'), includedCompleteUserIds, truncatedUserIds };
+  return { text: lines.join('\n'), includedCompleteUserIds };
 }
 
 /** 把任务写入数据库，如果该对话已有 pending/processing 任务则跳过 */
@@ -180,11 +136,14 @@ async function processQueue(): Promise<void> {
           continue;
         }
 
-        const { mergeCount, newEntries } = await extractMemories(task.character_id, convText, settings);
+        const { mergeCount, insertCount } = await extractMemories(task.character_id, convText, settings);
 
         // 只有实际产生了提取结果（新条目或合并）才标记消息为已提取
-        // 如果 AI 返回空结果（认为没有值得记忆的内容），不标记，下次仍可重新提取
-        if (newEntries.length > 0 || mergeCount > 0) {
+        // 如果 AI 返回空结果（认为没有值得记忆的内容），不标记，下次仍可重新提取。
+        // 这里的判断使用真实的 insertCount（实际写入 DB 的新记忆数）和
+        // mergeCount（实际更新的已有记忆数），而不是 LLM 解析出的原始条目数；
+        // 后者会在 LLM 反复返回与已有记忆完全等同内容时虚报"提取成功"。
+        if (insertCount > 0 || mergeCount > 0) {
           for (const msg of messages) {
             if (msg.role !== 'user' || !includedCompleteUserIds.has(msg.id)) continue;
             let meta: Record<string, unknown> = {};

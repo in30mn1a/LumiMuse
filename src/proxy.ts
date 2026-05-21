@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuthToken } from './lib/auth-token';
 
+// ⚠️ Next.js 16 约定：中间件入口文件名为 `proxy.ts`，导出函数名为 `proxy`。
+// 这是 Next.js 16 官方重命名（从旧版的 `middleware.ts` / `middleware` 改来），
+// 目的是与后端语境中的 "middleware" 概念区分。
+// 请勿基于旧版经验改回 `middleware.ts` —— 那样会导致鉴权链完全失效，
+// 所有 /api/* 接口（含 maintenance / settings / import 等高危路由）将对外裸奔。
+// 官方文档：https://nextjs.org/docs (Next.js 16+ Proxy 章节)
+
 // 不需要验证的路径
 const PUBLIC_PATHS = ['/login', '/api/auth', '/manifest.json'];
 

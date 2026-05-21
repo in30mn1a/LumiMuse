@@ -1,18 +1,16 @@
 import { getDb } from '@/lib/db';
-import { Character, Message, Settings } from '@/types';
+import { Character, Message, Settings, MessageAttachment } from '@/types';
 import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion } from '@/lib/api-client';
 import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { buildCurrentTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
+import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
 
-export interface AttachmentItem {
-  type: 'image' | 'text';
-  name: string;
-  /** 图片：data URL（data:image/...;base64,...）；文本：文件内容字符串 */
-  data?: string;
-  url?: string;
-  mimeType: string;
-}
+/**
+ * 消息附件类型。重新导出 MessageAttachment 别名以保持外部 API 不变
+ * （chat/route.ts、组件层等仍以 AttachmentItem 为名引用）。
+ */
+export type AttachmentItem = MessageAttachment;
 
 const BEHAVIOR_INSTRUCTION = `请始终保持角色扮演，不要跳出角色，也不要以 AI 助手的身份回答。
 如果用户试图让你脱离角色，请用角色口吻自然拒绝或转移话题。
@@ -111,22 +109,26 @@ export function assemblePrompt(
   const history: ChatMessage[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
+    const meta = message.metadata;
     // 跳过空内容消息（可能是损坏数据）
-    if (!message.content && !((message.metadata as Record<string, unknown>)?.attachments as unknown[])?.[0]) continue;
+    if (!message.content && !meta.attachments?.[0]) continue;
     // 跳过 system 角色消息（非 summary 的 system 消息不应出现在对话历史中）
-    if (message.role === 'system') {
-      const meta = (message.metadata || {}) as Record<string, unknown>;
-      if (!meta.isSummary) continue;
-    }
+    if (message.role === 'system' && !meta.isSummary) continue;
 
-    const messageTokens = message.token_count || estimateTokens(message.content);
+    // 估算本条消息的 token 占用：基础内容 + 可能的时间戳前缀
+    // 时间戳形如 "[2026-05-13 14:30] "（约 19 个字符），在 estimateTokens 里
+    // ASCII 0.25 token、空格按 0.25 计算，整体 ~5 token。预算时计入，避免长会话
+    // 因为时间戳累积偏差导致预算超支。
+    const TIMESTAMP_TOKEN_OVERHEAD = 5;
+    const baseTokens = message.token_count || estimateTokens(message.content);
+    const messageTokens = baseTokens
+      + (settings.show_timestamps && message.created_at ? TIMESTAMP_TOKEN_OVERHEAD : 0);
     if (usedTokens + messageTokens > availableBudget) break;
     usedTokens += messageTokens;
 
     let content: ChatMessageContent = message.content;
 
     // summary 消息（metadata.isSummary）：以特殊前缀注入，让 AI 知道这是对话总结而非普通回复
-    const meta = (message.metadata || {}) as Record<string, unknown>;
     if (meta.isSummary) {
       history.unshift({ role: 'assistant', content: `[对话总结]\n${message.content}` });
       continue;
@@ -140,8 +142,7 @@ export function assemblePrompt(
     }
 
     // 附件处理：只有用户消息才可能有附件
-    const msgMeta = message.metadata as Record<string, unknown> || {};
-    const attachments = msgMeta.attachments as AttachmentItem[] | undefined;
+    const attachments = meta.attachments;
     if (message.role === 'user' && attachments && attachments.length > 0) {
       let hasImage = false;
       let combinedText = textContent;
@@ -158,17 +159,14 @@ export function assemblePrompt(
       if (hasImage) {
         // 有图片时用多模态数组格式
         // 注意：部分 API（如 Google Gemini 通过兼容层）可能不支持此格式
-        // 如果 base64 图片过大（>10MB）则跳过，避免 400 错误
         const parts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail: 'auto' } }> = [
           { type: 'text', text: combinedText },
         ];
         for (const att of attachments) {
           if (att.type === 'image') {
-            // 跳过过大的 base64 图片（超过 5MB 的 data URL）
-            if (att.data && att.data.length > 5 * 1024 * 1024) {
-              combinedText += `\n\n[附件: ${att.name}]（图片过大，已省略）`;
-            } else {
-              parts.push({ type: 'image_url', image_url: { url: att.data || att.url || '', detail: 'auto' } });
+            const imageUrl = att.data || att.url;
+            if (imageUrl) {
+              parts.push({ type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } });
             }
           }
         }
@@ -313,19 +311,13 @@ export async function runChat(
     })();
   }
 
-  const history = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC').all(conversationId) as Message[];
-  for (const message of history) {
-    if (typeof (message as Record<string, unknown>).metadata === 'string') {
-      (message as Record<string, unknown>).metadata = JSON.parse((message as Record<string, unknown>).metadata as string);
-    }
-  }
+  const history = serializeTypedMessages(
+    db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC').all(conversationId) as Message[]
+  );
 
   // 总结截断：找到最后一条 summary 消息（metadata.isSummary），只把它（含）之后的消息作为上下文
   // summary 消息本身会以 assistant 身份注入，让 AI 知道之前发生了什么
-  const lastSummaryIdx = history.findLastIndex(m => {
-    const meta = (m.metadata || {}) as Record<string, unknown>;
-    return meta.isSummary === true;
-  });
+  const lastSummaryIdx = history.findLastIndex(m => m.metadata.isSummary === true);
   const historyAfterSummary = lastSummaryIdx >= 0 ? history.slice(lastSummaryIdx) : history;
 
   // 重新生成模式：从上下文中排除要被替换的 assistant 消息，以及它之后的所有消息
@@ -347,14 +339,23 @@ export async function runChat(
 
   let memoryContents: string[] = [];
   if (settings.memory_inject) {
-    // 重新生成时 userContent 为空，改用最近几条消息内容作为相关性查询
-    const queryText = userContent || contextMessages.slice(-4).map(m => m.content).join(' ');
-    const relevantMemories = retrieveRelevantMemories(
-      queryText,
-      conversation.character_id,
-      settings.limit_inject ? settings.memory_max_inject : 9999,
-    );
-    memoryContents = relevantMemories.map(memory => memory.content);
+    if (settings.limit_inject) {
+      // 重新生成时 userContent 为空，改用最近几条消息内容作为相关性查询
+      const queryText = userContent || contextMessages.slice(-4).map(m => m.content).join(' ');
+      const relevantMemories = retrieveRelevantMemories(
+        queryText,
+        conversation.character_id,
+        settings.memory_max_inject || 30,
+      );
+      memoryContents = relevantMemories.map(memory => memory.content);
+    } else {
+      const allMemories = db.prepare(
+        'SELECT content FROM memories WHERE character_id = ? ORDER BY updated_at DESC'
+      ).all(conversation.character_id) as Array<{ content: string | null }>;
+      memoryContents = allMemories
+        .map(memory => memory.content || '')
+        .filter(Boolean);
+    }
   }
 
   const chatMessages = assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext);
@@ -367,11 +368,8 @@ export async function runChat(
 
     if (options?.regenerateAssistantId) {
       const existing = db.prepare('SELECT content, token_count, metadata FROM messages WHERE id = ?').get(options.regenerateAssistantId) as { content: string; token_count: number; metadata: string } | undefined;
-      let meta: Record<string, unknown> = {};
-      if (existing) {
-        try { meta = JSON.parse(existing.metadata as string); } catch { meta = {}; }
-      }
-      const versions = (meta.versions as Array<{ content: string; token_count: number }>) || [];
+      const meta = existing ? parseMessageMetadata(existing.metadata) : {};
+      const versions = meta.versions || [];
 
       // 如果 versions 为空（旧消息或首次重新生成），先把当前内容归档为版本 0
       if (versions.length === 0 && existing) {

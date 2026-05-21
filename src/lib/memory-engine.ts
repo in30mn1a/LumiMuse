@@ -57,7 +57,9 @@ export function retrieveRelevantMemories(
   maxMemories: number = 30,
 ): Memory[] {
   const db = getDb();
-  const allMemories = db.prepare('SELECT * FROM memories WHERE character_id = ?').all(characterId) as Memory[];
+  const allMemories = db.prepare(
+    'SELECT * FROM memories WHERE character_id = ? ORDER BY updated_at DESC'
+  ).all(characterId) as Memory[];
   const normalizedMemories = allMemories.map(normalizeMemory);
 
   if (normalizedMemories.length <= maxMemories) {
@@ -66,7 +68,7 @@ export function retrieveRelevantMemories(
 
   const queryTokens = tokenizeForRetrieval(queryText);
   if (queryTokens.size === 0) {
-    return normalizedMemories.slice(-maxMemories);
+    return normalizedMemories.slice(0, maxMemories);
   }
 
   const scored: Array<[number, Memory]> = [];
@@ -77,12 +79,20 @@ export function retrieveRelevantMemories(
     }
     memoryTokens.add(memory.category);
 
-    const score = [...queryTokens].filter(token => memoryTokens.has(token)).length;
-    if (score > 0) scored.push([score, memory]);
+    // 评分归一化：原先只用交集大小，长记忆 token 数天然更多，会霸榜检索结果。
+    // 改用 TF-IDF 风格的余弦近似：intersection / sqrt(|memoryTokens| * |queryTokens|)
+    // 这样短而精确的记忆不会被长记忆挤出 top-N。
+    // 加 1 是为了避免极端短文本的分母过小造成评分爆炸。
+    const intersection = [...queryTokens].filter(token => memoryTokens.has(token)).length;
+    if (intersection > 0) {
+      const denom = Math.sqrt((memoryTokens.size + 1) * (queryTokens.size + 1));
+      const score = intersection / denom;
+      scored.push([score, memory]);
+    }
   }
 
   if (scored.length === 0) {
-    return normalizedMemories.slice(-maxMemories);
+    return normalizedMemories.slice(0, maxMemories);
   }
 
   scored.sort((a, b) => b[0] - a[0]);
@@ -284,11 +294,13 @@ export async function extractMemories(
   characterId: string,
   conversationText: string,
   settings: Settings,
-): Promise<{ newEntries: Memory[]; mergeCount: number }> {
-  if (conversationText.length < 100) return { newEntries: [], mergeCount: 0 };
+): Promise<{ insertCount: number; mergeCount: number }> {
+  if (conversationText.length < 100) return { insertCount: 0, mergeCount: 0 };
 
   const db = getDb();
-  const existingMemories = db.prepare('SELECT * FROM memories WHERE character_id = ?').all(characterId) as Memory[];
+  const existingMemories = db.prepare(
+    'SELECT * FROM memories WHERE character_id = ? ORDER BY updated_at DESC'
+  ).all(characterId) as Memory[];
   const normalizedExisting = existingMemories.map(normalizeMemory);
 
   // 提取时给 AI 参考的已有记忆：未启用注入限制时发送全部，启用时按相关性截取
@@ -310,7 +322,7 @@ export async function extractMemories(
 
   const response = await chatCompletion(settings, [{ role: 'user', content: prompt }]);
   const rawData = parseExtractionResponse(response);
-  if (rawData.length === 0) return { newEntries: [], mergeCount: 0 };
+  if (rawData.length === 0) return { insertCount: 0, mergeCount: 0 };
 
   const validCategories = new Set<string>(MEMORY_CATEGORIES);
   const newEntries: Memory[] = rawData
@@ -327,13 +339,18 @@ export async function extractMemories(
       updated_at: new Date().toISOString(),
     }));
 
-  if (newEntries.length === 0) return { newEntries: [], mergeCount: 0 };
+  if (newEntries.length === 0) return { insertCount: 0, mergeCount: 0 };
 
   const existingMap = new Map(normalizedExisting.map(m => [m.id, m]));
   const merged = mergeMemories(normalizedExisting, newEntries);
 
-  // 统计被合并（更新）的旧条目数量
+  // 真实统计：mergeCount 是"已有条目被有效更新"的数量；
+  // insertCount 是"全新插入到 DB"的数量。
+  // 之前外部用 `newEntries.length`（LLM 解析出的全部条目）判断"是否成功提取"，
+  // 在 LLM 反复返回与已有记忆完全等同内容的情况下会得到不准确的语义。
+  // 改为返回真实计数后，调用方可以精确判定"本次是否真的产生了新增或更新"。
   let mergeCount = 0;
+  let insertCount = 0;
 
   for (const entry of merged) {
     const existing = existingMap.get(entry.id);
@@ -353,6 +370,7 @@ export async function extractMemories(
         `).run(entry.content, entry.confidence, JSON.stringify(entry.tags), entry.updated_at, entry.id);
       }
     } else {
+      insertCount++;
       db.prepare(`
         INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
@@ -369,5 +387,5 @@ export async function extractMemories(
     }
   }
 
-  return { newEntries, mergeCount };
+  return { insertCount, mergeCount };
 }

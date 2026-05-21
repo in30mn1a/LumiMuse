@@ -2,7 +2,6 @@
 
 import { useState, useEffect, use, useRef, useMemo, type ChangeEvent } from 'react';
 import { Character } from '@/types';
-import { normalizeCharacterCard } from '@/lib/character-card-import';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
@@ -10,6 +9,14 @@ import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/c
 
 interface Props {
   params: Promise<{ id: string }>;
+}
+
+interface ImportResponse {
+  ok?: boolean;
+  error?: string;
+  memoriesImported?: number;
+  conversationsImported?: number;
+  characterDraft?: Partial<Character>;
 }
 
 function previewLine(text: string, fallback: string): string {
@@ -139,7 +146,7 @@ export default function CharacterEditor({ params }: Props) {
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiError, setAiError] = useState('');
   const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  const [pendingImport, setPendingImport] = useState<{ fileName: string; payload: Record<string, unknown> } | null>(null);
+  const [pendingImport, setPendingImport] = useState<{ fileName: string; file: File } | null>(null);
   const characterImportRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
@@ -259,68 +266,41 @@ export default function CharacterEditor({ params }: Props) {
     }
   };
 
-  const handleImportCharacterCard = async (event: ChangeEvent<HTMLInputElement>) => {
+  const handleImportCharacterCard = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !character) return;
 
-    try {
-      const json = JSON.parse(await file.text()) as Record<string, unknown>;
-      if (json.character || json.memories || json.conversations) {
-        setPendingImport({ fileName: file.name, payload: json });
-        return;
-      }
-
-      const draft = normalizeCharacterCard(json);
-      if (!draft) throw new Error(t('editor.importError'));
-      setDirty(true);
-      setCharacter({ ...character, ...draft });
-      setImportMsg({ type: 'ok', text: t('editor.importDraftSuccess') });
-    } catch {
-      setImportMsg({ type: 'err', text: t('editor.importError') });
-    } finally {
-      if (characterImportRef.current) characterImportRef.current.value = '';
-      setTimeout(() => setImportMsg(null), 5000);
-    }
+    setImportMsg(null);
+    setPendingImport({ fileName: file.name, file });
+    if (characterImportRef.current) characterImportRef.current.value = '';
   };
 
   const applyPendingImport = async (options: { includeCharacter: boolean; includeMemories: boolean; includeConversations: boolean }) => {
     if (!pendingImport || !character) return;
-    const sourceCharacter = (pendingImport.payload.character && typeof pendingImport.payload.character === 'object')
-      ? pendingImport.payload.character as Record<string, unknown>
-      : {};
-    const draft = normalizeCharacterCard({ character: sourceCharacter });
-
-    if (options.includeCharacter && draft) {
-      setDirty(true);
-      setCharacter({ ...character, ...draft });
-    }
-
-    const conversations = options.includeConversations && Array.isArray(pendingImport.payload.conversations)
-      ? pendingImport.payload.conversations.map(item => ({ ...(item as Record<string, unknown>), character_id: character.id }))
-      : [];
-    const memories = options.includeMemories && Array.isArray(pendingImport.payload.memories)
-      ? pendingImport.payload.memories.map(item => ({ ...(item as Record<string, unknown>), character_id: character.id }))
-      : [];
-
-    if (memories.length === 0 && conversations.length === 0) {
-      setImportMsg({ type: 'ok', text: t('editor.importDraftSuccess') });
-      setPendingImport(null);
-      if (characterImportRef.current) characterImportRef.current.value = '';
-      setTimeout(() => setImportMsg(null), 5000);
-      return;
-    }
 
     try {
-      const response = await fetch('/api/import', {
+      const params = new URLSearchParams({
+        target_character_id: character.id,
+        include_character: options.includeCharacter ? '1' : '0',
+        include_memories: options.includeMemories ? '1' : '0',
+        include_conversations: options.includeConversations ? '1' : '0',
+      });
+      const response = await fetch('/api/import?' + params.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ version: pendingImport.payload.version, memories, conversations }),
+        body: pendingImport.file,
       });
-      const data = await response.json();
-      if (!response.ok || !data.ok) throw new Error(t('editor.importError'));
+      const data = await response.json() as ImportResponse;
+      if (!response.ok || !data.ok) throw new Error(data.error || t('editor.importError'));
+
+      if (options.includeCharacter && data.characterDraft) {
+        setDirty(true);
+        setCharacter({ ...character, ...data.characterDraft });
+      }
+
       setImportMsg({ type: 'ok', text: t('import.characterSuccess').replace('{memories}', String(data.memoriesImported || 0)).replace('{conversations}', String(data.conversationsImported || 0)) });
-    } catch {
-      setImportMsg({ type: 'err', text: t('editor.importError') });
+    } catch (err) {
+      setImportMsg({ type: 'err', text: err instanceof Error ? err.message : t('editor.importError') });
     } finally {
       setPendingImport(null);
       if (characterImportRef.current) characterImportRef.current.value = '';

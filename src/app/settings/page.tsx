@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle, ApiProvider, ArtistString } from '@/types';
 import { applyFontStyle } from '@/lib/font-stacks';
 import { useRouter } from 'next/navigation';
@@ -785,20 +785,27 @@ function ImageGenSettingsSection({
   // 画师串预设管理
   const artistStrings: ArtistString[] = settings.artist_strings || [];
   const [selectedPresetId, setSelectedPresetId] = useState('');
-  const [presetName, setPresetName] = useState('');
-  const presetSynced = useRef(false);
 
-  // 页面加载时，根据当前画师串内容自动匹配预设
-  useEffect(() => {
-    if (presetSynced.current) return;
-    if (artistStrings.length > 0 && imgGen.nai_artist_tags.trim()) {
+  // 同步预设选中状态：当外部传入的 nai_artist_tags 变化时（例如设置异步加载完成、
+  // 或别处更新了画师串），用渲染期 setState 反查匹配的预设并选中。
+  // 这是 React 18+ 官方推荐的"由 props 派生 state"模式（见 react.dev/reference/react/useState
+  // 中 "Storing information from previous renders" 一节），等价于在同一 render pass
+  // 内重新渲染，不会触发 effect 的级联渲染告警，也不需要 useEffect/useRef 配合。
+  const [lastSyncedTags, setLastSyncedTags] = useState<string | null>(null);
+  if (imgGen.nai_artist_tags !== lastSyncedTags) {
+    setLastSyncedTags(imgGen.nai_artist_tags);
+    const trimmed = imgGen.nai_artist_tags.trim();
+    if (trimmed && artistStrings.length > 0) {
       const matched = artistStrings.find(a => a.tags === imgGen.nai_artist_tags);
-      if (matched) {
+      // 只在找到匹配预设时同步 selectedPresetId；找不到时不清空，保留用户已有选择，
+      // 由 handleArtistTagsChange 在用户手动改 tags 时显式清空。
+      if (matched && matched.id !== selectedPresetId) {
         setSelectedPresetId(matched.id);
       }
     }
-    presetSynced.current = true;
-  }, [artistStrings, imgGen.nai_artist_tags]);
+  }
+
+  const [presetName, setPresetName] = useState('');
 
   const handleSelectPreset = (id: string) => {
     if (!id) { setSelectedPresetId(''); return; }

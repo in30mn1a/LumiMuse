@@ -7,7 +7,7 @@ import { chatCompletion } from '@/lib/api-client';
 /**
  * AI 生成图片 prompt — 根据对话上下文和角色信息生成适合文生图的英文标签
  * POST body: { conversation_id: string; message_id?: string; user_hint?: string }
- * - message_id: 触发生图的消息 ID，取该消息及之前共 4 条作为上下文
+ * - message_id: 触发生图的消息 ID，取该消息及之前共 10 条作为上下文
  * - user_hint: 额外补充说明（最高优先级）
  * 返回: { prompt: string; negative_prompt: string }
  */
@@ -121,7 +121,7 @@ export async function POST(request: NextRequest) {
       image_tags?: string;
     } | undefined;
 
-    // 获取消息上下文：基于触发生图的消息，取该消息及之前共 4 条
+    // 获取消息上下文：基于触发生图的消息，取该消息及之前共 10 条
     let messages: Pick<Message, 'role' | 'content'>[];
     if (message_id) {
       // 先找到目标消息的 seq
@@ -130,15 +130,15 @@ export async function POST(request: NextRequest) {
       ).get(message_id, conversation_id) as { seq: number } | undefined;
       if (targetMsg) {
         messages = db.prepare(
-          'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') AND seq <= ? ORDER BY seq DESC LIMIT 4'
+          'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') AND seq <= ? ORDER BY seq DESC LIMIT 10'
         ).all(conversation_id, targetMsg.seq) as Pick<Message, 'role' | 'content'>[];
       } else {
         messages = [];
       }
     } else {
-      // 兜底：取最新 4 条
+      // 兜底：取最新 10 条
       messages = db.prepare(
-        'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') ORDER BY seq DESC LIMIT 4'
+        'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') ORDER BY seq DESC LIMIT 10'
       ).all(conversation_id) as Pick<Message, 'role' | 'content'>[];
     }
     messages.reverse();
@@ -149,8 +149,8 @@ export async function POST(request: NextRequest) {
     if (character) {
       context += `【角色信息】\n`;
       context += `角色名：${character.name}\n`;
-      if (character.personality) context += `性格/外貌描述：${character.personality.slice(0, 400)}\n`;
-      if (character.scenario) context += `世界观/场景设定：${character.scenario.slice(0, 300)}\n`;
+      if (character.personality) context += `性格/外貌描述：${character.personality}\n`;
+      if (character.scenario) context += `世界观/场景设定：${character.scenario}\n`;
       if (character.image_tags) {
         const isGemini = /gemini/i.test(settings.model);
         if (isGemini) {
@@ -172,14 +172,14 @@ export async function POST(request: NextRequest) {
     context += '\n【最近对话（用于推断当前场景、动作、情绪）】\n';
     for (const msg of messages) {
       const role = msg.role === 'user' ? '用户' : character?.name || 'AI';
-      context += `${role}：${msg.content.slice(0, 300)}\n`;
+      context += `${role}：${msg.content}\n`;
     }
 
     if (user_hint) {
       context += `\n【用户额外指定（最高优先级）】\n${user_hint}\n`;
     }
 
-    context += `\n请根据以上信息，生成一张插图的 Tag。重点捕捉最近对话中最具画面感的瞬间。`;
+    context += `\n请根据以上信息生成一张插图的 Tag。必须优先以最新一条消息为准来决定画面主体、动作、表情和场景；更早的对话只作为角色设定和上下文补充，不要让旧消息覆盖最新消息。`;
 
     const result = await chatCompletion(settings, [
       { role: 'system', content: PROMPT_GENERATION_SYSTEM },

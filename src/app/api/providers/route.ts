@@ -53,7 +53,8 @@ export async function POST(request: NextRequest) {
   const db = getDb();
 
   const id = randomUUID();
-  const apiKey = body.api_key === API_KEY_MASK ? '' : (body.api_key || '');
+  const currentSettings = loadSettings();
+  const apiKey = body.api_key === API_KEY_MASK ? currentSettings.api_key : (body.api_key || '');
 
   db.prepare(`
     INSERT INTO api_providers (id, name, api_base, api_key, model, temperature, max_tokens, context_window, json_mode)
@@ -77,7 +78,10 @@ export async function POST(request: NextRequest) {
     const transaction = db.transaction(() => {
       upsert.run('active_provider_id', JSON.stringify(id));
       upsert.run('api_base', JSON.stringify(body.api_base || ''));
-      if (apiKey) upsert.run('api_key', JSON.stringify(apiKey));
+      // 跨 provider 密钥保护：无论新 provider 是否带 key，都必须把 settings.api_key
+      // 同步成新 provider 的值（包括空字符串）。否则旧 provider 的 key 会残留并被
+      // 发往新的 api_base，造成跨账号密钥泄漏。
+      upsert.run('api_key', JSON.stringify(apiKey));
       upsert.run('model', JSON.stringify(body.model || ''));
       upsert.run('temperature', JSON.stringify(body.temperature ?? 1));
       upsert.run('max_tokens', JSON.stringify(body.max_tokens ?? 4096));
@@ -130,7 +134,9 @@ export async function PUT(request: NextRequest) {
     const transaction = db.transaction(() => {
       upsert.run('active_provider_id', JSON.stringify(body.id));
       upsert.run('api_base', JSON.stringify(body.api_base ?? existing.api_base));
-      if (apiKey && apiKey !== (existing.api_key as string)) upsert.run('api_key', JSON.stringify(apiKey));
+      // 跨 provider 密钥保护：必须无条件同步 api_key 到 settings 表（包括空值），
+      // 否则切换 active provider 时旧 key 会残留在 settings 中并被发往新 base。
+      upsert.run('api_key', JSON.stringify(apiKey || ''));
       upsert.run('model', JSON.stringify(body.model ?? existing.model));
       upsert.run('temperature', JSON.stringify(body.temperature ?? existing.temperature));
       upsert.run('max_tokens', JSON.stringify(body.max_tokens ?? existing.max_tokens));

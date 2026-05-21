@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { Message } from '@/types';
-import { loadSettings } from '@/lib/settings';
+import { serializeTypedMessages } from '@/lib/messages';
 
 
 export async function GET(request: NextRequest) {
@@ -54,21 +54,16 @@ export async function POST(request: NextRequest) {
   }
 
   // 获取所有消息
-  const allMessages = db.prepare(
-    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-  ).all(conversation_id) as Message[];
-
-  for (const msg of allMessages) {
-    if (typeof (msg as Record<string, unknown>).metadata === 'string') {
-      (msg as Record<string, unknown>).metadata = JSON.parse((msg as Record<string, unknown>).metadata as string);
-    }
-  }
+  const allMessages = serializeTypedMessages(
+    db.prepare(
+      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
+    ).all(conversation_id) as Message[]
+  );
 
   // 收集未提取的用户消息
-  const unextracted = allMessages.filter(message => {
-    const meta = message.metadata as Record<string, unknown> || {};
-    return message.role === 'user' && !meta.memory_extracted;
-  });
+  const unextracted = allMessages.filter(
+    message => message.role === 'user' && !message.metadata.memory_extracted
+  );
 
   if (unextracted.length === 0) {
     return NextResponse.json({ error: '没有待提取的消息' }, { status: 400 });
@@ -79,14 +74,12 @@ export async function POST(request: NextRequest) {
   const extractionMessages: Message[] = [];
   let includeNext = false;
   for (const msg of allMessages) {
-    const msgMeta = (msg.metadata || {}) as Record<string, unknown>;
-    if (msgMeta.isSummary) continue;
+    if (msg.metadata.isSummary) continue;
     if (unextractedIds.has(msg.id)) {
       extractionMessages.push(msg);
       includeNext = true;
     } else if (includeNext && msg.role === 'assistant') {
-      const meta = msg.metadata as Record<string, unknown> || {};
-      if (!meta.memory_extracted) {
+      if (!msg.metadata.memory_extracted) {
         extractionMessages.push(msg);
       }
       includeNext = false;

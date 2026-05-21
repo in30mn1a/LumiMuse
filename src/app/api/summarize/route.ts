@@ -1,9 +1,10 @@
 import { NextRequest } from 'next/server';
 import { getDb } from '@/lib/db';
-import { Settings, Message, Character } from '@/types';
+import { Message, Character } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { estimateTokens } from '@/lib/token-counter';
 import { safeFetch } from '@/lib/ssrf-guard';
+import { serializeTypedMessages } from '@/lib/messages';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(request: NextRequest) {
@@ -29,21 +30,14 @@ export async function POST(request: NextRequest) {
   }
 
   // 获取所有消息
-  const allMessages = db.prepare(
-    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-  ).all(conversation_id) as Message[];
-
-  for (const msg of allMessages) {
-    if (typeof (msg as Record<string, unknown>).metadata === 'string') {
-      (msg as Record<string, unknown>).metadata = JSON.parse((msg as Record<string, unknown>).metadata as string);
-    }
-  }
+  const allMessages = serializeTypedMessages(
+    db.prepare(
+      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
+    ).all(conversation_id) as Message[]
+  );
 
   // 找到最后一条 summary 消息（metadata.isSummary），只总结它之后的内容
-  const lastSummaryIdx = allMessages.findLastIndex(m => {
-    const meta = (m.metadata || {}) as Record<string, unknown>;
-    return meta.isSummary === true;
-  });
+  const lastSummaryIdx = allMessages.findLastIndex(m => m.metadata.isSummary === true);
   const messagesToSummarize = lastSummaryIdx >= 0
     ? allMessages.slice(lastSummaryIdx + 1)
     : allMessages;

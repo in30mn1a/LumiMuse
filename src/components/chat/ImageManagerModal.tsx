@@ -260,7 +260,7 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
       {previewImage && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80"
-          onClick={() => setPreviewIndex(null)}
+          onClick={e => { e.stopPropagation(); setPreviewIndex(null); }}
         >
           <div className="relative flex max-h-[90dvh] max-w-[90vw] items-center justify-center" onClick={e => e.stopPropagation()}>
             {canPrev && (

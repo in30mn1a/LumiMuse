@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import { I18nProvider } from '@/lib/i18n-context';
 import { ThemeProvider } from '@/lib/theme-provider';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
+import { ToastProvider } from '@/components/ui/Toast';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -64,7 +65,9 @@ export default function RootLayout({
       <body className="antialiased">
         <ThemeProvider>
           <I18nProvider>
-            <ErrorBoundary>{children}</ErrorBoundary>
+            <ToastProvider>
+              <ErrorBoundary>{children}</ErrorBoundary>
+            </ToastProvider>
           </I18nProvider>
         </ThemeProvider>
       </body>

@@ -126,7 +126,13 @@ function migrate(db: Database.Database): void {
 
   const ftsCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts').get() as { count: number }).count;
   const messageCount = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
-  if (messageCount > 0 && ftsCount === 0) {
+  // 旧条件 `ftsCount === 0 && messageCount > 0` 不幂等：
+  // 若 FTS 处于"半损坏"状态（部分丢失但非全空），永远走不到重建分支。
+  // 改为「FTS 行数少于消息数」即视为损坏：触发器同步下两者应严格相等，
+  // 任何缺失都说明索引落后或损坏，需要全量回灌。
+  if (messageCount > 0 && ftsCount < messageCount) {
+    // 重建前先清空，避免与残留索引行冲突 / 产生重复
+    db.exec(`DELETE FROM messages_fts`);
     db.exec(`
       INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
       SELECT id, content, role, conversation_id, created_at, seq

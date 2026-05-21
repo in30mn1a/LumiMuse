@@ -5,12 +5,13 @@ import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTING
 import { applyFontStyle } from '@/lib/font-stacks';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
+import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, SparkIcon, SettingsIcon, ImageIcon } from '@/components/ui/icons';
 
 export default function SettingsPage() {
   const router = useRouter();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [saving, setSaving] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [saving, setSaving] = useState<'idle' | 'saving'>('idle');
   const [modelList, setModelList] = useState<string[]>([]);
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -20,6 +21,7 @@ export default function SettingsPage() {
   const [editingProvider, setEditingProvider] = useState<Partial<ApiProvider> | null>(null);
   const [activeTab, setActiveTab] = useState<'api' | 'generation' | 'memory' | 'advanced'>('api');
   const { t, setLang } = useTranslation();
+  const { showToast } = useToast();
 
   const loadProviders = useCallback(() => {
     fetch('/api/providers').then(r => r.json()).then(data => {
@@ -52,11 +54,19 @@ export default function SettingsPage() {
     setModelLoading(true);
     setModelError(null);
     try {
-      const params = new URLSearchParams({ refresh: '1' });
-      if (apiBase || settings.api_base) params.set('api_base', apiBase || settings.api_base);
-      if (apiKey && apiKey !== '********') params.set('api_key', apiKey);
-      else if (settings.api_key && settings.api_key !== '********') params.set('api_key', settings.api_key);
-      const response = await fetch(`/api/models?${params}`);
+      // 使用 POST 传递 api_key，避免敏感凭证出现在 URL / access log / 历史记录中
+      const body: Record<string, unknown> = { refresh: true };
+      const usingBase = apiBase || settings.api_base;
+      if (usingBase) body.api_base = usingBase;
+      const usingKey = (apiKey && apiKey !== '********')
+        ? apiKey
+        : (settings.api_key && settings.api_key !== '********' ? settings.api_key : undefined);
+      if (usingKey) body.api_key = usingKey;
+      const response = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       const data = await response.json();
       if (data.error) {
         setModelError(data.error);
@@ -71,17 +81,28 @@ export default function SettingsPage() {
   };
 
   const handleSave = async () => {
+    // 用 toast 替代旧的 1.2s setTimeout 状态切换：主人离开页面也能后续看到结果。
+    // saving 状态仅保留用于按钮 loading 反馈。
     setSaving('saving');
-    await fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
-    });
-    setLang(settings.language);
-    document.documentElement.classList.toggle('dark', settings.theme === 'dark');
-    applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
-    setSaving('saved');
-    window.setTimeout(() => setSaving('idle'), 1200);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
+      }
+      setLang(settings.language);
+      document.documentElement.classList.toggle('dark', settings.theme === 'dark');
+      applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
+      showToast(t('settings.saveSuccess'), 'success');
+    } catch (err) {
+      showToast(`${t('settings.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    } finally {
+      setSaving('idle');
+    }
   };
 
   const handleLogout = async () => {
@@ -199,14 +220,10 @@ export default function SettingsPage() {
               >
                 {saving === 'saving' ? (
                   <span className="spinner-sm" aria-hidden="true" />
-                ) : saving === 'saved' ? (
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
-                    <path d="M5 12l5 5L20 7" />
-                  </svg>
                 ) : (
                   <SparkIcon className="h-4 w-4" />
                 )}
-                {saving === 'saved' ? t('settings.saved') : saving === 'saving' ? t('settings.saving') : t('settings.save')}
+                {saving === 'saving' ? t('settings.saving') : t('settings.save')}
               </button>
             </div>
           </div>

@@ -23,6 +23,26 @@ interface ConversationWithMessages {
   messages?: Record<string, unknown>[];
 }
 
+// ── 安全校验工具 ─────────────────────────────────────────────
+// 限制请求体大小，避免恶意巨大 JSON 触发 OOM。
+// 上限 10MB 已足够覆盖典型的全量导出（角色卡 + 历史对话）。
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * 安全提取字符串字段：拒绝非字符串值，避免 JSON 中注入对象 / 数组导致后续
+ * 直接绑定到 SQLite 参数时抛出 TypeError 或写入异常数据。
+ */
+function asString(v: unknown, fallback = ''): string {
+  return typeof v === 'string' ? v : fallback;
+}
+
+/**
+ * 安全提取数组字段：非数组一律视为空数组。
+ */
+function asArray<T>(v: unknown): T[] {
+  return Array.isArray(v) ? (v as T[]) : [];
+}
+
 /**
  * POST /api/import  — 导入角色、记忆和对话
  * Body: JSON 文件内容（单角色或全量格式）
@@ -32,9 +52,44 @@ interface ConversationWithMessages {
  *   - 对话：按 id 去重，已存在则跳过；消息同理
  */
 export async function POST(request: NextRequest) {
+  // ── 1. 请求体大小防护 ───────────────────────────────────────
+  // 在解析 JSON 之前先看 Content-Length。保守策略：缺失也拒绝，
+  // 避免 chunked / 未声明长度的请求绕过限制。
+  const contentLengthHeader = request.headers.get('content-length');
+  if (!contentLengthHeader) {
+    return NextResponse.json(
+      { error: '缺少 Content-Length，拒绝处理' },
+      { status: 411 },
+    );
+  }
+  const contentLength = Number(contentLengthHeader);
+  if (!Number.isFinite(contentLength) || contentLength < 0) {
+    return NextResponse.json({ error: '无效的 Content-Length' }, { status: 400 });
+  }
+  if (contentLength > MAX_IMPORT_BYTES) {
+    return NextResponse.json(
+      { error: `导入文件过大（最大 ${MAX_IMPORT_BYTES / 1024 / 1024}MB）` },
+      { status: 413 },
+    );
+  }
+
+  // 先读 text 以便在解析前再次验证字符串长度（防止 Content-Length 被伪造）。
+  let raw: string;
+  try {
+    raw = await request.text();
+  } catch {
+    return NextResponse.json({ error: '读取请求体失败' }, { status: 400 });
+  }
+  if (raw.length > MAX_IMPORT_BYTES) {
+    return NextResponse.json(
+      { error: `导入文件过大（最大 ${MAX_IMPORT_BYTES / 1024 / 1024}MB）` },
+      { status: 413 },
+    );
+  }
+
   let payload: ImportPayload;
   try {
-    payload = await request.json() as ImportPayload;
+    payload = JSON.parse(raw) as ImportPayload;
   } catch {
     return NextResponse.json({ error: '无效的 JSON 格式' }, { status: 400 });
   }
@@ -58,36 +113,43 @@ export async function POST(request: NextRequest) {
   const conversationsToImport: ConversationWithMessages[] = payload.conversations ?? [];
 
   // ── 导入角色 ────────────────────────────────────────────────
+  // 用 asString / asArray 替换原先的 `as string` 断言，确保即使输入 JSON
+  // 把字段类型恶意改成对象 / 数字，也不会污染 SQLite 参数或导致运行时异常。
   const idMap = new Map<string, string>(); // 原 id → 新 id
 
   for (const char of charactersToImport) {
-    const existingByName = db.prepare('SELECT id FROM characters WHERE name = ?').get(char.name as string) as { id: string } | undefined;
+    const charName = asString(char.name);
+    const charId = asString(char.id);
+
+    const existingByName = charName
+      ? db.prepare('SELECT id FROM characters WHERE name = ?').get(charName) as { id: string } | undefined
+      : undefined;
 
     if (existingByName) {
-      if (char.id) idMap.set(char.id as string, existingByName.id);
+      if (charId) idMap.set(charId, existingByName.id);
       results.skipped++;
       continue;
     }
 
     const newId = uuidv4().slice(0, 8);
-    if (char.id) idMap.set(char.id as string, newId);
+    if (charId) idMap.set(charId, newId);
 
     db.prepare(`
       INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       newId,
-      char.name || '导入角色',
-      char.avatar_url || null,
-      char.basic_info || '',
-      char.personality || '',
-      char.scenario || '',
-      char.greeting || '',
-      char.example_dialogue || '',
-      char.system_prompt || '',
-      char.other_info || '',
-      char.image_tags || '',
-      char.created_at || now,
+      charName || '导入角色',
+      asString(char.avatar_url) || null,
+      asString(char.basic_info),
+      asString(char.personality),
+      asString(char.scenario),
+      asString(char.greeting),
+      asString(char.example_dialogue),
+      asString(char.system_prompt),
+      asString(char.other_info),
+      asString(char.image_tags),
+      asString(char.created_at) || now,
       now,
     );
     results.imported++;
@@ -95,7 +157,7 @@ export async function POST(request: NextRequest) {
 
   // ── 导入记忆 ────────────────────────────────────────────────
   for (const mem of memoriesToImport) {
-    const originalCharId = mem.character_id as string;
+    const originalCharId = asString(mem.character_id);
     const newCharId = idMap.get(originalCharId) ?? originalCharId;
 
     const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
@@ -108,11 +170,11 @@ export async function POST(request: NextRequest) {
     `).run(
       newMemId,
       newCharId,
-      normalizeMemoryCategory(String(mem.category || '话题历史')),
-      mem.content || '',
+      normalizeMemoryCategory(asString(mem.category) || '话题历史'),
+      asString(mem.content),
       typeof mem.confidence === 'number' ? mem.confidence : 0.8,
-      JSON.stringify(Array.isArray(mem.tags) ? mem.tags : []),
-      mem.created_at || now,
+      JSON.stringify(asArray<unknown>(mem.tags)),
+      asString(mem.created_at) || now,
       now,
     );
     results.memoriesImported++;
@@ -122,7 +184,8 @@ export async function POST(request: NextRequest) {
   const importConversations = db.transaction((convs: ConversationWithMessages[]) => {
     for (const conv of convs) {
       // 解析 character_id：优先用 idMap 映射后的新 id
-      const newCharId = idMap.get(conv.character_id) ?? conv.character_id;
+      const convCharId = asString(conv.character_id);
+      const newCharId = idMap.get(convCharId) ?? convCharId;
 
       // 确认角色存在
       const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
@@ -136,14 +199,14 @@ export async function POST(request: NextRequest) {
       `).run(
         newConvId,
         newCharId,
-        conv.title || '导入的对话',
-        conv.created_at || now,
-        conv.updated_at || now,
+        asString(conv.title) || '导入的对话',
+        asString(conv.created_at) || now,
+        asString(conv.updated_at) || now,
       );
       results.conversationsImported++;
 
       // 导入该对话的消息
-      const messages = conv.messages ?? [];
+      const messages = asArray<Record<string, unknown>>(conv.messages);
       let seq = 1;
       for (const msg of messages) {
         const newMsgId = uuidv4().slice(0, 8);
@@ -159,10 +222,10 @@ export async function POST(request: NextRequest) {
         `).run(
           newMsgId,
           newConvId,
-          msg.role,
-          msg.content,
+          asString(msg.role),
+          asString(msg.content),
           typeof msg.token_count === 'number' ? msg.token_count : 0,
-          msg.created_at || now,
+          asString(msg.created_at) || now,
           metaStr,
           seq++,
         );

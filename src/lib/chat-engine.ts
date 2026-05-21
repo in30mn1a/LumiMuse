@@ -198,13 +198,53 @@ export function assemblePrompt(
   result.push(...history);
 
   // 合并连续同角色消息（Gemini 等 API 要求严格交替 user/assistant）
+  // 多模态 content 是数组结构，不能用 JSON.stringify 直接拼接，否则下游 LLM 会收到字符串而非结构化 parts
   const merged: ChatMessage[] = [];
   for (const msg of result) {
     const last = merged[merged.length - 1];
     if (last && last.role === msg.role && last.role !== 'system') {
-      const lastText = typeof last.content === 'string' ? last.content : JSON.stringify(last.content);
-      const curText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-      last.content = `${lastText}\n\n${curText}`;
+      const lastIsArray = Array.isArray(last.content);
+      const curIsArray = Array.isArray(msg.content);
+
+      if (!lastIsArray && !curIsArray) {
+        // 两条都是纯文本：直接拼接
+        last.content = `${last.content as string}\n\n${msg.content as string}`;
+      } else {
+        // 任一是多模态：归一化为数组结构后合并
+        const lastParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }> =
+          lastIsArray
+            ? [...(last.content as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }>)]
+            : [{ type: 'text', text: last.content as string }];
+        const curParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }> =
+          curIsArray
+            ? (msg.content as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }>)
+            : [{ type: 'text', text: msg.content as string }];
+
+        // 文本部分合并到第一个 text part；图片部分按出现顺序追加
+        const firstTextIdx = lastParts.findIndex(p => p.type === 'text');
+        const curTextSegments: string[] = [];
+        const curImages: typeof curParts = [];
+        for (const part of curParts) {
+          if (part.type === 'text') {
+            if (part.text) curTextSegments.push(part.text);
+          } else {
+            curImages.push(part);
+          }
+        }
+        const curTextJoined = curTextSegments.join('\n\n');
+
+        if (curTextJoined) {
+          if (firstTextIdx >= 0) {
+            const firstText = lastParts[firstTextIdx] as { type: 'text'; text: string };
+            lastParts[firstTextIdx] = { type: 'text', text: `${firstText.text}\n\n${curTextJoined}` };
+          } else {
+            lastParts.unshift({ type: 'text', text: curTextJoined });
+          }
+        }
+        for (const img of curImages) lastParts.push(img);
+
+        last.content = lastParts;
+      }
     } else {
       merged.push({ role: msg.role, content: msg.content });
     }
@@ -254,7 +294,6 @@ export async function runChat(
       }
     }
     const userTokenCount = estimateTokens(fullContent);
-    const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
     const promptAttachments = options?.attachments || [];
     const storedAttachments = promptAttachments.map(att => (
       att.type === 'image'
@@ -264,10 +303,14 @@ export async function runChat(
     const userMeta = storedAttachments.length > 0
       ? JSON.stringify({ attachments: storedAttachments })
       : '{}';
-    db.prepare(`
-      INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
-      VALUES (?, ?, 'user', ?, ?, ?, ?, ?)
-    `).run(userMsgId, conversationId, userContent, userTokenCount, now, nextSeq, userMeta);
+    // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
+    db.transaction(() => {
+      const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+        VALUES (?, ?, 'user', ?, ?, ?, ?, ?)
+      `).run(userMsgId, conversationId, userContent, userTokenCount, now, nextSeq, userMeta);
+    })();
   }
 
   const history = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC').all(conversationId) as Message[];
@@ -346,12 +389,15 @@ export async function runChat(
     } else {
       const asstId = uuidv4().slice(0, 8);
       const meta = { versions: [{ content: fullText, token_count: tokenCount }], activeVersion: 0 };
-      const asstSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
-      db.prepare(`
-        INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
-        VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)
-      `).run(asstId, conversationId, fullText, tokenCount, asstNow, asstSeq, JSON.stringify(meta));
-      db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
+      // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
+      db.transaction(() => {
+        const asstSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
+        db.prepare(`
+          INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)
+        `).run(asstId, conversationId, fullText, tokenCount, asstNow, asstSeq, JSON.stringify(meta));
+        db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
+      })();
       await callbacks.onDone(fullText, tokenCount);
     }
   };

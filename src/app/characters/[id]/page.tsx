@@ -5,6 +5,7 @@ import { Character } from '@/types';
 import { normalizeCharacterCard } from '@/lib/character-card-import';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
+import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 
 interface Props {
@@ -142,10 +143,28 @@ export default function CharacterEditor({ params }: Props) {
   const characterImportRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
+  const { showToast } = useToast();
+  // dirty 标记：表单是否存在未保存的修改。
+  // - update() 会置为 true
+  // - handleSave() 成功后置为 false
+  // 用于：取消按钮二次确认 + beforeunload 浏览器关闭/刷新拦截
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     fetch(`/api/characters/${id}`).then(r => r.json()).then(setCharacter);
   }, [id]);
+
+  // beforeunload：dirty 时拦截浏览器关闭/刷新/前进后退，避免误丢修改。
+  // 注意：现代浏览器会忽略我们设置的提示文案，统一显示其原生提示，但仍需调用以触发拦截。
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
 
   const previewMessages = useMemo(() => {
     if (!character) return [];
@@ -166,22 +185,50 @@ export default function CharacterEditor({ params }: Props) {
     router.push('/');
   };
 
+  // 取消按钮：若存在未保存修改，先弹原生 confirm，确认后才离开。
+  const handleCancel = () => {
+    if (dirty && !window.confirm(t('editor.confirmDiscard'))) return;
+    returnToSidebar();
+  };
+
   const handleSave = async () => {
     if (!character) return;
     setSaving(true);
-    await fetch(`/api/characters/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(character),
-    });
-    setSaving(false);
-    returnToSidebar();
+    try {
+      const response = await fetch(`/api/characters/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(character),
+      });
+      // 非 2xx 视为失败
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
+      }
+      setDirty(false);
+      showToast(t('editor.saveSuccess'), 'success');
+      returnToSidebar();
+    } catch (err) {
+      showToast(`${t('editor.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async () => {
     if (!confirm(t('editor.deleteConfirm'))) return;
-    await fetch(`/api/characters/${id}`, { method: 'DELETE' });
-    router.push('/');
+    try {
+      const response = await fetch(`/api/characters/${id}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
+      }
+      // 删除成功后离开页面前清除 dirty，避免触发 beforeunload
+      setDirty(false);
+      router.push('/');
+    } catch (err) {
+      showToast(`${t('editor.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
   };
 
   const handleDuplicate = async () => {
@@ -193,7 +240,7 @@ export default function CharacterEditor({ params }: Props) {
       if (!response.ok) throw new Error(data.error || t('editor.duplicateError'));
       router.push(`/characters/${data.id}`);
     } catch (err) {
-      alert(err instanceof Error ? err.message : t('editor.duplicateError'));
+      showToast(err instanceof Error ? err.message : t('editor.duplicateError'), 'error');
     } finally {
       setDuplicating(false);
     }
@@ -207,6 +254,7 @@ export default function CharacterEditor({ params }: Props) {
     const response = await fetch('/api/upload', { method: 'POST', body: formData });
     if (response.ok) {
       const { url } = await response.json();
+      setDirty(true);
       setCharacter({ ...character, avatar_url: url });
     }
   };
@@ -224,6 +272,7 @@ export default function CharacterEditor({ params }: Props) {
 
       const draft = normalizeCharacterCard(json);
       if (!draft) throw new Error(t('editor.importError'));
+      setDirty(true);
       setCharacter({ ...character, ...draft });
       setImportMsg({ type: 'ok', text: t('editor.importDraftSuccess') });
     } catch {
@@ -242,6 +291,7 @@ export default function CharacterEditor({ params }: Props) {
     const draft = normalizeCharacterCard({ character: sourceCharacter });
 
     if (options.includeCharacter && draft) {
+      setDirty(true);
       setCharacter({ ...character, ...draft });
     }
 
@@ -296,6 +346,7 @@ export default function CharacterEditor({ params }: Props) {
         throw new Error(data.error || t('editor.aiGenerateError'));
       }
 
+      setDirty(true);
       setCharacter({
         ...character,
         name: data.name ?? character.name,
@@ -317,6 +368,8 @@ export default function CharacterEditor({ params }: Props) {
 
   const update = (field: keyof Character, value: string) => {
     if (!character) return;
+    // 任意字段被修改即标记为 dirty，触发未保存提示
+    setDirty(true);
     setCharacter({ ...character, [field]: value });
   };
 
@@ -338,7 +391,7 @@ export default function CharacterEditor({ params }: Props) {
         <header className="surface-hero px-5 py-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-4">
-              <button onClick={returnToSidebar} className="soft-button soft-button-secondary shrink-0 whitespace-nowrap px-3 py-2">
+              <button onClick={handleCancel} className="soft-button soft-button-secondary shrink-0 whitespace-nowrap px-3 py-2">
                 <ArrowLeftIcon className="h-4 w-4" />
                 {t('editor.cancel')}
               </button>

@@ -13,7 +13,12 @@ export default function Home() {
   const [targetMessageId, setTargetMessageId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // 角色 fetch 的请求序列号：handleCharacterSelect 用，避免快速切角色时旧请求覆盖新请求
   const characterRequestSeqRef = useRef(0);
+  // 对话切换时也独立维护一个序列号，避免 await fetch character 期间用户又切到别的对话，
+  // 让较慢的旧请求把状态覆盖回错误的角色。与上方 ref 区分：character 选择和 conversation 选择
+  // 是两条互相独立的赛道，共享同一序列会让选角色时误废弃合法的对话切换响应。
+  const conversationSelectSeqRef = useRef(0);
 
   useEffect(() => {
     if (sessionStorage.getItem('lumimuse_open_sidebar') !== '1') return;
@@ -40,14 +45,22 @@ export default function Home() {
   };
 
   const handleConversationSelect = async (characterId: string, conversationId: string, messageId?: string) => {
-    const requestSeq = ++characterRequestSeqRef.current;
+    // 入口 ++seq 并捕获本地 mySeq；fetch 完成后只有 mySeq 仍是最新值才允许 setState，
+    // 否则用户已切到别处，旧响应直接丢弃。
+    const mySeq = ++conversationSelectSeqRef.current;
     setSelectedConversationId(conversationId);
     setTargetMessageId(messageId ?? null);
     if (characterId !== selectedCharacterId) {
       setSelectedCharacterId(characterId);
-      const response = await fetch(`/api/characters/${characterId}`);
-      const full = await response.json();
-      if (characterRequestSeqRef.current === requestSeq) setSelectedCharacter(full);
+      try {
+        const response = await fetch(`/api/characters/${characterId}`);
+        const full = await response.json();
+        if (mySeq === conversationSelectSeqRef.current) {
+          setSelectedCharacter(full);
+        }
+      } catch {
+        /* 网络失败时保持现状，不破坏 UI */
+      }
     }
     setSidebarOpen(false);
   };

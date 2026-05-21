@@ -55,6 +55,10 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [modelLoading, setModelLoading] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  // 选项 DOM 引用数组，用于方向键移动焦点
+  const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
+  // 触发按钮引用，关闭后把焦点还回去，保持键盘用户操作连续
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const { t } = useTranslation();
 
   const modelList = externalModelList && externalModelList.length > 0 ? externalModelList : fetchedModels;
@@ -75,6 +79,17 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [modelPickerOpen]);
+
+  // 下拉打开后把焦点移到当前选中项（或首项），方便键盘用户立即用方向键导航
+  useEffect(() => {
+    if (!modelPickerOpen || modelList.length === 0) return;
+    const raf = requestAnimationFrame(() => {
+      const selectedIdx = modelList.findIndex((m) => m === currentModel);
+      const targetIdx = selectedIdx >= 0 ? selectedIdx : 0;
+      optionRefs.current[targetIdx]?.focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [modelPickerOpen, modelList, currentModel]);
 
   const handleOpenModelPicker = async () => {
     if (modelPickerOpen) {
@@ -101,6 +116,34 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const handleSelectModel = (model: string) => {
     onModelChange?.(model);
     setModelPickerOpen(false);
+    // 关闭下拉后焦点回到触发按钮，符合 listbox 模式的可访问性建议
+    modelTriggerRef.current?.focus();
+  };
+
+  // listbox 选项键盘导航：方向键移动焦点、Enter 选中、Esc 关闭
+  const handleOptionKeyDown = (e: React.KeyboardEvent<HTMLDivElement>, index: number, model: string) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = Math.min(index + 1, modelList.length - 1);
+      optionRefs.current[next]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = Math.max(index - 1, 0);
+      optionRefs.current[prev]?.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleSelectModel(model);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setModelPickerOpen(false);
+      modelTriggerRef.current?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      optionRefs.current[0]?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      optionRefs.current[modelList.length - 1]?.focus();
+    }
   };
 
   const handleSubmit = () => {
@@ -184,7 +227,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             {attachments.map((att, i) => (
               <div
                 key={i}
-                className="group relative flex items-center gap-2 rounded-xl border border-border-light bg-white/80 px-3 py-1.5 text-xs text-text-secondary shadow-sm"
+                className="group relative flex items-center gap-2 rounded-xl border border-border-light bg-white/80 px-3 py-1.5 text-xs text-text-secondary shadow-sm dark:bg-white/10"
               >
                 {att.type === 'image' ? (
                   <img src={att.url || att.data} alt={att.name} className="h-8 w-8 rounded-lg object-cover" loading="lazy" />
@@ -210,7 +253,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           <p className="mb-2 text-xs text-red-500">{attachError}</p>
         )}
 
-        <div className="flex items-center gap-2 rounded-[1.25rem] border border-border-light bg-white/70 px-3 py-2 shadow-[0_8px_22px_rgba(92,74,139,0.04)]">
+        <div className="flex items-center gap-2 rounded-[1.25rem] border border-border-light bg-white/70 px-3 py-2 shadow-[0_8px_22px_rgba(92,74,139,0.04)] dark:bg-white/5">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -266,34 +309,56 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
         {/* 模型切换栏 */}
         <div className="relative mt-1 flex items-center justify-between px-1" ref={modelPickerRef}>
           <button
+            ref={modelTriggerRef}
             onClick={handleOpenModelPicker}
             className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
+            aria-haspopup="listbox"
+            aria-expanded={modelPickerOpen}
           >
             <span className="max-w-[12rem] truncate">{currentModel || t('settings.modelPlaceholder')}</span>
             <ChevronDownIcon className="h-3 w-3" />
           </button>
 
           {modelPickerOpen && (
-            <div className="absolute bottom-full left-0 z-50 mb-1 max-h-60 w-72 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]">
+            <div
+              role="listbox"
+              tabIndex={-1}
+              aria-label={t('input.modelSelect')}
+              aria-activedescendant={currentModel ? `model-option-${currentModel}` : undefined}
+              className="absolute bottom-full left-0 z-50 mb-1 max-h-60 w-72 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+            >
               <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
                 {modelLoading ? t('common.loading') : t('input.modelSelect')}
               </div>
               {modelList.length === 0 && !modelLoading && (
                 <div className="px-3 py-2 text-xs text-text-muted">{t('input.noModels')}</div>
               )}
-              {modelList.map(model => (
-                <button
-                  key={model}
-                  onClick={() => handleSelectModel(model)}
-                  className={`w-full px-3 py-1.5 text-left text-xs transition-colors ${
-                    model === currentModel
-                      ? 'bg-accent/10 text-accent-dark font-medium'
-                      : 'text-text-secondary hover:bg-accent/5'
-                  }`}
-                >
-                  <span className="block truncate">{model}</span>
-                </button>
-              ))}
+              {modelList.map((model, index) => {
+                const isSelected = model === currentModel;
+                return (
+                  // role="option" + aria-selected：屏幕阅读器会朗读"选项 X，已选中"
+                  // tabIndex=0 让方向键导航时能 focus 到具体选项
+                  <div
+                    key={model}
+                    id={`model-option-${model}`}
+                    ref={(el) => {
+                      optionRefs.current[index] = el;
+                    }}
+                    role="option"
+                    aria-selected={isSelected}
+                    tabIndex={0}
+                    onClick={() => handleSelectModel(model)}
+                    onKeyDown={(e) => handleOptionKeyDown(e, index, model)}
+                    className={`w-full cursor-pointer px-3 py-1.5 text-left text-xs transition-colors outline-none focus:bg-accent/10 ${
+                      isSelected
+                        ? 'bg-accent/10 text-accent-dark font-medium'
+                        : 'text-text-secondary hover:bg-accent/5'
+                    }`}
+                  >
+                    <span className="block truncate">{model}</span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

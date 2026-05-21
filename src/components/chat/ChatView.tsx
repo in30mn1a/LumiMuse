@@ -1,21 +1,22 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Character, Conversation, Message, Memory } from '@/types';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
 import ChatHeader from './ChatHeader';
 import ChatToolbar from './ChatToolbar';
 import ChatMessageList from './ChatMessageList';
+import RenameConvModal from './RenameConvModal';
+import DeleteConvModal from './DeleteConvModal';
+import ResetExtractionModal from './ResetExtractionModal';
+import ImageManagerModal from './ImageManagerModal';
+import { ConversationDesktopAside, ConversationMobileDrawer } from './ConversationListPanels';
 import { useTranslation } from '@/lib/i18n-context';
+import { formatTemplate } from '@/lib/i18n';
 import { estimateTokens } from '@/lib/token-counter';
-import { formatDateTime, formatShortDate, getVersionInfo } from '@/lib/chat-view-utils';
-import {
-  ClockIcon,
-  ImageIcon,
-  MenuIcon,
-  TrashIcon,
-} from '@/components/ui/icons';
+import { getVersionInfo } from '@/lib/chat-view-utils';
+import { MenuIcon } from '@/components/ui/icons';
 
 const PAGE_SIZE = 60; // 每次从后端加载的消息数
 
@@ -144,14 +145,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [duplicating, setDuplicating] = useState(false);
   // 重置提取状态弹窗
   const [resetExtractionOpen, setResetExtractionOpen] = useState(false);
-  const [resetSelectedIds, setResetSelectedIds] = useState<Set<string>>(new Set());
-  const RESET_PAGE_SIZE = 30;
-  const [resetVisibleCount, setResetVisibleCount] = useState(RESET_PAGE_SIZE);
   // 服务端返回的真实未提取消息数量（不受前端分页限制）
   const [serverUnextractedCount, setServerUnextractedCount] = useState<number>(0);
-  // 弹窗中加载的全部消息（打开弹窗时从服务端获取完整列表）
-  // null 表示正在加载中，空数组表示加载完成但无消息
-  const [allDialogMessages, setAllDialogMessages] = useState<Message[] | null>(null);
   // 记忆提取状态：'idle' | 'extracting' | 'done' | 'failed'
   const [memoryExtractStatus, setMemoryExtractStatus] = useState<'idle' | 'extracting' | 'done' | 'failed'>('idle');
   // 提取状态自动隐藏定时器
@@ -160,17 +155,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
   // 移动端工具栏展开（拉片）
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
-  // 图片管理弹窗
+  // 图片管理弹窗（仅保留开关；列表/选中/分页等已下沉到 ImageManagerModal 内部）
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
-  const [characterImages, setCharacterImages] = useState<Array<{
-    messageId: string; conversationId: string; conversationTitle: string;
-    createdAt: string; imageId: string; versionId: string; url: string;
-  }>>([]);
-  const [loadingCharacterImages, setLoadingCharacterImages] = useState(false);
-  const [selectedImageKeys, setSelectedImageKeys] = useState<Set<string>>(new Set());
-  const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null);
-  const IMAGE_MANAGER_PAGE_SIZE = 12;
-  const [imageManagerPage, setImageManagerPage] = useState(0);
   // 轻量 Toast
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
@@ -178,6 +164,28 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const previousCharacterIdRef = useRef<string | null>(character?.id ?? null);
   const streamingFrameRef = useRef<number | null>(null);
   const pendingStreamingTextRef = useRef('');
+  // 跟踪当前选中的对话 ID。
+  // 删除对话是异步流程：从弹窗确认到 fetch 完成中间用户可能切换对话，
+  // 直接读取闭包内 activeConvId 会导致删错对象。Ref 保证 handleDeleteConv 拿到的是"最新"值，
+  // 而本地变量 targetConvId 用于"快照确认时刻"，避免删除中途又被切换覆盖。
+  const activeConvIdRef = useRef<string | null>(activeConvId);
+  useEffect(() => {
+    activeConvIdRef.current = activeConvId;
+  }, [activeConvId]);
+
+  // 竞态保护：用户切换对话时立即清空 streamingText / streamingConvId，
+  // 避免上一段流尚未结束就把旧文字带到新对话。
+  // 切到的目标对话若有后台流在跑（activeStreams 中），等其新 chunk 到达时会重新写回 streaming state。
+  useEffect(() => {
+    if (streamingConvId && streamingConvId !== activeConvId) {
+      // SSE 清理：用户切换对话时必须立即重置流式 UI 状态，避免旧对话的流式文本泄漏到新对话
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStreamingText('');
+      setStreamingConvId(null);
+    }
+    // 仅依赖 activeConvId：streamingConvId 在流启动时被设置，无需作为依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConvId]);
 
   const isMessageListNearBottom = useCallback(() => {
     const end = messagesEndRef.current;
@@ -533,7 +541,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       const taskKey = parsed.updatedAt ? `${parsed.status}:${parsed.updatedAt}` : parsed.status;
       if (parsed.status === 'done' && parsed.mergeCount > 0 && seenMemoryTaskRef.current[convId] !== taskKey) {
         seenMemoryTaskRef.current[convId] = taskKey;
-        showToast(`TA 更新了关于你的 ${parsed.mergeCount} 条记忆`, 'info');
+        showToast(formatTemplate(t('chat.memoryUpdated'), { count: parsed.mergeCount }), 'info');
       }
 
       return parsed.status === 'done' || parsed.status === 'failed' || parsed.status === 'idle';
@@ -556,7 +564,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     // 超时也标记失败
     setMemoryExtractStatus('failed');
     extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
-  }, [showToast, messages.length]);
+  }, [showToast, messages.length, t]);
 
   const refreshConversationState = async (nextActiveId?: string | null) => {
     if (!character) return;
@@ -614,28 +622,34 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     setRenameOpen(true);
   };
 
-  const handleRenameConv = async () => {
-    if (!activeConvId || !renameValue.trim()) return;
+  const handleRenameConv = async (nextTitle?: string) => {
+    const finalTitle = (nextTitle ?? renameValue).trim();
+    if (!activeConvId || !finalTitle) return;
     await fetch(`/api/conversations/${activeConvId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: renameValue.trim() }),
+      body: JSON.stringify({ title: finalTitle }),
     });
     setConversations(prev => prev.map(conversation => (
-      conversation.id === activeConvId ? { ...conversation, title: renameValue.trim() } : conversation
+      conversation.id === activeConvId ? { ...conversation, title: finalTitle } : conversation
     )));
     setRenameOpen(false);
   };
 
   const handleDeleteConv = async () => {
-    if (!activeConvId) return;
-    const next = conversations.find(conversation => conversation.id !== activeConvId) || null;
+    // 用 ref 取最新 activeConvId，避免被组件 re-render 之间的旧闭包污染
+    const targetConvId = activeConvIdRef.current;
+    if (!targetConvId) return;
+    // 关闭弹窗 + 决定下一段对话（基于 targetConvId 而不是闭包变量）
+    const next = conversations.find(conversation => conversation.id !== targetConvId) || null;
     // 先切换到下一个对话，避免删除时消息区闪白
     setActiveConvId(next?.id || null);
     if (!next) setMessages([]);
     setDeleteOpen(false);
-    await fetch(`/api/conversations/${activeConvId}`, { method: 'DELETE' });
-    setConversations(prev => prev.filter(conversation => conversation.id !== activeConvId));
+    // 关键点：DELETE 用上面快照下来的 targetConvId，
+    // 即便用户在 await 期间又切到别的对话也只会删自己最初确认的那一条
+    await fetch(`/api/conversations/${targetConvId}`, { method: 'DELETE' });
+    setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
     void refreshConversationState(next?.id || null);
   };
 
@@ -742,7 +756,12 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             const parsed = JSON.parse(eventData);
             if (eventType === 'chunk' && parsed.text) {
               fullText += parsed.text;
-              if (activeStreamConvRef.current === myConvId) scheduleStreamingText(fullText);
+              // 竞态保护：仅当本流仍是「最后启动的流」且「用户当前正在看本对话」时才更新 UI 文本。
+              // 用户切到别的对话后，本流剩余 chunk 不再写入 streamingText（避免在错误的对话上残留文字）。
+              // fullText 在闭包内继续累积，保证后端持久化的内容完整。
+              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
+                scheduleStreamingText(fullText);
+              }
             } else if (eventType === 'memory' && parsed.status === 'extracting') {
               void pollMemoryTask(myConvId);
             } else if (eventType === 'error') {
@@ -766,7 +785,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             const parsed = JSON.parse(eventData);
             if (parsed.text) {
               fullText += parsed.text;
-              if (activeStreamConvRef.current === myConvId) scheduleStreamingText(fullText);
+              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
+                scheduleStreamingText(fullText);
+              }
             }
           } catch {
             // 忽略尾部碎片
@@ -776,9 +797,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
       if (regenerateAssistantId) skipScrollRef.current = true;
       await refreshMessages();
-      if (activeStreamConvRef.current === myConvId) {
-        setStreamingText('');
-      }
       // 刷新列表但不重置 active
       void refreshConversationState(undefined);
     } catch (error) {
@@ -795,13 +813,16 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         }
       }
     } finally {
-      // 只有自己仍是活跃流时才清理全局状态，避免覆盖新流
+      // 竞态保护：finally 阶段不再依赖闭包 myConvId 决定是否清理全局 streaming state。
+      // 之前的实现是「只有自己仍是活跃流时才清理」，但若用户中途切走又切回原对话，
+      // streamingConvId / streamingText 可能停留在旧值，导致界面上出现幽灵气泡。
+      // 现在统一无条件清空：若有其他流并发跑，它们自己的 chunk 处理逻辑会再次写回正确的 streaming state。
       if (activeStreamConvRef.current === myConvId) {
-        setIsLoading(false);
-        setStreamingText('');
-        setStreamingConvId(null);
         activeStreamConvRef.current = null;
       }
+      setIsLoading(false);
+      setStreamingText('');
+      setStreamingConvId(null);
       // hiddenMessageId/streamingTargetId 是 regeneration 专用，始终清理
       setHiddenMessageId(null);
       setStreamingTargetId(null);
@@ -858,7 +879,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     // 检查是否有足够的消息可以总结
     const nonSummaryMessages = messages.filter(m => m.role === 'user' || m.role === 'assistant');
     if (nonSummaryMessages.length < 2) {
-      showToast('消息太少，暂时不需要总结', 'info');
+      showToast(t('chat.summarizeTooFew'), 'info');
       return;
     }
 
@@ -915,7 +936,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const handleGenerateImage = async (messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => {
     const targetConversationId = conversationIdOverride || activeConvId;
     if (!targetConversationId || !character) return;
-    showToast('正在生成图片...', 'info');
+    showToast(t('chat.imageGenStart'), 'info');
 
     type ImageStatus = 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
     type ImageEntry = {
@@ -988,7 +1009,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         const promptData = await promptRes.json();
         if (promptData.error) throw new Error(promptData.error);
         generatedPrompt = promptData.prompt || '';
-        if (!generatedPrompt) throw new Error('AI 未能生成有效的提示词');
+        if (!generatedPrompt) throw new Error(t('chat.imageGenPromptFail'));
 
         await upsertPlaceholder({
           prompt: generatedPrompt,
@@ -1004,7 +1025,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
       const imgData = await imgRes.json();
       if (imgData.error) throw new Error(imgData.error);
-      if (!imgData.url) throw new Error('生图未返回图片');
+      if (!imgData.url) throw new Error(t('chat.imageGenNoUrl'));
 
       const newImage = { url: imgData.url, prompt: generatedPrompt, id: placeholderId, status: 'ready' as const };
       await persistImages(images => {
@@ -1027,7 +1048,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         return images.map(img => img.id === placeholderId ? newImage : img);
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : '生图失败';
+      const message = err instanceof Error ? err.message : t('chat.imageGenGeneric');
       await upsertPlaceholder({
         prompt: generatedPrompt,
         status: 'failed',
@@ -1174,82 +1195,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
   };
 
-  // 加载角色全部生成图片
-  const loadCharacterImages = useCallback(async () => {
-    if (!character) return;
-    setLoadingCharacterImages(true);
-    try {
-      const res = await fetch(`/api/characters/${character.id}/images`);
-      const data = await res.json();
-      setCharacterImages(data);
-    } catch {
-      showToast('加载图片失败');
-    } finally {
-      setLoadingCharacterImages(false);
-    }
-  }, [character, showToast]);
+  // 图片管理弹窗的加载、选中、批量删除等已下沉到 ImageManagerModal 内部。
+  // 这里只保留打开/关闭开关与「删除完成后刷新主消息列表」的桥接。
 
-  const openImageManager = useCallback(() => {
-    setImageManagerOpen(true);
-    setSelectedImageKeys(new Set());
-    setPreviewImageIndex(null);
-    setImageManagerPage(0);
-    void loadCharacterImages();
-  }, [loadCharacterImages]);
-
-  const closeImageManager = useCallback(() => {
-    setImageManagerOpen(false);
-    setPreviewImageIndex(null);
-    setSelectedImageKeys(new Set());
-    setImageManagerPage(0);
-  }, []);
-
-  // 批量删除选中图片
-  const handleBatchDeleteImages = useCallback(async () => {
-    if (selectedImageKeys.size === 0 || !character) return;
-    const items = [...selectedImageKeys].map(key => {
-      const [messageId, imageId, versionId] = key.split('::');
-      return { messageId, imageId, versionId };
-    });
-    try {
-      const res = await fetch(`/api/characters/${character.id}/images`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items }),
-      });
-      const data = await res.json() as { ok: boolean; deletedUrls?: string[] };
-      if (!data.ok) throw new Error('删除失败');
-      // 同步删除磁盘文件
-      for (const url of data.deletedUrls || []) {
-        fetch('/api/image-gen/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url }),
-        }).catch(() => {});
-      }
-      setSelectedImageKeys(new Set());
-      setPreviewImageIndex(null);
-      await loadCharacterImages();
-      // 同步刷新消息列表（图片已从 metadata 删除）
-      if (activeConvId) await refreshMessages();
-      showToast(`已删除 ${items.length} 张图片`, 'info');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : '删除失败');
-    }
-  }, [selectedImageKeys, character, loadCharacterImages, activeConvId, showToast, refreshMessages]);
-
-  // 切换提取状态弹窗打开时，加载该对话的全部消息
-  useEffect(() => {
-    if (!resetExtractionOpen || !activeConvId) return;
-    let cancelled = false;
-    // 使用 all=1 获取全部消息
-    fetchMessagesPage(activeConvId, { all: true })
-      .then(({ messages: allMsgs }) => {
-        if (!cancelled) setAllDialogMessages(allMsgs);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [resetExtractionOpen, activeConvId]);
+  // 切换提取状态弹窗逻辑（加载、选中、分页）已下沉到 ResetExtractionModal 内部。
 
   // 切换提取状态：重置或标记指定消息
   const handleResetExtraction = async (messageIds?: string[], action: 'reset' | 'mark' = 'reset') => {
@@ -1260,7 +1209,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messageIds, action }),
       });
-      if (!res.ok) throw new Error('操作失败');
+      if (!res.ok) throw new Error(t('chat.resetExtractionFail'));
       const { resetCount } = await res.json() as { resetCount: number };
       // 更新本地消息的 metadata
       const targetSet = messageIds ? new Set(messageIds) : null;
@@ -1276,7 +1225,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         return { ...m, metadata: meta };
       };
       setMessages(prev => prev.map(updateMeta));
-      setAllDialogMessages(prev => prev ? prev.map(updateMeta) : prev);
       // 更新服务端未提取数量
       if (action === 'mark') {
         setServerUnextractedCount(prev => Math.max(0, prev - resetCount));
@@ -1284,12 +1232,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         setServerUnextractedCount(prev => prev + resetCount);
       }
       setResetExtractionOpen(false);
-      setResetSelectedIds(new Set());
-      setAllDialogMessages(null);
-      const actionText = action === 'mark' ? '标记已提取' : '重置';
-      showToast(`已${actionText} ${resetCount} 条消息`, 'info');
+      const actionText = action === 'mark' ? t('chat.resetActionMark') : t('chat.resetActionReset');
+      showToast(formatTemplate(t('chat.resetActionDone'), { action: actionText, count: resetCount }), 'info');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '操作失败');
+      showToast(err instanceof Error ? err.message : t('chat.resetExtractionFail'));
     }
   };
 
@@ -1304,13 +1250,13 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        showToast(data.error || '触发提取失败');
+        showToast(data.error || t('chat.manualExtractFail'));
         return;
       }
       // 开始轮询提取状态
       void pollMemoryTask(activeConvId);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '触发提取失败');
+      showToast(err instanceof Error ? err.message : t('chat.manualExtractFail'));
     }
   };
 
@@ -1413,7 +1359,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             const parsed = JSON.parse(eventData);
             if (eventType === 'chunk' && parsed.text) {
               fullText += parsed.text;
-              if (activeStreamConvRef.current === myConvId) scheduleStreamingText(fullText);
+              // 同 callChatStream：双重守卫，避免在用户切走后写到错误的对话上
+              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
+                scheduleStreamingText(fullText);
+              }
             } else if (eventType === 'memory' && parsed.status === 'extracting') {
               void pollMemoryTask(myConvId);
             } else if (eventType === 'error') {
@@ -1437,7 +1386,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             const parsed = JSON.parse(eventData);
             if (parsed.text) {
               fullText += parsed.text;
-              if (activeStreamConvRef.current === myConvId) scheduleStreamingText(fullText);
+              if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
+                scheduleStreamingText(fullText);
+              }
             }
           } catch {
             // 忽略尾部碎片
@@ -1446,9 +1397,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       }
 
       await refreshMessagesForConversation(myConvId);
-      if (activeStreamConvRef.current === myConvId) {
-        setStreamingText('');
-      }
       // 刷新列表但不重置 active
       void refreshConversationState(undefined);
 
@@ -1490,12 +1438,14 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         setMessages(prev => prev.filter(message => message.id !== 'temp-user'));
       }
     } finally {
+      // 同 callChatStream：finally 阶段无条件清空全局 streaming state，
+      // 避免「中途切走 → 切回」时残留旧 streamingText 的幽灵气泡。
       if (activeStreamConvRef.current === myConvId) {
-        setIsLoading(false);
-        setStreamingText('');
-        setStreamingConvId(null);
         activeStreamConvRef.current = null;
       }
+      setIsLoading(false);
+      setStreamingText('');
+      setStreamingConvId(null);
       // 无论如何都从活跃流集合中移除
       setActiveStreams(prev => { const next = new Set(prev); next.delete(myConvId); return next; });
       abortControllersRef.current.delete(myConvId);
@@ -1587,7 +1537,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         onRename={() => { openRename(); setToolbarExpanded(false); }}
         onSummarize={() => { handleSummarize(); setToolbarExpanded(false); }}
         onDuplicate={() => { handleDuplicateConv(); setToolbarExpanded(false); }}
-        onOpenImageManager={() => { openImageManager(); setToolbarExpanded(false); }}
+        onOpenImageManager={() => { setImageManagerOpen(true); setToolbarExpanded(false); }}
         onRequestDelete={() => { setDeleteOpen(true); setToolbarExpanded(false); }}
       />
 
@@ -1598,7 +1548,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             unextractedCount={unextractedCount}
             memoryExtractStatus={memoryExtractStatus}
             tokenCount={tokenCount}
-            onOpenResetExtraction={() => { setResetExtractionOpen(true); setResetVisibleCount(RESET_PAGE_SIZE); }}
+            onOpenResetExtraction={() => setResetExtractionOpen(true)}
           />
 
           <ChatMessageList
@@ -1632,503 +1582,88 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreamingHere} isGenerating={isStreamingHere} currentModel={currentModel} onModelChange={async (model: string) => { setCurrentModel(model); await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) }); }} />
         </section>
 
-        <aside className="hidden min-h-0 flex-col gap-4 lg:flex">
-          <div className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="shrink-0 border-b border-border-light px-4 py-4">
-              <p className="label-small">{t('chat.quickResume')}</p>
-            </div>
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4">
-              {conversations.map(conversation => (
-                <button
-                  key={conversation.id}
-                  onClick={() => setActiveConvId(conversation.id)}
-                  className={`w-full rounded-2xl border px-3 py-3 text-left transition-all duration-200 ${
-                    activeConvId === conversation.id
-                      ? 'border-accent/25 bg-[rgba(155,124,240,0.10)]'
-                      : 'border-border-light bg-white/75 hover:bg-white'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-medium text-text-primary">{conversation.title}</span>
-                    <span className="text-[11px] text-text-muted">{formatShortDate(conversation.updated_at)}</span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-2 text-xs text-text-muted">
-                    <ClockIcon className="h-3.5 w-3.5" />
-                    {formatDateTime(conversation.updated_at)}
-                  </div>
-                </button>
-              ))}
-              {conversations.length === 0 && (
-                <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
-                  {t('chat.noConversationBody')}
-                </div>
-              )}
-            </div>
-          </div>
-        </aside>
+        <ConversationDesktopAside
+          conversations={conversations}
+          activeConvId={activeConvId}
+          onSelect={setActiveConvId}
+        />
       </div>
 
       {renameOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-          <div className="surface-panel w-full max-w-md p-5">
-            <h3 className="section-title text-xl">{t('chat.renameTitle')}</h3>
-            <input
-              value={renameValue}
-              onChange={e => setRenameValue(e.target.value)}
-              placeholder={t('chat.renamePlaceholder')}
-              className="input-rich mt-4"
-            />
-            <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => setRenameOpen(false)} className="soft-button soft-button-secondary">
-                {t('chat.cancel')}
-              </button>
-              <button onClick={handleRenameConv} className="soft-button soft-button-primary">
-                {t('chat.renameConfirm')}
-              </button>
-            </div>
-          </div>
-        </div>
+        <RenameConvModal
+          open={renameOpen}
+          initialValue={renameValue}
+          onClose={() => setRenameOpen(false)}
+          onConfirm={async (newTitle) => {
+            setRenameValue(newTitle);
+            await handleRenameConv(newTitle);
+          }}
+        />
       )}
 
       {deleteOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-          <div className="surface-panel w-full max-w-md p-5">
-            <h3 className="section-title text-xl">{t('chat.deleteTitle')}</h3>
-            <p className="mt-3 section-copy">{t('chat.deleteConfirm')}</p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => setDeleteOpen(false)} className="soft-button soft-button-secondary">
-                {t('chat.cancel')}
-              </button>
-              <button onClick={handleDeleteConv} className="soft-button soft-button-danger">
-                {t('chat.deleteAction')}
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeleteConvModal
+          open={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          onConfirm={handleDeleteConv}
+        />
       )}
 
       {/* 重置提取状态弹窗 */}
       {resetExtractionOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-          <div className="surface-panel w-full max-w-md p-5">
-            <h3 className="section-title text-xl">{t('chat.resetExtractionTitle')}</h3>
-            <p className="mt-2 section-copy">{t('chat.resetExtractionDesc')}</p>
-
-            {/* 全选 / 取消全选 */}
-            <div className="mt-3 flex items-center justify-between text-sm">
-              <span className="text-text-muted">
-                {resetSelectedIds.size > 0
-                  ? `已选 ${resetSelectedIds.size} 条`
-                  : '点击消息多选'}
-              </span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    const userMsgs = (allDialogMessages || []).filter(m => m.role === 'user');
-                    setResetSelectedIds(new Set(userMsgs.map(m => m.id)));
-                  }}
-                  className="text-xs text-accent-dark hover:underline"
-                >
-                  全选
-                </button>
-                <button
-                  onClick={() => setResetSelectedIds(new Set())}
-                  className="text-xs text-text-muted hover:underline"
-                >
-                  取消全选
-                </button>
-              </div>
-            </div>
-
-            {/* 消息列表（只显示用户消息，从新到旧，分页加载） */}
-            {allDialogMessages === null ? (
-              <div className="mt-2 flex items-center justify-center py-8 text-sm text-text-muted">
-                加载中...
-              </div>
-            ) : (() => {
-              const userMsgs = allDialogMessages.filter(m => m.role === 'user').reverse();
-              const visible = userMsgs.slice(0, resetVisibleCount);
-              const hasMore = userMsgs.length > resetVisibleCount;
-              return (
-                <div className="mt-2 max-h-64 overflow-y-auto rounded-xl border border-border-light">
-                  {visible.map(m => {
-                    const meta = m.metadata as Record<string, unknown> || {};
-                    const extracted = Boolean(meta.memory_extracted);
-                    const selected = resetSelectedIds.has(m.id);
-                    return (
-                      <button
-                        key={m.id}
-                        onClick={() => {
-                          setResetSelectedIds(prev => {
-                            const next = new Set(prev);
-                            next.has(m.id) ? next.delete(m.id) : next.add(m.id);
-                            return next;
-                          });
-                        }}
-                        className={`flex w-full items-start gap-3 border-b border-border-light px-4 py-3 text-left text-sm transition-colors ${
-                          selected ? 'bg-accent/8' : 'hover:bg-accent/5'
-                        }`}
-                      >
-                        {/* 复选框 */}
-                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
-                          selected ? 'border-accent bg-accent text-white' : 'border-border-light bg-white'
-                        }`}>
-                          {selected && (
-                            <svg viewBox="0 0 10 8" fill="none" className="h-2.5 w-2.5" aria-hidden="true">
-                              <path d="M1 4l3 3 5-6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          )}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-text-primary">{m.content.slice(0, 60)}</span>
-                          <span className="text-xs text-text-muted">{formatDateTime(m.created_at)}</span>
-                        </span>
-                        <span className={`mt-0.5 shrink-0 text-xs ${extracted ? 'text-green-500' : 'text-amber-500'}`}>
-                          {extracted ? '✓' : '○'}
-                        </span>
-                      </button>
-                    );
-                  })}
-                  {hasMore && (
-                    <button
-                      onClick={() => setResetVisibleCount(v => v + RESET_PAGE_SIZE)}
-                      className="w-full px-4 py-3 text-center text-xs text-accent-dark hover:bg-accent/5"
-                    >
-                      加载更多（还有 {userMsgs.length - resetVisibleCount} 条）
-                    </button>
-                  )}
-                </div>
-              );
-            })()}
-
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              {/* 忽略本对话开关 */}
-              <button
-                onClick={async () => {
-                  if (!activeConvId) return;
-                  const isIgnored = Boolean(activeConversation?.ignore_memory);
-                  await fetch(`/api/conversations/${activeConvId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ignore_memory: !isIgnored }),
-                  });
-                  setConversations(prev => prev.map(c =>
-                    c.id === activeConvId ? { ...c, ignore_memory: isIgnored ? 0 : 1 } : c
-                  ));
-                  showToast(isIgnored ? '已恢复记忆提取' : '已忽略本对话的记忆提取', 'info');
-                }}
-                className={`soft-button px-3 py-1.5 text-xs ${activeConversation?.ignore_memory ? 'soft-button-primary' : 'soft-button-secondary'}`}
-                title="开启后，本对话不会触发记忆提取"
-              >
-                {activeConversation?.ignore_memory ? '✓ 已忽略' : '忽略提取'}
-              </button>
-              {/* 手动提取按钮 */}
-              <button
-                onClick={() => { setResetExtractionOpen(false); setAllDialogMessages(null); handleManualExtract(); }}
-                disabled={memoryExtractStatus === 'extracting' || serverUnextractedCount === 0}
-                className="soft-button soft-button-primary px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                title="立即触发记忆提取"
-              >
-                {memoryExtractStatus === 'extracting' ? t('chat.extracting') : t('chat.manualExtract')}
-              </button>
-              <div className="flex-1" />
-              <button
-                onClick={() => { setResetExtractionOpen(false); setResetSelectedIds(new Set()); setResetVisibleCount(RESET_PAGE_SIZE); setAllDialogMessages(null); }}
-                className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
-              >
-                {t('chat.cancel')}
-              </button>
-              <button
-                onClick={() => handleResetExtraction(undefined, 'reset')}
-                className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
-              >
-                {t('chat.resetAll')}
-              </button>
-              <button
-                onClick={() => handleResetExtraction([...resetSelectedIds], 'mark')}
-                disabled={resetSelectedIds.size === 0}
-                className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                标记已提取 ({resetSelectedIds.size})
-              </button>
-              <button
-                onClick={() => handleResetExtraction([...resetSelectedIds], 'reset')}
-                disabled={resetSelectedIds.size === 0}
-                className="soft-button soft-button-primary px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                重置选中 ({resetSelectedIds.size})
-              </button>
-            </div>
-          </div>
-        </div>
+        <ResetExtractionModal
+          open={resetExtractionOpen}
+          conversationId={activeConvId}
+          conversation={activeConversation}
+          serverUnextractedCount={serverUnextractedCount}
+          memoryExtractStatus={memoryExtractStatus}
+          onClose={() => setResetExtractionOpen(false)}
+          onSubmit={async (messageIds, action) => {
+            await handleResetExtraction(messageIds, action);
+          }}
+          onToggleIgnore={async () => {
+            if (!activeConvId) return;
+            const isIgnored = Boolean(activeConversation?.ignore_memory);
+            await fetch(`/api/conversations/${activeConvId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ignore_memory: !isIgnored }),
+            });
+            setConversations(prev => prev.map(c =>
+              c.id === activeConvId ? { ...c, ignore_memory: isIgnored ? 0 : 1 } : c
+            ));
+            showToast(isIgnored ? t('chat.ignoreOff') : t('chat.ignoreOn'), 'info');
+          }}
+          onManualExtract={handleManualExtract}
+          loadAllMessages={async (cid) => {
+            const { messages: msgs } = await fetchMessagesPage(cid, { all: true });
+            return msgs;
+          }}
+        />
       )}
 
       {/* 移动端对话列表抽屉（lg 以下显示） */}
-      {convDrawerOpen && (
-        <>
-          {/* 遮罩 */}
-          <div
-            className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
-            onClick={() => setConvDrawerOpen(false)}
-          />
-          {/* 底部抽屉 */}
-          <div className="fixed bottom-0 left-0 right-0 z-50 animate-slideUp lg:hidden">
-            <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4">
-              {/* 拖拽把手 */}
-              <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-border-light" />
-              <div className="mb-3 flex items-center justify-between">
-                <p className="text-sm font-semibold text-text-primary">{t('chat.quickResume')}</p>
-                <button
-                  onClick={() => setConvDrawerOpen(false)}
-                  className="rounded-full p-1.5 text-text-muted hover:bg-warm-100"
-                  aria-label="关闭"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <div className="max-h-[55dvh] space-y-2 overflow-y-auto pb-1">
-                {conversations.map(conversation => (
-                  <button
-                    key={conversation.id}
-                    onClick={() => {
-                      setActiveConvId(conversation.id);
-                      setConvDrawerOpen(false);
-                    }}
-                    className={`w-full rounded-2xl border px-3 py-3 text-left transition-all duration-200 ${
-                      activeConvId === conversation.id
-                        ? 'border-accent/25 bg-[rgba(155,124,240,0.10)]'
-                        : 'border-border-light bg-white/75 hover:bg-white'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium text-text-primary">{conversation.title}</span>
-                      <span className="shrink-0 text-[11px] text-text-muted">{formatShortDate(conversation.updated_at)}</span>
-                    </div>
-                    <div className="mt-1 flex items-center gap-1.5 text-xs text-text-muted">
-                      <ClockIcon className="h-3.5 w-3.5" />
-                      {formatDateTime(conversation.updated_at)}
-                    </div>
-                  </button>
-                ))}
-                {conversations.length === 0 && (
-                  <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
-                    {t('chat.noConversationBody')}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </>
-      )}
+      <ConversationMobileDrawer
+        open={convDrawerOpen}
+        conversations={conversations}
+        activeConvId={activeConvId}
+        onSelect={setActiveConvId}
+        onClose={() => setConvDrawerOpen(false)}
+      />
 
       {/* 全局 Toast 提示 */}
       <Toast items={toasts} onDismiss={dismissToast} />
 
       {/* 图片管理弹窗 */}
-      {imageManagerOpen && (() => {
-        const totalPages = Math.max(1, Math.ceil(characterImages.length / IMAGE_MANAGER_PAGE_SIZE));
-        const currentPage = Math.min(imageManagerPage, totalPages - 1);
-        const pageImages = characterImages.slice(currentPage * IMAGE_MANAGER_PAGE_SIZE, (currentPage + 1) * IMAGE_MANAGER_PAGE_SIZE);
-        const previewImage = previewImageIndex !== null ? characterImages[previewImageIndex] : null;
-        const canPrev = previewImageIndex !== null && previewImageIndex > 0;
-        const canNext = previewImageIndex !== null && previewImageIndex < characterImages.length - 1;
-
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={closeImageManager}>
-            <div
-              className="surface-panel flex w-full max-w-3xl flex-col overflow-hidden"
-              style={{ maxHeight: '90dvh' }}
-              onClick={e => e.stopPropagation()}
-            >
-              {/* 标题栏 */}
-              <div className="flex shrink-0 items-center justify-between border-b border-border-light px-5 py-4">
-                <div className="flex items-center gap-3">
-                  <h3 className="section-title text-lg">图片管理</h3>
-                  <span className="chip text-xs">{characterImages.length} 张</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {selectedImageKeys.size > 0 && (
-                    <button
-                      onClick={handleBatchDeleteImages}
-                      className="soft-button soft-button-danger px-3 py-1.5 text-sm"
-                    >
-                      <TrashIcon className="h-3.5 w-3.5" />
-                      <span>删除选中 ({selectedImageKeys.size})</span>
-                    </button>
-                  )}
-                  {characterImages.length > 0 && (
-                    <button
-                      onClick={() => {
-                        if (selectedImageKeys.size === characterImages.length) {
-                          setSelectedImageKeys(new Set());
-                        } else {
-                          setSelectedImageKeys(new Set(characterImages.map(img => `${img.messageId}::${img.imageId}::${img.versionId}`)));
-                        }
-                      }}
-                      className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
-                    >
-                      {selectedImageKeys.size === characterImages.length ? '取消全选' : '全选'}
-                    </button>
-                  )}
-                  <button onClick={closeImageManager} className="rounded-xl p-2 text-text-muted hover:bg-warm-100" aria-label="关闭">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              {/* 图片网格 */}
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                {loadingCharacterImages ? (
-                  <div className="flex h-40 items-center justify-center text-sm text-text-muted">加载中...</div>
-                ) : characterImages.length === 0 ? (
-                  <div className="flex h-40 flex-col items-center justify-center gap-2 text-sm text-text-muted">
-                    <ImageIcon className="h-8 w-8 opacity-30" />
-                    <span>还没有生成过图片</span>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-4 gap-3">
-                    {pageImages.map((img, indexInPage) => {
-                      const globalIndex = currentPage * IMAGE_MANAGER_PAGE_SIZE + indexInPage;
-                      const key = `${img.messageId}::${img.imageId}::${img.versionId}`;
-                      const selected = selectedImageKeys.has(key);
-                      return (
-                        <div key={key} className="group relative aspect-square overflow-hidden rounded-xl">
-                          {/* 缩略图：点击 → 大图预览 */}
-                          <button
-                            className="block h-full w-full"
-                            onClick={() => setPreviewImageIndex(globalIndex)}
-                            aria-label="查看大图"
-                          >
-                            <img
-                              src={img.url}
-                              alt=""
-                              className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
-                              loading="lazy"
-                            />
-                          </button>
-                          {/* 左上角复选框：点击 → 选中/取消 */}
-                          <button
-                            className={`absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border-2 transition-all ${
-                              selected
-                                ? 'border-accent bg-accent opacity-100'
-                                : 'border-white/80 bg-black/25 opacity-0 group-hover:opacity-100'
-                            }`}
-                            onClick={e => {
-                              e.stopPropagation();
-                              setSelectedImageKeys(prev => {
-                                const next = new Set(prev);
-                                next.has(key) ? next.delete(key) : next.add(key);
-                                return next;
-                              });
-                            }}
-                            aria-label={selected ? '取消选中' : '选中'}
-                          >
-                            {selected && (
-                              <svg viewBox="0 0 10 8" fill="none" className="h-2.5 w-2.5" aria-hidden="true">
-                                <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                              </svg>
-                            )}
-                          </button>
-                          {/* 选中时整体高亮边框 */}
-                          {selected && (
-                            <div className="pointer-events-none absolute inset-0 rounded-xl ring-2 ring-accent ring-offset-1" />
-                          )}
-                          {/* 对话标题（hover 显示） */}
-                          <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 pb-1.5 pt-4 opacity-0 transition-opacity group-hover:opacity-100">
-                            <p className="truncate text-[10px] text-white/90">{img.conversationTitle}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* 翻页栏 */}
-              {!loadingCharacterImages && characterImages.length > IMAGE_MANAGER_PAGE_SIZE && (
-                <div className="flex shrink-0 items-center justify-between border-t border-border-light px-5 py-3">
-                  <button
-                    onClick={() => setImageManagerPage(p => Math.max(0, p - 1))}
-                    disabled={currentPage === 0}
-                    className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:opacity-40"
-                  >
-                    ‹ 上一页
-                  </button>
-                  <span className="text-sm text-text-muted">
-                    第 {currentPage + 1} / {totalPages} 页
-                  </span>
-                  <button
-                    onClick={() => setImageManagerPage(p => Math.min(totalPages - 1, p + 1))}
-                    disabled={currentPage >= totalPages - 1}
-                    className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:opacity-40"
-                  >
-                    下一页 ›
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* 大图预览 Lightbox */}
-            {previewImage && (
-              <div
-                className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80"
-                onClick={() => setPreviewImageIndex(null)}
-              >
-                <div className="relative flex max-h-[90dvh] max-w-[90vw] items-center justify-center" onClick={e => e.stopPropagation()}>
-                  {/* 左切换 */}
-                  {canPrev && (
-                    <button
-                      onClick={() => setPreviewImageIndex(i => i !== null ? i - 1 : i)}
-                      className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-3 text-white/90 backdrop-blur-sm hover:bg-black/60"
-                      aria-label="上一张"
-                    >
-                      <span className="block text-xl leading-none">‹</span>
-                    </button>
-                  )}
-                  <img
-                    src={previewImage.url}
-                    alt=""
-                    className="max-h-[90dvh] max-w-[90vw] rounded-2xl shadow-2xl"
-                  />
-                  {/* 右切换 */}
-                  {canNext && (
-                    <button
-                      onClick={() => setPreviewImageIndex(i => i !== null ? i + 1 : i)}
-                      className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-3 text-white/90 backdrop-blur-sm hover:bg-black/60"
-                      aria-label="下一张"
-                    >
-                      <span className="block text-xl leading-none">›</span>
-                    </button>
-                  )}
-                  {/* 计数 + 关闭 */}
-                  <div className="absolute right-3 top-3 flex items-center gap-2">
-                    <span className="rounded-full bg-black/40 px-3 py-1 text-xs text-white/85 backdrop-blur-sm">
-                      {previewImageIndex! + 1} / {characterImages.length}
-                    </span>
-                    <button
-                      onClick={() => setPreviewImageIndex(null)}
-                      className="rounded-full bg-black/40 p-2 text-white/90 backdrop-blur-sm hover:bg-black/60"
-                      aria-label="关闭预览"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
-                        <path d="M18 6L6 18M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                  {/* 对话来源 */}
-                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-xs text-white/85 backdrop-blur-sm">
-                    {previewImage.conversationTitle}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })()}
+      <ImageManagerModal
+        open={imageManagerOpen}
+        character={character}
+        onClose={() => setImageManagerOpen(false)}
+        onAfterBatchDelete={async () => {
+          if (activeConvId) await refreshMessages();
+        }}
+        showToast={showToast}
+      />
     </div>
   );
 }

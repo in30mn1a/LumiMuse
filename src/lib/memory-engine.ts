@@ -161,18 +161,24 @@ function mergeMemories(existing: Memory[], newMemories: Memory[]): Memory[] {
       }
     }
 
-    if (bestSimilarity >= 0.72 && bestIndex >= 0) {
-      const existingEntry = result[bestIndex];
-      result[bestIndex] = {
-        ...existingEntry,
-        content: newEntry.content.length > existingEntry.content.length ? newEntry.content : existingEntry.content,
-        confidence: Math.max(existingEntry.confidence, newEntry.confidence),
-        tags: [...new Set([...existingEntry.tags, ...newEntry.tags])].slice(0, 5),
-        updated_at: new Date().toISOString(),
-      };
-    } else {
-      result.push(newEntry);
+    // 动态阈值：短文本（如"喜欢猫" vs "喜欢狗"）bigram 重叠率天然偏高但语义可能完全不同，
+    // 因此对较短记忆采用更严格的阈值；以两条中较短的一方判定，避免长记忆带短记忆"蹭过"阈值。
+    if (bestIndex >= 0) {
+      const shorterLen = Math.min(result[bestIndex].content.length, newEntry.content.length);
+      const threshold = shorterLen < 20 ? 0.85 : 0.72;
+      if (bestSimilarity >= threshold) {
+        const existingEntry = result[bestIndex];
+        result[bestIndex] = {
+          ...existingEntry,
+          content: newEntry.content.length > existingEntry.content.length ? newEntry.content : existingEntry.content,
+          confidence: Math.max(existingEntry.confidence, newEntry.confidence),
+          tags: [...new Set([...existingEntry.tags, ...newEntry.tags])].slice(0, 5),
+          updated_at: new Date().toISOString(),
+        };
+        continue;
+      }
     }
+    result.push(newEntry);
   }
 
   return result;
@@ -201,14 +207,41 @@ function parseExtractionResponse(response: string): RawMemoryData[] {
     if (result.category) return [result];
     return [];
   } catch {
-    const match = text.match(/\{[\s\S]*"memories"[\s\S]*\}/);
-    if (match) {
-      try {
-        const parsed = JSON.parse(match[0]);
-        if (Array.isArray(parsed.memories)) return parsed.memories;
-      } catch {
-        return [];
+    // 回退策略：从 "memories" 关键字位置出发，向前找最近的 '{' 作为对象起点，
+    // 然后向后做花括号配对扫描（考虑字符串与转义），找到匹配的 '}' 截取再尝试 JSON.parse。
+    // 这样比贪婪正则更稳健，避免越过同一响应中的多个 JSON 块。
+    const keywordIdx = text.indexOf('"memories"');
+    if (keywordIdx === -1) return [];
+
+    let startIdx = -1;
+    for (let i = keywordIdx; i >= 0; i -= 1) {
+      if (text[i] === '{') { startIdx = i; break; }
+    }
+    if (startIdx === -1) return [];
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let endIdx = -1;
+    for (let i = startIdx; i < text.length; i += 1) {
+      const ch = text[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\') { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) { endIdx = i; break; }
       }
+    }
+    if (endIdx === -1) return [];
+
+    try {
+      const parsed = JSON.parse(text.slice(startIdx, endIdx + 1));
+      if (Array.isArray(parsed.memories)) return parsed.memories;
+    } catch {
+      return [];
     }
     return [];
   }

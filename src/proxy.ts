@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyAuthToken } from './lib/auth-token';
 
 // 不需要验证的路径
 const PUBLIC_PATHS = ['/login', '/api/auth', '/manifest.json'];
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // 没有设置访问密码时，直接放行（本地开发模式）
@@ -26,15 +27,17 @@ export function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // 兼容旧数据：/avatars/xxx 和 /generated/xxx 重写到 /api/files/...
-  if (pathname.startsWith('/avatars/') || pathname.startsWith('/generated/') || pathname.startsWith('/attachments/')) {
-    const rewriteUrl = new URL(`/api/files${pathname}`, request.url);
-    return NextResponse.rewrite(rewriteUrl);
-  }
-
-  // 检查 cookie 里的认证令牌
+  // 验证 cookie 中的签名 token（HMAC，常量时间比较，不再存放密码原文）
   const token = request.cookies.get('lumimuse_auth')?.value;
-  if (token === process.env.ACCESS_PASSWORD) {
+  const valid = await verifyAuthToken(token);
+  if (valid) {
+    // 兼容旧数据：/avatars/xxx、/generated/xxx 和 /attachments/xxx 重写到 /api/files/...
+    // 该兼容入口必须在认证通过后执行，避免旧静态资源路径绕过访问密码。
+    if (pathname.startsWith('/avatars/') || pathname.startsWith('/generated/') || pathname.startsWith('/attachments/')) {
+      const rewriteUrl = new URL(`/api/files${pathname}`, request.url);
+      return NextResponse.rewrite(rewriteUrl);
+    }
+
     return NextResponse.next();
   }
 

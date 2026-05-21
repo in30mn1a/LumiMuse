@@ -22,21 +22,30 @@ export function enqueueExtraction(
 ): void {
   const db = getDb();
 
-  // 内存层去重：正在处理中直接跳过
+  // 内存层去重：仅作为快速短路，不能替代 DB 层去重
+  // （多进程/多实例场景下内存 Set 不共享，仍需 DB 事务兜底）
   if (inFlightConversations.has(conversationId)) return;
-
-  // 数据库层去重：已有 pending/processing 任务则跳过
-  const existing = db.prepare(
-    "SELECT id FROM memory_tasks WHERE conversation_id = ? AND status IN ('pending','processing') LIMIT 1"
-  ).get(conversationId);
-  if (existing) return;
 
   const messageIds = JSON.stringify(messages.map(m => m.id));
   const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, created_at, updated_at)
-    VALUES (?, ?, ?, 'pending', ?, ?)
-  `).run(characterId, conversationId, messageIds, now, now);
+
+  // TOCTOU 保护：SELECT + INSERT 必须在同一事务内原子执行
+  // 否则两个并发请求可能同时通过 SELECT 检查、各自插入，造成重复任务
+  const insertIfAbsent = db.transaction(() => {
+    const existing = db.prepare(
+      "SELECT id FROM memory_tasks WHERE conversation_id = ? AND status IN ('pending','processing') LIMIT 1"
+    ).get(conversationId);
+    if (existing) return false;
+
+    db.prepare(`
+      INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending', ?, ?)
+    `).run(characterId, conversationId, messageIds, now, now);
+    return true;
+  });
+
+  const inserted = insertIfAbsent();
+  if (!inserted) return;
 
   if (!processing) void processQueue();
 }
@@ -66,10 +75,11 @@ async function processQueue(): Promise<void> {
 
     // 内存层去重
     if (inFlightConversations.has(task.conversation_id)) {
-      // 内存层去重：跳过这条任务，继续处理下一条
-      db.prepare("UPDATE memory_tasks SET status = 'pending', updated_at = ? WHERE id = ?")
+      // 命中内存去重说明已有同 conversation 的任务正在跑，本任务无需重复处理。
+      // 直接标记为 done 跳过，避免重置回 pending 导致下个循环再次取到同一条任务，陷入无限循环。
+      db.prepare("UPDATE memory_tasks SET status = 'done', updated_at = ? WHERE id = ?")
         .run(new Date().toISOString(), task.id);
-      continue; // 跳过当前任务，继续处理队列中其他任务
+      continue;
     }
 
     inFlightConversations.add(task.conversation_id);

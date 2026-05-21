@@ -79,8 +79,8 @@ function buildMarkdownComponents(isUser: boolean): React.ComponentProps<typeof R
   const text = isUser ? 'text-white' : 'text-text-primary';
   const muted = isUser ? 'text-white/70' : 'text-text-muted';
   const border = isUser ? 'border-white/30' : 'border-border-light';
-  const codeBg = isUser ? 'bg-white/15 text-white' : 'bg-black/6 text-text-primary';
-  const blockBg = isUser ? 'bg-white/10 border-white/25' : 'bg-black/4 border-accent/20';
+  const codeBg = isUser ? 'bg-white/15 text-white' : 'bg-[var(--code-inline-bg)] text-text-primary';
+  const blockBg = isUser ? 'bg-white/10 border-white/25' : 'bg-[var(--code-block-bg)] border-accent/20';
   const linkColor = isUser ? 'text-white underline decoration-white/50' : 'text-accent-dark underline decoration-accent/40';
 
   return {
@@ -250,7 +250,7 @@ function MessageBubbleInner({
 }: Props) {
   const { t } = useTranslation();
   const isUser = message.role === 'user';
-  const roleLabel = isUser ? '你' : characterName;
+  const roleLabel = isUser ? t('message.you') : characterName;
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [editAttachments, setEditAttachments] = useState<Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>>([]);
@@ -295,7 +295,7 @@ function MessageBubbleInner({
   /* 操作按钮样式 */
   const btnBase = 'rounded-lg p-1.5 transition-all duration-150';
   const btnUser = `${btnBase} text-white/60 hover:bg-white/20 hover:text-white`;
-  const btnAssistant = `${btnBase} text-text-muted/50 hover:bg-black/5 hover:text-text-secondary`;
+  const btnAssistant = `${btnBase} text-text-muted/50 hover:bg-black/5 hover:text-text-secondary dark:hover:bg-white/10`;
 
   // ── 总结消息：特殊卡片样式（通过 metadata.isSummary 识别）──
   const msgMeta = (message.metadata || {}) as Record<string, unknown>;
@@ -453,7 +453,7 @@ function MessageBubbleInner({
               className={`w-full rounded-xl border p-2 text-sm outline-none ${
                 isUser
                   ? 'border-white/30 bg-white/20 text-white placeholder-white/50 focus:border-white/60'
-                  : 'border-border-light bg-white/90 text-text-primary focus:border-accent/40'
+                  : 'border-border-light bg-white/90 text-text-primary focus:border-accent/40 dark:bg-white/10'
               }`}
               rows={3}
               autoFocus
@@ -465,7 +465,7 @@ function MessageBubbleInner({
               <button
                 onClick={() => setEditing(false)}
                 className={`rounded-lg px-3 py-1 text-xs transition-colors ${
-                  isUser ? 'text-white/70 hover:bg-white/20' : 'text-text-muted hover:bg-white/60'
+                  isUser ? 'text-white/70 hover:bg-white/20' : 'text-text-muted hover:bg-white/60 dark:hover:bg-white/10'
                 }`}
               >
                 {t('common.cancel')}
@@ -530,18 +530,18 @@ function MessageBubbleInner({
               onClick={() => onSwitchVersion?.(message.id, versionInfo.active - 1)}
               disabled={versionInfo.active <= 0}
               className="rounded px-1.5 py-0.5 transition-colors hover:bg-white/30 disabled:opacity-30"
-              aria-label="上一个版本"
+              aria-label={t('message.prevVersion')}
             >
               ‹
             </button>
-            <span aria-label={`第 ${versionInfo.active + 1} 版，共 ${versionInfo.total} 版`}>
+            <span aria-label={t('message.versionStatus').replace('{active}', String(versionInfo.active + 1)).replace('{total}', String(versionInfo.total))}>
               {versionInfo.active + 1}/{versionInfo.total}
             </span>
             <button
               onClick={() => onSwitchVersion?.(message.id, versionInfo.active + 1)}
               disabled={versionInfo.active >= versionInfo.total - 1}
               className="rounded px-1.5 py-0.5 transition-colors hover:bg-white/30 disabled:opacity-30"
-              aria-label="下一个版本"
+              aria-label={t('message.nextVersion')}
             >
               ›
             </button>
@@ -772,7 +772,7 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
           className="w-full resize-none rounded-lg border border-border-light bg-white/70 px-3 py-2 text-xs leading-relaxed text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/30 dark:bg-white/5"
         />
         <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-          <button onClick={() => setEditingPrompt(false)} className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-black/5">取消</button>
+          <button onClick={() => setEditingPrompt(false)} className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-black/5 dark:hover:bg-white/10">取消</button>
           <button onClick={handleSavePrompt} className="rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20">保存</button>
           <button onClick={() => { handleSavePrompt(); onRegenerate?.(messageId, promptValue, img.id); }} className="rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20">保存并重新生成</button>
         </div>
@@ -806,7 +806,7 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
           <div className="flex shrink-0 gap-1">
             <button
               onClick={() => { setPromptValue(img.prompt); setEditingPrompt(true); }}
-              className="rounded-lg bg-black/5 p-1.5 text-text-muted transition-colors hover:bg-black/10 hover:text-text-primary"
+              className="rounded-lg bg-black/5 p-1.5 text-text-muted transition-colors hover:bg-black/10 hover:text-text-primary dark:bg-white/10 dark:hover:bg-white/15"
               title="查看 / 编辑提示词"
               aria-label="查看 / 编辑提示词"
             >

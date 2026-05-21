@@ -138,12 +138,17 @@ const translations: Record<Lang, Record<string, string>> = {
     'editor.previewTitle': '聊天预览',
     'editor.previewSubtitle': '角色资料会直接影响真实聊天时的语气与记忆',
     'editor.previewNote': '这是当前角色在聊天中的感觉预览',
+    'editor.saveSuccess': '已保存角色',
+    'editor.saveFailed': '保存失败',
+    'editor.confirmDiscard': '有未保存的修改，确定离开吗？',
 
     'settings.title': '设置',
     'settings.back': '返回聊天',
     'settings.saved': '已保存',
     'settings.saving': '保存中...',
     'settings.save': '保存设置',
+    'settings.saveSuccess': '设置已保存',
+    'settings.saveFailed': '保存失败',
     'settings.api': '接口配置',
     'settings.apiBase': 'API地址',
     'settings.apiBasePlaceholder': 'https://api.openai.com/v1',
@@ -212,6 +217,8 @@ const translations: Record<Lang, Record<string, string>> = {
     'search.placeholder': '搜索对话内容...',
     'search.hint': '输入关键词开始搜索',
     'search.noResults': '没有找到相关内容',
+    'search.loadMore': '查看更多结果',
+    'search.youPrefix': '你：',
     'common.loading': '加载中...',
     'common.empty': '暂无内容',
     'common.more': '更多',
@@ -230,6 +237,10 @@ const translations: Record<Lang, Record<string, string>> = {
     'message.delete': '删除消息',
     'message.regenerate': '重新生成',
     'message.regenerateFromHere': '重新回答',
+    'message.you': '你',
+    'message.prevVersion': '上一个版本',
+    'message.nextVersion': '下一个版本',
+    'message.versionStatus': '第 {active} 版，共 {total} 版',
 
     'chat.summarize': '总结上下文',
     'chat.summarizing': '正在总结...',
@@ -241,6 +252,24 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.duplicating': '复制中...',
     'chat.duplicateSuccess': '已复制为副本',
     'chat.duplicateError': '复制失败，请稍后重试',
+
+    // toast 文案：以下用于 ChatView 内部的轻提示，统一走 i18n
+    'chat.memoryUpdated': 'TA 更新了关于你的 {count} 条记忆',
+    'chat.summarizeTooFew': '消息太少，暂时不需要总结',
+    'chat.imageGenStart': '正在生成图片...',
+    'chat.imageGenPromptFail': 'AI 未能生成有效的提示词',
+    'chat.imageGenNoUrl': '生图未返回图片',
+    'chat.imageGenGeneric': '生图失败',
+    'chat.imageLoadFail': '加载图片失败',
+    'chat.imageBatchDeleted': '已删除 {count} 张图片',
+    'chat.imageDeleteFail': '删除失败',
+    'chat.resetActionDone': '已{action} {count} 条消息',
+    'chat.resetActionMark': '标记已提取',
+    'chat.resetActionReset': '重置',
+    'chat.resetExtractionFail': '操作失败',
+    'chat.manualExtractFail': '触发提取失败',
+    'chat.ignoreOn': '已忽略本对话的记忆提取',
+    'chat.ignoreOff': '已恢复记忆提取',
 
     'imageGen.title': '生成图片',
     'imageGen.aiHint': 'AI 提示（可选）',
@@ -326,6 +355,12 @@ const translations: Record<Lang, Record<string, string>> = {
     'import.characterHint': '只会导入到当前正在编辑的角色，可选择覆盖表单资料或追加它的记忆/对话',
     'import.apply': '导入',
     'import.characterSuccess': '导入完成：{memories} 条记忆，{conversations} 段对话。角色资料如有勾选，会先覆盖当前表单，保存后生效',
+
+    'errorBoundary.title': '页面出了点小状况',
+    'errorBoundary.body': '刚才的操作触发了一个意外的错误，已经被拦截，你可以尝试恢复或刷新页面。',
+    'errorBoundary.unknown': '未知错误',
+    'errorBoundary.recover': '尝试恢复',
+    'errorBoundary.reload': '刷新页面',
   },
   en: {
     'sidebar.tagline': 'Warm light · companionship · long-term memory',
@@ -464,12 +499,17 @@ const translations: Record<Lang, Record<string, string>> = {
     'editor.previewTitle': 'Chat preview',
     'editor.previewSubtitle': 'Character settings shape real chat tone and memory',
     'editor.previewNote': 'This is the current feel of the character in chat',
+    'editor.saveSuccess': 'Character saved',
+    'editor.saveFailed': 'Save failed',
+    'editor.confirmDiscard': 'You have unsaved changes. Leave anyway?',
 
     'settings.title': 'Settings',
     'settings.back': 'Back to chat',
     'settings.saved': 'Saved',
     'settings.saving': 'Saving...',
     'settings.save': 'Save settings',
+    'settings.saveSuccess': 'Settings saved',
+    'settings.saveFailed': 'Save failed',
     'settings.api': 'API settings',
     'settings.apiBase': 'API base URL',
     'settings.apiBasePlaceholder': 'https://api.openai.com/v1',
@@ -539,6 +579,8 @@ const translations: Record<Lang, Record<string, string>> = {
     'search.placeholder': 'Search messages...',
     'search.hint': 'Type a keyword to search',
     'search.noResults': 'No results found',
+    'search.loadMore': 'View more results',
+    'search.youPrefix': 'You: ',
     'common.loading': 'Loading...',
     'common.empty': 'No content yet',
     'common.more': 'More',
@@ -557,6 +599,10 @@ const translations: Record<Lang, Record<string, string>> = {
     'message.delete': 'Delete message',
     'message.regenerate': 'Regenerate',
     'message.regenerateFromHere': 'Regenerate from here',
+    'message.you': 'You',
+    'message.prevVersion': 'Previous version',
+    'message.nextVersion': 'Next version',
+    'message.versionStatus': 'Version {active} of {total}',
 
     'chat.summarize': 'Summarize context',
     'chat.summarizing': 'Summarizing...',
@@ -568,6 +614,24 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.duplicating': 'Duplicating...',
     'chat.duplicateSuccess': 'Duplicated as a copy',
     'chat.duplicateError': 'Duplicate failed, please try again',
+
+    // toast strings (i18n for ChatView toasts)
+    'chat.memoryUpdated': 'They updated {count} memories about you',
+    'chat.summarizeTooFew': 'Not enough messages to summarize yet',
+    'chat.imageGenStart': 'Generating image...',
+    'chat.imageGenPromptFail': 'AI failed to generate a valid prompt',
+    'chat.imageGenNoUrl': 'Image generation returned no image',
+    'chat.imageGenGeneric': 'Image generation failed',
+    'chat.imageLoadFail': 'Failed to load images',
+    'chat.imageBatchDeleted': 'Deleted {count} images',
+    'chat.imageDeleteFail': 'Delete failed',
+    'chat.resetActionDone': '{action} {count} message(s)',
+    'chat.resetActionMark': 'Marked as extracted',
+    'chat.resetActionReset': 'Reset',
+    'chat.resetExtractionFail': 'Operation failed',
+    'chat.manualExtractFail': 'Failed to trigger extraction',
+    'chat.ignoreOn': 'Memory extraction disabled for this conversation',
+    'chat.ignoreOff': 'Memory extraction restored',
 
     'imageGen.title': 'Generate Image',
     'imageGen.aiHint': 'AI hint (optional)',
@@ -653,11 +717,27 @@ const translations: Record<Lang, Record<string, string>> = {
     'import.characterHint': 'Only imports into the character currently being edited. You can overwrite form fields or append its memories/conversations.',
     'import.apply': 'Import',
     'import.characterSuccess': 'Import complete: {memories} memories, {conversations} conversations. Checked profile fields are applied to the form and need saving.',
+
+    'errorBoundary.title': 'Something went wrong on this page',
+    'errorBoundary.body': 'An unexpected error was caught. You can try to recover or reload the page.',
+    'errorBoundary.unknown': 'Unknown error',
+    'errorBoundary.recover': 'Try to recover',
+    'errorBoundary.reload': 'Reload page',
   },
 };
 
 export function t(key: string, lang: Lang): string {
   return translations[lang]?.[key] ?? key;
+}
+
+/**
+ * 将翻译模板中的 {name} 占位符替换为实际值。
+ * 模板示例：'TA 更新了关于你的 {count} 条记忆' + { count: 3 } => 'TA 更新了关于你的 3 条记忆'
+ */
+export function formatTemplate(template: string, params: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(params, key) ? String(params[key]) : match
+  );
 }
 
 export default translations;

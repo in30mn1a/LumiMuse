@@ -73,6 +73,20 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
         if (isDragging) return;
         onSelect(character.id, character);
       }}
+      // role="button" + tabIndex=0 让 div 进入 Tab 序列，但语义上是按钮，
+      // 因此必须自己绑定 Enter/Space → 触发 onClick，否则键盘用户无法激活
+      // (WAI-ARIA: 自定义按钮控件需复刻原生 button 的键盘行为)
+      onKeyDown={(e) => {
+        if (isDragging) return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          onSelect(character.id, character);
+        } else if (e.key === ' ') {
+          // Space 默认会让页面滚动，需 preventDefault；但仅在 keyup 时触发更接近原生 button
+          e.preventDefault();
+          onSelect(character.id, character);
+        }
+      }}
       role="button"
       tabIndex={0}
     >

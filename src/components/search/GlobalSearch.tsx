@@ -25,6 +25,9 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  // 打开搜索弹窗前的活跃元素（通常是触发 Cmd+K 的按钮或 body）
+  // 关闭后将焦点还回去，保持键盘用户的操作连续性，避免焦点跳到 body 顶部
+  const triggerRef = useRef<HTMLElement | null>(null);
   const { results: messageResults, loading, loadingMore, hasMore, loadMore, clearSearch } = useMessageSearch(open ? query : '', { limit: 30, debounceMs: 200 });
   const results = useMemo<SearchResult[]>(() => messageResults.map(m => ({
       id: m.messageId,
@@ -36,15 +39,20 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
     })), [messageResults]);
   const safeActiveIndex = results.length > 0 ? Math.min(activeIndex, results.length - 1) : 0;
 
-  // 打开时聚焦输入框
+  // 打开时聚焦输入框；同时记录原焦点元素以便关闭时恢复
   useEffect(() => {
     if (open) {
+      // 在打开瞬间捕获原焦点（如 Cmd+K 触发按钮），后面 close 时再 .focus() 还回去
+      triggerRef.current = (document.activeElement as HTMLElement) || null;
       queueMicrotask(() => {
         setQuery('');
         clearSearch();
         setActiveIndex(0);
       });
       setTimeout(() => inputRef.current?.focus(), 50);
+    } else {
+      // 关闭后焦点回到触发元素，符合 WAI-ARIA 对话框最佳实践
+      triggerRef.current?.focus?.();
     }
   }, [clearSearch, open]);
 
@@ -66,6 +74,11 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
     <div
       className="fixed inset-0 z-[70] flex items-start justify-center bg-black/35 px-4 pt-[12vh] backdrop-blur-sm"
       onClick={onClose}
+      // role="dialog" + aria-modal 让屏幕阅读器把这块视为模态对话框，
+      // 阅读时会暂停背景 DOM 的朗读，专注于搜索界面
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('search.placeholder') || '搜索'}
     >
       <div
         className="surface-panel w-full max-w-xl overflow-hidden"
@@ -123,7 +136,7 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
               disabled={loadingMore}
               className="w-full px-4 py-3 text-center text-xs font-medium text-accent-dark transition-colors hover:bg-warm-50 disabled:cursor-not-allowed disabled:text-text-muted"
             >
-              {loadingMore ? t('common.loading') : '查看更多结果'}
+              {loadingMore ? t('common.loading') : t('search.loadMore')}
             </button>
           )}
         </div>

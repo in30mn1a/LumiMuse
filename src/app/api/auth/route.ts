@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { issueAuthToken, timingSafeEqualString, TOKEN_TTL_MS } from '@/lib/auth-token';
 
 // POST /api/auth — 验证访问密码，写入认证 cookie
 export async function POST(request: NextRequest) {
@@ -16,20 +17,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '请求格式错误' }, { status: 400 });
   }
 
-  if (body.password !== password) {
-    // 故意不区分"密码错误"和"密码为空"，避免信息泄露
+  // 常量时间比较，避免通过响应耗时差推测密码
+  const submitted = typeof body.password === 'string' ? body.password : '';
+  if (!timingSafeEqualString(submitted, password)) {
     return NextResponse.json({ error: '密码不正确' }, { status: 401 });
   }
 
-  // 验证通过，写入 httpOnly cookie
+  // 验证通过，签发签名 token 并写入 httpOnly cookie
+  const token = await issueAuthToken();
   const response = NextResponse.json({ ok: true });
-  response.cookies.set('lumimuse_auth', password, {
+  response.cookies.set('lumimuse_auth', token, {
     httpOnly: true,
     sameSite: 'lax',
     // 生产环境下建议开启 secure，本地 http 开发时不强制
     secure: process.env.NODE_ENV === 'production',
-    // 30 天有效期
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: Math.floor(TOKEN_TTL_MS / 1000),
     path: '/',
   });
 

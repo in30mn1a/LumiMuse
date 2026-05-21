@@ -117,10 +117,33 @@ async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphan
 }
 
 /**
+ * 路由内独立鉴权检查（defense in depth）。
+ *
+ * 为什么要在路由内重做一次：
+ *   - middleware 是全局兜底，一旦 PUBLIC_PATHS 配置失误、matcher 漏配，
+ *     或未来重构把 /api/maintenance 误划入公开路径，将直接暴露破坏性接口。
+ *   - 维护接口（删除孤儿数据 / 文件）属于高危操作，独立校验可以将单点
+ *     失误造成的影响降到最低。
+ */
+async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
+  if (!process.env.ACCESS_PASSWORD) return null;
+  const token = request.cookies.get('lumimuse_auth')?.value;
+  const { verifyAuthToken } = await import('@/lib/auth-token');
+  const valid = await verifyAuthToken(token);
+  if (!valid) {
+    return NextResponse.json({ error: '未授权' }, { status: 401 });
+  }
+  return null;
+}
+
+/**
  * GET /api/maintenance
  * 预览孤儿数据数量，不实际删除（含文件孤儿）
  */
-export async function GET(_request: NextRequest) {
+export async function GET(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const dbStats = countOrphans();
   const scanResults = {
     avatars: await scanOrphanFiles('avatars'),
@@ -139,7 +162,11 @@ export async function GET(_request: NextRequest) {
  * POST /api/maintenance
  * 执行孤儿数据清理（含文件孤儿）
  */
-export async function POST(_request: NextRequest) {
+export async function POST(request: NextRequest) {
+  // defense in depth：维护接口危险性高，路由内独立鉴权
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const db = getDb();
 
   const cleanup = db.transaction(() => {

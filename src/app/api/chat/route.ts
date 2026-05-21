@@ -81,83 +81,94 @@ export async function POST(request: NextRequest) {
             // 该对话设置了"忽略记忆提取"，跳过所有触发逻辑
             if (conversation.ignore_memory) return;
 
-            const allMessages = db.prepare(
-              'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-            ).all(conversation_id) as Message[];
+            // 记忆触发判定 + 入队属于"事后"工作，包含较多 DB 查询和遍历，
+            // 同步执行会阻塞 SSE 流的关闭。用 queueMicrotask 异步化，让 done 事件
+            // 尽快下发、流尽快关闭；消息保存仍由 runChat 内部同步完成，不会丢消息。
+            queueMicrotask(() => {
+              try {
+                const allMessages = db.prepare(
+                  'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
+                ).all(conversation_id) as Message[];
 
-            for (const msg of allMessages) {
-              if (typeof (msg as Record<string, unknown>).metadata === 'string') {
-                (msg as Record<string, unknown>).metadata = JSON.parse((msg as Record<string, unknown>).metadata as string);
-              }
-            }
-
-            // 未提取的用户消息（排除 summary 类型）
-            const unextracted = allMessages.filter(message => {
-              const meta = message.metadata as Record<string, unknown> || {};
-              return message.role === 'user' && !meta.memory_extracted;
-            });
-
-            if (unextracted.length === 0) return;
-
-            // 构建完整对话片段：未提取的用户消息 + 紧随其后的 assistant 回复
-            // 用 Set 记录未提取用户消息的 id，再把它们之间/之后的 assistant 消息也纳入
-            const unextractedIds = new Set(unextracted.map(m => m.id));
-            const extractionMessages: Message[] = [];
-            let includeNext = false;
-            for (const msg of allMessages) {
-              const msgMeta = (msg.metadata || {}) as Record<string, unknown>;
-              if (msgMeta.isSummary) continue;
-              if (unextractedIds.has(msg.id)) {
-                extractionMessages.push(msg);
-                includeNext = true; // 下一条 assistant 消息也要带上
-              } else if (includeNext && msg.role === 'assistant') {
-                const meta = msg.metadata as Record<string, unknown> || {};
-                if (!meta.memory_extracted) {
-                  extractionMessages.push(msg);
+                for (const msg of allMessages) {
+                  if (typeof (msg as Record<string, unknown>).metadata === 'string') {
+                    (msg as Record<string, unknown>).metadata = JSON.parse((msg as Record<string, unknown>).metadata as string);
+                  }
                 }
-                includeNext = false;
-              } else {
-                includeNext = false;
+
+                // 未提取的用户消息（排除 summary 类型）
+                const unextracted = allMessages.filter(message => {
+                  const meta = message.metadata as Record<string, unknown> || {};
+                  return message.role === 'user' && !meta.memory_extracted;
+                });
+
+                if (unextracted.length === 0) return;
+
+                // 构建完整对话片段：未提取的用户消息 + 紧随其后的 assistant 回复
+                // 用 Set 记录未提取用户消息的 id，再把它们之间/之后的 assistant 消息也纳入
+                const unextractedIds = new Set(unextracted.map(m => m.id));
+                const extractionMessages: Message[] = [];
+                let includeNext = false;
+                for (const msg of allMessages) {
+                  const msgMeta = (msg.metadata || {}) as Record<string, unknown>;
+                  if (msgMeta.isSummary) continue;
+                  if (unextractedIds.has(msg.id)) {
+                    extractionMessages.push(msg);
+                    includeNext = true; // 下一条 assistant 消息也要带上
+                  } else if (includeNext && msg.role === 'assistant') {
+                    const meta = msg.metadata as Record<string, unknown> || {};
+                    if (!meta.memory_extracted) {
+                      extractionMessages.push(msg);
+                    }
+                    includeNext = false;
+                  } else {
+                    includeNext = false;
+                  }
+                }
+
+                // 记忆提取触发判断
+                let shouldExtract = false;
+
+                // 1. 间隔消息数触发
+                if (settings.memory_trigger_interval_enabled && unextracted.length >= settings.memory_interval) {
+                  shouldExtract = true;
+                }
+
+                // 2. 关键词触发
+                if (!shouldExtract && settings.memory_trigger_keyword_enabled && settings.memory_trigger_keywords) {
+                  const keywords = settings.memory_trigger_keywords.split(',').map(k => k.trim()).filter(Boolean);
+                  const lastUserMsg = unextracted[unextracted.length - 1]?.content || '';
+                  if (keywords.some(kw => lastUserMsg.includes(kw))) {
+                    shouldExtract = true;
+                  }
+                }
+
+                // 3. 固定时间间隔触发：检查距离上次提取是否超过设定小时数
+                if (!shouldExtract && settings.memory_trigger_time_enabled && unextracted.length > 0) {
+                  const hours = settings.memory_trigger_time_hours || 24;
+                  const lastExtractedMsg = allMessages
+                    .filter(m => {
+                      const meta = m.metadata as Record<string, unknown> || {};
+                      return m.role === 'user' && meta.memory_extracted;
+                    })
+                    .pop();
+                  const lastExtractedTime = lastExtractedMsg ? new Date(lastExtractedMsg.created_at).getTime() : 0;
+                  const now = Date.now();
+                  if (now - lastExtractedTime >= hours * 60 * 60 * 1000) {
+                    shouldExtract = true;
+                  }
+                }
+
+                if (shouldExtract) {
+                  enqueueExtraction(conversation.character_id, conversation_id, extractionMessages);
+                  // send 内部已对 closed 做兜底，即便流已关闭也是 no-op
+                  send('memory', JSON.stringify({ status: 'extracting' }));
+                }
+              } catch (err) {
+                // 异步任务必须自己捕获异常，避免 unhandled rejection 导致进程崩溃
+                console.error('Memory trigger evaluation failed:', err);
               }
-            }
-
-            // 记忆提取触发判断
-            let shouldExtract = false;
-
-            // 1. 间隔消息数触发
-            if (settings.memory_trigger_interval_enabled && unextracted.length >= settings.memory_interval) {
-              shouldExtract = true;
-            }
-
-            // 2. 关键词触发
-            if (!shouldExtract && settings.memory_trigger_keyword_enabled && settings.memory_trigger_keywords) {
-              const keywords = settings.memory_trigger_keywords.split(',').map(k => k.trim()).filter(Boolean);
-              const lastUserMsg = unextracted[unextracted.length - 1]?.content || '';
-              if (keywords.some(kw => lastUserMsg.includes(kw))) {
-                shouldExtract = true;
-              }
-            }
-
-            // 3. 固定时间间隔触发：检查距离上次提取是否超过设定小时数
-            if (!shouldExtract && settings.memory_trigger_time_enabled && unextracted.length > 0) {
-              const hours = settings.memory_trigger_time_hours || 24;
-              const lastExtractedMsg = allMessages
-                .filter(m => {
-                  const meta = m.metadata as Record<string, unknown> || {};
-                  return m.role === 'user' && meta.memory_extracted;
-                })
-                .pop();
-              const lastExtractedTime = lastExtractedMsg ? new Date(lastExtractedMsg.created_at).getTime() : 0;
-              const now = Date.now();
-              if (now - lastExtractedTime >= hours * 60 * 60 * 1000) {
-                shouldExtract = true;
-              }
-            }
-
-            if (shouldExtract) {
-              enqueueExtraction(conversation.character_id, conversation_id, extractionMessages);
-              send('memory', JSON.stringify({ status: 'extracting' }));
-            }
+            });
           },
           onError: (error) => {
             send('error', JSON.stringify({ message: error.message }));

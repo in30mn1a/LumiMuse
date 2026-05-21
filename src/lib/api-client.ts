@@ -1,4 +1,5 @@
 import { Settings } from '@/types';
+import { safeFetch } from './ssrf-guard';
 
 export type ChatMessageContent =
   | string
@@ -32,7 +33,7 @@ export async function chatCompletionStream(
     stream: true,
   };
 
-  const response = await fetch(`${settings.api_base}/chat/completions`, {
+  const response = await safeFetch(`${settings.api_base}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -48,7 +49,12 @@ export async function chatCompletionStream(
     return;
   }
 
-  const reader = response.body!.getReader();
+  if (!response.body) {
+    callbacks.onError(new Error('API 未返回响应体（可能是网络或代理问题）'));
+    return;
+  }
+
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let fullText = '';
   let buffer = '';
@@ -136,7 +142,7 @@ export async function chatCompletion(
     body.response_format = { type: 'json_object' };
   }
 
-  const response = await fetch(`${settings.api_base}/chat/completions`, {
+  const response = await safeFetch(`${settings.api_base}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

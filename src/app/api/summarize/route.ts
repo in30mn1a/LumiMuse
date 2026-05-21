@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { Settings, Message, Character } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { estimateTokens } from '@/lib/token-counter';
+import { safeFetch } from '@/lib/ssrf-guard';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(request: NextRequest) {
@@ -75,7 +76,8 @@ ${convText}`;
 
   try {
     // 使用流式调用收集完整内容（兼容性更好）
-    const response = await fetch(`${settings.api_base}/chat/completions`, {
+    // 客户端断开连接时同步取消上游请求，避免 reader 泄漏
+    const response = await safeFetch(`${settings.api_base}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -88,6 +90,7 @@ ${convText}`;
         temperature: settings.temperature,
         stream: true,
       }),
+      signal: request.signal,
     });
 
     if (!response.ok) {
@@ -95,32 +98,45 @@ ${convText}`;
       throw new Error(`LLM API error ${response.status}: ${text.slice(0, 200)}`);
     }
 
+    if (!response.body) {
+      throw new Error('LLM 未返回响应体');
+    }
+
     // 读取流式响应，累积完整内容
-    const reader = response.body!.getReader();
+    const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let summaryContent = '';
     let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        if (request.signal.aborted) {
+          await reader.cancel();
+          return new Response(JSON.stringify({ error: '请求已取消' }), { status: 499 });
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split('\n\n');
-      buffer = parts.pop()!;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop()!;
 
-      for (const part of parts) {
-        for (const line of part.split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === 'data: [DONE]') continue;
-          if (!trimmed.startsWith('data: ')) continue;
-          try {
-            const json = JSON.parse(trimmed.slice(6));
-            const delta = json.choices?.[0]?.delta?.content;
-            if (delta) summaryContent += delta;
-          } catch { /* 跳过格式不完整的分片 */ }
+        for (const part of parts) {
+          for (const line of part.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed === 'data: [DONE]') continue;
+            if (!trimmed.startsWith('data: ')) continue;
+            try {
+              const json = JSON.parse(trimmed.slice(6));
+              const delta = json.choices?.[0]?.delta?.content;
+              if (delta) summaryContent += delta;
+            } catch { /* 跳过格式不完整的分片 */ }
+          }
         }
       }
+    } finally {
+      // 无论正常结束还是异常都释放 reader
+      try { await reader.cancel(); } catch { /* ignore */ }
     }
 
     // 处理剩余缓冲区

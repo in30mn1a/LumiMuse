@@ -17,6 +17,15 @@
   --color-border-light: #ece5fb;
   --font-sans: 'LXGW WenKai Screen', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
   --font-display: 'Quicksand', 'LXGW WenKai Screen', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+
+  /* 语义化颜色：用于消息气泡 / 浮层 / 分隔等场景 */
+  --bubble-user-bg: linear-gradient(135deg, #9b7cf0 0%, #6f52c5 100%);
+  --bubble-assistant-bg: rgba(255, 255, 255, 0.88);
+  --overlay-light: rgba(255, 255, 255, 0.7);
+  --overlay-strong: rgba(255, 255, 255, 0.9);
+  --soft-divider: rgba(0, 0, 0, 0.06);
+  --code-inline-bg: rgba(0, 0, 0, 0.06);
+  --code-block-bg: rgba(0, 0, 0, 0.04);
 }
 
 .dark {
@@ -34,6 +43,15 @@
   --color-text-muted: #8f86a4;
   --color-border: #3a304f;
   --color-border-light: #2f2643;
+
+  /* 暗色：消息气泡背景比 light 更亮一些以保证可读 */
+  --bubble-user-bg: linear-gradient(135deg, #8a6ee0 0%, #5d44b3 100%);
+  --bubble-assistant-bg: rgba(41, 32, 58, 0.86);
+  --overlay-light: rgba(41, 32, 58, 0.6);
+  --overlay-strong: rgba(41, 32, 58, 0.9);
+  --soft-divider: rgba(255, 255, 255, 0.08);
+  --code-inline-bg: rgba(255, 255, 255, 0.1);
+  --code-block-bg: rgba(255, 255, 255, 0.06);
 }
 
 @layer base {
@@ -135,6 +153,11 @@
     backdrop-filter: blur(18px);
   }
 
+  .dark .surface-panel {
+    background: rgba(36, 28, 52, 0.82);
+    box-shadow: 0 22px 54px rgba(0, 0, 0, 0.45);
+  }
+
   .surface-panel-quiet {
     background: rgba(247, 243, 255, 0.84);
     border: 1px solid rgba(155, 124, 240, 0.12);
@@ -142,11 +165,20 @@
     backdrop-filter: blur(16px);
   }
 
+  .dark .surface-panel-quiet {
+    background: rgba(33, 26, 48, 0.78);
+  }
+
   .surface-card {
     background: rgba(255, 255, 255, 0.9);
     border: 1px solid var(--color-border-light);
     border-radius: 20px;
     box-shadow: 0 14px 28px rgba(92, 74, 139, 0.06);
+  }
+
+  .dark .surface-card {
+    background: rgba(38, 30, 56, 0.9);
+    box-shadow: 0 14px 28px rgba(0, 0, 0, 0.4);
   }
 
   .surface-hero {
@@ -241,6 +273,12 @@
       border-color 150ms ease,
       box-shadow 150ms ease,
       background-color 150ms ease;
+  }
+
+  .dark .input-rich,
+  .dark .select-rich,
+  .dark .textarea-rich {
+    background: rgba(36, 28, 52, 0.7);
   }
 
   .input-rich,
@@ -380,10 +418,14 @@
   }
 
   .message-assistant {
-    background: rgba(255, 255, 255, 0.88);
+    background: var(--bubble-assistant-bg);
     color: var(--color-text-primary);
     border: 1px solid var(--color-border-light);
     box-shadow: 0 12px 24px rgba(92, 74, 139, 0.06);
+  }
+
+  .dark .message-assistant {
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
   }
 
   .message-meta {

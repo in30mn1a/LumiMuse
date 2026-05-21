@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { loadSettings } from '@/lib/settings';
 import { ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS } from '@/types';
+import { safeFetch } from '@/lib/ssrf-guard';
 import { writeFile, mkdir } from 'fs/promises';
 import { inflateRawSync } from 'zlib';
 import path from 'path';
@@ -29,12 +30,12 @@ async function saveBase64Image(base64: string): Promise<string> {
   return `/api/files/generated/${filename}`;
 }
 
-// 保存远程图片 URL 到本地
+// 保存远程图片 URL 到本地（远端 URL 必须经过 SSRF 校验，避免恶意 ComfyUI/custom 输出指向内网）
 async function saveRemoteImage(imageUrl: string): Promise<string> {
   const dir = await ensureOutputDir();
   const filename = `${uuid()}.png`;
   const filepath = path.join(dir, filename);
-  const response = await fetch(imageUrl);
+  const response = await safeFetch(imageUrl);
   if (!response.ok) throw new Error(`下载图片失败: ${response.status}`);
   const buffer = Buffer.from(await response.arrayBuffer());
   await writeFile(filepath, buffer);
@@ -59,7 +60,7 @@ async function generateSD(prompt: string, negativePrompt: string, cfg: ImageGenS
   };
 
   const url = `${cfg.sd_url.replace(/\/$/, '')}/sdapi/v1/txt2img`;
-  const response = await fetch(url, {
+  const response = await safeFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -256,7 +257,7 @@ async function generateComfyUI(prompt: string, negativePrompt: string, cfg: Imag
   const baseUrl = cfg.comfyui_url.replace(/\/$/, '');
 
   // 提交任务
-  const queueRes = await fetch(`${baseUrl}/prompt`, {
+  const queueRes = await safeFetch(`${baseUrl}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: workflow }),
@@ -276,7 +277,7 @@ async function generateComfyUI(prompt: string, negativePrompt: string, cfg: Imag
 
   while (Date.now() - start < maxWait) {
     await new Promise(r => setTimeout(r, 2000));
-    const historyRes = await fetch(`${baseUrl}/history/${prompt_id}`);
+    const historyRes = await safeFetch(`${baseUrl}/history/${prompt_id}`);
     if (!historyRes.ok) continue;
     const history = await historyRes.json();
     const result = history[prompt_id];
@@ -350,7 +351,7 @@ async function generateCustom(prompt: string, cfg: ImageGenSettings): Promise<st
     headers['Authorization'] = `Bearer ${cfg.custom_api_key}`;
   }
 
-  const response = await fetch(url, {
+  const response = await safeFetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),

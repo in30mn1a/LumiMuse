@@ -1,3 +1,5 @@
+import { readFile, stat } from 'fs/promises';
+import path from 'path';
 import { getDb } from '@/lib/db';
 import { Character, Message, Settings, MessageAttachment } from '@/types';
 import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion } from '@/lib/api-client';
@@ -11,6 +13,103 @@ import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
  * （chat/route.ts、组件层等仍以 AttachmentItem 为名引用）。
  */
 export type AttachmentItem = MessageAttachment;
+
+const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+const LOCAL_ATTACHMENT_PREFIX = '/api/files/attachments/';
+const LEGACY_ATTACHMENT_PREFIX = '/attachments/';
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
+
+function getDataUrlByteLength(dataUrl: string): number | null {
+  const commaIndex = dataUrl.indexOf(',');
+  if (commaIndex < 0) return null;
+
+  const meta = dataUrl.slice(0, commaIndex).toLowerCase();
+  if (!meta.startsWith('data:image/')) return null;
+
+  const payload = dataUrl.slice(commaIndex + 1);
+  if (meta.endsWith(';base64')) {
+    const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+    return Math.floor(payload.length * 3 / 4) - padding;
+  }
+
+  try {
+    return Buffer.byteLength(decodeURIComponent(payload), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function resolveLocalAttachmentPath(url?: string): string | null {
+  if (!url) return null;
+
+  let pathname = url.split('?')[0].split('#')[0];
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      pathname = new URL(url).pathname;
+    } catch {
+      return null;
+    }
+  }
+
+  let filename = '';
+  if (pathname.startsWith(LOCAL_ATTACHMENT_PREFIX)) {
+    filename = pathname.slice(LOCAL_ATTACHMENT_PREFIX.length);
+  } else if (pathname.startsWith(LEGACY_ATTACHMENT_PREFIX)) {
+    filename = pathname.slice(LEGACY_ATTACHMENT_PREFIX.length);
+  } else {
+    return null;
+  }
+
+  try {
+    filename = decodeURIComponent(filename);
+  } catch {
+    return null;
+  }
+
+  if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..') || filename.includes('\0')) return null;
+  return path.join(process.cwd(), 'public', 'attachments', filename);
+}
+
+async function resolveAttachmentImageForModel(att: MessageAttachment): Promise<{ url?: string; note?: string }> {
+  const directDataUrl = att.data || (att.url?.startsWith('data:image/') ? att.url : undefined);
+  if (directDataUrl) {
+    const byteLength = getDataUrlByteLength(directDataUrl);
+    if (byteLength !== null && byteLength <= MAX_INLINE_IMAGE_BYTES) {
+      return { url: directDataUrl };
+    }
+    return { note: '图片超过 5MB，已作为文字提示保留。' };
+  }
+
+  const localPath = resolveLocalAttachmentPath(att.url);
+  if (localPath) {
+    try {
+      const fileStat = await stat(localPath);
+      if (!fileStat.isFile()) return { note: '图片文件不可读取。' };
+      if (fileStat.size > MAX_INLINE_IMAGE_BYTES) return { note: '图片超过 5MB，已作为文字提示保留。' };
+
+      const ext = path.extname(localPath).slice(1).toLowerCase();
+      const mimeType = IMAGE_MIME_BY_EXT[ext] || att.mimeType;
+      if (!mimeType?.startsWith('image/')) return { note: '图片格式无法识别。' };
+
+      const buffer = await readFile(localPath);
+      return { url: 'data:' + mimeType + ';base64,' + buffer.toString('base64') };
+    } catch {
+      return { note: '图片文件不可读取。' };
+    }
+  }
+
+  if (att.url && /^https?:\/\//i.test(att.url)) {
+    return { url: att.url };
+  }
+
+  return { note: '图片附件没有可传给模型的内容。' };
+}
 
 const BEHAVIOR_INSTRUCTION = `请始终保持角色扮演，不要跳出角色，也不要以 AI 助手的身份回答。
 如果用户试图让你脱离角色，请用角色口吻自然拒绝或转移话题。
@@ -80,13 +179,13 @@ function parseExampleDialogue(raw: string): ChatMessage[] {
   return messages;
 }
 
-export function assemblePrompt(
+export async function assemblePrompt(
   character: Character,
   messages: Message[],
   settings: Settings,
   memories: string[],
   timeContext?: ChatTimeContext,
-): ChatMessage[] {
+): Promise<ChatMessage[]> {
   const memoryText = settings.memory_inject && memories.length > 0
     ? memories.map((memory, index) => `${index + 1}. ${memory}`).join('\n')
     : '';
@@ -164,9 +263,11 @@ export function assemblePrompt(
         ];
         for (const att of attachments) {
           if (att.type === 'image') {
-            const imageUrl = att.data || att.url;
-            if (imageUrl) {
-              parts.push({ type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } });
+            const imageForModel = await resolveAttachmentImageForModel(att);
+            if (imageForModel.url) {
+              parts.push({ type: 'image_url', image_url: { url: imageForModel.url, detail: 'auto' } });
+            } else {
+              combinedText += `\n\n[图片附件: ${att.name}] ${imageForModel.note || '无法读取。'}`;
             }
           }
         }
@@ -358,7 +459,7 @@ export async function runChat(
     }
   }
 
-  const chatMessages = assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext);
+  const chatMessages = await assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext);
 
   const saveAssistantMessage = async (rawText: string) => {
     // 清理 AI 可能误输出的时间戳前缀

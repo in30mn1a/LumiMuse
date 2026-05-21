@@ -177,6 +177,40 @@ export function collectConversationLocalAssetUrls(db: Database, conversationId: 
   return urls;
 }
 
+/**
+ * 高效判断候选 URL 是否仍被任意行引用，返回"已无引用"的 URL 子集。
+ * 与 collectAllLocalAssetUrls 相比，按需逐个 LIKE 查询，避免全表 JSON 解析。
+ */
+export function filterUnreferencedLocalAssetUrls(db: Database, candidates: Iterable<string>): string[] {
+  const unique = new Set<string>();
+  for (const url of candidates) {
+    if (resolveLocalAssetUrl(url)) unique.add(url);
+  }
+  if (unique.size === 0) return [];
+
+  // 预编译三条查询：metadata（JSON 字符串）、content、avatar_url。
+  // LIKE 模式以 URL 直接匹配，?# 等查询串后缀不会落在 metadata 持久化值里。
+  const metadataStmt = db.prepare(
+    "SELECT 1 FROM messages WHERE metadata LIKE '%' || ? || '%' LIMIT 1",
+  );
+  const contentStmt = db.prepare(
+    "SELECT 1 FROM messages WHERE content LIKE '%' || ? || '%' LIMIT 1",
+  );
+  const avatarStmt = db.prepare(
+    'SELECT 1 FROM characters WHERE avatar_url = ? LIMIT 1',
+  );
+
+  const orphans: string[] = [];
+  for (const url of unique) {
+    const referenced =
+      metadataStmt.get(url) !== undefined ||
+      contentStmt.get(url) !== undefined ||
+      avatarStmt.get(url) !== undefined;
+    if (!referenced) orphans.push(url);
+  }
+  return orphans;
+}
+
 export function collectAllLocalAssetUrls(db: Database): Set<string> {
   const urls = new Set<string>();
   const characters = db.prepare('SELECT avatar_url FROM characters').all() as Array<{ avatar_url: string | null }>;

@@ -1,6 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { parseMessageMetadata, serializeMessage } from '@/lib/messages';
+import {
+  collectLocalAssetUrlsFromContent,
+  collectLocalAssetUrlsFromMetadata,
+  deleteLocalAssetUrls,
+  filterUnreferencedLocalAssetUrls,
+} from '@/lib/character-file-utils';
+
+type MessageRecord = Record<string, unknown>;
+
+function collectMessageLocalAssetUrls(message: MessageRecord): Set<string> {
+  const urls = collectLocalAssetUrlsFromMetadata(message.metadata);
+  const contentUrls = collectLocalAssetUrlsFromContent(
+    typeof message.content === 'string' ? message.content : null,
+  );
+
+  for (const url of contentUrls) {
+    urls.add(url);
+  }
+
+  return urls;
+}
+
+async function deleteUnreferencedLocalAssets(
+  db: ReturnType<typeof getDb>,
+  previousFileUrls: Set<string>,
+): Promise<void> {
+  if (previousFileUrls.size === 0) return;
+
+  // 只对修改前出现过的 URL 做"是否仍被引用"检查，避免全表扫描所有资源。
+  const orphanUrls = filterUnreferencedLocalAssetUrls(db, previousFileUrls);
+  await deleteLocalAssetUrls(orphanUrls);
+}
 
 function mergeMessageMetadata(
   current: Record<string, unknown>,
@@ -19,6 +51,7 @@ export async function PUT(
 
   const existing = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  const previousFileUrls = collectMessageLocalAssetUrls(existing);
 
   if (body.activeVersion !== undefined) {
     let meta: Record<string, unknown> = {};
@@ -73,6 +106,7 @@ export async function PUT(
     db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(mergedMeta), id);
   }
 
+  await deleteUnreferencedLocalAssets(db, previousFileUrls);
   const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
   return NextResponse.json(serializeMessage(updated));
 }
@@ -86,6 +120,7 @@ export async function DELETE(
 
   const existing = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  const previousFileUrls = collectMessageLocalAssetUrls(existing);
 
   // 如果消息有多个版本，只删除当前激活版本，保留其他版本
   let meta: Record<string, unknown> = {};
@@ -102,6 +137,7 @@ export async function DELETE(
     const target = newVersions[newActiveIdx];
     db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
       .run(target.content, target.token_count, JSON.stringify(meta), id);
+    await deleteUnreferencedLocalAssets(db, previousFileUrls);
     const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
     return NextResponse.json({ ok: true, deleted: 'version', message: serializeMessage(updated) });
   }
@@ -109,5 +145,6 @@ export async function DELETE(
   // 只有一个版本（或无版本信息）：删整条消息
   const result = db.prepare('DELETE FROM messages WHERE id = ?').run(id);
   if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  await deleteUnreferencedLocalAssets(db, previousFileUrls);
   return NextResponse.json({ ok: true, deleted: 'message' });
 }

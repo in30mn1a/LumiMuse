@@ -140,7 +140,10 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
       const downloadUrl = URL.createObjectURL(zipBlob);
       const a = document.createElement('a');
       a.href = downloadUrl;
-      a.download = `lumimuse-images-${new Date().toISOString().slice(0, 10)}.zip`;
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+      a.download = `lumimuse-${character?.name ?? 'images'}-${dateStr}-${timeStr}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

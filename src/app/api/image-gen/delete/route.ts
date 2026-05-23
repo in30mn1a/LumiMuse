@@ -1,0 +1,36 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { unlink } from 'fs/promises';
+import path from 'path';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { url } = await request.json() as { url: string };
+
+    if (!url || typeof url !== 'string') {
+      return NextResponse.json({ error: '缺少 url' }, { status: 400 });
+    }
+
+    // 安全校验：只允许删除 /generated/ 目录下的文件
+    // 兼容新旧两种 URL 格式
+    if (!url.startsWith('/generated/') && !url.startsWith('/api/files/generated/')) {
+      return NextResponse.json({ error: '不允许删除该路径' }, { status: 403 });
+    }
+
+    // 提取文件名，防止路径穿越
+    const filename = path.basename(url);
+    if (!filename || filename.includes('..') || filename.includes('/')) {
+      return NextResponse.json({ error: '非法文件名' }, { status: 400 });
+    }
+
+    const filepath = path.join(process.cwd(), 'public', 'generated', filename);
+    await unlink(filepath);
+
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    // 文件不存在也视为成功（幂等）
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return NextResponse.json({ ok: true });
+    }
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}

@@ -1,0 +1,13 @@
+.git
+.next
+node_modules
+data
+public/generated
+public/avatars
+public/attachments
+.env*.local
+.env
+*.log
+.DS_Store
+.vscode
+.superpowers

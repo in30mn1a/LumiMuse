@@ -1,0 +1,952 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:isolate';
+import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
+import '../database/database.dart';
+
+// ═══════════════════════════════════════════════════════════════
+// 数据模型
+// ═══════════════════════════════════════════════════════════════
+
+/// 备份数据验证结果
+class BackupValidation {
+  /// 验证是否通过
+  final bool isValid;
+
+  /// 错误信息（验证失败时非空）
+  final String? errorMessage;
+
+  /// 角色数量
+  final int characterCount;
+
+  /// 对话数量
+  final int conversationCount;
+
+  /// 消息数量
+  final int messageCount;
+
+  /// 记忆数量
+  final int memoryCount;
+
+  const BackupValidation({
+    required this.isValid,
+    this.errorMessage,
+    this.characterCount = 0,
+    this.conversationCount = 0,
+    this.messageCount = 0,
+    this.memoryCount = 0,
+  });
+
+  /// 创建验证失败结果
+  factory BackupValidation.invalid(String errorMessage) {
+    return BackupValidation(
+      isValid: false,
+      errorMessage: errorMessage,
+    );
+  }
+
+  /// 创建验证成功结果
+  factory BackupValidation.valid({
+    required int characterCount,
+    required int conversationCount,
+    required int messageCount,
+    required int memoryCount,
+  }) {
+    return BackupValidation(
+      isValid: true,
+      characterCount: characterCount,
+      conversationCount: conversationCount,
+      messageCount: messageCount,
+      memoryCount: memoryCount,
+    );
+  }
+}
+
+/// 导出选项 — 控制按角色范围导出时包含哪些数据
+class ExportOptions {
+  /// 是否包含角色资料
+  final bool includeCharacter;
+
+  /// 是否包含角色记忆
+  final bool includeMemories;
+
+  /// 是否包含角色对话
+  final bool includeConversations;
+
+  const ExportOptions({
+    this.includeCharacter = true,
+    this.includeMemories = true,
+    this.includeConversations = true,
+  });
+}
+
+/// 导入选项 — 控制导入时包含哪些数据
+class ImportOptions {
+  /// 是否导入角色资料
+  final bool includeCharacter;
+
+  /// 是否导入角色记忆
+  final bool includeMemories;
+
+  /// 是否导入角色对话
+  final bool includeConversations;
+
+  const ImportOptions({
+    this.includeCharacter = true,
+    this.includeMemories = true,
+    this.includeConversations = true,
+  });
+}
+
+/// 导入结果统计
+class ImportResult {
+  /// 新增记录数
+  final int addedCount;
+
+  /// 跳过（重复）记录数
+  final int skippedCount;
+
+  /// 总处理记录数
+  final int totalCount;
+
+  /// 导入的记忆数量
+  final int memoriesImported;
+
+  /// 导入的对话数量
+  final int conversationsImported;
+
+  /// 导入的消息数量
+  final int messagesImported;
+
+  const ImportResult({
+    required this.addedCount,
+    required this.skippedCount,
+    required this.totalCount,
+    this.memoriesImported = 0,
+    this.conversationsImported = 0,
+    this.messagesImported = 0,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 备份服务
+// ═══════════════════════════════════════════════════════════════
+
+/// 最大导入文件大小：100MB
+const int maxImportFileSize = 100 * 1024 * 1024;
+
+/// 数据备份与恢复服务
+class BackupService {
+  final AppDatabase _db;
+
+  BackupService(this._db);
+
+  /// 导出所有数据为 JSON
+  Future<String> exportToJson() async {
+    final result = await _db.transaction(() async {
+      final characters = await _db.select(_db.characters).get();
+      final conversations = await _db.select(_db.conversations).get();
+      final messages = await _db.select(_db.messages).get();
+      final memories = await _db.select(_db.memories).get();
+      return (characters, conversations, messages, memories);
+    });
+
+    final (characters, conversations, messages, memories) = result;
+
+    final data = {
+      'version': 1,
+      'exported_at': DateTime.now().toIso8601String(),
+      'characters': characters.map((c) => {
+        'id': c.id,
+        'name': c.name,
+        'avatar_url': c.avatarUrl,
+        'personality': c.personality,
+        'scenario': c.scenario,
+        'greeting': c.greeting,
+        'example_dialogue': c.exampleDialogue,
+        'system_prompt': c.systemPrompt,
+        'image_tags': c.imageTags,
+        'basic_info': c.basicInfo,
+        'other_info': c.otherInfo,
+        'sort_order': c.sortOrder,
+        'created_at': c.createdAt.toIso8601String(),
+        'updated_at': c.updatedAt.toIso8601String(),
+      }).toList(),
+      'conversations': conversations.map((c) => {
+        'id': c.id,
+        'character_id': c.characterId,
+        'title': c.title,
+        'ignore_memory': c.ignoreMemory,
+        'created_at': c.createdAt.toIso8601String(),
+        'updated_at': c.updatedAt.toIso8601String(),
+      }).toList(),
+      'messages': messages.map((m) => {
+        'id': m.id,
+        'conversation_id': m.conversationId,
+        'role': m.role,
+        'content': m.content,
+        'token_count': m.tokenCount,
+        'seq': m.seq,
+        'created_at': m.createdAt.toIso8601String(),
+        'metadata': m.metadata,
+      }).toList(),
+      'memories': memories.map((m) => {
+        'id': m.id,
+        'character_id': m.characterId,
+        'category': m.category,
+        'content': m.content,
+        'confidence': m.confidence,
+        'tags': m.tags,
+        'source_msg_ids': m.sourceMsgIds,
+        'created_at': m.createdAt.toIso8601String(),
+        'updated_at': m.updatedAt.toIso8601String(),
+      }).toList(),
+    };
+
+    if (kIsWeb) {
+      return jsonEncode(data);
+    } else {
+      return await Isolate.run(() => jsonEncode(data));
+    }
+  }
+
+  /// 导出到文件，返回文件路径
+  Future<String> exportToFile() async {
+    final json = await exportToJson();
+    final dir = await getApplicationDocumentsDirectory();
+    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+    final file = File('${dir.path}/LumiMuse/backup_$timestamp.json');
+    await file.parent.create(recursive: true);
+    await file.writeAsString(json);
+    return file.path;
+  }
+
+  /// 把任意 JSON 字符串写到指定的目标文件路径（绝对路径），返回写入路径。
+  ///
+  /// 与 `exportToFile` 区别：本方法接受调用方决定的最终路径（通常来自
+  /// FilePicker.saveFile 的返回值），因此可以让用户在桌面端把备份保存到
+  /// 任意位置，避免 `Share.shareXFiles` 在 Windows / Linux 上抛
+  /// MissingPluginException。
+  Future<String> writeJsonToPath(String json, String targetPath) async {
+    final file = File(targetPath);
+    await file.parent.create(recursive: true);
+    await file.writeAsString(json);
+    return file.path;
+  }
+
+  /// 检查文件大小是否在允许范围内（≤100MB）
+  /// 返回 null 表示通过，否则返回错误信息
+  static String? checkFileSize(int fileSizeInBytes) {
+    if (fileSizeInBytes > maxImportFileSize) {
+      final sizeMB = (fileSizeInBytes / (1024 * 1024)).toStringAsFixed(1);
+      // TODO(parity): 主项目缺失 'backup.fileTooLarge' 键，硬编码兜底
+      return '文件大小 ${sizeMB}MB 超过限制（最大 100MB）';
+    }
+    return null;
+  }
+
+  /// 验证备份 JSON 数据格式和必需字段
+  /// 返回验证结果，包含统计信息或错误信息
+  static BackupValidation validateBackupJson(String jsonStr) {
+    // 1. 验证 JSON 格式
+    dynamic parsed;
+    try {
+      parsed = jsonDecode(jsonStr);
+    } catch (e) {
+      // TODO(parity): 主项目缺失 'backup.invalidJson' 键，硬编码兜底
+      return BackupValidation.invalid('文件不是有效的 JSON 格式');
+    }
+
+    // 2. 验证是 Map 类型
+    if (parsed is! Map<String, dynamic>) {
+      // TODO(parity): 主项目缺失 'backup.invalidJson' 键，硬编码兜底
+      return BackupValidation.invalid('文件不是有效的 JSON 格式');
+    }
+
+    final data = parsed;
+
+    // 3. 验证必需顶层字段（支持 v1 characters 数组 和 v2 单 character 两种格式）
+    final missingFields = <String>[];
+    final hasV1Characters = data.containsKey('characters');
+    final hasV2Character = data.containsKey('character') && data['character'] is Map;
+    final hasValidCharacter = hasV1Characters || hasV2Character;
+
+    if (!hasValidCharacter) {
+      missingFields.add('character');
+    }
+    if (!data.containsKey('conversations')) {
+      missingFields.add('conversations');
+    }
+    if (!data.containsKey('memories')) {
+      missingFields.add('memories');
+    }
+
+    if (missingFields.isNotEmpty) {
+      // TODO(parity): 主项目缺失 'backup.missingRequiredFields' 键，硬编码兜底
+      return BackupValidation.invalid(
+        '缺少必需字段：${missingFields.join("、")}',
+      );
+    }
+
+    // 4. 验证字段类型
+    // v1: characters 是 List，v2: character 是 Map（单个角色）
+    int characterCount = 0;
+    if (hasV1Characters) {
+      final characters = data['characters'];
+      if (characters is! List) {
+        // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
+        return BackupValidation.invalid('字段 characters 必须是数组');
+      }
+      characterCount = characters.length;
+    } else {
+      characterCount = 1; // v2 单角色
+    }
+
+    final conversations = data['conversations'];
+    if (conversations is! List) {
+      // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
+      return BackupValidation.invalid('字段 conversations 必须是数组');
+    }
+    final memories = data['memories'];
+    if (memories is! List) {
+      // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
+      return BackupValidation.invalid('字段 memories 必须是数组');
+    }
+
+    // 5. 统计数量
+    final messages = data['messages'];
+    final messageCount = (messages is List) ? messages.length : 0;
+
+    return BackupValidation.valid(
+      characterCount: characterCount,
+      conversationCount: conversations.length,
+      messageCount: messageCount,
+      memoryCount: memories.length,
+    );
+  }
+
+  /// 从 JSON 导入数据（带验证和统计）
+  /// 使用数据库事务确保原子性，ID 重复则跳过保留本地版本
+  Future<ImportResult> importFromJson(String jsonStr) async {
+    // 先验证数据格式
+    final validation = validateBackupJson(jsonStr);
+    if (!validation.isValid) {
+      // TODO(parity): 主项目缺失 'backup.invalidFormat' 键，硬编码兜底
+      throw FormatException(validation.errorMessage ?? '数据格式无效');
+    }
+
+    // TODO(parity): 大批量数据时改为 Isolate.run 避免主线程阻塞
+    final data = kIsWeb
+        ? (jsonDecode(jsonStr) as Map<String, dynamic>)
+        : await Isolate.run(() => jsonDecode(jsonStr) as Map<String, dynamic>);
+    int addedCount = 0;
+    int skippedCount = 0;
+
+    // 使用事务确保原子性
+    await _db.transaction(() async {
+      // 导入角色
+      final characters = data['characters'] as List? ?? [];
+      final characterCompanions = <CharactersCompanion>[];
+      for (final c in characters) {
+        final map = c as Map<String, dynamic>;
+        final id = map['id'] as String;
+
+        // 检查是否已存在，存在则跳过
+        final existing = await (_db.select(_db.characters)
+              ..where((t) => t.id.equals(id)))
+            .getSingleOrNull();
+
+        if (existing != null) {
+          skippedCount++;
+          continue;
+        }
+
+        characterCompanions.add(
+          CharactersCompanion.insert(
+            id: id,
+            name: Value(map['name'] as String? ?? ''),
+            avatarUrl: Value(map['avatar_url'] as String?),
+            personality: Value(map['personality'] as String? ?? ''),
+            scenario: Value(map['scenario'] as String? ?? ''),
+            greeting: Value(map['greeting'] as String? ?? ''),
+            exampleDialogue: Value(map['example_dialogue'] as String? ?? ''),
+            systemPrompt: Value(map['system_prompt'] as String? ?? ''),
+            imageTags: Value(map['image_tags'] as String? ?? ''),
+            basicInfo: Value(map['basic_info'] as String? ?? ''),
+            otherInfo: Value(map['other_info'] as String? ?? ''),
+            sortOrder: Value(map['sort_order'] as int? ?? 0),
+            createdAt: Value(DateTime.parse(map['created_at'] as String)),
+            updatedAt: Value(DateTime.parse(map['updated_at'] as String)),
+          ),
+        );
+        addedCount++;
+      }
+      if (characterCompanions.isNotEmpty) {
+        await _db.batch((batch) {
+          for (final companion in characterCompanions) {
+            batch.insert(_db.characters, companion);
+          }
+        });
+      }
+
+      // 导入对话
+      final conversations = data['conversations'] as List? ?? [];
+      final conversationCompanions = <ConversationsCompanion>[];
+      for (final c in conversations) {
+        final map = c as Map<String, dynamic>;
+        final id = map['id'] as String;
+
+        final existing = await (_db.select(_db.conversations)
+              ..where((t) => t.id.equals(id)))
+            .getSingleOrNull();
+
+        if (existing != null) {
+          skippedCount++;
+          continue;
+        }
+
+        conversationCompanions.add(
+          ConversationsCompanion.insert(
+            id: id,
+            characterId: map['character_id'] as String,
+            title: Value(map['title'] as String? ?? ''),
+            ignoreMemory: Value(map['ignore_memory'] as int? ?? 0),
+            createdAt: Value(DateTime.parse(map['created_at'] as String)),
+            updatedAt: Value(DateTime.parse(map['updated_at'] as String)),
+          ),
+        );
+        addedCount++;
+      }
+      if (conversationCompanions.isNotEmpty) {
+        await _db.batch((batch) {
+          for (final companion in conversationCompanions) {
+            batch.insert(_db.conversations, companion);
+          }
+        });
+      }
+
+      // 导入消息
+      final messages = data['messages'] as List? ?? [];
+      final messageCompanions = <MessagesCompanion>[];
+      for (final m in messages) {
+        final map = m as Map<String, dynamic>;
+        final id = map['id'] as String;
+
+        final existing = await (_db.select(_db.messages)
+              ..where((t) => t.id.equals(id)))
+            .getSingleOrNull();
+
+        if (existing != null) {
+          skippedCount++;
+          continue;
+        }
+
+        messageCompanions.add(
+          MessagesCompanion.insert(
+            id: id,
+            conversationId: map['conversation_id'] as String,
+            role: map['role'] as String,
+            content: Value(map['content'] as String? ?? ''),
+            tokenCount: Value(map['token_count'] as int? ?? 0),
+            seq: Value(map['seq'] as int? ?? 0),
+            createdAt: Value(DateTime.parse(map['created_at'] as String)),
+            metadata: Value(map['metadata'] as String? ?? '{}'),
+          ),
+        );
+        addedCount++;
+      }
+      if (messageCompanions.isNotEmpty) {
+        await _db.batch((batch) {
+          for (final companion in messageCompanions) {
+            batch.insert(_db.messages, companion);
+          }
+        });
+      }
+
+      // 导入记忆
+      final memories = data['memories'] as List? ?? [];
+      final memoryCompanions = <MemoriesCompanion>[];
+      for (final m in memories) {
+        final map = m as Map<String, dynamic>;
+        final id = map['id'] as String;
+
+        final existing = await (_db.select(_db.memories)
+              ..where((t) => t.id.equals(id)))
+            .getSingleOrNull();
+
+        if (existing != null) {
+          skippedCount++;
+          continue;
+        }
+
+        memoryCompanions.add(
+          MemoriesCompanion.insert(
+            id: id,
+            characterId: map['character_id'] as String,
+            category: map['category'] as String,
+            content: map['content'] as String,
+            confidence: Value((map['confidence'] as num?)?.toDouble() ?? 0.8),
+            tags: Value(map['tags'] is String
+                ? map['tags'] as String
+                : jsonEncode(map['tags'] ?? [])),
+            sourceMsgIds: Value(map['source_msg_ids'] is String
+                ? map['source_msg_ids'] as String
+                : jsonEncode(map['source_msg_ids'] ?? [])),
+            createdAt: Value(DateTime.parse(map['created_at'] as String)),
+            updatedAt: Value(DateTime.parse(map['updated_at'] as String)),
+          ),
+        );
+        addedCount++;
+      }
+      if (memoryCompanions.isNotEmpty) {
+        await _db.batch((batch) {
+          for (final companion in memoryCompanions) {
+            batch.insert(_db.memories, companion);
+          }
+        });
+      }
+
+      // 导入设置（设置使用 key 作为主键，重复则跳过）
+      final settings = data['settings'] as Map<String, dynamic>? ?? {};
+      for (final entry in settings.entries) {
+        // 跳过密码相关设置，避免导入备份时覆盖当前的登录密码
+        if (entry.key.startsWith('launch_password_')) {
+          continue;
+        }
+
+        final existing = await (_db.select(_db.settings)
+              ..where((t) => t.key.equals(entry.key)))
+            .getSingleOrNull();
+
+        if (existing != null) {
+          skippedCount++;
+          continue;
+        }
+
+        await _db.into(_db.settings).insert(
+          SettingsCompanion.insert(
+            key: entry.key,
+            value: entry.value is String
+                ? entry.value as String
+                : jsonEncode(entry.value),
+          ),
+        );
+        addedCount++;
+      }
+    });
+
+    return ImportResult(
+      addedCount: addedCount,
+      skippedCount: skippedCount,
+      totalCount: addedCount + skippedCount,
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 选择性导出 — 按角色范围导出
+  // ═══════════════════════════════════════════════════════════════
+
+  /// 按角色选择性导出，返回导出文件路径
+  /// [characterId] 要导出的角色 ID
+  /// [options] 导出选项，控制包含哪些数据
+  Future<String> exportCharacter(
+    String characterId, {
+    ExportOptions options = const ExportOptions(),
+  }) async {
+    final exportData = await exportCharacterToJson(characterId, options: options);
+    final character = await (_db.select(_db.characters)
+          ..where((t) => t.id.equals(characterId)))
+        .getSingle();
+
+    // 写入文件
+    final dir = await getApplicationDocumentsDirectory();
+    final now = DateTime.now();
+    final dateStr =
+        '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+    // 文件名格式：lumimuse-{角色名}-{YYYYMMDD_HHmmss}.json
+    final safeName = character.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final fileName = 'lumimuse-$safeName-$dateStr.json';
+    final file = File('${dir.path}/LumiMuse/$fileName');
+    await file.parent.create(recursive: true);
+    final encodedData = kIsWeb
+        ? jsonEncode(exportData)
+        : await Isolate.run(() => jsonEncode(exportData));
+    await file.writeAsString(encodedData);
+
+    // 尝试打开文件位置
+    try {
+      if (Platform.isWindows) {
+        await Process.start('explorer', ['/select,', file.path]);
+      } else if (Platform.isMacOS) {
+        await Process.start('open', ['-R', file.path]);
+      } else if (Platform.isLinux) {
+        await Process.start('xdg-open', [file.parent.path]);
+      }
+    } catch (_) {
+      // 忽略 — 仅为改善用户体验
+    }
+
+    return file.path;
+  }
+
+  /// 按角色选择性导出，返回 JSON Map（不涉及文件 I/O，便于测试）
+  /// [characterId] 要导出的角色 ID
+  /// [options] 导出选项，控制包含哪些数据
+  Future<Map<String, dynamic>> exportCharacterToJson(
+    String characterId, {
+    ExportOptions options = const ExportOptions(),
+  }) async {
+    // 查询角色
+    final character = await (_db.select(_db.characters)
+          ..where((t) => t.id.equals(characterId)))
+        .getSingleOrNull();
+
+    if (character == null) {
+      // TODO(parity): 主项目缺失 'backup.characterNotFound' 键，硬编码兜底
+      throw StateError('角色不存在：$characterId');
+    }
+
+    // 构建导出数据
+    final Map<String, dynamic> exportData = {
+      'version': 2,
+      'exported_at': DateTime.now().toIso8601String(),
+    };
+
+    // 导出角色资料
+    if (options.includeCharacter) {
+      exportData['character'] = {
+        'id': character.id,
+        'name': character.name,
+        'avatar_url': character.avatarUrl,
+        'personality': character.personality,
+        'scenario': character.scenario,
+        'greeting': character.greeting,
+        'example_dialogue': character.exampleDialogue,
+        'system_prompt': character.systemPrompt,
+        'image_tags': character.imageTags,
+        'basic_info': character.basicInfo,
+        'other_info': character.otherInfo,
+        'sort_order': character.sortOrder,
+        'created_at': character.createdAt.toIso8601String(),
+        'updated_at': character.updatedAt.toIso8601String(),
+      };
+    }
+
+    // 导出角色记忆（按 character_id 过滤）
+    if (options.includeMemories) {
+      final memories = await (_db.select(_db.memories)
+            ..where((t) => t.characterId.equals(characterId)))
+          .get();
+
+      exportData['memories'] = memories.map((m) => {
+        'id': m.id,
+        'character_id': m.characterId,
+        'category': m.category,
+        'content': m.content,
+        'confidence': m.confidence,
+        'tags': m.tags,
+        'source_msg_ids': m.sourceMsgIds,
+        'created_at': m.createdAt.toIso8601String(),
+        'updated_at': m.updatedAt.toIso8601String(),
+      }).toList();
+    }
+
+    // 导出角色对话及嵌套消息（按 character_id 过滤）
+    if (options.includeConversations) {
+      final conversations = await (_db.select(_db.conversations)
+            ..where((t) => t.characterId.equals(characterId)))
+          .get();
+
+      final conversationsWithMessages = <Map<String, dynamic>>[];
+      for (final conv in conversations) {
+        // 查询该对话的消息，按 created_at 升序、seq 升序
+        final messages = await (_db.select(_db.messages)
+              ..where((t) => t.conversationId.equals(conv.id))
+              ..orderBy([
+                (t) => OrderingTerm.asc(t.createdAt),
+                (t) => OrderingTerm.asc(t.seq),
+              ]))
+            .get();
+
+        conversationsWithMessages.add({
+          'id': conv.id,
+          'character_id': conv.characterId,
+          'title': conv.title,
+          'ignore_memory': conv.ignoreMemory,
+          'created_at': conv.createdAt.toIso8601String(),
+          'updated_at': conv.updatedAt.toIso8601String(),
+          'messages': messages.map((m) => {
+            'id': m.id,
+            'conversation_id': m.conversationId,
+            'role': m.role,
+            'content': m.content,
+            'token_count': m.tokenCount,
+            'seq': m.seq,
+            'created_at': m.createdAt.toIso8601String(),
+            'metadata': m.metadata,
+          }).toList(),
+        });
+      }
+
+      exportData['conversations'] = conversationsWithMessages;
+    }
+
+    return exportData;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 导入增强 — 名称去重与 ID 重建
+  // ═══════════════════════════════════════════════════════════════
+
+  /// 带选项的导入（名称去重 + ID 重建）
+  /// [jsonStr] JSON 字符串
+  /// [options] 导入选项，控制导入哪些数据
+  /// [targetCharacterId] 如果提供，记忆/对话将关联到此角色（用于"导入到当前角色"场景）
+  Future<ImportResult> importWithOptions(
+    String jsonStr, {
+    ImportOptions options = const ImportOptions(),
+    String? targetCharacterId,
+  }) async {
+    final Map<String, dynamic> data;
+    try {
+      // TODO(parity): 大批量数据时改为 Isolate.run 避免主线程阻塞
+      data = kIsWeb
+          ? (jsonDecode(jsonStr) as Map<String, dynamic>)
+          : await Isolate.run(() => jsonDecode(jsonStr) as Map<String, dynamic>);
+    } catch (e) {
+      // TODO(parity): 主项目缺失 'backup.invalidFormat' 键，硬编码兜底
+      throw const FormatException('备份文件格式无效：无法解析备份文件');
+    }
+    const uuid = Uuid();
+
+    int addedCount = 0;
+    int skippedCount = 0;
+    int memoriesImported = 0;
+    int conversationsImported = 0;
+    int messagesImported = 0;
+
+    // ID 映射表：原始 ID → 新/已有 ID
+    final Map<String, String> idMap = {};
+
+    await _db.transaction(() async {
+      // ─── 导入角色（按名称去重）───
+      if (options.includeCharacter) {
+        // 支持 version 2 格式（单个 character）和 version 1 格式（characters 数组）
+        final List<Map<String, dynamic>> characterList;
+        if (data.containsKey('character') && data['character'] is Map) {
+          characterList = [data['character'] as Map<String, dynamic>];
+        } else if (data.containsKey('characters') && data['characters'] is List) {
+          characterList = (data['characters'] as List)
+              .map((c) => c as Map<String, dynamic>)
+              .toList();
+        } else {
+          characterList = [];
+        }
+
+        final characterCompanions = <CharactersCompanion>[];
+        for (final map in characterList) {
+          final originalId = map['id'] as String;
+          final name = map['name'] as String? ?? '';
+
+          // 按名称去重：查询是否已存在同名角色
+          final existing = await (_db.select(_db.characters)
+                ..where((t) => t.name.equals(name)))
+              .getSingleOrNull();
+
+          if (existing != null) {
+            // 同名角色已存在，跳过并记录 ID 映射
+            idMap[originalId] = existing.id;
+            skippedCount++;
+          } else {
+            // 不存在同名角色，生成新 UUID 并插入
+            final newId = uuid.v4();
+            idMap[originalId] = newId;
+
+            characterCompanions.add(
+              CharactersCompanion.insert(
+                id: newId,
+                name: Value(name),
+                avatarUrl: Value(map['avatar_url'] as String?),
+                personality: Value(map['personality'] as String? ?? ''),
+                scenario: Value(map['scenario'] as String? ?? ''),
+                greeting: Value(map['greeting'] as String? ?? ''),
+                exampleDialogue: Value(map['example_dialogue'] as String? ?? ''),
+                systemPrompt: Value(map['system_prompt'] as String? ?? ''),
+                imageTags: Value(map['image_tags'] as String? ?? ''),
+                basicInfo: Value(map['basic_info'] as String? ?? ''),
+                otherInfo: Value(map['other_info'] as String? ?? ''),
+                sortOrder: Value(map['sort_order'] as int? ?? 0),
+                createdAt: Value(
+                  map['created_at'] != null
+                      ? DateTime.parse(map['created_at'] as String)
+                      : DateTime.now(),
+                ),
+                updatedAt: Value(
+                  map['updated_at'] != null
+                      ? DateTime.parse(map['updated_at'] as String)
+                      : DateTime.now(),
+                ),
+              ),
+            );
+            addedCount++;
+          }
+        }
+        if (characterCompanions.isNotEmpty) {
+          await _db.batch((batch) {
+            for (final companion in characterCompanions) {
+              batch.insert(_db.characters, companion);
+            }
+          });
+        }
+      }
+
+      // ─── 导入记忆（使用 idMap 映射 character_id，生成新 UUID）───
+      if (options.includeMemories) {
+        final memories = data['memories'] as List? ?? [];
+        final memoryCompanions = <MemoriesCompanion>[];
+        for (final m in memories) {
+          final map = m as Map<String, dynamic>;
+          final originalCharId = map['character_id'] as String;
+
+          // 使用 idMap 映射 character_id，或使用 targetCharacterId
+          final mappedCharId = targetCharacterId ??
+              idMap[originalCharId] ??
+              originalCharId;
+
+          // 生成新 UUID
+          final newMemId = uuid.v4();
+
+          memoryCompanions.add(
+            MemoriesCompanion.insert(
+              id: newMemId,
+              characterId: mappedCharId,
+              category: map['category'] as String,
+              content: map['content'] as String,
+              confidence: Value((map['confidence'] as num?)?.toDouble() ?? 0.8),
+              tags: Value(map['tags'] is String
+                  ? map['tags'] as String
+                  : jsonEncode(map['tags'] ?? [])),
+              sourceMsgIds: Value(map['source_msg_ids'] is String
+                  ? map['source_msg_ids'] as String
+                  : jsonEncode(map['source_msg_ids'] ?? [])),
+              createdAt: Value(
+                map['created_at'] != null
+                    ? DateTime.parse(map['created_at'] as String)
+                    : DateTime.now(),
+              ),
+              updatedAt: Value(
+                map['updated_at'] != null
+                    ? DateTime.parse(map['updated_at'] as String)
+                    : DateTime.now(),
+              ),
+            ),
+          );
+          memoriesImported++;
+          addedCount++;
+        }
+        if (memoryCompanions.isNotEmpty) {
+          await _db.batch((batch) {
+            for (final companion in memoryCompanions) {
+              batch.insert(_db.memories, companion);
+            }
+          });
+        }
+      }
+
+      // ─── 导入对话和消息（生成新 ID，使用 idMap 映射 character_id）───
+      if (options.includeConversations) {
+        final conversations = data['conversations'] as List? ?? [];
+        final conversationCompanions = <ConversationsCompanion>[];
+        final messageCompanions = <MessagesCompanion>[];
+        for (final c in conversations) {
+          final map = c as Map<String, dynamic>;
+          final originalCharId = map['character_id'] as String;
+
+          // 使用 idMap 映射 character_id，或使用 targetCharacterId
+          final mappedCharId = targetCharacterId ??
+              idMap[originalCharId] ??
+              originalCharId;
+
+          // 生成新对话 ID
+          final newConvId = uuid.v4();
+
+          conversationCompanions.add(
+            ConversationsCompanion.insert(
+              id: newConvId,
+              characterId: mappedCharId,
+              title: Value(map['title'] as String? ?? ''),
+              ignoreMemory: Value(map['ignore_memory'] as int? ?? 0),
+              createdAt: Value(
+                map['created_at'] != null
+                    ? DateTime.parse(map['created_at'] as String)
+                    : DateTime.now(),
+              ),
+              updatedAt: Value(
+                map['updated_at'] != null
+                    ? DateTime.parse(map['updated_at'] as String)
+                    : DateTime.now(),
+              ),
+            ),
+          );
+          conversationsImported++;
+          addedCount++;
+
+          // 导入该对话的消息（嵌套在对话对象中）
+          final messages = map['messages'] as List? ?? [];
+          var seq = 0;
+          for (final msg in messages) {
+            final msgMap = msg as Map<String, dynamic>;
+
+            // 生成新消息 ID
+            final newMsgId = uuid.v4();
+
+            messageCompanions.add(
+              MessagesCompanion.insert(
+                id: newMsgId,
+                conversationId: newConvId,
+                role: msgMap['role'] as String,
+                content: Value(msgMap['content'] as String? ?? ''),
+                tokenCount: Value(msgMap['token_count'] as int? ?? 0),
+                seq: Value(seq++),
+                createdAt: Value(
+                  msgMap['created_at'] != null
+                      ? DateTime.parse(msgMap['created_at'] as String)
+                      : DateTime.now(),
+                ),
+                metadata: Value(msgMap['metadata'] as String? ?? '{}'),
+              ),
+            );
+            messagesImported++;
+            addedCount++;
+          }
+        }
+        if (conversationCompanions.isNotEmpty) {
+          await _db.batch((batch) {
+            for (final companion in conversationCompanions) {
+              batch.insert(_db.conversations, companion);
+            }
+          });
+        }
+        if (messageCompanions.isNotEmpty) {
+          await _db.batch((batch) {
+            for (final companion in messageCompanions) {
+              batch.insert(_db.messages, companion);
+            }
+          });
+        }
+      }
+    });
+
+    return ImportResult(
+      addedCount: addedCount,
+      skippedCount: skippedCount,
+      totalCount: addedCount + skippedCount,
+      memoriesImported: memoriesImported,
+      conversationsImported: conversationsImported,
+      messagesImported: messagesImported,
+    );
+  }
+}

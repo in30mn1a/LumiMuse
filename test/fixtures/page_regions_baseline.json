@@ -1,0 +1,412 @@
+{
+  "_comment": "UI 布局唯一基准（task 2.2 / 2.3 / 2.4 / 9.11）。与五个根 widget 以及三个弹层（ExportDialog / ImportDialog / ChatLightbox）的 baselineRegions 静态字段严格对齐，与 requirements.md §A3.1 ~ §A3.5、§A7.3、§A7.5、§C2.2 一一对应。子 spec 修改 widget 内部时不得改变 order/anchor/id；任何破坏不变量的改动都会被回归脚本 RC-11 立即扫出。",
+  "HomePage": [
+    {
+      "name": "sidebarBrand",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "logo"},
+        {"order": 2, "anchor": "start", "id": "brandName"}
+      ]
+    },
+    {
+      "name": "sidebarSearch",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "searchIcon"},
+        {"order": 2, "anchor": "start", "id": "searchInput"},
+        {"order": 3, "anchor": "end", "id": "clearButton"}
+      ]
+    },
+    {
+      "name": "sidebarCharacterGroupTitle",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "label"}
+      ]
+    },
+    {
+      "name": "sidebarCharacterList",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "characterList"}
+      ]
+    },
+    {
+      "name": "sidebarFooterNav",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "memoryNav"},
+        {"order": 2, "anchor": "start", "id": "settingsNav"}
+      ]
+    },
+    {
+      "name": "mobileMenuButton",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "menuButton"}
+      ]
+    }
+  ],
+  "ChatView": [
+    {
+      "name": "toolbarDesktopLeft",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "avatar"},
+        {"order": 2, "anchor": "start", "id": "nameAndChips"}
+      ]
+    },
+    {
+      "name": "toolbarDesktopRight",
+      "slots": [
+        {"order": 1, "anchor": "end", "id": "newChat"},
+        {"order": 2, "anchor": "end", "id": "rename"},
+        {"order": 3, "anchor": "end", "id": "summary"},
+        {"order": 4, "anchor": "end", "id": "duplicate"},
+        {"order": 5, "anchor": "end", "id": "image"},
+        {"order": 6, "anchor": "end", "id": "delete"}
+      ]
+    },
+    {
+      "name": "toolbarMobileCompact",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "menu"},
+        {"order": 2, "anchor": "start", "id": "avatar"},
+        {"order": 3, "anchor": "start", "id": "name"},
+        {"order": 4, "anchor": "end", "id": "listIcon"},
+        {"order": 5, "anchor": "end", "id": "plusIcon"},
+        {"order": 6, "anchor": "end", "id": "searchIcon"},
+        {"order": 7, "anchor": "end", "id": "chevronDown"}
+      ]
+    },
+    {
+      "name": "toolbarMobileExpanded",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "continueChip"},
+        {"order": 2, "anchor": "start", "id": "memoryChip"},
+        {"order": 3, "anchor": "end", "id": "pencilIcon"},
+        {"order": 4, "anchor": "end", "id": "summaryIcon"},
+        {"order": 5, "anchor": "end", "id": "duplicateIcon"},
+        {"order": 6, "anchor": "end", "id": "imageIcon"},
+        {"order": 7, "anchor": "end", "id": "trashIcon"}
+      ]
+    },
+    {
+      "name": "messageHeader",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "sparkIcon"},
+        {"order": 2, "anchor": "start", "id": "title"},
+        {"order": 3, "anchor": "end", "id": "chips"}
+      ]
+    },
+    {
+      "name": "messageList",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "list"}
+      ]
+    },
+    {
+      "name": "chatInput",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "paperclipIcon"},
+        {"order": 2, "anchor": "center", "id": "textarea"},
+        {"order": 3, "anchor": "end", "id": "sendOrStopButton"}
+      ]
+    }
+  ],
+  "CharacterEditPage": [
+    {
+      "name": "headerLeft",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "back"},
+        {"order": 2, "anchor": "start", "id": "decoration"},
+        {"order": 3, "anchor": "start", "id": "title"}
+      ]
+    },
+    {
+      "name": "headerActions",
+      "slots": [
+        {"order": 1, "anchor": "end", "id": "aiGenerate"},
+        {"order": 2, "anchor": "end", "id": "duplicate"},
+        {"order": 3, "anchor": "end", "id": "deleteCharacter"},
+        {"order": 4, "anchor": "end", "id": "import"},
+        {"order": 5, "anchor": "end", "id": "export"},
+        {"order": 6, "anchor": "end", "id": "save"}
+      ]
+    },
+    {
+      "name": "aiGeneratorPanel",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "requirementInput"},
+        {"order": 2, "anchor": "end", "id": "applyButton"}
+      ]
+    },
+    {
+      "name": "mainGroupIdentity",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "avatar"},
+        {"order": 2, "anchor": "start", "id": "name"}
+      ]
+    },
+    {
+      "name": "mainGroupBasicInfo",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "basicInfoTextarea"}
+      ]
+    },
+    {
+      "name": "mainGroupPersonality",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "personalityTextarea"}
+      ]
+    },
+    {
+      "name": "mainGroupScenario",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "scenarioTextarea"}
+      ]
+    },
+    {
+      "name": "mainGroupGreeting",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "greetingTextarea"}
+      ]
+    },
+    {
+      "name": "mainGroupOther",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "otherInfoTextarea"}
+      ]
+    },
+    {
+      "name": "mainGroupExampleDialogue",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "exampleDialogueTextarea"}
+      ]
+    },
+    {
+      "name": "advancedSettings",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "systemPrompt"},
+        {"order": 2, "anchor": "start", "id": "imageTags"}
+      ]
+    },
+    {
+      "name": "previewSidebar",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "stickyDesktop"}
+      ]
+    }
+  ],
+  "MemoryListPage": [
+    {
+      "name": "headerLeft",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "back"},
+        {"order": 2, "anchor": "start", "id": "decoration"},
+        {"order": 3, "anchor": "start", "id": "title"}
+      ]
+    },
+    {
+      "name": "headerRight",
+      "slots": [
+        {"order": 1, "anchor": "end", "id": "characterChip"},
+        {"order": 2, "anchor": "end", "id": "characterSelect"}
+      ]
+    },
+    {
+      "name": "filterBar",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "searchChip"},
+        {"order": 2, "anchor": "start", "id": "categorySelect"},
+        {"order": 3, "anchor": "start", "id": "sortSelect"},
+        {"order": 4, "anchor": "end", "id": "addButton"}
+      ]
+    },
+    {
+      "name": "listHeader",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "label"},
+        {"order": 2, "anchor": "end", "id": "count"}
+      ]
+    },
+    {
+      "name": "memoryList",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "list"}
+      ]
+    },
+    {
+      "name": "pagination",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "status"},
+        {"order": 2, "anchor": "end", "id": "prevButton"},
+        {"order": 3, "anchor": "end", "id": "nextButton"}
+      ]
+    }
+  ],
+  "SettingsPage": [
+    {
+      "name": "headerLeft",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "back"},
+        {"order": 2, "anchor": "start", "id": "decoration"},
+        {"order": 3, "anchor": "start", "id": "title"}
+      ]
+    },
+    {
+      "name": "headerRight",
+      "slots": [
+        {"order": 1, "anchor": "end", "id": "logout"},
+        {"order": 2, "anchor": "end", "id": "saveButton"}
+      ]
+    },
+    {
+      "name": "sectionOverview",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "apiStatus"},
+        {"order": 2, "anchor": "start", "id": "themeStatus"},
+        {"order": 3, "anchor": "start", "id": "languageStatus"},
+        {"order": 4, "anchor": "start", "id": "memoryStatus"}
+      ]
+    },
+    {
+      "name": "sectionApi",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "apiBase"},
+        {"order": 2, "anchor": "start", "id": "apiKey"},
+        {"order": 3, "anchor": "start", "id": "modelRow"},
+        {"order": 4, "anchor": "start", "id": "jsonMode"}
+      ]
+    },
+    {
+      "name": "sectionModelParams",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "temperature"},
+        {"order": 2, "anchor": "start", "id": "maxTokens"},
+        {"order": 3, "anchor": "start", "id": "contextWindow"}
+      ]
+    },
+    {
+      "name": "sectionChatBehavior",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "streaming"},
+        {"order": 2, "anchor": "start", "id": "exampleDialogue"},
+        {"order": 3, "anchor": "start", "id": "showTimestamps"}
+      ]
+    },
+    {
+      "name": "sectionMemoryEngine",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "triggerInterval"},
+        {"order": 2, "anchor": "start", "id": "memoryInterval"},
+        {"order": 3, "anchor": "start", "id": "triggerTime"},
+        {"order": 4, "anchor": "start", "id": "memoryTriggerTimeHours"},
+        {"order": 5, "anchor": "start", "id": "triggerKeyword"},
+        {"order": 6, "anchor": "start", "id": "memoryTriggerKeywords"},
+        {"order": 7, "anchor": "start", "id": "memoryInject"},
+        {"order": 8, "anchor": "start", "id": "limitInject"},
+        {"order": 9, "anchor": "start", "id": "memoryMaxInject"}
+      ]
+    },
+    {
+      "name": "sectionDisplay",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "themeSelect"},
+        {"order": 2, "anchor": "start", "id": "languageSelect"},
+        {"order": 3, "anchor": "start", "id": "fontWenkai"},
+        {"order": 4, "anchor": "start", "id": "fontSystem"},
+        {"order": 5, "anchor": "start", "id": "fontSerif"}
+      ]
+    },
+    {
+      "name": "sectionImageGen",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "enableSwitch"},
+        {"order": 2, "anchor": "start", "id": "engineSelect"},
+        {"order": 3, "anchor": "start", "id": "engineParams"},
+        {"order": 4, "anchor": "start", "id": "qualityTags"},
+        {"order": 5, "anchor": "start", "id": "autoGenerate"},
+        {"order": 6, "anchor": "start", "id": "autoGenerateKeywords"}
+      ]
+    },
+    {
+      "name": "sectionMaintenance",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "previewButton"},
+        {"order": 2, "anchor": "start", "id": "confirmCleanButton"},
+        {"order": 3, "anchor": "start", "id": "statusMessage"}
+      ]
+    }
+  ],
+  "ExportDialog": [
+    {
+      "name": "title",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "title"}
+      ]
+    },
+    {
+      "name": "hintText",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "hint"}
+      ]
+    },
+    {
+      "name": "checkboxes",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "characterData"},
+        {"order": 2, "anchor": "start", "id": "characterMemories"},
+        {"order": 3, "anchor": "start", "id": "characterConversations"}
+      ]
+    },
+    {
+      "name": "footerActions",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "cancel"},
+        {"order": 2, "anchor": "end", "id": "download"}
+      ]
+    }
+  ],
+  "ImportDialog": [
+    {
+      "name": "title",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "title"}
+      ]
+    },
+    {
+      "name": "hintText",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "hint"}
+      ]
+    },
+    {
+      "name": "filenamePreview",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "filename"}
+      ]
+    },
+    {
+      "name": "checkboxes",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "characterData"},
+        {"order": 2, "anchor": "start", "id": "characterMemories"},
+        {"order": 3, "anchor": "start", "id": "characterConversations"}
+      ]
+    },
+    {
+      "name": "footerActions",
+      "slots": [
+        {"order": 1, "anchor": "start", "id": "cancel"},
+        {"order": 2, "anchor": "end", "id": "apply"}
+      ]
+    }
+  ],
+  "ChatLightbox": [
+    {
+      "name": "lightboxToolbar",
+      "slots": [
+        {"order": 1, "anchor": "end", "id": "prevImage"},
+        {"order": 2, "anchor": "end", "id": "nextImage"},
+        {"order": 3, "anchor": "end", "id": "confirm"},
+        {"order": 4, "anchor": "end", "id": "close"},
+        {"order": 5, "anchor": "end", "id": "delete"}
+      ]
+    }
+  ]
+}

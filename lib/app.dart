@@ -16,10 +16,13 @@ class LumiMuseApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
     final locale = ref.watch(localeProvider);
-    final fontStack = ref.watch(settingsProvider).maybeWhen(
-      data: (s) => FontStack.fromStyle(s.fontStyle),
-      orElse: () => FontConfig.defaultStack,
-    );
+    final fontStack = ref
+        .watch(settingsProvider)
+        .maybeWhen(
+          data: (s) => FontStack.fromStyle(s.fontStyle),
+          orElse: () => FontConfig.defaultStack,
+        );
+    final textScale = ref.watch(fontScaleProvider);
 
     return MaterialApp.router(
       title: 'LumiMuse',
@@ -50,8 +53,16 @@ class LumiMuseApp extends ConsumerWidget {
         // - 启用时由闸门接管首屏，解锁后再渲染真实路由
         // 放在 AppShell 之内是为了让闸门画面也能享有暖光渐变背景（_LockScreen
         // 与 _GateLoading 都使用透明 Scaffold，依赖 AppShell 提供底色）。
-        return AppShell(
-          child: LaunchPasswordGate(child: child ?? const SizedBox.shrink()),
+        final media = MediaQuery.of(context);
+        return MediaQuery(
+          data: media.copyWith(
+            textScaler: TextScaler.linear(
+              textScale.clamp(0.85, 1.5).toDouble(),
+            ),
+          ),
+          child: AppShell(
+            child: LaunchPasswordGate(child: child ?? const SizedBox.shrink()),
+          ),
         );
       },
     );

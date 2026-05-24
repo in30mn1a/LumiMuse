@@ -465,6 +465,7 @@ class LumiSectionPanel extends StatelessWidget {
       padding: padding ?? AppSpacing.paddingPanel,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           if (title != null) ...[
             Row(

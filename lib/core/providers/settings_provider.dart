@@ -25,6 +25,21 @@ final localeProvider = StateProvider<Locale>((ref) {
 /// 当前激活的供应商 ID Provider
 final activeProviderIdProvider = StateProvider<String>((ref) => '');
 
+/// 全局字体缩放倍率 Provider。
+final fontScaleProvider = StateProvider<double>((ref) => 1.0);
+
+/// 记录最近一次打开的对话，供下次启动恢复。
+Future<void> rememberLastConversation(
+  WidgetRef ref, {
+  required String characterId,
+  required String conversationId,
+}) async {
+  await ref.read(settingsProvider.notifier).updateLastConversation(
+        characterId: characterId,
+        conversationId: conversationId,
+      );
+}
+
 /// 把 AppSettings.language 字段（可空字符串）转换为 Flutter 内置 Locale。
 ///
 /// - `'en'` → `Locale('en')`
@@ -53,13 +68,58 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   Future<AppSettings> build() async {
     final db = ref.read(databaseProvider);
     final settings = await _loadFromDb(db);
-    // 冷启动时同步 locale，确保首屏渲染前 MaterialApp.locale 已就位
-    ref.read(localeProvider.notifier).state =
-        _languageToLocale(settings.language);
-    // 同步 activeProviderId
+    _syncDerivedProviders(settings);
+    return settings;
+  }
+
+  void _syncDerivedProviders(AppSettings settings) {
+    ref.read(themeModeProvider.notifier).state = settings.theme == 'dark'
+        ? ThemeMode.dark
+        : ThemeMode.light;
+    ref.read(localeProvider.notifier).state = _languageToLocale(
+      settings.language,
+    );
     ref.read(activeProviderIdProvider.notifier).state =
         settings.activeProviderId;
-    return settings;
+    ref.read(fontScaleProvider.notifier).state = settings.fontScale;
+  }
+
+  /// 仅持久化最近对话指针，避免整包 [updateSettings]。
+  Future<void> updateLastConversation({
+    required String characterId,
+    required String conversationId,
+  }) async {
+    final current = state.valueOrNull;
+    if (current == null) return;
+    if (current.lastConversationCharacterId == characterId &&
+        current.lastConversationId == conversationId) {
+      return;
+    }
+
+    final next = current.copyWith(
+      lastConversationCharacterId: characterId,
+      lastConversationId: conversationId,
+    );
+    final db = ref.read(databaseProvider);
+    await db.batch((batch) {
+      batch.insert(
+        db.settings,
+        SettingsCompanion.insert(
+          key: 'last_conversation_character_id',
+          value: jsonEncode(characterId),
+        ),
+        mode: InsertMode.insertOrReplace,
+      );
+      batch.insert(
+        db.settings,
+        SettingsCompanion.insert(
+          key: 'last_conversation_id',
+          value: jsonEncode(conversationId),
+        ),
+        mode: InsertMode.insertOrReplace,
+      );
+    });
+    state = AsyncData(next);
   }
 
   /// 从数据库加载设置
@@ -94,13 +154,7 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       }
     });
 
-    ref.read(themeModeProvider.notifier).state =
-        newSettings.theme == 'dark' ? ThemeMode.dark : ThemeMode.light;
-
-    // 同步 locale：保证「写库 + 写 Provider」在同一调用栈内完成，
-    // MaterialApp 顶层 watch 后立即重建为新语言。
-    ref.read(localeProvider.notifier).state =
-        _languageToLocale(newSettings.language);
+    _syncDerivedProviders(newSettings);
 
     state = AsyncData(newSettings);
   }
@@ -108,18 +162,24 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   /// 更新单个设置项
   Future<void> updateSetting(String key, dynamic value) async {
     final db = ref.read(databaseProvider);
-    await db.into(db.settings).insertOnConflictUpdate(
-      SettingsCompanion.insert(key: key, value: jsonEncode(value)),
-    );
+    await db
+        .into(db.settings)
+        .insertOnConflictUpdate(
+          SettingsCompanion.insert(key: key, value: jsonEncode(value)),
+        );
     // 重新加载
-    state = AsyncData(await _loadFromDb(db));
+    final nextSettings = await _loadFromDb(db);
+    _syncDerivedProviders(nextSettings);
+    state = AsyncData(nextSettings);
   }
 
   AppSettings _mapToSettings(Map<String, dynamic> map) {
     // 解析图片生成设置（存储为嵌套 JSON 对象）
     ImageGenSettings imageGen = const ImageGenSettings();
     if (map['image_gen'] is Map<String, dynamic>) {
-      imageGen = ImageGenSettings.fromJson(map['image_gen'] as Map<String, dynamic>);
+      imageGen = ImageGenSettings.fromJson(
+        map['image_gen'] as Map<String, dynamic>,
+      );
     }
 
     // 解析画师串管理预设（存储为 JSON 数组）
@@ -153,17 +213,26 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       exampleDialogue: map['example_dialogue'] as bool? ?? true,
       memoryInject: map['memory_inject'] as bool? ?? true,
       showTimestamps: map['show_timestamps'] as bool? ?? true,
-      memoryTriggerIntervalEnabled: map['memory_trigger_interval_enabled'] as bool? ?? true,
+      memoryTriggerIntervalEnabled:
+          map['memory_trigger_interval_enabled'] as bool? ?? true,
       memoryInterval: map['memory_interval'] as int? ?? 3,
-      memoryTriggerTimeEnabled: map['memory_trigger_time_enabled'] as bool? ?? false,
+      memoryTriggerTimeEnabled:
+          map['memory_trigger_time_enabled'] as bool? ?? false,
       memoryTriggerTimeHours: map['memory_trigger_time_hours'] as int? ?? 24,
-      memoryTriggerKeywordEnabled: map['memory_trigger_keyword_enabled'] as bool? ?? true,
+      memoryTriggerKeywordEnabled:
+          map['memory_trigger_keyword_enabled'] as bool? ?? true,
       memoryTriggerKeywords: map['memory_trigger_keywords'] as String? ?? '晚安',
       memoryMaxInject: map['memory_max_inject'] as int? ?? 30,
       limitInject: map['limit_inject'] as bool? ?? false,
       theme: map['theme'] as String? ?? 'light',
       language: map['language'] as String? ?? 'zh',
       fontStyle: map['font_style'] as String? ?? 'wenkai',
+      fontScale: (map['font_scale'] as num?)?.toDouble() ?? 1.0,
+      autoResumeLastConversation:
+          map['auto_resume_last_conversation'] as bool? ?? false,
+      lastConversationCharacterId:
+          map['last_conversation_character_id'] as String? ?? '',
+      lastConversationId: map['last_conversation_id'] as String? ?? '',
       activeProviderId: map['active_provider_id'] as String? ?? '',
       imageGen: imageGen,
       artistStrings: artistStrings,
@@ -194,6 +263,10 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       'theme': s.theme,
       'language': s.language,
       'font_style': s.fontStyle,
+      'font_scale': s.fontScale,
+      'auto_resume_last_conversation': s.autoResumeLastConversation,
+      'last_conversation_character_id': s.lastConversationCharacterId,
+      'last_conversation_id': s.lastConversationId,
       'active_provider_id': s.activeProviderId,
       'image_gen': s.imageGen.toJson(),
       'artist_strings': s.artistStrings.map((a) => a.toJson()).toList(),

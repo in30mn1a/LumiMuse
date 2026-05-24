@@ -83,10 +83,7 @@ class _LocaleSyncCase {
   final _InitLanguage initLanguage;
   final List<String> updates; // 每一项 ∈ {'zh','en'}，长度 1 ~ 10
 
-  const _LocaleSyncCase({
-    required this.initLanguage,
-    required this.updates,
-  });
+  const _LocaleSyncCase({required this.initLanguage, required this.updates});
 
   @override
   String toString() =>
@@ -145,11 +142,10 @@ Future<void> _seedInitLanguage(AppDatabase db, String? value) async {
   // SettingsNotifier._loadFromDb 会对 row.value 做 jsonDecode；为了让
   // 解析后真的拿到字符串值（而不是被当成 raw key），统一写 JSON-encoded
   // 字符串。
-  await db.into(db.settings).insertOnConflictUpdate(
-        SettingsCompanion.insert(
-          key: 'language',
-          value: jsonEncode(value),
-        ),
+  await db
+      .into(db.settings)
+      .insertOnConflictUpdate(
+        SettingsCompanion.insert(key: 'language', value: jsonEncode(value)),
       );
 }
 
@@ -162,117 +158,112 @@ void main() {
     Glados<_LocaleSyncCase>(
       any.localeSyncCase,
       ExploreConfig(numRuns: 100),
-    ).test(
-      '每一步后 localeProvider == _languageToLocale(currentSettings.language)；'
-      '非法初始 language 回退 Locale("zh")',
-      (c) async {
-        final db = _createTestDb();
-        ProviderContainer? container;
-        try {
-          // ── 1. 预先种入初始 language 字段 ─────────────────────────────
-          await _seedInitLanguage(db, _initLangToValue(c.initLanguage));
+    ).test('每一步后 localeProvider == _languageToLocale(currentSettings.language)；'
+        '非法初始 language 回退 Locale("zh")', (c) async {
+      final db = _createTestDb();
+      ProviderContainer? container;
+      try {
+        // ── 1. 预先种入初始 language 字段 ─────────────────────────────
+        await _seedInitLanguage(db, _initLangToValue(c.initLanguage));
 
-          // ── 2. 用 ProviderContainer 隔离运行 settingsProvider ─────────
-          container = ProviderContainer(overrides: [
-            databaseProvider.overrideWithValue(db),
-          ]);
+        // ── 2. 用 ProviderContainer 隔离运行 settingsProvider ─────────
+        container = ProviderContainer(
+          overrides: [databaseProvider.overrideWithValue(db)],
+        );
 
-          // ── 3. 触发 SettingsNotifier.build：读 DB → 写 localeProvider ──
-          // 用 .future 等待 build 完成，确保 build 内部对 localeProvider
-          // 的同步写入已经生效。
-          final initialSettings =
-              await container.read(settingsProvider.future);
+        // ── 3. 触发 SettingsNotifier.build：读 DB → 写 localeProvider ──
+        // 用 .future 等待 build 完成，确保 build 内部对 localeProvider
+        // 的同步写入已经生效。
+        final initialSettings = await container.read(settingsProvider.future);
 
-          // ── 4. 断言初始状态：localeProvider 与 currentSettings.language
-          // 经 _languageToLocale 投影后一致 ─────────────────────────────
-          {
-            final expected =
-                _expectedLocale(initialSettings.language).languageCode;
-            final actual =
-                container.read(localeProvider).languageCode;
-            expect(
-              actual,
-              equals(expected),
-              reason:
-                  '初始状态：localeProvider 应等于 _languageToLocale(currentSettings.language)。\n'
-                  '  init = ${c.initLanguage}\n'
-                  '  currentSettings.language = "${initialSettings.language}"\n'
-                  '  expected = "$expected"\n'
-                  '  actual   = "$actual"',
-            );
-          }
-
-          // ── 5. 非法初始 language 回退断言（R2.3）：当初始为 'xx' / null
-          // / '' 时，localeProvider.languageCode 必须是 'zh'。
-          final isInitInvalid = c.initLanguage == _InitLanguage.xx ||
-              c.initLanguage == _InitLanguage.nullValue ||
-              c.initLanguage == _InitLanguage.empty;
-          if (isInitInvalid) {
-            expect(
-              container.read(localeProvider).languageCode,
-              equals('zh'),
-              reason:
-                  '非法 language0 (${c.initLanguage}) 应回退为 Locale("zh")，'
-                  '当前为 ${container.read(localeProvider)}',
-            );
-          }
-
-          // ── 6. 顺序执行 update 序列，每一步后断言同步不变量 ───────────
-          AppSettings current = initialSettings;
-          final notifier = container.read(settingsProvider.notifier);
-          for (var i = 0; i < c.updates.length; i++) {
-            final newLang = c.updates[i];
-            current = current.copyWith(language: newLang);
-            await notifier.updateSettings(current);
-
-            // 6a. localeProvider 必须与 currentSettings.language 同步
-            final expected = _expectedLocale(current.language).languageCode;
-            final actualLocale = container.read(localeProvider);
-            expect(
-              actualLocale.languageCode,
-              equals(expected),
-              reason:
-                  'update 序列第 $i 步后 localeProvider 与 settings 不同步。\n'
-                  '  step       = $i / ${c.updates.length}\n'
-                  '  newLang    = "$newLang"\n'
-                  '  settings   = "${current.language}"\n'
-                  '  expected   = "$expected"\n'
-                  '  actual     = "${actualLocale.languageCode}"\n'
-                  '  case       = $c',
-            );
-
-            // 6b. settings AsyncValue 也应同步更新到 newLang
-            final stateNow =
-                container.read(settingsProvider).valueOrNull;
-            expect(
-              stateNow?.language,
-              equals(newLang),
-              reason:
-                  'updateSettings 后 settingsProvider.value 未同步到 newLang。\n'
-                  '  step    = $i\n'
-                  '  newLang = "$newLang"\n'
-                  '  state   = "${stateNow?.language}"',
-            );
-          }
-        } finally {
-          container?.dispose();
-          await db.close();
+        // ── 4. 断言初始状态：localeProvider 与 currentSettings.language
+        // 经 _languageToLocale 投影后一致 ─────────────────────────────
+        {
+          final expected = _expectedLocale(
+            initialSettings.language,
+          ).languageCode;
+          final actual = container.read(localeProvider).languageCode;
+          expect(
+            actual,
+            equals(expected),
+            reason:
+                '初始状态：localeProvider 应等于 _languageToLocale(currentSettings.language)。\n'
+                '  init = ${c.initLanguage}\n'
+                '  currentSettings.language = "${initialSettings.language}"\n'
+                '  expected = "$expected"\n'
+                '  actual   = "$actual"',
+          );
         }
-      },
-    );
+
+        // ── 5. 非法初始 language 回退断言（R2.3）：当初始为 'xx' / null
+        // / '' 时，localeProvider.languageCode 必须是 'zh'。
+        final isInitInvalid =
+            c.initLanguage == _InitLanguage.xx ||
+            c.initLanguage == _InitLanguage.nullValue ||
+            c.initLanguage == _InitLanguage.empty;
+        if (isInitInvalid) {
+          expect(
+            container.read(localeProvider).languageCode,
+            equals('zh'),
+            reason:
+                '非法 language0 (${c.initLanguage}) 应回退为 Locale("zh")，'
+                '当前为 ${container.read(localeProvider)}',
+          );
+        }
+
+        // ── 6. 顺序执行 update 序列，每一步后断言同步不变量 ───────────
+        AppSettings current = initialSettings;
+        final notifier = container.read(settingsProvider.notifier);
+        for (var i = 0; i < c.updates.length; i++) {
+          final newLang = c.updates[i];
+          current = current.copyWith(language: newLang);
+          await notifier.updateSettings(current);
+
+          // 6a. localeProvider 必须与 currentSettings.language 同步
+          final expected = _expectedLocale(current.language).languageCode;
+          final actualLocale = container.read(localeProvider);
+          expect(
+            actualLocale.languageCode,
+            equals(expected),
+            reason:
+                'update 序列第 $i 步后 localeProvider 与 settings 不同步。\n'
+                '  step       = $i / ${c.updates.length}\n'
+                '  newLang    = "$newLang"\n'
+                '  settings   = "${current.language}"\n'
+                '  expected   = "$expected"\n'
+                '  actual     = "${actualLocale.languageCode}"\n'
+                '  case       = $c',
+          );
+
+          // 6b. settings AsyncValue 也应同步更新到 newLang
+          final stateNow = container.read(settingsProvider).valueOrNull;
+          expect(
+            stateNow?.language,
+            equals(newLang),
+            reason:
+                'updateSettings 后 settingsProvider.value 未同步到 newLang。\n'
+                '  step    = $i\n'
+                '  newLang = "$newLang"\n'
+                '  state   = "${stateNow?.language}"',
+          );
+        }
+      } finally {
+        container?.dispose();
+        await db.close();
+      }
+    });
 
     // ────────────────────────────────────────────────
     // 例测：把契约的关键边界用具体输入再固化一次（双层保护）
     // ────────────────────────────────────────────────
 
-    test('初始 language 为 "en" → 冷启动后 localeProvider == Locale("en")',
-        () async {
+    test('初始 language 为 "en" → 冷启动后 localeProvider == Locale("en")', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seedInitLanguage(db, 'en');
-      final container = ProviderContainer(overrides: [
-        databaseProvider.overrideWithValue(db),
-      ]);
+      final container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(db)],
+      );
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -284,9 +275,9 @@ void main() {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seedInitLanguage(db, 'xx');
-      final container = ProviderContainer(overrides: [
-        databaseProvider.overrideWithValue(db),
-      ]);
+      final container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(db)],
+      );
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -296,14 +287,13 @@ void main() {
       expect(container.read(localeProvider), const Locale('zh'));
     });
 
-    test('初始 language 缺失（DB 无 language 行） → 默认 Locale("zh")',
-        () async {
+    test('初始 language 缺失（DB 无 language 行） → 默认 Locale("zh")', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
       // 不种入任何 language 行
-      final container = ProviderContainer(overrides: [
-        databaseProvider.overrideWithValue(db),
-      ]);
+      final container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(db)],
+      );
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -312,14 +302,13 @@ void main() {
       expect(container.read(localeProvider), const Locale('zh'));
     });
 
-    test('updateSettings("en") 后 localeProvider 立即同步到 Locale("en")',
-        () async {
+    test('updateSettings("en") 后 localeProvider 立即同步到 Locale("en")', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seedInitLanguage(db, 'zh');
-      final container = ProviderContainer(overrides: [
-        databaseProvider.overrideWithValue(db),
-      ]);
+      final container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(db)],
+      );
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -329,10 +318,7 @@ void main() {
           .read(settingsProvider.notifier)
           .updateSettings(settings.copyWith(language: 'en'));
       expect(container.read(localeProvider), const Locale('en'));
-      expect(
-        container.read(settingsProvider).valueOrNull?.language,
-        'en',
-      );
+      expect(container.read(settingsProvider).valueOrNull?.language, 'en');
 
       // 再切回 'zh'，验证可逆
       await container
@@ -340,5 +326,91 @@ void main() {
           .updateSettings(settings.copyWith(language: 'zh'));
       expect(container.read(localeProvider), const Locale('zh'));
     });
+
+    test(
+      'updateSetting("theme", "dark") 后 themeModeProvider 立即同步为 dark',
+      () async {
+        final db = _createTestDb();
+        addTearDown(() => db.close());
+        final container = ProviderContainer(
+          overrides: [databaseProvider.overrideWithValue(db)],
+        );
+        addTearDown(container.dispose);
+
+        await container.read(settingsProvider.future);
+
+        await container
+            .read(settingsProvider.notifier)
+            .updateSetting('theme', 'dark');
+
+        expect(container.read(themeModeProvider), ThemeMode.dark);
+        expect(container.read(settingsProvider).valueOrNull?.theme, 'dark');
+      },
+    );
+
+    test(
+      'updateSetting("font_scale", 1.2) 后 settings 与 fontScaleProvider 同步',
+      () async {
+        final db = _createTestDb();
+        addTearDown(() => db.close());
+        final container = ProviderContainer(
+          overrides: [databaseProvider.overrideWithValue(db)],
+        );
+        addTearDown(container.dispose);
+
+        await container.read(settingsProvider.future);
+
+        await container
+            .read(settingsProvider.notifier)
+            .updateSetting('font_scale', 1.2);
+
+        expect(container.read(settingsProvider).valueOrNull?.fontScale, 1.2);
+        expect(container.read(fontScaleProvider), 1.2);
+      },
+    );
+
+    test('冷启动 theme=dark 时 themeModeProvider 同步为 dark', () async {
+      final db = _createTestDb();
+      addTearDown(() => db.close());
+      await db
+          .into(db.settings)
+          .insertOnConflictUpdate(
+            SettingsCompanion.insert(key: 'theme', value: jsonEncode('dark')),
+          );
+      final container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(db)],
+      );
+      addTearDown(container.dispose);
+
+      final settings = await container.read(settingsProvider.future);
+      expect(settings.theme, 'dark');
+      expect(container.read(themeModeProvider), ThemeMode.dark);
+    });
+
+    test(
+      'updateSetting("auto_resume_last_conversation", true) 后设置项保存',
+      () async {
+        final db = _createTestDb();
+        addTearDown(() => db.close());
+        final container = ProviderContainer(
+          overrides: [databaseProvider.overrideWithValue(db)],
+        );
+        addTearDown(container.dispose);
+
+        await container.read(settingsProvider.future);
+
+        await container
+            .read(settingsProvider.notifier)
+            .updateSetting('auto_resume_last_conversation', true);
+
+        expect(
+          container
+              .read(settingsProvider)
+              .valueOrNull
+              ?.autoResumeLastConversation,
+          isTrue,
+        );
+      },
+    );
   });
 }

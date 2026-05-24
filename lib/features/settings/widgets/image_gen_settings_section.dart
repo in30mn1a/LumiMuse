@@ -235,6 +235,7 @@ class _ImageGenSettingsSectionState
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             // 通用设置（启用开关 + 品质标签）
             _buildSection(
@@ -791,6 +792,7 @@ class _ImageGenSettingsSectionState
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Row(children: [
             Icon(icon, size: 18, color: isDark ? AppTheme.darkAccentDark : AppTheme.accentDark),

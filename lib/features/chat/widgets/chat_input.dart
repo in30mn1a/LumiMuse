@@ -43,7 +43,7 @@ import 'attachment_preview_bar.dart';
 class ChatInput extends ConsumerStatefulWidget {
   /// 发送回调：text 已 trim，attachments 为空时传 null
   final Future<void> Function(String text, List<AttachmentItem>? attachments)
-      onSend;
+  onSend;
 
   /// 停止当前流式生成的回调（仅在 isGenerating 时启用）
   final VoidCallback? onStop;
@@ -107,8 +107,9 @@ class _ChatInputState extends ConsumerState<ChatInput> {
     final trimmed = _controller.text.trim();
     if ((trimmed.isEmpty && _attachments.isEmpty) || widget.disabled) return;
 
-    final attachmentsToSend =
-        _attachments.isEmpty ? null : List<AttachmentItem>.from(_attachments);
+    final attachmentsToSend = _attachments.isEmpty
+        ? null
+        : List<AttachmentItem>.from(_attachments);
     // TSX 同款：纯附件场景把 content 占位为 ' '
     final content = trimmed.isEmpty ? ' ' : trimmed;
 
@@ -118,13 +119,38 @@ class _ChatInputState extends ConsumerState<ChatInput> {
       _attachError = null;
     });
 
+    final isMobilePlatform = Theme.of(context).platform == TargetPlatform.iOS ||
+        Theme.of(context).platform == TargetPlatform.android;
+    if (isMobilePlatform || AppBreakpoints.isMobile(MediaQuery.sizeOf(context).width)) {
+      _focusNode.unfocus();
+    }
+
     await widget.onSend(content, attachmentsToSend);
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    
+    final isMobilePlatform = Theme.of(context).platform == TargetPlatform.iOS ||
+        Theme.of(context).platform == TargetPlatform.android;
+    final shouldUnfocus = isMobilePlatform || AppBreakpoints.isMobile(MediaQuery.sizeOf(context).width);
+
+    if (shouldUnfocus) {
+      // 无论是从“不生成”变成“正在生成”（即输入框被禁用），还是从“正在生成”变成“结束生成”（即输入框恢复可用），
+      // 在移动端/触摸平台都确保取消聚焦，关闭/防止键盘弹出。
+      if ((oldWidget.isGenerating && !widget.isGenerating) ||
+          (!oldWidget.isGenerating && widget.isGenerating)) {
+        _focusNode.unfocus();
+      }
+    }
   }
 
   /// Enter 发送 / Shift+Enter 换行（与 TSX 一致）
   void _handleKey(KeyEvent event) {
     if (event is! KeyDownEvent) return;
-    final isEnter = event.logicalKey == LogicalKeyboardKey.enter ||
+    final isEnter =
+        event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter;
     if (!isEnter) return;
     final isShift = HardwareKeyboard.instance.isShiftPressed;
@@ -141,7 +167,7 @@ class _ChatInputState extends ConsumerState<ChatInput> {
 
     final canSend =
         (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
-            !widget.disabled;
+        !widget.disabled;
 
     // chat-input-safe：safe-area-inset-bottom + 1rem
     final safeBottom = mediaQuery.padding.bottom;
@@ -150,8 +176,9 @@ class _ChatInputState extends ConsumerState<ChatInput> {
         ? mediaQuery.viewInsets.bottom
         : safeBottom;
 
-    final borderLight =
-        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+    final borderLight = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
     // bg-[rgba(248,244,255,0.82)] / dark:bg-[rgba(25,20,37,0.82)]
     final containerBg = isDark
         ? const Color(0xFF191425).withValues(alpha: 0.82)
@@ -183,8 +210,7 @@ class _ChatInputState extends ConsumerState<ChatInput> {
                 if (_attachments.isNotEmpty) ...[
                   AttachmentPreviewBar(
                     attachments: _attachments,
-                    onRemove: (i) =>
-                        setState(() => _attachments.removeAt(i)),
+                    onRemove: (i) => setState(() => _attachments.removeAt(i)),
                   ),
                   const SizedBox(height: AppSpacing.sm),
                 ],
@@ -202,8 +228,14 @@ class _ChatInputState extends ConsumerState<ChatInput> {
                 ],
 
                 // 输入条主体
-                _buildInputRow(context, isDark, lang, isMobile, borderLight,
-                    canSend),
+                _buildInputRow(
+                  context,
+                  isDark,
+                  lang,
+                  isMobile,
+                  borderLight,
+                  canSend,
+                ),
 
                 // 模型切换栏（对照 TSX ChatInput 底部 model picker）
                 if (widget.onModelChange != null)
@@ -244,7 +276,9 @@ class _ChatInputState extends ConsumerState<ChatInput> {
       ),
       // px-3 py-2
       padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -270,7 +304,6 @@ class _ChatInputState extends ConsumerState<ChatInput> {
           ),
 
           const SizedBox(width: AppSpacing.sm), // gap-2
-
           // ── 槽位 2：textarea（min-w-0 flex-1）──
           Expanded(
             child: KeyboardListener(
@@ -294,9 +327,7 @@ class _ChatInputState extends ConsumerState<ChatInput> {
                   hintText: I18n.t('input.placeholder', lang: lang),
                   hintStyle: TextStyle(
                     fontSize: 15,
-                    color: isDark
-                        ? AppTheme.darkTextMuted
-                        : AppTheme.textMuted,
+                    color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                   ),
                   // border-none focus:ring-0：完全无边框无聚焦框
                   border: InputBorder.none,
@@ -304,8 +335,10 @@ class _ChatInputState extends ConsumerState<ChatInput> {
                   focusedBorder: InputBorder.none,
                   isDense: true,
                   // px-1 py-1
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 4,
+                  ),
                   // textarea-rich min-h-[3.1rem] ≈ 50px
                   isCollapsed: false,
                 ),
@@ -314,7 +347,6 @@ class _ChatInputState extends ConsumerState<ChatInput> {
           ),
 
           const SizedBox(width: AppSpacing.sm), // gap-2
-
           // ── 槽位 3：发送 / 停止按钮（self-end mb-1）──
           Padding(
             padding: const EdgeInsets.only(bottom: 4), // mb-1
@@ -322,8 +354,7 @@ class _ChatInputState extends ConsumerState<ChatInput> {
                 ? LumiSoftButton(
                     kind: LumiSoftButtonKind.secondary,
                     icon: Icons.stop_outlined,
-                    label:
-                        isMobile ? null : I18n.t('input.stop', lang: lang),
+                    label: isMobile ? null : I18n.t('input.stop', lang: lang),
                     onTap: widget.onStop,
                     minWidth: isMobile ? 45 : 105.6,
                     padding: EdgeInsets.symmetric(
@@ -334,8 +365,7 @@ class _ChatInputState extends ConsumerState<ChatInput> {
                 : LumiSoftButton(
                     kind: LumiSoftButtonKind.primary,
                     icon: Icons.auto_awesome,
-                    label:
-                        isMobile ? null : I18n.t('input.send', lang: lang),
+                    label: isMobile ? null : I18n.t('input.send', lang: lang),
                     onTap: canSend ? _submit : null,
                     minWidth: isMobile ? 45 : 105.6,
                     padding: EdgeInsets.symmetric(
@@ -364,9 +394,7 @@ class _ChatInputState extends ConsumerState<ChatInput> {
           cursor: SystemMouseCursors.click,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-            ),
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -399,12 +427,12 @@ class _ChatInputState extends ConsumerState<ChatInput> {
             ref.read(settingsProvider).valueOrNull ?? const AppSettings();
         if (settings.apiBase.isNotEmpty) {
           // 先尝试从本地缓存读取
-          final cached = await (db.select(db.modelCache)
-                ..where((t) => t.apiBase.equals(settings.apiBase)))
-              .getSingleOrNull();
+          final cached =
+              await (db.select(db.modelCache)
+                    ..where((t) => t.apiBase.equals(settings.apiBase)))
+                  .getSingleOrNull();
           if (cached != null) {
-            final models = (jsonDecode(cached.models) as List)
-                .cast<String>();
+            final models = (jsonDecode(cached.models) as List).cast<String>();
             if (models.isNotEmpty) {
               _fetchedModels = models;
             }
@@ -420,12 +448,14 @@ class _ChatInputState extends ConsumerState<ChatInput> {
               if (models.isNotEmpty) {
                 _fetchedModels = models;
                 // 写入缓存供下次使用
-                await db.into(db.modelCache).insertOnConflictUpdate(
-                  ModelCacheCompanion.insert(
-                    apiBase: settings.apiBase,
-                    models: drift.Value(jsonEncode(models)),
-                  ),
-                );
+                await db
+                    .into(db.modelCache)
+                    .insertOnConflictUpdate(
+                      ModelCacheCompanion.insert(
+                        apiBase: settings.apiBase,
+                        models: drift.Value(jsonEncode(models)),
+                      ),
+                    );
               }
             } finally {
               llm.dispose();
@@ -442,21 +472,20 @@ class _ChatInputState extends ConsumerState<ChatInput> {
 
     // 使用 showMenu 弹出模型选择列表（渲染在 Overlay 层，不受父级裁剪影响）
     final RenderBox button = context.findRenderObject() as RenderBox;
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final position = RelativeRect.fromRect(
       Rect.fromPoints(
         button.localToGlobal(Offset.zero, ancestor: overlay),
         button.localToGlobal(
-            button.size.bottomLeft(Offset.zero),
-            ancestor: overlay),
+          button.size.bottomLeft(Offset.zero),
+          ancestor: overlay,
+        ),
       ),
       Offset.zero & overlay.size,
     );
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final accentDark =
-        isDark ? AppTheme.darkAccentDark : AppTheme.accentDark;
+    final accentDark = isDark ? AppTheme.darkAccentDark : AppTheme.accentDark;
 
     if (_fetchedModels.isEmpty) {
       // 没有模型可选，显示提示

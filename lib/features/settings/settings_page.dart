@@ -303,66 +303,80 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     constraints: const BoxConstraints(maxWidth: 1280),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         _buildHeader(lang),
                         const SizedBox(height: AppSpacing.md),
                         _buildTabNav(lang, isDark),
                         const SizedBox(height: AppSpacing.lg),
-                        // 用 IndexedStack 而非条件渲染：未激活的 Tab 仍保留在
+                        // 用 Stack + Offstage 而非条件渲染：未激活的 Tab 仍保留在
                         // widget tree 中，子 Section（多为 Stateful，含输入控制器、
                         // 滚动位置等）切换 Tab 后状态不会被销毁重建。
-                        IndexedStack(
-                          index: _activeTab.index,
-                          sizing: StackFit.loose,
+                        // 使用 Offstage 代替 IndexedStack，以避免因其他长 Tab 的高度
+                        // 撑开 Stack，导致短 Tab 底部出现多余滑动空间的问题。
+                        Stack(
+                          fit: StackFit.loose,
                           children: [
-                            const Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                ProviderManageSection(),
-                                SizedBox(height: AppSpacing.lg),
-                                ApiSection(),
-                              ],
+                            Offstage(
+                              offstage: _activeTab != _SettingTab.api,
+                              child: const Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  ProviderManageSection(),
+                                  SizedBox(height: AppSpacing.lg),
+                                  ApiSection(),
+                                ],
+                              ),
                             ),
-                            const Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                ModelSection(),
-                                SizedBox(height: AppSpacing.lg),
-                                ChatBehaviorSection(),
-                              ],
+                            Offstage(
+                              offstage: _activeTab != _SettingTab.generation,
+                              child: const Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  ModelSection(),
+                                  SizedBox(height: AppSpacing.lg),
+                                  ChatBehaviorSection(),
+                                ],
+                              ),
                             ),
-                            const Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                MemorySection(),
-                                SizedBox(height: AppSpacing.lg),
-                                DisplaySection(),
-                              ],
+                            Offstage(
+                              offstage: _activeTab != _SettingTab.memory,
+                              child: const Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  MemorySection(),
+                                  SizedBox(height: AppSpacing.lg),
+                                  DisplaySection(),
+                                ],
+                              ),
                             ),
-                            Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                LumiSectionPanel(
-                                  title: I18n.t('settings.imageGen', lang: lang),
-                                  child: const ImageGenSettingsSection(),
-                                ),
-                                const SizedBox(height: AppSpacing.lg),
-                                const LumiSectionPanel(
-                                  title: '启动密码',
-                                  child: LaunchPasswordSection(),
-                                ),
-                                const SizedBox(height: AppSpacing.lg),
-                                const LumiSectionPanel(
-                                  title: '数据备份与恢复',
-                                  child: _ImportExportSection(),
-                                ),
-                                const SizedBox(height: AppSpacing.lg),
-                                const MaintenanceSection(),
-                              ],
+                            Offstage(
+                              offstage: _activeTab != _SettingTab.advanced,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  LumiSectionPanel(
+                                    title: I18n.t('settings.imageGen', lang: lang),
+                                    child: const ImageGenSettingsSection(),
+                                  ),
+                                  const SizedBox(height: AppSpacing.lg),
+                                  const LumiSectionPanel(
+                                    title: '启动密码',
+                                    child: LaunchPasswordSection(),
+                                  ),
+                                  const SizedBox(height: AppSpacing.lg),
+                                  const LumiSectionPanel(
+                                    title: '数据备份与恢复',
+                                    child: _ImportExportSection(),
+                                  ),
+                                  const SizedBox(height: AppSpacing.lg),
+                                  const MaintenanceSection(),
+                                ],
+                              ),
                             ),
                           ],
                         ),
@@ -630,6 +644,7 @@ class _ImportExportSectionState extends ConsumerState<_ImportExportSection> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
       children: [
         Text(
           I18n.t('export.hint', lang: lang),

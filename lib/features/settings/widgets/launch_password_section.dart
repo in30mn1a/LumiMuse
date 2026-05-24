@@ -217,6 +217,7 @@ class _LaunchPasswordSectionState extends ConsumerState<LaunchPasswordSection> {
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           // 顶部标题行 — 与其它 _SectionCard 一致的图标 + 标题样式
           Row(

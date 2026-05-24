@@ -29,6 +29,10 @@ class AppSettings {
   final String theme; // 'light' / 'dark'
   final String language; // 'zh' / 'en'
   final String fontStyle; // 'wenkai' / 'system' / 'serif'
+  final double fontScale;
+  final bool autoResumeLastConversation;
+  final String lastConversationCharacterId;
+  final String lastConversationId;
 
   // 供应商
   final String activeProviderId;
@@ -62,6 +66,10 @@ class AppSettings {
     this.theme = 'light',
     this.language = 'zh',
     this.fontStyle = 'wenkai',
+    this.fontScale = 1.0,
+    this.autoResumeLastConversation = false,
+    this.lastConversationCharacterId = '',
+    this.lastConversationId = '',
     this.activeProviderId = '',
     this.imageGen = const ImageGenSettings(),
     this.artistStrings = const [],
@@ -90,6 +98,10 @@ class AppSettings {
     String? theme,
     String? language,
     String? fontStyle,
+    double? fontScale,
+    bool? autoResumeLastConversation,
+    String? lastConversationCharacterId,
+    String? lastConversationId,
     String? activeProviderId,
     ImageGenSettings? imageGen,
     List<ArtistString>? artistStrings,
@@ -106,17 +118,28 @@ class AppSettings {
       exampleDialogue: exampleDialogue ?? this.exampleDialogue,
       memoryInject: memoryInject ?? this.memoryInject,
       showTimestamps: showTimestamps ?? this.showTimestamps,
-      memoryTriggerIntervalEnabled: memoryTriggerIntervalEnabled ?? this.memoryTriggerIntervalEnabled,
+      memoryTriggerIntervalEnabled:
+          memoryTriggerIntervalEnabled ?? this.memoryTriggerIntervalEnabled,
       memoryInterval: memoryInterval ?? this.memoryInterval,
-      memoryTriggerTimeEnabled: memoryTriggerTimeEnabled ?? this.memoryTriggerTimeEnabled,
-      memoryTriggerTimeHours: memoryTriggerTimeHours ?? this.memoryTriggerTimeHours,
-      memoryTriggerKeywordEnabled: memoryTriggerKeywordEnabled ?? this.memoryTriggerKeywordEnabled,
-      memoryTriggerKeywords: memoryTriggerKeywords ?? this.memoryTriggerKeywords,
+      memoryTriggerTimeEnabled:
+          memoryTriggerTimeEnabled ?? this.memoryTriggerTimeEnabled,
+      memoryTriggerTimeHours:
+          memoryTriggerTimeHours ?? this.memoryTriggerTimeHours,
+      memoryTriggerKeywordEnabled:
+          memoryTriggerKeywordEnabled ?? this.memoryTriggerKeywordEnabled,
+      memoryTriggerKeywords:
+          memoryTriggerKeywords ?? this.memoryTriggerKeywords,
       memoryMaxInject: memoryMaxInject ?? this.memoryMaxInject,
       limitInject: limitInject ?? this.limitInject,
       theme: theme ?? this.theme,
       language: language ?? this.language,
       fontStyle: fontStyle ?? this.fontStyle,
+      fontScale: fontScale ?? this.fontScale,
+      autoResumeLastConversation:
+          autoResumeLastConversation ?? this.autoResumeLastConversation,
+      lastConversationCharacterId:
+          lastConversationCharacterId ?? this.lastConversationCharacterId,
+      lastConversationId: lastConversationId ?? this.lastConversationId,
       activeProviderId: activeProviderId ?? this.activeProviderId,
       imageGen: imageGen ?? this.imageGen,
       artistStrings: artistStrings ?? this.artistStrings,
@@ -177,7 +200,8 @@ class ImageGenSettings {
     this.sdCfgScale = 7,
     this.sdWidth = 512,
     this.sdHeight = 768,
-    this.sdNegativePrompt = 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark',
+    this.sdNegativePrompt =
+        'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark',
     this.naiApiKey = '',
     this.naiModel = 'nai-diffusion-4-5-full',
     this.naiSampler = 'k_euler_ancestral',
@@ -187,7 +211,8 @@ class ImageGenSettings {
     this.naiCfgRescale = 0,
     this.naiWidth = 832,
     this.naiHeight = 1216,
-    this.naiNegativePrompt = 'lowres, bad anatomy, bad hands, text, error, missing fingers',
+    this.naiNegativePrompt =
+        'lowres, bad anatomy, bad hands, text, error, missing fingers',
     this.naiArtistTags = '',
     this.comfyuiUrl = 'http://127.0.0.1:8188',
     this.comfyuiWorkflow = '',
@@ -195,7 +220,8 @@ class ImageGenSettings {
     this.customApiKey = '',
     this.customModel = 'dall-e-3',
     this.customSize = '1024x1024',
-    this.qualityTags = 'best quality, amazing quality, very aesthetic, masterpiece',
+    this.qualityTags =
+        'best quality, amazing quality, very aesthetic, masterpiece',
     this.autoGenerate = false,
     this.autoGenerateKeywords = '画,生图,来一张,看看',
   });
@@ -212,7 +238,9 @@ class ImageGenSettings {
       sdCfgScale: (json['sd_cfg_scale'] as num?)?.toDouble() ?? 7,
       sdWidth: json['sd_width'] as int? ?? 512,
       sdHeight: json['sd_height'] as int? ?? 768,
-      sdNegativePrompt: json['sd_negative_prompt'] as String? ?? 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark',
+      sdNegativePrompt:
+          json['sd_negative_prompt'] as String? ??
+          'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark',
       naiApiKey: json['nai_api_key'] as String? ?? '',
       naiModel: json['nai_model'] as String? ?? 'nai-diffusion-4-5-full',
       naiSampler: json['nai_sampler'] as String? ?? 'k_euler_ancestral',
@@ -222,7 +250,9 @@ class ImageGenSettings {
       naiCfgRescale: (json['nai_cfg_rescale'] as num?)?.toDouble() ?? 0,
       naiWidth: json['nai_width'] as int? ?? 832,
       naiHeight: json['nai_height'] as int? ?? 1216,
-      naiNegativePrompt: json['nai_negative_prompt'] as String? ?? 'lowres, bad anatomy, bad hands, text, error, missing fingers',
+      naiNegativePrompt:
+          json['nai_negative_prompt'] as String? ??
+          'lowres, bad anatomy, bad hands, text, error, missing fingers',
       naiArtistTags: json['nai_artist_tags'] as String? ?? '',
       comfyuiUrl: json['comfyui_url'] as String? ?? 'http://127.0.0.1:8188',
       comfyuiWorkflow: json['comfyui_workflow'] as String? ?? '',
@@ -230,9 +260,12 @@ class ImageGenSettings {
       customApiKey: json['custom_api_key'] as String? ?? '',
       customModel: json['custom_model'] as String? ?? 'dall-e-3',
       customSize: json['custom_size'] as String? ?? '1024x1024',
-      qualityTags: json['quality_tags'] as String? ?? 'best quality, amazing quality, very aesthetic, masterpiece',
+      qualityTags:
+          json['quality_tags'] as String? ??
+          'best quality, amazing quality, very aesthetic, masterpiece',
       autoGenerate: json['auto_generate'] as bool? ?? false,
-      autoGenerateKeywords: json['auto_generate_keywords'] as String? ?? '画,生图,来一张,看看',
+      autoGenerateKeywords:
+          json['auto_generate_keywords'] as String? ?? '画,生图,来一张,看看',
     );
   }
 
@@ -361,18 +394,10 @@ class ArtistString {
   }
 
   Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'name': name,
-      'tags': tags,
-    };
+    return {'id': id, 'name': name, 'tags': tags};
   }
 
-  ArtistString copyWith({
-    String? id,
-    String? name,
-    String? tags,
-  }) {
+  ArtistString copyWith({String? id, String? name, String? tags}) {
     return ArtistString(
       id: id ?? this.id,
       name: name ?? this.name,
@@ -380,4 +405,3 @@ class ArtistString {
     );
   }
 }
-

@@ -12,11 +12,18 @@
 // 当前 build 闭包返回 [SizedBox.shrink] 占位，仅作骨架声明；具体子树由各
 // 子 widget 自行渲染，本字段不参与运行期 UI 布局。
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:drift/drift.dart' as drift;
+import '../../core/database/database.dart';
+import '../../core/providers/database_provider.dart';
 import '../../core/providers/character_provider.dart';
 import '../../core/providers/selection_provider.dart';
+import '../../core/providers/settings_provider.dart';
+import '../../core/models/app_settings.dart';
 import '../../theme/app_breakpoints.dart';
 import '../../theme/page_region.dart';
 import '../chat/chat_view.dart';
@@ -34,103 +41,103 @@ class HomePage extends ConsumerStatefulWidget {
   /// 子 spec 修改 widget 内部时不得改变 order/anchor/id；仅允许调整 build 闭包
   /// 返回的子树细节。任何破坏不变量的改动都会被回归脚本 RC-11 立即扫出。
   static List<PageRegion> get baselineRegions => [
-        // §A3.1 区块 1：顶部品牌区（surface-hero 容器）
-        PageRegion(
-          name: 'sidebarBrand',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'logo',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'brandName',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+    // §A3.1 区块 1：顶部品牌区（surface-hero 容器）
+    PageRegion(
+      name: 'sidebarBrand',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'logo',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.1 区块 2：搜索栏（圆角胶囊输入容器）
-        PageRegion(
-          name: 'sidebarSearch',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'searchIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'searchInput',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.end,
-              id: 'clearButton',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'brandName',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.1 区块 3：角色分组标题（surface-panel-quiet 容器）
-        PageRegion(
-          name: 'sidebarCharacterGroupTitle',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'label',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+      ],
+    ),
+    // §A3.1 区块 2：搜索栏（圆角胶囊输入容器）
+    PageRegion(
+      name: 'sidebarSearch',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'searchIcon',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.1 区块 4：角色列表（占用剩余高度的可滚动区域）
-        PageRegion(
-          name: 'sidebarCharacterList',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'characterList',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'searchInput',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.1 区块 5：底部导航 —— 顺序固定「记忆库在上、设置在下」，禁止互换
-        PageRegion(
-          name: 'sidebarFooterNav',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'memoryNav',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'settingsNav',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.end,
+          id: 'clearButton',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.1.5 移动端浮按钮（仅在屏宽 < 768px 且侧栏关闭时显示）
-        PageRegion(
-          name: 'mobileMenuButton',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'menuButton',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+      ],
+    ),
+    // §A3.1 区块 3：角色分组标题（surface-panel-quiet 容器）
+    PageRegion(
+      name: 'sidebarCharacterGroupTitle',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'label',
+          build: (_) => const SizedBox.shrink(),
         ),
-      ];
+      ],
+    ),
+    // §A3.1 区块 4：角色列表（占用剩余高度的可滚动区域）
+    PageRegion(
+      name: 'sidebarCharacterList',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'characterList',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.1 区块 5：底部导航 —— 顺序固定「记忆库在上、设置在下」，禁止互换
+    PageRegion(
+      name: 'sidebarFooterNav',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'memoryNav',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'settingsNav',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.1.5 移动端浮按钮（仅在屏宽 < 768px 且侧栏关闭时显示）
+    PageRegion(
+      name: 'mobileMenuButton',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'menuButton',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+  ];
 
   @override
   ConsumerState<HomePage> createState() => _HomePageState();
@@ -138,6 +145,7 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  bool _resumeAttempted = false;
 
   @override
   Widget build(BuildContext context) {
@@ -154,6 +162,14 @@ class _HomePageState extends ConsumerState<HomePage> {
       });
     });
 
+    ref.listen(settingsProvider, (prev, next) {
+      next.whenData(_maybeAutoResumeLastConversation);
+    });
+    final settings = ref.watch(settingsProvider).valueOrNull;
+    if (settings != null) {
+      _maybeAutoResumeLastConversation(settings);
+    }
+
     final inner = isWide ? _buildDesktop(context) : _buildMobile(context);
 
     // Ctrl+K / Cmd+K 全局打开搜索弹窗 — 与 TSX page.tsx 第 57~67 行 keydown 监听一致
@@ -168,12 +184,57 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
+  void _maybeAutoResumeLastConversation(AppSettings settings) {
+    if (!settings.autoResumeLastConversation) return;
+    if (_resumeAttempted) return;
+    if (ref.read(selectionProvider).characterId != null) return;
+    _resumeAttempted = true;
+    unawaited(_restoreLastConversation(settings));
+  }
+
+  Future<void> _restoreLastConversation(AppSettings settings) async {
+    final db = ref.read(databaseProvider);
+    Conversation? target;
+    if (settings.lastConversationId.isNotEmpty) {
+      target =
+          await (db.select(db.conversations)
+                ..where((t) => t.id.equals(settings.lastConversationId)))
+              .getSingleOrNull();
+    }
+    if (target == null && settings.lastConversationCharacterId.isNotEmpty) {
+      target =
+          await (db.select(db.conversations)
+                ..where(
+                  (t) =>
+                      t.characterId.equals(settings.lastConversationCharacterId),
+                )
+                ..orderBy([
+                  (t) => drift.OrderingTerm(
+                    expression: t.updatedAt,
+                    mode: drift.OrderingMode.desc,
+                  ),
+                ])
+                ..limit(1))
+              .getSingleOrNull();
+    }
+    if (!mounted || target == null) return;
+    if (ref.read(selectionProvider).characterId != null) return;
+    ref
+        .read(selectionProvider.notifier)
+        .selectConversation(
+          characterId: target.characterId,
+          conversationId: target.id,
+        );
+  }
+
   /// 打开全局搜索弹窗，命中结果后写入 selectionProvider 并跳到主页
   void _openGlobalSearch() {
     showGlobalSearchDialog(
       context,
       onSelect: (characterId, conversationId, messageId) {
-        ref.read(selectionProvider.notifier).selectConversation(
+        ref
+            .read(selectionProvider.notifier)
+            .selectConversation(
               characterId: characterId,
               conversationId: conversationId,
               targetMessageId: messageId,
@@ -210,7 +271,8 @@ class _HomePageState extends ConsumerState<HomePage> {
       drawer: Drawer(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        width: MediaQuery.of(context).size.width *
+        width:
+            MediaQuery.of(context).size.width *
             AppBreakpoints.mobileDrawerWidthRatio,
         child: SafeArea(
           child: Padding(

@@ -36,7 +36,11 @@ class OverviewSection extends ConsumerWidget {
     final lang = ref.watch(localeProvider).languageCode;
 
     final apiOn = settings.apiBase.isNotEmpty && settings.model.isNotEmpty;
-    final memOn = settings.memoryInject || settings.memoryTriggerIntervalEnabled || settings.memoryTriggerTimeEnabled || settings.memoryTriggerKeywordEnabled;
+    final memOn =
+        settings.memoryInject ||
+        settings.memoryTriggerIntervalEnabled ||
+        settings.memoryTriggerTimeEnabled ||
+        settings.memoryTriggerKeywordEnabled;
     final maxInjectText = settings.limitInject
         ? settings.memoryMaxInject.toString()
         : '不限';
@@ -49,8 +53,8 @@ class OverviewSection extends ConsumerWidget {
           final cols = w >= 1100
               ? 4
               : w >= 720
-                  ? 2
-                  : 1;
+              ? 2
+              : 1;
           return SettingsGrid(
             columnCount: cols,
             spacing: 12,
@@ -101,8 +105,7 @@ class ProviderManageSection extends ConsumerStatefulWidget {
       _ProviderManageSectionState();
 }
 
-class _ProviderManageSectionState
-    extends ConsumerState<ProviderManageSection> {
+class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
   Map<String, dynamic>? _editingProvider;
 
   @override
@@ -111,10 +114,10 @@ class _ProviderManageSectionState
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final providers = ref.watch(apiProviderListProvider).valueOrNull ?? [];
     final activeId = ref.watch(activeProviderIdProvider);
-    final borderLight =
-        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
-    final accentDark =
-        isDark ? AppTheme.darkAccentDark : AppTheme.accentDark;
+    final borderLight = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
+    final accentDark = isDark ? AppTheme.darkAccentDark : AppTheme.accentDark;
 
     return LumiSectionPanel(
       title: I18n.t('settings.providerManage', lang: lang),
@@ -140,6 +143,7 @@ class _ProviderManageSectionState
       ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           if (providers.isEmpty)
             Padding(
@@ -148,15 +152,21 @@ class _ProviderManageSectionState
                 I18n.t('settings.providerEmpty', lang: lang),
                 style: TextStyle(
                   fontSize: 14,
-                  color: isDark
-                      ? AppTheme.darkTextMuted
-                      : AppTheme.textMuted,
+                  color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                 ),
               ),
             )
           else
-            ...providers.map((p) => _buildProviderCard(
-                  p, activeId, isDark, lang, borderLight, accentDark)),
+            ...providers.map(
+              (p) => _buildProviderCard(
+                p,
+                activeId,
+                isDark,
+                lang,
+                borderLight,
+                accentDark,
+              ),
+            ),
           if (_editingProvider != null)
             _buildEditForm(isDark, lang, borderLight),
         ],
@@ -180,8 +190,8 @@ class _ProviderManageSectionState
         color: isActive
             ? AppTheme.accent.withValues(alpha: 0.08)
             : (isDark
-                ? AppTheme.darkSurface.withValues(alpha: 0.5)
-                : Colors.white.withValues(alpha: 0.7)),
+                  ? AppTheme.darkSurface.withValues(alpha: 0.5)
+                  : Colors.white.withValues(alpha: 0.7)),
         border: Border.all(
           color: isActive
               ? AppTheme.accent.withValues(alpha: 0.3)
@@ -211,7 +221,9 @@ class _ProviderManageSectionState
                       const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: AppTheme.accent.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(999),
@@ -233,9 +245,7 @@ class _ProviderManageSectionState
                   '${p.apiBase} · ${p.model.isNotEmpty ? p.model : I18n.t('settings.modelPlaceholder', lang: lang)}',
                   style: TextStyle(
                     fontSize: 12,
-                    color: isDark
-                        ? AppTheme.darkTextMuted
-                        : AppTheme.textMuted,
+                    color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                   ),
                   overflow: TextOverflow.ellipsis,
                   maxLines: 1,
@@ -298,12 +308,12 @@ class _ProviderManageSectionState
         color: isDark
             ? AppTheme.darkSurface.withValues(alpha: 0.6)
             : Colors.white.withValues(alpha: 0.8),
-        border: Border.all(
-            color: AppTheme.accent.withValues(alpha: 0.2)),
+        border: Border.all(color: AppTheme.accent.withValues(alpha: 0.2)),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Text(
             isEdit
@@ -312,9 +322,7 @@ class _ProviderManageSectionState
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w500,
-              color: isDark
-                  ? AppTheme.darkTextPrimary
-                  : AppTheme.textPrimary,
+              color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
             ),
           ),
           const SizedBox(height: 12),
@@ -396,9 +404,7 @@ class _ProviderManageSectionState
           style: TextStyle(
             fontSize: 12,
             fontWeight: FontWeight.w500,
-            color: isDark
-                ? AppTheme.darkTextSecondary
-                : AppTheme.textSecondary,
+            color: isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary,
           ),
         ),
         const SizedBox(height: 6),
@@ -408,9 +414,7 @@ class _ProviderManageSectionState
                 ? AppTheme.darkSurface.withValues(alpha: 0.7)
                 : Colors.white.withValues(alpha: 0.86),
             border: Border.all(
-              color: isDark
-                  ? AppTheme.darkBorderLight
-                  : AppTheme.borderLight,
+              color: isDark ? AppTheme.darkBorderLight : AppTheme.borderLight,
             ),
             borderRadius: BorderRadius.circular(12),
           ),
@@ -420,22 +424,20 @@ class _ProviderManageSectionState
             onChanged: onChanged,
             style: TextStyle(
               fontSize: 14,
-              color: isDark
-                  ? AppTheme.darkTextPrimary
-                  : AppTheme.textPrimary,
+              color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
             ),
             decoration: InputDecoration(
               hintText: placeholder,
               hintStyle: TextStyle(
                 fontSize: 13,
-                color: (isDark
-                        ? AppTheme.darkTextMuted
-                        : AppTheme.textMuted)
+                color: (isDark ? AppTheme.darkTextMuted : AppTheme.textMuted)
                     .withValues(alpha: 0.7),
               ),
               border: InputBorder.none,
               contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 10),
+                horizontal: 12,
+                vertical: 10,
+              ),
             ),
           ),
         ),
@@ -455,9 +457,9 @@ class _ProviderManageSectionState
           .saveCurrentAsProvider(name.trim());
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
       }
     }
   }
@@ -490,15 +492,16 @@ class _ProviderManageSectionState
     final isEdit = ep['id'] != null && (ep['id'] as String).isNotEmpty;
 
     if (isEdit) {
-      await ref.read(apiProviderListProvider.notifier).updateProvider(
+      await ref
+          .read(apiProviderListProvider.notifier)
+          .updateProvider(
             ApiProviderData(
               id: ep['id'] as String,
               name: ep['name'] as String? ?? 'Provider',
               apiBase: ep['api_base'] as String? ?? '',
               apiKey: ep['api_key'] as String? ?? '',
               model: ep['model'] as String? ?? '',
-              temperature:
-                  (ep['temperature'] as num?)?.toDouble() ?? 1.0,
+              temperature: (ep['temperature'] as num?)?.toDouble() ?? 1.0,
               maxTokens: ep['max_tokens'] as int? ?? 4096,
               contextWindow: ep['context_window'] as int? ?? 131072,
               jsonMode: ep['json_mode'] as bool? ?? false,
@@ -632,6 +635,7 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
       title: I18n.t('settings.api', lang: lang),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           SettingsLabeledField(
             label: I18n.t('settings.apiBase', lang: lang),
@@ -659,19 +663,22 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
                 final wide = constraints.maxWidth >= 480;
                 final modelInput = _availableModels.isNotEmpty
                     ? SettingsRichSelect<String?>(
-                        value: _availableModels
-                                .contains(_modelController.text)
+                        value: _availableModels.contains(_modelController.text)
                             ? _modelController.text
                             : null,
                         items: [
                           SettingsRichSelectItem<String?>(
                             value: null,
-                            label:
-                                I18n.t('settings.modelPlaceholder', lang: lang),
+                            label: I18n.t(
+                              'settings.modelPlaceholder',
+                              lang: lang,
+                            ),
                           ),
                           ..._availableModels.map(
-                            (m) =>
-                                SettingsRichSelectItem<String?>(value: m, label: m),
+                            (m) => SettingsRichSelectItem<String?>(
+                              value: m,
+                              label: m,
+                            ),
                           ),
                         ],
                         onChanged: (v) {
@@ -681,8 +688,7 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
                       )
                     : SettingsRichInput(
                         controller: _modelController,
-                        hint:
-                            I18n.t('settings.modelPlaceholder', lang: lang),
+                        hint: I18n.t('settings.modelPlaceholder', lang: lang),
                         onChanged: (v) => _updateSetting('model', v),
                       );
                 final fetchBtn = LumiSoftButton(
@@ -851,6 +857,7 @@ class ChatBehaviorSection extends ConsumerWidget {
       title: I18n.t('settings.chatBehavior', lang: lang),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           SettingsCheckboxRow(
             checked: settings.streaming,
@@ -902,8 +909,8 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
   void _loadControllers(AppSettings settings) {
     if (_loaded) return;
     _memoryIntervalController.text = settings.memoryInterval.toString();
-    _memoryTriggerTimeHoursController.text =
-        settings.memoryTriggerTimeHours.toString();
+    _memoryTriggerTimeHoursController.text = settings.memoryTriggerTimeHours
+        .toString();
     _memoryTriggerKeywordsController.text = settings.memoryTriggerKeywords;
     _memoryMaxInjectController.text = settings.memoryMaxInject.toString();
     _loaded = true;
@@ -924,6 +931,7 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
       title: I18n.t('settings.memoryEngine', lang: lang),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
         children: [
           SettingsCheckboxRow(
             checked: settings.memoryTriggerIntervalEnabled,
@@ -943,8 +951,7 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
           SettingsCheckboxRow(
             checked: settings.memoryTriggerTimeEnabled,
             label: I18n.t('settings.triggerTime', lang: lang),
-            onChanged: (v) =>
-                _updateSetting('memory_trigger_time_enabled', v),
+            onChanged: (v) => _updateSetting('memory_trigger_time_enabled', v),
           ),
           if (settings.memoryTriggerTimeEnabled) ...[
             const SizedBox(height: 12),
@@ -1046,9 +1053,25 @@ class DisplaySection extends ConsumerWidget {
               onChanged: (v) => updateSetting('language', v),
             ),
           );
+          final fontScaleBlock = SettingsLabeledFieldFramed(
+            label: I18n.t('settings.fontSize', lang: lang),
+            child: _FontScaleSlider(
+              value: settings.fontScale,
+              onCommit: (v) => updateSetting('font_scale', v),
+            ),
+          );
+          final resumeBlock = SettingsLabeledFieldFramed(
+            label: I18n.t('settings.autoResumeLastConversation', lang: lang),
+            child: Switch(
+              value: settings.autoResumeLastConversation,
+              onChanged: (v) =>
+                  updateSetting('auto_resume_last_conversation', v),
+            ),
+          );
           if (wide) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Row(
                   children: [
@@ -1057,19 +1080,97 @@ class DisplaySection extends ConsumerWidget {
                     Expanded(child: langBlock),
                   ],
                 ),
+                const SizedBox(height: AppSpacing.lg),
+                Row(
+                  children: [
+                    Expanded(child: fontScaleBlock),
+                    const SizedBox(width: 16),
+                    Expanded(child: resumeBlock),
+                  ],
+                ),
               ],
             );
           }
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
             children: [
               themeBlock,
               const SizedBox(height: AppSpacing.lg),
               langBlock,
+              const SizedBox(height: AppSpacing.lg),
+              fontScaleBlock,
+              const SizedBox(height: AppSpacing.lg),
+              resumeBlock,
             ],
           );
         },
       ),
+    );
+  }
+}
+
+/// 字体缩放滑块：拖动时仅更新 [fontScaleProvider] 预览，松手后写库。
+class _FontScaleSlider extends ConsumerStatefulWidget {
+  const _FontScaleSlider({
+    required this.value,
+    required this.onCommit,
+  });
+
+  final double value;
+  final Future<void> Function(double value) onCommit;
+
+  @override
+  ConsumerState<_FontScaleSlider> createState() => _FontScaleSliderState();
+}
+
+class _FontScaleSliderState extends ConsumerState<_FontScaleSlider> {
+  late double _draft;
+
+  @override
+  void initState() {
+    super.initState();
+    _draft = widget.value.clamp(0.85, 1.5).toDouble();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FontScaleSlider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.value != widget.value) {
+      _draft = widget.value.clamp(0.85, 1.5).toDouble();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Slider(
+          value: _draft,
+          min: 0.85,
+          max: 1.5,
+          divisions: 13,
+          label: '${(_draft * 100).round()}%',
+          onChanged: (v) {
+            setState(() => _draft = v);
+            ref.read(fontScaleProvider.notifier).state = v;
+          },
+          onChangeEnd: (v) => widget.onCommit(v),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            '${(_draft * 100).round()}%',
+            style: TextStyle(
+              fontSize: 12,
+              color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1107,7 +1208,9 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
     } catch (e) {
       if (mounted) {
         setState(() => _maintStatus = _MaintStatus.idle);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
@@ -1123,7 +1226,8 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
           _cleanupResult = result;
           _maintCleanedCount = result.dbDeleted;
           _maintStatus = _MaintStatus.done;
-          if (result.dbDeleted > 0 || result.fileResults.values.any((stat) => stat.deleted > 0)) {
+          if (result.dbDeleted > 0 ||
+              result.fileResults.values.any((stat) => stat.deleted > 0)) {
             _statsRefreshSeq++;
           }
         });
@@ -1134,7 +1238,9 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
     } catch (e) {
       if (mounted) {
         setState(() => _maintStatus = _MaintStatus.idle);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
@@ -1143,7 +1249,8 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
   Widget build(BuildContext context) {
     final lang = ref.watch(localeProvider).languageCode;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final running = _maintStatus == _MaintStatus.checking ||
+    final running =
+        _maintStatus == _MaintStatus.checking ||
         _maintStatus == _MaintStatus.cleaning;
 
     String? msg;
@@ -1153,7 +1260,8 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
     final mutedColor = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
 
     final totalOrphans = _maintPreviewCount;
-    final hasFileOrphans = _maintPreviewFiles?.values.any((stat) => stat.orphanCount > 0) ?? false;
+    final hasFileOrphans =
+        _maintPreviewFiles?.values.any((stat) => stat.orphanCount > 0) ?? false;
 
     if (running) {
       msg = I18n.t('settings.cleanupRunning', lang: lang);
@@ -1161,17 +1269,17 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
     } else if (_maintStatus == _MaintStatus.done) {
       final dbCount = _maintCleanedCount;
       final fileResults = _cleanupResult?.fileResults;
-      final totalDeletedFiles = fileResults?.values.fold<int>(0, (sum, item) => sum + item.deleted) ?? 0;
+      final totalDeletedFiles =
+          fileResults?.values.fold<int>(0, (sum, item) => sum + item.deleted) ??
+          0;
 
       if (dbCount == 0 && totalDeletedFiles == 0) {
         msg = I18n.t('settings.cleanupClean', lang: lang);
         msgColor = mutedColor;
       } else {
-        msg = I18n.tArgs(
-          'settings.cleanupResult',
-          {'count': dbCount},
-          lang: lang,
-        );
+        msg = I18n.tArgs('settings.cleanupResult', {
+          'count': dbCount,
+        }, lang: lang);
         msgColor = const Color(0xFF16A34A);
 
         if (fileResults != null) {
@@ -1179,11 +1287,11 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
           final atDel = fileResults['attachments']?.deleted ?? 0;
           final gDel = fileResults['generated']?.deleted ?? 0;
           if (aDel > 0 || atDel > 0 || gDel > 0) {
-            subMsg = I18n.tArgs(
-              'settings.cleanupFileResult',
-              {'a': aDel, 'at': atDel, 'g': gDel},
-              lang: lang,
-            );
+            subMsg = I18n.tArgs('settings.cleanupFileResult', {
+              'a': aDel,
+              'at': atDel,
+              'g': gDel,
+            }, lang: lang);
             subMsgColor = const Color(0xFF16A34A);
           }
         }
@@ -1193,11 +1301,9 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
         msg = I18n.t('settings.cleanupClean', lang: lang);
         msgColor = mutedColor;
       } else {
-        msg = I18n.tArgs(
-          'settings.cleanupPreview',
-          {'count': totalOrphans},
-          lang: lang,
-        );
+        msg = I18n.tArgs('settings.cleanupPreview', {
+          'count': totalOrphans,
+        }, lang: lang);
         msgColor = const Color(0xFFD97706);
 
         if (_maintPreviewFiles != null) {
@@ -1208,11 +1314,11 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
           final attStr = '${att?.orphanCount ?? 0}/${att?.total ?? 0}';
           final genStr = '${gen?.orphanCount ?? 0}/${gen?.total ?? 0}';
 
-          subMsg = I18n.tArgs(
-            'settings.cleanupFilePreview',
-            {'a': avStr, 'at': attStr, 'g': genStr},
-            lang: lang,
-          );
+          subMsg = I18n.tArgs('settings.cleanupFilePreview', {
+            'a': avStr,
+            'at': attStr,
+            'g': genStr,
+          }, lang: lang);
           subMsgColor = const Color(0xFFD97706);
         }
       }
@@ -1223,6 +1329,7 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
       subtitle: I18n.t('settings.maintenanceHint', lang: lang),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           DatabaseStatsView(key: ValueKey<int>(_statsRefreshSeq)),
           const SizedBox(height: AppSpacing.lg),
@@ -1253,7 +1360,10 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
                     Text(msg, style: TextStyle(fontSize: 14, color: msgColor)),
                     if (subMsg != null) ...[
                       const SizedBox(height: 4),
-                      Text(subMsg, style: TextStyle(fontSize: 13, color: subMsgColor)),
+                      Text(
+                        subMsg,
+                        style: TextStyle(fontSize: 13, color: subMsgColor),
+                      ),
                     ],
                   ],
                 ),
@@ -1300,12 +1410,15 @@ class _DatabaseStatsViewState extends ConsumerState<DatabaseStatsView> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final mutedColor = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
-    final secondaryColor =
-        isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary;
-    final primaryColor =
-        isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary;
-    final borderColor =
-        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+    final secondaryColor = isDark
+        ? AppTheme.darkTextSecondary
+        : AppTheme.textSecondary;
+    final primaryColor = isDark
+        ? AppTheme.darkTextPrimary
+        : AppTheme.textPrimary;
+    final borderColor = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
 
     return FutureBuilder<DatabaseStats>(
       future: _future,

@@ -66,223 +66,223 @@ class ChatView extends ConsumerStatefulWidget {
   /// 子 spec 修改 widget 内部时不得改变 order/anchor/id；仅允许调整 build 闭包
   /// 返回的子树细节。任何破坏不变量的改动都会被回归脚本 RC-11 立即扫出。
   static List<PageRegion> get baselineRegions => [
-        // §A3.2.2 PC 端工具栏左半区（角色身份）
-        PageRegion(
-          name: 'toolbarDesktopLeft',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'avatar',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'nameAndChips',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+    // §A3.2.2 PC 端工具栏左半区（角色身份）
+    PageRegion(
+      name: 'toolbarDesktopLeft',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'avatar',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.2.2 PC 端工具栏右半区（操作按钮组，6 枚按钮顺序锁定）
-        PageRegion(
-          name: 'toolbarDesktopRight',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.end,
-              id: 'newChat',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.end,
-              id: 'rename',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.end,
-              id: 'summary',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 4,
-              anchor: SlotAnchor.end,
-              id: 'duplicate',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 5,
-              anchor: SlotAnchor.end,
-              id: 'image',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 6,
-              anchor: SlotAnchor.end,
-              id: 'delete',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'nameAndChips',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.2.3 移动端紧凑工具栏（收起状态下单行）
-        PageRegion(
-          name: 'toolbarMobileCompact',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'menu',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'avatar',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.start,
-              id: 'name',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 4,
-              anchor: SlotAnchor.end,
-              id: 'listIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 5,
-              anchor: SlotAnchor.end,
-              id: 'plusIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 6,
-              anchor: SlotAnchor.end,
-              id: 'searchIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 7,
-              anchor: SlotAnchor.end,
-              id: 'chevronDown',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+      ],
+    ),
+    // §A3.2.2 PC 端工具栏右半区（操作按钮组，6 枚按钮顺序锁定）
+    PageRegion(
+      name: 'toolbarDesktopRight',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.end,
+          id: 'newChat',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.2.4 移动端展开拉片（toolbarExpanded === true 时第二行）
-        PageRegion(
-          name: 'toolbarMobileExpanded',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'continueChip',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'memoryChip',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.end,
-              id: 'pencilIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 4,
-              anchor: SlotAnchor.end,
-              id: 'summaryIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 5,
-              anchor: SlotAnchor.end,
-              id: 'duplicateIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 6,
-              anchor: SlotAnchor.end,
-              id: 'imageIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 7,
-              anchor: SlotAnchor.end,
-              id: 'trashIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.end,
+          id: 'rename',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.2.5 消息区副标题栏（左：spark + 标题；右：可选 chips + token chip）
-        PageRegion(
-          name: 'messageHeader',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'sparkIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'title',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.end,
-              id: 'chips',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.end,
+          id: 'summary',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.2.6 消息列表（surface-panel 主体内容）
-        PageRegion(
-          name: 'messageList',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'list',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 4,
+          anchor: SlotAnchor.end,
+          id: 'duplicate',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.2.7 输入栏 ChatInput（三槽位顺序锁定：附件 → textarea → 发送/停止）
-        PageRegion(
-          name: 'chatInput',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'paperclipIcon',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.center,
-              id: 'textarea',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.end,
-              id: 'sendOrStopButton',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 5,
+          anchor: SlotAnchor.end,
+          id: 'image',
+          build: (_) => const SizedBox.shrink(),
         ),
-      ];
+        PageSlot(
+          order: 6,
+          anchor: SlotAnchor.end,
+          id: 'delete',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.2.3 移动端紧凑工具栏（收起状态下单行）
+    PageRegion(
+      name: 'toolbarMobileCompact',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'menu',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'avatar',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.start,
+          id: 'name',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 4,
+          anchor: SlotAnchor.end,
+          id: 'listIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 5,
+          anchor: SlotAnchor.end,
+          id: 'plusIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 6,
+          anchor: SlotAnchor.end,
+          id: 'searchIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 7,
+          anchor: SlotAnchor.end,
+          id: 'chevronDown',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.2.4 移动端展开拉片（toolbarExpanded === true 时第二行）
+    PageRegion(
+      name: 'toolbarMobileExpanded',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'continueChip',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'memoryChip',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.end,
+          id: 'pencilIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 4,
+          anchor: SlotAnchor.end,
+          id: 'summaryIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 5,
+          anchor: SlotAnchor.end,
+          id: 'duplicateIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 6,
+          anchor: SlotAnchor.end,
+          id: 'imageIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 7,
+          anchor: SlotAnchor.end,
+          id: 'trashIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.2.5 消息区副标题栏（左：spark + 标题；右：可选 chips + token chip）
+    PageRegion(
+      name: 'messageHeader',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'sparkIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'title',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.end,
+          id: 'chips',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.2.6 消息列表（surface-panel 主体内容）
+    PageRegion(
+      name: 'messageList',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'list',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.2.7 输入栏 ChatInput（三槽位顺序锁定：附件 → textarea → 发送/停止）
+    PageRegion(
+      name: 'chatInput',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'paperclipIcon',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.center,
+          id: 'textarea',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.end,
+          id: 'sendOrStopButton',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+  ];
 
   @override
   ConsumerState<ChatView> createState() => _ChatViewState();
@@ -382,6 +382,16 @@ class _ChatViewState extends ConsumerState<ChatView> {
       }
     });
     _actions.conversationId = id;
+    final characterId = ref.read(selectionProvider).characterId;
+    if (id != null && characterId != null) {
+      unawaited(
+        rememberLastConversation(
+          ref,
+          characterId: characterId,
+          conversationId: id,
+        ),
+      );
+    }
   }
 
   /// 重置动画追踪状态（角色切换 / 新建对话时调用）
@@ -428,13 +438,14 @@ class _ChatViewState extends ConsumerState<ChatView> {
   /// - 否则 → 置 id（切换到新气泡）
   void _toggleMessageActions(String id) {
     setState(() {
-      _activeActionMessageId =
-          (_activeActionMessageId == id) ? null : id;
+      _activeActionMessageId = (_activeActionMessageId == id) ? null : id;
     });
   }
 
   Future<void> _deleteAttachment(String messageId, int attachmentIndex) async {
-    await ref.read(messageActionsProvider).deleteAttachment(messageId, attachmentIndex);
+    await ref
+        .read(messageActionsProvider)
+        .deleteAttachment(messageId, attachmentIndex);
   }
 
   @override
@@ -455,7 +466,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
       resetAnimationState: _resetAnimationState,
       resetMemoryTaskSeen: _resetMemoryTaskSeen,
       onConversationChanged: (id) {
-        setState(() => _resolvedConversationId = id);
+        _setConversationId(id);
       },
     );
   }
@@ -470,8 +481,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
 
   /// 由调用方统一使用的 toast 入口：等价于 TSX 第 156 行 `showToast(message, type)`。
   /// 默认 type 为 error，与 TSX 一致。
-  void _showToast(String message,
-      {ChatToastType type = ChatToastType.error}) {
+  void _showToast(String message, {ChatToastType type = ChatToastType.error}) {
     _chatToast.show(message, type: type);
   }
 
@@ -487,8 +497,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
       return;
     }
 
-    final list =
-        await ref.read(conversationListProvider(characterId).future);
+    final list = await ref.read(conversationListProvider(characterId).future);
     if (!mounted) return;
     if (list.isNotEmpty) {
       _setConversationId(list.first.id);
@@ -501,14 +510,16 @@ class _ChatViewState extends ConsumerState<ChatView> {
     if (!_scrollController.hasClients) return true;
     final maxScroll = _scrollController.position.maxScrollExtent;
     final currentScroll = _scrollController.offset;
-    final isGenerating = _resolvedConversationId != null &&
+    final isGenerating =
+        _resolvedConversationId != null &&
         ref.read(chatControllerProvider(_resolvedConversationId!)).isGenerating;
     final threshold = isGenerating ? 250.0 : 120.0;
     return (maxScroll - currentScroll) <= threshold;
   }
 
   void _scrollToBottom({bool animate = true}) {
-    final isGenerating = _resolvedConversationId != null &&
+    final isGenerating =
+        _resolvedConversationId != null &&
         ref.read(chatControllerProvider(_resolvedConversationId!)).isGenerating;
     final finalAnimate = isGenerating ? false : animate;
 
@@ -683,30 +694,26 @@ class _ChatViewState extends ConsumerState<ChatView> {
   /// 对照 TSX 第 1597 行起：
   /// `<div className="flex h-full min-h-0 flex-1 flex-col gap-2 px-2 py-2`
   /// ` md:gap-4 md:px-4 md:py-4">`
-  Widget _buildBody(
-    BuildContext context,
-    Character character,
-    bool isDark,
-  ) {
+  Widget _buildBody(BuildContext context, Character character, bool isDark) {
     final width = MediaQuery.sizeOf(context).width;
     final isLargeDesktop = width >= 1024; // lg 断点
 
-    final convCount = ref
-            .watch(conversationListProvider(character.id))
-            .valueOrNull
-            ?.length ??
+    final convCount =
+        ref.watch(conversationListProvider(character.id)).valueOrNull?.length ??
         0;
-    final memoryCount = ref
-            .watch(memoryListProvider(
-                MemoryListParams(characterId: character.id)))
+    final memoryCount =
+        ref
+            .watch(
+              memoryListProvider(MemoryListParams(characterId: character.id)),
+            )
             .valueOrNull
             ?.total ??
         0;
 
     final isStreaming = _resolvedConversationId != null
         ? ref
-            .watch(chatControllerProvider(_resolvedConversationId!))
-            .isGenerating
+              .watch(chatControllerProvider(_resolvedConversationId!))
+              .isGenerating
         : false;
 
     return Padding(
@@ -738,24 +745,24 @@ class _ChatViewState extends ConsumerState<ChatView> {
             onImageManager: _openImageManager,
             onDelete: _deleteCurrentConversation,
           ),
-          SizedBox(height: AppBreakpoints.isMobile(width) ? 8 : 16), // gap-2 / md:gap-4
-
+          SizedBox(
+            height: AppBreakpoints.isMobile(width) ? 8 : 16,
+          ), // gap-2 / md:gap-4
           // ── 主区 grid：左主面板 + 右对话快捷面板（lg+） ──
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 // 左侧 surface-panel 主面板
-                Expanded(
-                  child: _buildMainPanel(context, character, isDark),
-                ),
+                Expanded(child: _buildMainPanel(context, character, isDark)),
                 if (isLargeDesktop) ...[
                   const SizedBox(width: 16), // md:gap-4
                   // 右侧 22rem ≈ 352 对话快捷面板
                   SizedBox(
                     width: 352,
                     child: QuickResumePanel(
-                      conversations: ref
+                      conversations:
+                          ref
                               .watch(conversationListProvider(character.id))
                               .valueOrNull ??
                           [],
@@ -808,19 +815,19 @@ class _ChatViewState extends ConsumerState<ChatView> {
     final conv = convId == null
         ? null
         : ref
-            .watch(conversationListProvider(character.id))
-            .valueOrNull
-            ?.cast<Conversation?>()
-            .firstWhere(
-              (c) => c?.id == convId,
-              orElse: () => null,
-            );
+              .watch(conversationListProvider(character.id))
+              .valueOrNull
+              ?.cast<Conversation?>()
+              .firstWhere((c) => c?.id == convId, orElse: () => null);
 
     final tokenCount = _estimateTokenCount(character);
     final ignoreMemory = (conv?.ignoreMemory ?? 0) == 1;
     final unextractedCount = convId == null
         ? 0
-        : (ref.watch(conversationUnextractedCountProvider(convId)).valueOrNull ?? 0);
+        : (ref
+                  .watch(conversationUnextractedCountProvider(convId))
+                  .valueOrNull ??
+              0);
 
     // 提取状态：使用前端状态（3 秒后自动回到 idle），不直接读数据库
     final memoryStatus = _memoryExtractStatus;
@@ -851,13 +858,15 @@ class _ChatViewState extends ConsumerState<ChatView> {
     final list =
         ref.read(conversationListProvider(characterId)).valueOrNull ?? [];
     final conv = list.cast<Conversation?>().firstWhere(
-          (c) => c?.id == convId,
-          orElse: () => null,
-        );
+      (c) => c?.id == convId,
+      orElse: () => null,
+    );
     final ignoreMemory = (conv?.ignoreMemory ?? 0) == 1;
 
-    final extractStatus =
-        ref.read(latestMemoryTaskProvider(convId)).valueOrNull?.status;
+    final extractStatus = ref
+        .read(latestMemoryTaskProvider(convId))
+        .valueOrNull
+        ?.status;
     final isExtracting =
         extractStatus == 'processing' || extractStatus == 'pending';
 
@@ -899,16 +908,18 @@ class _ChatViewState extends ConsumerState<ChatView> {
       if (characterId == null) return;
 
       final db = ref.read(databaseProvider);
-      final messages = await (db.select(db.messages)
-            ..where((t) => t.conversationId.equals(convId))
-            ..orderBy([
-              (t) => drift.OrderingTerm.asc(t.createdAt),
-              (t) => drift.OrderingTerm.asc(t.seq),
-            ]))
-          .get();
+      final messages =
+          await (db.select(db.messages)
+                ..where((t) => t.conversationId.equals(convId))
+                ..orderBy([
+                  (t) => drift.OrderingTerm.asc(t.createdAt),
+                  (t) => drift.OrderingTerm.asc(t.seq),
+                ]))
+              .get();
 
-      final extractionIds =
-          MemoryExtractionService.selectExtractionMessageIds(messages);
+      final extractionIds = MemoryExtractionService.selectExtractionMessageIds(
+        messages,
+      );
 
       if (extractionIds.isEmpty) {
         _showToast('没有待提取的消息', type: ChatToastType.info);
@@ -930,8 +941,10 @@ class _ChatViewState extends ConsumerState<ChatView> {
       // 设置前端提取状态为 extracting
       _extractStatusTimer?.cancel();
       setState(() => _memoryExtractStatus = 'extracting');
-      _showToast('已触发记忆提取（${extractionIds.length} 条消息）',
-          type: ChatToastType.info);
+      _showToast(
+        '已触发记忆提取（${extractionIds.length} 条消息）',
+        type: ChatToastType.info,
+      );
     } catch (e) {
       _showToast('手动提取失败: $e', type: ChatToastType.error);
     }
@@ -984,8 +997,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
       // 切到下一条对话（如果有）
       final selection = ref.read(selectionProvider);
       if (selection.characterId != null) {
-        final list = await ref
-            .read(conversationListProvider(selection.characterId!).future);
+        final list = await ref.read(
+          conversationListProvider(selection.characterId!).future,
+        );
         if (!mounted) return;
         final next = list.isNotEmpty ? list.first.id : null;
         _setConversationId(next);
@@ -1048,7 +1062,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
                     child: Icon(
                       Icons.auto_awesome_rounded,
                       size: 28,
-                      color: isDark ? AppTheme.darkAccentDark : AppTheme.accentDark,
+                      color: isDark
+                          ? AppTheme.darkAccentDark
+                          : AppTheme.accentDark,
                     ),
                   ),
                 ),
@@ -1078,7 +1094,6 @@ class _ChatViewState extends ConsumerState<ChatView> {
                         : AppTheme.textPrimary,
                   ),
                 ),
-
               ],
             ),
           ),
@@ -1117,10 +1132,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
           children: [
             // 移动端菜单
             if (widget.onOpenSidebar != null) ...[
-              LumiChip.icon(
-                icon: Icons.menu,
-                onTap: widget.onOpenSidebar!,
-              ),
+              LumiChip.icon(icon: Icons.menu, onTap: widget.onOpenSidebar!),
               const SizedBox(width: 8),
             ],
             // 角色头像
@@ -1184,15 +1196,17 @@ class _ChatViewState extends ConsumerState<ChatView> {
 
   // ─── 消息列表 ───
   Widget _buildMessageList(Character character) {
-    final showTimestamps =
-        ref.watch(settingsProvider.select((s) => s.valueOrNull?.showTimestamps ?? true));
+    final showTimestamps = ref.watch(
+      settingsProvider.select((s) => s.valueOrNull?.showTimestamps ?? true),
+    );
 
     if (_resolvedConversationId == null) {
       return _buildEmptyChat(character);
     }
 
-    final messagesAsync =
-        ref.watch(messageListProvider(_resolvedConversationId!));
+    final messagesAsync = ref.watch(
+      messageListProvider(_resolvedConversationId!),
+    );
 
     return messagesAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -1266,112 +1280,112 @@ class _ChatViewState extends ConsumerState<ChatView> {
             isStreamingHere && streamingTargetMessageId == null;
 
         return LumiScrollbar(
-              controller: _scrollController,
-              child: NotificationListener<ScrollNotification>(
-                  onNotification: (notification) {
-                    if (notification is ScrollUpdateNotification) {
-                      final metrics = notification.metrics;
-                      if (metrics.pixels <= metrics.minScrollExtent + 60) {
-                        _loadMoreMessages();
-                      }
-                    }
-                    // 仅在确实有 active action 时才 setState，避免每次 ScrollUpdate
-                    // 都触发整个 build，造成滚动卡顿。
-                    if (_activeActionMessageId != null) {
-                      setState(() => _activeActionMessageId = null);
-                    }
-                    return false;
-                  },
-                  child: ScrollConfiguration(
-                    behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-                    child: ListView.builder(
-                      controller: _scrollController,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: items.length + (showNewMessageStreamBubble ? 1 : 0),
-                      itemBuilder: (context, index) {
-                        if (index == items.length && showNewMessageStreamBubble) {
-                          return _buildStreamingMessage(character);
-                        }
-                        final item = items[index];
-                        if (item is LoadMoreItem) {
-                          return _buildLoadMoreIndicator();
-                        }
-                        if (item is DateDividerItem) {
-                          return _buildDateDivider(item.date);
-                        }
-                        final msg = (item as MessageItem).message;
+          controller: _scrollController,
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (notification) {
+              if (notification is ScrollUpdateNotification) {
+                final metrics = notification.metrics;
+                if (metrics.pixels <= metrics.minScrollExtent + 60) {
+                  _loadMoreMessages();
+                }
+              }
+              // 仅在确实有 active action 时才 setState，避免每次 ScrollUpdate
+              // 都触发整个 build，造成滚动卡顿。
+              if (_activeActionMessageId != null) {
+                setState(() => _activeActionMessageId = null);
+              }
+              return false;
+            },
+            child: ScrollConfiguration(
+              behavior: ScrollConfiguration.of(
+                context,
+              ).copyWith(scrollbars: false),
+              child: ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                itemCount: items.length + (showNewMessageStreamBubble ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (index == items.length && showNewMessageStreamBubble) {
+                    return _buildStreamingMessage(character);
+                  }
+                  final item = items[index];
+                  if (item is LoadMoreItem) {
+                    return _buildLoadMoreIndicator();
+                  }
+                  if (item is DateDividerItem) {
+                    return _buildDateDivider(item.date);
+                  }
+                  final msg = (item as MessageItem).message;
 
-                        final stagger = newMessageStagger[msg.id];
-                        final isNewMessage = stagger != null;
+                  final stagger = newMessageStagger[msg.id];
+                  final isNewMessage = stagger != null;
 
-                        final isStreamingTarget =
-                            isStreamingHere && streamingTargetMessageId == msg.id;
+                  final isStreamingTarget =
+                      isStreamingHere && streamingTargetMessageId == msg.id;
 
-                        final bubble = MessageBubble(
-                          key: ValueKey('msg_${msg.id}'),
-                          message: msg,
-                          characterName: character.name,
-                          characterAvatarUrl: character.avatarUrl,
-                          showTimestamps: showTimestamps,
-                          onRegenerate: msg.role == 'assistant'
-                              ? () => _actions.regenerate(msg.id)
-                              : null,
-                          onRegenerateFromHere: msg.role == 'user'
-                              ? () => _actions.regenerateFromHere(msg.id)
-                              : null,
-                          onGenerateImage: msg.role == 'assistant'
-                              ? ({String? prompt, String? replaceImageId}) =>
-                                  _actions.generateImageForMessage(msg.id,
-                                      existingPrompt: prompt,
-                                      replaceImageId: replaceImageId)
-                              : null,
-                          onCopy: () => _actions.copyMessage(msg.content),
-                          onDelete: () => _actions.deleteMessage(msg.id),
-                          onSwitchVersion: (v) => _actions.switchVersion(msg.id, v),
-                          onEdit: msg.role != 'system'
-                              ? () => _showEditDialog(msg)
-                              : null,
-                          onRegenerateImage: (path, {prompt}) =>
-                              _actions.regenerateImage(
+                  final bubble = MessageBubble(
+                    key: ValueKey('msg_${msg.id}'),
+                    message: msg,
+                    characterName: character.name,
+                    characterAvatarUrl: character.avatarUrl,
+                    showTimestamps: showTimestamps,
+                    onRegenerate: msg.role == 'assistant'
+                        ? () => _actions.regenerate(msg.id)
+                        : null,
+                    onRegenerateFromHere: msg.role == 'user'
+                        ? () => _actions.regenerateFromHere(msg.id)
+                        : null,
+                    onGenerateImage: msg.role == 'assistant'
+                        ? ({String? prompt, String? replaceImageId}) =>
+                              _actions.generateImageForMessage(
                                 msg.id,
-                                path,
-                                prompt: prompt,
-                              ),
-                          onDeleteGeneratedImage: (imageId) =>
-                              _actions.deleteGeneratedImage(msg.id, imageId),
-                          onDeleteGeneratedImageVersion:
-                              (imageId, versionLocalPath) =>
-                                  _actions.deleteGeneratedImageVersion(
-                                    msg.id,
-                                    imageId,
-                                    versionLocalPath,
-                                  ),
-                          onEditImagePrompt: (imageId, newPrompt) =>
-                              _actions.editImagePrompt(msg.id, imageId, newPrompt),
-                          onSetPrimaryImage: (imageId, versionIndex) =>
-                              _actions.setPrimaryImage(msg.id, imageId, versionIndex),
-                          onDeleteAttachment: msg.role == 'user'
-                              ? (index) => _deleteAttachment(msg.id, index)
-                              : null,
-                          activeMessageId: _activeActionMessageId,
-                          onToggleActions: _toggleMessageActions,
-                        );
+                                existingPrompt: prompt,
+                                replaceImageId: replaceImageId,
+                              )
+                        : null,
+                    onCopy: () => _actions.copyMessage(msg.content),
+                    onDelete: () => _actions.deleteMessage(msg.id),
+                    onSwitchVersion: (v) => _actions.switchVersion(msg.id, v),
+                    onEdit: msg.role != 'system'
+                        ? () => _showEditDialog(msg)
+                        : null,
+                    onRegenerateImage: (path, {prompt}) =>
+                        _actions.regenerateImage(msg.id, path, prompt: prompt),
+                    onDeleteGeneratedImage: (imageId) =>
+                        _actions.deleteGeneratedImage(msg.id, imageId),
+                    onDeleteGeneratedImageVersion:
+                        (imageId, versionLocalPath) =>
+                            _actions.deleteGeneratedImageVersion(
+                              msg.id,
+                              imageId,
+                              versionLocalPath,
+                            ),
+                    onEditImagePrompt: (imageId, newPrompt) =>
+                        _actions.editImagePrompt(msg.id, imageId, newPrompt),
+                    onSetPrimaryImage: (imageId, versionIndex) =>
+                        _actions.setPrimaryImage(msg.id, imageId, versionIndex),
+                    onDeleteAttachment: msg.role == 'user'
+                        ? (index) => _deleteAttachment(msg.id, index)
+                        : null,
+                    activeMessageId: _activeActionMessageId,
+                    onToggleActions: _toggleMessageActions,
+                  );
 
-                        return MessageAnimationWrapper(
-                          key: isStreamingTarget
-                              ? ValueKey('streaming_${msg.id}')
-                              : ValueKey('anim_${msg.id}'),
-                          shouldAnimate: isNewMessage,
-                          staggerIndex: stagger ?? 0,
-                          child: isStreamingTarget
-                              ? _buildRegenerateStreamingBubble(character)
-                              : bubble,
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              );
+                  return MessageAnimationWrapper(
+                    key: isStreamingTarget
+                        ? ValueKey('streaming_${msg.id}')
+                        : ValueKey('anim_${msg.id}'),
+                    shouldAnimate: isNewMessage,
+                    staggerIndex: stagger ?? 0,
+                    child: isStreamingTarget
+                        ? _buildRegenerateStreamingBubble(character)
+                        : bubble,
+                  );
+                },
+              ),
+            ),
+          ),
+        );
       },
     );
   }
@@ -1385,31 +1399,32 @@ class _ChatViewState extends ConsumerState<ChatView> {
         children: [
           // 圆形头像光晕
           Container(
-            width: 96,
-            height: 96,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  AppTheme.accent.withValues(alpha: 0.20),
-                  AppTheme.accentLight.withValues(alpha: 0.30),
-                ],
-              ),
-              borderRadius: BorderRadius.circular(32),
-              border: Border.all(
-                color: AppTheme.accent.withValues(alpha: 0.16),
-              ),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: character.avatarUrl != null &&
-                    character.avatarUrl!.isNotEmpty
-                ? LumiNetworkImage(
-                    url: character.avatarUrl!,
-                    fit: BoxFit.cover,
-                  )
-                : _emptyAvatarInitial(character),
-          )
+                width: 96,
+                height: 96,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      AppTheme.accent.withValues(alpha: 0.20),
+                      AppTheme.accentLight.withValues(alpha: 0.30),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(32),
+                  border: Border.all(
+                    color: AppTheme.accent.withValues(alpha: 0.16),
+                  ),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child:
+                    character.avatarUrl != null &&
+                        character.avatarUrl!.isNotEmpty
+                    ? LumiNetworkImage(
+                        url: character.avatarUrl!,
+                        fit: BoxFit.cover,
+                      )
+                    : _emptyAvatarInitial(character),
+              )
               .animate(onPlay: (controller) => controller.repeat(reverse: true))
               .scale(
                 begin: const Offset(1.0, 1.0),
@@ -1428,16 +1443,14 @@ class _ChatViewState extends ConsumerState<ChatView> {
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.w600,
-              color:
-                  isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+              color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
             ),
           ),
           if (character.greeting.isNotEmpty) ...[
             const SizedBox(height: 12),
             Container(
               constraints: const BoxConstraints(maxWidth: 480),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
               decoration: BoxDecoration(
                 color: isDark
                     ? AppTheme.darkSurface.withValues(alpha: 0.6)
@@ -1524,9 +1537,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 : Colors.white.withValues(alpha: 0.6),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: isDark
-                  ? AppTheme.darkBorderLight
-                  : AppTheme.borderLight,
+              color: isDark ? AppTheme.darkBorderLight : AppTheme.borderLight,
             ),
           ),
           child: Row(
@@ -1547,9 +1558,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 '加载更多历史消息…',
                 style: TextStyle(
                   fontSize: 12,
-                  color: isDark
-                      ? AppTheme.darkTextMuted
-                      : AppTheme.textMuted,
+                  color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                 ),
               ),
             ],
@@ -1583,28 +1592,15 @@ class _ChatViewState extends ConsumerState<ChatView> {
       padding: const EdgeInsets.symmetric(vertical: 14),
       child: Row(
         children: [
-          Expanded(
-            child: Container(
-              height: 1,
-              color: dividerColor,
-            ),
-          ),
+          Expanded(child: Container(height: 1, color: dividerColor)),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Text(
               label,
-              style: TextStyle(
-                fontSize: 11,
-                color: labelColor,
-              ),
+              style: TextStyle(fontSize: 11, color: labelColor),
             ),
           ),
-          Expanded(
-            child: Container(
-              height: 1,
-              color: dividerColor,
-            ),
-          ),
+          Expanded(child: Container(height: 1, color: dividerColor)),
         ],
       ),
     );
@@ -1641,8 +1637,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
   Widget _buildMemoryExtractionIndicator(bool isDark) {
     if (_resolvedConversationId == null) return const SizedBox.shrink();
 
-    final snapAsync =
-        ref.watch(latestMemoryTaskProvider(_resolvedConversationId!));
+    final snapAsync = ref.watch(
+      latestMemoryTaskProvider(_resolvedConversationId!),
+    );
     final snap = snapAsync.valueOrNull;
     if (snap == null || snap.status != 'processing') {
       return const SizedBox.shrink();
@@ -1655,14 +1652,11 @@ class _ChatViewState extends ConsumerState<ChatView> {
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
               color: accent.withValues(alpha: isDark ? 0.16 : 0.10),
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: accent.withValues(alpha: 0.24),
-              ),
+              border: Border.all(color: accent.withValues(alpha: 0.24)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -1697,8 +1691,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
   Widget _buildInputArea(BuildContext context, bool isDark) {
     final isGenerating = _resolvedConversationId != null
         ? ref
-            .watch(chatControllerProvider(_resolvedConversationId!))
-            .isGenerating
+              .watch(chatControllerProvider(_resolvedConversationId!))
+              .isGenerating
         : false;
 
     return ChatInput(
@@ -1706,7 +1700,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
       onStop: _actions.stopGeneration,
       disabled: isGenerating,
       isGenerating: isGenerating,
-      currentModel: ref.watch(settingsProvider.select((s) => s.valueOrNull?.model ?? '')),
+      currentModel: ref.watch(
+        settingsProvider.select((s) => s.valueOrNull?.model ?? ''),
+      ),
       onModelChange: (model) async {
         final notifier = ref.read(settingsProvider.notifier);
         final current = ref.read(settingsProvider).valueOrNull;
@@ -1756,8 +1752,12 @@ class _ChatViewState extends ConsumerState<ChatView> {
       // 任何退出路径（含异常 / Navigator.pop / 系统返回）都释放 controller
       ctrl.dispose();
     }
-    if (result != null && result.trim().isNotEmpty && result != message.content) {
-      await ref.read(messageActionsProvider).editContent(message.id, result.trim());
+    if (result != null &&
+        result.trim().isNotEmpty &&
+        result != message.content) {
+      await ref
+          .read(messageActionsProvider)
+          .editContent(message.id, result.trim());
     }
   }
 
@@ -1765,8 +1765,10 @@ class _ChatViewState extends ConsumerState<ChatView> {
     final selection = ref.read(selectionProvider);
     if (selection.characterId == null) return;
     final conversations =
-        ref.read(conversationListProvider(selection.characterId!)).valueOrNull ??
-            [];
+        ref
+            .read(conversationListProvider(selection.characterId!))
+            .valueOrNull ??
+        [];
     // 阶段 2E：用对照 TSX 第 2127~2178 行的 surface-panel 圆角抽屉替代裸
     // ListTile + showModalBottomSheet
     showConversationDrawer(
@@ -1849,9 +1851,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
       final list =
           ref.read(conversationListProvider(characterId)).valueOrNull ?? [];
       final conv = list.cast<Conversation?>().firstWhere(
-            (c) => c?.id == id,
-            orElse: () => null,
-          );
+        (c) => c?.id == id,
+        orElse: () => null,
+      );
       if (conv != null) initial = conv.title;
     }
     final result = await showRenameConversationDialog(
@@ -1915,7 +1917,6 @@ class _ChatViewState extends ConsumerState<ChatView> {
       await _actions.generateImage(result);
     }
   }
-
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1950,10 +1951,12 @@ class _StreamingBubble extends ConsumerWidget {
           Flexible(
             child: Container(
               constraints: BoxConstraints(
-                maxWidth: (MediaQuery.of(context).size.width * 0.65).clamp(0.0, 680.0),
+                maxWidth: (MediaQuery.of(context).size.width * 0.65).clamp(
+                  0.0,
+                  680.0,
+                ),
               ),
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               decoration: BoxDecoration(
                 color: isDark
                     ? AppTheme.darkSurface.withValues(alpha: 0.88)
@@ -2012,16 +2015,11 @@ class _StreamingAvatar extends StatelessWidget {
           ],
         ),
         borderRadius: AppRadius.mdBorder,
-        border: Border.all(
-          color: AppTheme.accent.withValues(alpha: 0.10),
-        ),
+        border: Border.all(color: AppTheme.accent.withValues(alpha: 0.10)),
       ),
       clipBehavior: Clip.antiAlias,
       child: hasAvatar
-          ? LumiNetworkImage(
-              url: character.avatarUrl!,
-              fit: BoxFit.cover,
-            )
+          ? LumiNetworkImage(url: character.avatarUrl!, fit: BoxFit.cover)
           : _initial(),
     );
   }
@@ -2088,8 +2086,8 @@ class _TypingDotsState extends State<_TypingDots>
                 final phase = t < 0.3
                     ? (t / 0.3)
                     : t < 0.6
-                        ? (1 - (t - 0.3) / 0.3)
-                        : 0.0;
+                    ? (1 - (t - 0.3) / 0.3)
+                    : 0.0;
                 return Transform.translate(
                   offset: Offset(0, -4 * phase),
                   child: Container(
@@ -2097,8 +2095,9 @@ class _TypingDotsState extends State<_TypingDots>
                     height: 6,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: AppTheme.accent
-                          .withValues(alpha: 0.4 + 0.6 * phase),
+                      color: AppTheme.accent.withValues(
+                        alpha: 0.4 + 0.6 * phase,
+                      ),
                     ),
                   ),
                 );

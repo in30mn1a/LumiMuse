@@ -39,7 +39,7 @@ export async function POST(
 
   const copiedUrls = new Map<string, string>();
   const now = new Date().toISOString();
-  const newCharacterId = uuidv4().slice(0, 8);
+  const newCharacterId = uuidv4().slice(0, 12);
   const newName = `${original.name}（副本）`;
   try {
     const newAvatarUrl = await copyLocalAssetUrl(original.avatar_url, copiedUrls) as string | null;
@@ -49,11 +49,20 @@ export async function POST(
   ).all(id) as ConversationRow[];
 
   const messagesByConversation = new Map<string, Message[]>();
-  for (const conversation of conversations) {
-    const messages = db.prepare(
-      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-    ).all(conversation.id) as Message[];
-    messagesByConversation.set(conversation.id, messages);
+  if (conversations.length > 0) {
+    const conversationIds = conversations.map(c => c.id);
+    const placeholders = conversationIds.map(() => '?').join(', ');
+    const allMessages = db.prepare(
+      `SELECT * FROM messages WHERE conversation_id IN (${placeholders}) ORDER BY created_at ASC, seq ASC`
+    ).all(...conversationIds) as Message[];
+    // 初始化每个会话的空数组，保证后续 get() 不会返回 undefined
+    for (const conversation of conversations) {
+      messagesByConversation.set(conversation.id, []);
+    }
+    for (const message of allMessages) {
+      const bucket = messagesByConversation.get(message.conversation_id);
+      if (bucket) bucket.push(message);
+    }
   }
 
   const memories = db.prepare(
@@ -62,7 +71,7 @@ export async function POST(
 
   const preparedConversations = conversations.map(conversation => ({
     originalId: conversation.id,
-    newId: uuidv4().slice(0, 8),
+    newId: uuidv4().slice(0, 12),
     title: conversation.title,
     ignoreMemory: conversation.ignore_memory ? 1 : 0,
     createdAt: conversation.created_at,
@@ -85,7 +94,7 @@ export async function POST(
     const messages = messagesByConversation.get(preparedConversation.originalId) || [];
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index];
-      const newMessageId = uuidv4().slice(0, 8);
+      const newMessageId = uuidv4().slice(0, 12);
       newMessageIdMap.set(message.id, newMessageId);
       preparedMessages.push({
         id: newMessageId,
@@ -101,7 +110,7 @@ export async function POST(
   }
 
   const preparedMemories = memories.map(memory => ({
-    id: uuidv4().slice(0, 8),
+    id: uuidv4().slice(0, 12),
     category: memory.category,
     content: memory.content,
     confidence: memory.confidence,
@@ -119,6 +128,7 @@ export async function POST(
       newCharacterId,
       newName,
       newAvatarUrl,
+      original.basic_info || '',
       original.personality,
       original.scenario,
       original.greeting,

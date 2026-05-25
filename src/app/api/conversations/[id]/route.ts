@@ -21,10 +21,15 @@ export async function DELETE(
   const db = getDb();
   const fileUrls = collectConversationLocalAssetUrls(db, id);
 
-  const result = db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
-  if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
-  db.prepare('DELETE FROM memory_tasks WHERE conversation_id = ?').run(id);
+  // 用事务包裹三条 DELETE，避免中途失败留下不一致状态
+  const changes = db.transaction(() => {
+    const result = db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+    if (result.changes === 0) return 0;
+    db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
+    db.prepare('DELETE FROM memory_tasks WHERE conversation_id = ?').run(id);
+    return result.changes;
+  })();
+  if (changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   // 清理该对话独有的本地文件
   const remainingUrls = collectAllLocalAssetUrls(db);

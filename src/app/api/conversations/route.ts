@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const { character_id, title } = await request.json() as { character_id: string; title?: string };
-  const id = uuidv4().slice(0, 8);
+  const id = uuidv4().slice(0, 12);
   const now = new Date().toISOString();
 
   const db = getDb();

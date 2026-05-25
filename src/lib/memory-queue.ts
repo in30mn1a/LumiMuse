@@ -93,21 +93,21 @@ async function processQueue(): Promise<void> {
   const db = getDb();
 
   while (true) {
-    // 取一条 pending 任务
+    // 取一条 pending 任务，并在 SQL 层直接排除 inFlightConversations 中的对话。
+    // 之前的做法是先 SELECT 再判断，若命中内存去重就把任务标记为 'done' 以避免无限循环；
+    // 但这会丢消息——较新任务的 message_ids 可能包含尚未被前一任务覆盖的新消息，
+    // 一旦标 done，这些新消息将永远不再被提取。
+    // 改为 SQL 层排除：既不会无限循环（同对话任务不会再被取到），也不会误标 done；
+    // 前一任务在 finally 中 delete 后，下一轮循环会自然取到同对话的新任务。
+    const inFlightList = [...inFlightConversations];
     const task = db.prepare(
-      "SELECT * FROM memory_tasks WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
-    ).get() as { id: number; character_id: string; conversation_id: string; message_ids: string } | undefined;
+      `SELECT * FROM memory_tasks
+       WHERE status = 'pending'
+       ${inFlightList.length > 0 ? `AND conversation_id NOT IN (${inFlightList.map(() => '?').join(',')})` : ''}
+       ORDER BY id ASC LIMIT 1`
+    ).get(...inFlightList) as { id: number; character_id: string; conversation_id: string; message_ids: string } | undefined;
 
     if (!task) break;
-
-    // 内存层去重
-    if (inFlightConversations.has(task.conversation_id)) {
-      // 命中内存去重说明已有同 conversation 的任务正在跑，本任务无需重复处理。
-      // 直接标记为 done 跳过，避免重置回 pending 导致下个循环再次取到同一条任务，陷入无限循环。
-      db.prepare("UPDATE memory_tasks SET status = 'done', updated_at = ? WHERE id = ?")
-        .run(new Date().toISOString(), task.id);
-      continue;
-    }
 
     inFlightConversations.add(task.conversation_id);
 

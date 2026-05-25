@@ -381,7 +381,7 @@ export async function runChat(
   }
 
   if (!options?.regenerateAssistantId && !options?.skipUserInsert) {
-    const userMsgId = uuidv4().slice(0, 8);
+    const userMsgId = uuidv4().slice(0, 12);
     const now = new Date().toISOString();
     // token 统计包含文本附件内容
     let fullContent = userContent;
@@ -394,11 +394,20 @@ export async function runChat(
     }
     const userTokenCount = estimateTokens(fullContent);
     const promptAttachments = options?.attachments || [];
-    const storedAttachments = promptAttachments.map(att => (
-      att.type === 'image'
-        ? { type: att.type, name: att.name, url: att.url || att.data, mimeType: att.mimeType }
-        : att
-    ));
+    // 落库时要求 image 必须有 URL；无 URL 的 base64 仅作为内存中的 prompt 多模态输入，
+    // 不写入 messages.metadata，避免 DB 体积爆炸 + 后续 SELECT * 拖慢。
+    const storedAttachments: AttachmentItem[] = [];
+    for (const att of promptAttachments) {
+      if (att.type === 'image') {
+        if (!att.url) {
+          console.warn(`[chat-engine] 丢弃无 URL 的 image 附件（仅 base64），不入库: ${att.name}`);
+          continue;
+        }
+        storedAttachments.push({ type: att.type, name: att.name, url: att.url, mimeType: att.mimeType });
+      } else {
+        storedAttachments.push(att);
+      }
+    }
     const userMeta = storedAttachments.length > 0
       ? JSON.stringify({ attachments: storedAttachments })
       : '{}';
@@ -481,12 +490,15 @@ export async function runChat(
       meta.versions = versions;
       meta.activeVersion = versions.length - 1;
 
-      db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
-        .run(fullText, tokenCount, JSON.stringify(meta), options.regenerateAssistantId);
-      db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
+      // 用事务包裹两条 UPDATE，保持与新建分支对称、避免半成功状态
+      db.transaction(() => {
+        db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
+          .run(fullText, tokenCount, JSON.stringify(meta), options.regenerateAssistantId);
+        db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
+      })();
       await callbacks.onDone(fullText, tokenCount);
     } else {
-      const asstId = uuidv4().slice(0, 8);
+      const asstId = uuidv4().slice(0, 12);
       const meta = { versions: [{ content: fullText, token_count: tokenCount }], activeVersion: 0 };
       // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
       db.transaction(() => {

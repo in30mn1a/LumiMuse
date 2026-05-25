@@ -1,6 +1,25 @@
 import { Settings } from '@/types';
 import { safeFetch } from './ssrf-guard';
 
+/**
+ * 清理上游响应中可能回显的敏感字段（Authorization 头、API key 片段等），
+ * 防止错误消息被透传到客户端日志/前端时泄漏凭据。最终长度限制 200。
+ */
+function sanitizeUpstreamError(text: string): string {
+  let sanitized = text;
+  // Authorization: Bearer xxx（含 Bearer 后整段 token）
+  sanitized = sanitized.replace(/Authorization\s*[:=]\s*Bearer\s+[\w.\-+/=]+/gi, 'Authorization: Bearer [REDACTED]');
+  // Authorization: 其他认证方案（Basic/Digest/纯 token 等）
+  sanitized = sanitized.replace(/Authorization\s*[:=]\s*[^\s,;"'}\]]+/gi, 'Authorization: [REDACTED]');
+  // 独立出现的 Bearer xxx
+  sanitized = sanitized.replace(/Bearer\s+[\w.\-+/=]+/g, 'Bearer [REDACTED]');
+  // api_key=xxx / api-key=xxx / apikey=xxx（query string 或 JSON 风格）
+  sanitized = sanitized.replace(/(api[_-]?key)\s*[:=]\s*["']?[\w.\-+/=]+["']?/gi, '$1=[REDACTED]');
+  // OpenAI 风格的 sk-xxxxx
+  sanitized = sanitized.replace(/sk-[\w-]{8,}/g, 'sk-[REDACTED]');
+  return sanitized.slice(0, 200);
+}
+
 export type ChatMessageContent =
   | string
   | Array<
@@ -45,7 +64,7 @@ export async function chatCompletionStream(
 
   if (!response.ok) {
     const text = await response.text();
-    callbacks.onError(new Error(`API error ${response.status}: ${text.slice(0, 200)}`));
+    callbacks.onError(new Error(`API error ${response.status}: ${sanitizeUpstreamError(text)}`));
     return;
   }
 
@@ -99,6 +118,14 @@ export async function chatCompletionStream(
     if (err instanceof Error && (err.name === 'AbortError' || callbacks.signal?.aborted)) {
       reader.cancel();
       return;
+    }
+    // 非 abort 错误：若已累积部分内容，先保存再向上抛出，避免用户已看到的回复丢失
+    if (fullText) {
+      try {
+        await callbacks.onDone(fullText);
+      } catch {
+        // 保存失败不应掩盖原始错误
+      }
     }
     throw err;
   }
@@ -154,7 +181,7 @@ export async function chatCompletion(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`API error ${response.status}: ${text.slice(0, 200)}`);
+    throw new Error(`API error ${response.status}: ${sanitizeUpstreamError(text)}`);
   }
 
   const data = await response.json();

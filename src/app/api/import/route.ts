@@ -77,6 +77,8 @@ function createEmptyResults() {
     conversationsImported: 0,
     conversationsSkipped: 0,
     messagesImported: 0,
+    // 同名冲突重命名后的角色列表，便于前端提示用户「这些角色已重命名导入」。
+    warnings: [] as { type: 'character_renamed'; originalName: string; newName: string }[],
   };
 }
 
@@ -88,12 +90,28 @@ function createEmptyResults() {
  *   - 记忆：全量追加
  *   - 对话：导入时重建对话和消息 ID，避免和现有数据冲突
  */
+// 导入文件体积上限：50MB。
+// 保留余量给合法的大库导出（角色/对话/消息全量），同时避免恶意 100MB+ JSON 耗尽内存。
+const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+
 export async function POST(request: NextRequest) {
+  // 提前用 Content-Length 拒绝超大请求，避免先把整个 body 读进内存才发现超限。
+  // 注：恶意 client 可能伪造 / 省略 Content-Length，因此这只是第一道闸门。
+  const contentLength = Number(request.headers.get('content-length') || '0');
+  if (contentLength > MAX_IMPORT_BYTES) {
+    return NextResponse.json({ error: '导入文件过大' }, { status: 413 });
+  }
+
   let raw: string;
   try {
     raw = await request.text();
   } catch {
     return NextResponse.json({ error: '读取请求体失败' }, { status: 400 });
+  }
+
+  // 二次校验：即使缺失 Content-Length，也要在解析 JSON 前拦截超大 body。
+  if (raw.length > MAX_IMPORT_BYTES) {
+    return NextResponse.json({ error: '导入文件过大' }, { status: 413 });
   }
 
   let payload: ImportPayload;
@@ -156,6 +174,19 @@ export async function POST(request: NextRequest) {
   });
 }
 
+/**
+ * 同名角色追加后缀，确保导入不会把不同来源的同名角色静默合并到同一目标。
+ * 例：「艾莉丝」存在时，导入新角色会变成「艾莉丝（导入-1717000000000）」。
+ */
+function makeUniqueCharacterName(db: ReturnType<typeof getDb>, baseName: string): string {
+  const safeBase = baseName || '导入角色';
+  const candidate = `${safeBase}（导入-${Date.now()}）`;
+  // 极端情况下时间戳碰撞，附加短随机串兜底
+  const existing = db.prepare('SELECT id FROM characters WHERE name = ?').get(candidate);
+  if (!existing) return candidate;
+  return `${candidate}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
 function importPayload({
   charactersToImport,
   memoriesToImport,
@@ -180,17 +211,26 @@ function importPayload({
       const charName = asString(char.name);
       const charId = asString(char.id);
 
+      // 重要：原先「同名跳过 + 复用现有 id」会把不同来源的同名角色静默合并到同一目标，
+      // 导致后续记忆 / 对话被错误地挂到不属于它们的角色上。
+      // 现在改为：检测到同名时，给新导入的角色追加后缀创建独立记录，并在 warnings 里告知调用方。
       const existingByName = charName
         ? db.prepare('SELECT id FROM characters WHERE name = ?').get(charName) as { id: string } | undefined
         : undefined;
 
+      const finalName = existingByName
+        ? makeUniqueCharacterName(db, charName)
+        : (charName || '导入角色');
+
       if (existingByName) {
-        if (charId) idMap.set(charId, existingByName.id);
-        results.skipped++;
-        continue;
+        results.warnings.push({
+          type: 'character_renamed',
+          originalName: charName,
+          newName: finalName,
+        });
       }
 
-      const newId = uuidv4().slice(0, 8);
+      const newId = uuidv4().slice(0, 12);
       if (charId) idMap.set(charId, newId);
 
       db.prepare(`
@@ -198,7 +238,7 @@ function importPayload({
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         newId,
-        charName || '导入角色',
+        finalName,
         asString(char.avatar_url) || null,
         asString(char.basic_info),
         asString(char.personality),
@@ -222,7 +262,7 @@ function importPayload({
       const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
       if (!charExists) continue;
 
-      const newMemId = uuidv4().slice(0, 8);
+      const newMemId = uuidv4().slice(0, 12);
       db.prepare(`
         INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
@@ -252,7 +292,7 @@ function importPayload({
         continue;
       }
 
-      const newConvId = uuidv4().slice(0, 8);
+      const newConvId = uuidv4().slice(0, 12);
 
       db.prepare(`
         INSERT INTO conversations (id, character_id, title, created_at, updated_at)
@@ -270,7 +310,7 @@ function importPayload({
       const messages = asArray<Record<string, unknown>>(conv.messages);
       let seq = 1;
       for (const msg of messages) {
-        const newMsgId = uuidv4().slice(0, 8);
+        const newMsgId = uuidv4().slice(0, 12);
 
         // metadata 可能是对象或字符串，统一序列化为字符串存储
         const metaStr = typeof msg.metadata === 'string'

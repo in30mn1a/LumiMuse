@@ -4,7 +4,17 @@ import { chatCompletion } from '@/lib/api-client';
 import { EXTRACTION_PROMPT } from '@/lib/prompt-templates';
 import { normalizeMemoryCategory } from '@/lib/memory-category';
 
-const CJK_STOPWORDS = new Set(['用户', '喜欢', '觉得', '一起', '我们', '这个', '那个', '自己', '对话', '记忆']);
+const CJK_STOPWORDS = new Set([
+  // 原有
+  '用户', '喜欢', '觉得', '一起', '我们', '这个', '那个', '自己', '对话', '记忆',
+  // 高频虚词 / 指代词
+  '什么', '怎么', '为什', '为何', '可以', '可能', '应该', '需要', '已经', '还有',
+  '一个', '一些', '一下', '一直', '一样', '没有', '不是', '就是', '还是', '只是',
+  // 时间词
+  '今天', '明天', '昨天', '现在', '以后', '之前', '之后', '时候', '今晚', '最近',
+  // 知觉 / 行为
+  '知道', '看到', '听到', '想到', '感觉', '希望', '如果', '因为', '所以', '但是',
+]);
 
 function parseJsonField(value: unknown): unknown {
   if (typeof value !== 'string') return value;
@@ -328,7 +338,8 @@ export async function extractMemories(
   const newEntries: Memory[] = rawData
     .filter(item => item.content && validCategories.has(item.category))
     .map(item => ({
-      id: crypto.randomUUID().slice(0, 8),
+      // 48 bit (12 hex) 碰撞概率远低于 32 bit；不会影响已有数据，仅新插入条目变长
+      id: crypto.randomUUID().slice(0, 12),
       character_id: characterId,
       category: item.category as MemoryCategory,
       content: item.content,

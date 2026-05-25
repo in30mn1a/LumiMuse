@@ -151,7 +151,7 @@ ${convText}`;
     }
 
     // 将总结作为特殊消息存入数据库（role = 'summary'）
-    const summaryId = uuidv4().slice(0, 8);
+    const summaryId = uuidv4().slice(0, 12);
     const now = new Date().toISOString();
     const tokenCount = estimateTokens(summaryContent);
     const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;

@@ -45,9 +45,17 @@ function ChevronDownIcon({ className }: { className?: string }) {
   );
 }
 
+// 带稳定 id 的附件项：仅本组件内部使用，避免渲染列表用数组下标当 key。
+// 提交 onSend 时再剥掉 id，保持对外 AttachmentItem 接口不变。
+type LocalAttachment = AttachmentItem & { id: string };
+
+function genAttachmentId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList }: Props) {
   const [text, setText] = useState('');
-  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [attachments, setAttachments] = useState<LocalAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -149,7 +157,11 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const handleSubmit = () => {
     const trimmed = text.trim();
     if ((!trimmed && attachments.length === 0) || disabled) return;
-    onSend(trimmed || ' ', attachments.length > 0 ? attachments : undefined);
+    // 剥掉本地 id，向外只暴露纯净的 AttachmentItem
+    const payload = attachments.length > 0
+      ? attachments.map(({ id: _id, ...rest }) => rest as AttachmentItem)
+      : undefined;
+    onSend(trimmed || ' ', payload);
     setText('');
     setAttachments([]);
     setAttachError('');
@@ -168,7 +180,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     e.target.value = '';
 
     setAttachError('');
-    const newAttachments: AttachmentItem[] = [];
+    const newAttachments: LocalAttachment[] = [];
 
     for (const file of files) {
       if (file.size > MAX_FILE_SIZE) {
@@ -196,13 +208,13 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           setAttachError(data.error || `${file.name} 上传失败`);
           continue;
         }
-        newAttachments.push({ type: 'image', name: file.name, data: dataUrl, url: data.url, mimeType: file.type });
+        newAttachments.push({ id: genAttachmentId(), type: 'image', name: file.name, data: dataUrl, url: data.url, mimeType: file.type });
       } else if (isText) {
         if (file.size > MAX_TEXT_SIZE) {
           setAttachError(`${file.name} 文本文件超过 200KB，可能导致 token 过多`);
         }
         const text = await file.text();
-        newAttachments.push({ type: 'text', name: file.name, data: text, mimeType: file.type || 'text/plain' });
+        newAttachments.push({ id: genAttachmentId(), type: 'text', name: file.name, data: text, mimeType: file.type || 'text/plain' });
       } else {
         setAttachError(`${file.name} 不支持的格式（支持 JPG、PNG、TXT、MD、JSON 等文本文件）`);
       }
@@ -213,8 +225,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     }
   };
 
-  const removeAttachment = (index: number) => {
-    setAttachments(prev => prev.filter((_, i) => i !== index));
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(att => att.id !== id));
   };
 
   const canSend = (text.trim().length > 0 || attachments.length > 0) && !disabled;
@@ -224,9 +236,9 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
       <div className="mx-auto max-w-6xl">
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
-            {attachments.map((att, i) => (
+            {attachments.map(att => (
               <div
-                key={i}
+                key={att.id}
                 className="group relative flex items-center gap-2 rounded-xl border border-border-light bg-white/80 px-3 py-1.5 text-xs text-text-secondary shadow-sm dark:bg-white/10"
               >
                 {att.type === 'image' ? (
@@ -238,7 +250,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 )}
                 <span className="max-w-[8rem] truncate">{att.name}</span>
                 <button
-                  onClick={() => removeAttachment(i)}
+                  onClick={() => removeAttachment(att.id)}
                   className="ml-1 rounded-full p-0.5 text-text-muted hover:bg-red-50 hover:text-red-500"
                   aria-label={`移除 ${att.name}`}
                 >

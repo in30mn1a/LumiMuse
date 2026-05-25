@@ -5,6 +5,15 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import Image from 'next/image';
 
+// 限制登录后跳转地址只能是站内相对路径，避免开放重定向
+function safeReturnTo(from: string | null): string {
+  if (!from) return '/';
+  // 必须以 `/` 开头；不允许 `//xxx`（协议相对 URL）或 `/\xxx`（反斜杠绕过）
+  if (!from.startsWith('/')) return '/';
+  if (from.startsWith('//') || from.startsWith('/\\')) return '/';
+  return from;
+}
+
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -32,8 +41,8 @@ function LoginForm() {
       });
 
       if (res.ok) {
-        // 跳回原来想访问的页面，默认回首页
-        const from = searchParams.get('from') || '/';
+        // 跳回原来想访问的页面，默认回首页（校验仅允许站内相对路径）
+        const from = safeReturnTo(searchParams.get('from'));
         router.replace(from);
       } else {
         const data = await res.json();

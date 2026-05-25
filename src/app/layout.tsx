@@ -43,9 +43,14 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // 内联脚本：在 React 挂载前同步读取 localStorage 决定是否加 dark class，避免首屏闪烁（FOUC）。
+  // 必须用 try/catch 包住——隐私模式或部分浏览器禁用 storage 时访问会抛错，导致整页脚本崩溃。
+  const themeInitScript = `(function(){try{var t=localStorage.getItem('lumimuse_theme');var d=t==='dark'||(t==='auto'&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d){document.documentElement.classList.add('dark');}}catch(e){}})();`;
+
   return (
     <html lang="zh" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         {/* Quicksand 英文字体 */}

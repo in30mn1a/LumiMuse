@@ -67,17 +67,20 @@ export async function POST(request: NextRequest) {
 
   const db = getDb();
   const { v4: uuidv4 } = await import('uuid');
-  const msgId = uuidv4().slice(0, 8);
+  const msgId = uuidv4().slice(0, 12);
   const now = new Date().toISOString();
-  const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
   const metaStr = metadata ? JSON.stringify(metadata) : '{}';
 
-  db.prepare(`
-    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(msgId, conversation_id, role, content, token_count || 0, now, nextSeq, metaStr);
+  // 用事务包裹 SELECT MAX(seq) + INSERT + UPDATE conversations，避免并发写入产生重复 seq
+  db.transaction(() => {
+    const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
+    db.prepare(`
+      INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(msgId, conversation_id, role, content, token_count || 0, now, nextSeq, metaStr);
 
-  db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
+  })();
 
   const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(msgId) as Message;
   return NextResponse.json(serializeTypedMessages([message])[0], { status: 201 });

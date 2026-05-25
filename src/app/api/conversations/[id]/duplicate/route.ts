@@ -27,7 +27,7 @@ export async function POST(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  const newId = uuidv4().slice(0, 8);
+  const newId = uuidv4().slice(0, 12);
   const now = new Date().toISOString();
   const newTitle = `${original.title} (副本)`;
 
@@ -50,7 +50,7 @@ export async function POST(
   const copyAll = db.transaction(() => {
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      const newMsgId = uuidv4().slice(0, 8);
+      const newMsgId = uuidv4().slice(0, 12);
       // metadata 保持原样（包括 memory_extracted 标记），避免副本重复提取已有记忆
       const metaStr = typeof msg.metadata === 'string'
         ? (msg.metadata as unknown as string)

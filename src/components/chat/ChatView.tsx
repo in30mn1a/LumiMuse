@@ -17,6 +17,7 @@ import { formatTemplate } from '@/lib/i18n';
 import { estimateTokens } from '@/lib/token-counter';
 import { getVersionInfo } from '@/lib/chat-view-utils';
 import { MenuIcon } from '@/components/ui/icons';
+import { useToast } from '@/components/ui/Toast';
 
 const PAGE_SIZE = 60; // 每次从后端加载的消息数
 
@@ -26,37 +27,6 @@ function buildClientTimePayload() {
     client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     client_utc_offset_minutes: new Date().getTimezoneOffset(),
   };
-}
-
-/* ── 轻量 Toast ─────────────────────────────────────────── */
-interface ToastItem { id: number; message: string; type: 'error' | 'info' }
-
-const TOAST_DURATION_MS = 4000;
-
-function Toast({ items, onDismiss }: { items: ToastItem[]; onDismiss: (id: number) => void }) {
-  if (items.length === 0) return null;
-  return (
-    <div className="pointer-events-none fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">
-      {items.map(item => (
-        <div
-          key={item.id}
-          onClick={() => onDismiss(item.id)}
-          className={`pointer-events-auto relative flex cursor-pointer items-center gap-2 overflow-hidden rounded-2xl border px-4 py-2.5 text-sm shadow-lg backdrop-blur-xl transition-all ${
-            item.type === 'error'
-              ? 'border-red-200/60 bg-red-50/90 text-red-700'
-              : 'border-accent/20 bg-white/90 text-text-primary'
-          }`}
-        >
-          {item.message}
-          <span
-            className="toast-progress"
-            style={{ animationDuration: `${TOAST_DURATION_MS}ms` }}
-            aria-hidden="true"
-          />
-        </div>
-      ))}
-    </div>
-  );
 }
 
 interface Props {
@@ -168,6 +138,7 @@ async function readChatSseStream(body: ReadableStream<Uint8Array>, handlers: Cha
 
 export default function ChatView({ character, conversationId, targetMessageId, onOpenSidebar, onOpenSearch }: Props) {
   const { t } = useTranslation();
+  const { showToast } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [hiddenMessageId, setHiddenMessageId] = useState<string | null>(null);
@@ -223,9 +194,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
   // 图片管理弹窗（仅保留开关；列表/选中/分页等已下沉到 ImageManagerModal 内部）
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
-  // 轻量 Toast
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const toastIdRef = useRef(0);
   const seenMemoryTaskRef = useRef<Record<string, string>>({});
   const previousCharacterIdRef = useRef<string | null>(character?.id ?? null);
   const streamingFrameRef = useRef<number | null>(null);
@@ -238,6 +206,21 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   useEffect(() => {
     activeConvIdRef.current = activeConvId;
   }, [activeConvId]);
+
+  // 同步 messages / character 到 ref，让传给 MessageBubble 的回调闭包内能读最新值，
+  // 同时保持自身依赖数组为空，引用稳定 → React.memo(MessageBubble) 不会因父级 re-render 而失效。
+  const messagesRef = useRef<Message[]>(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  const activeStreamsRef = useRef<Set<string>>(activeStreams);
+  useEffect(() => {
+    activeStreamsRef.current = activeStreams;
+  }, [activeStreams]);
+  const characterRef = useRef<Character | null>(character);
+  useEffect(() => {
+    characterRef.current = character;
+  }, [character]);
 
   // 竞态保护：用户切换对话时立即清空 streamingText / streamingConvId，
   // 避免上一段流尚未结束就把旧文字带到新对话。
@@ -273,16 +256,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     if (streamingFrameRef.current !== null) {
       cancelAnimationFrame(streamingFrameRef.current);
     }
-  }, []);
-
-  const showToast = useCallback((message: string, type: ToastItem['type'] = 'error') => {
-    const id = ++toastIdRef.current;
-    setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), TOAST_DURATION_MS);
-  }, []);
-
-  const dismissToast = useCallback((id: number) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
   const activeConversation = useMemo(
@@ -541,21 +514,23 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   }, [isMessageListNearBottom, messages]);
 
   const refreshMessages = useCallback(async () => {
-    if (!activeConvId) return;
-    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) });
+    const convId = activeConvIdRef.current;
+    if (!convId) return;
+    // 用 ref 读取最新 messages 长度，避免 callback 引用因 messages 变化而频繁重建
+    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(convId, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
     setMessages(uniqueMessagesById(freshMessages));
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
     if (uc !== undefined) setServerUnextractedCount(uc);
-  }, [activeConvId, messages.length]);
+  }, []);
 
   const refreshMessagesForConversation = useCallback(async (conversationIdToRefresh: string) => {
-    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(PAGE_SIZE, messages.length) });
+    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
     setMessages(uniqueMessagesById(freshMessages));
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
     if (uc !== undefined) setServerUnextractedCount(uc);
-  }, [messages.length]);
+  }, []);
 
   const loadOlderMessages = useCallback(async () => {
     if (!activeConvId || !hasOlderMessages || oldestLoadedSeq === null || loadingOlderMessages) return;
@@ -739,7 +714,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     void refreshConversationState(next?.id || null);
   };
 
-  const handleEditMessage = async (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => {
+  const handleEditMessage = useCallback(async (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => {
     await fetch(`/api/messages/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -747,9 +722,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       body: JSON.stringify({ content, attachments: attachments ?? [] }),
     });
     await refreshMessages();
-  };
+  }, [refreshMessages]);
 
-  const handleDeleteMessage = async (id: string) => {
+  const handleDeleteMessage = useCallback(async (id: string) => {
     const res = await fetch(`/api/messages/${id}`, { method: 'DELETE' });
     const data = await res.json() as { ok: boolean; deleted: 'message' | 'version'; message?: Message };
     if (data.deleted === 'version' && data.message) {
@@ -759,7 +734,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       // 整条消息被删除
       setMessages(prev => prev.filter(m => m.id !== id));
     }
-  };
+  }, []);
 
   const handleStop = useCallback(() => {
     // 停止当前对话的流
@@ -870,45 +845,52 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     }
   };
 
-  const handleRegenerate = async (messageId: string) => {
-    if (!activeConvId || activeStreams.has(activeConvId)) return;
+  const handleRegenerate = useCallback(async (messageId: string) => {
+    const convId = activeConvIdRef.current;
+    if (!convId || activeStreamsRef.current.has(convId)) return;
 
     // 找到该 assistant 消息前方最近的 user 消息，而不是全局最后一条
-    const idx = messages.findIndex(m => m.id === messageId);
+    const currentMessages = messagesRef.current;
+    const idx = currentMessages.findIndex(m => m.id === messageId);
     if (idx === -1) return;
-    const userMsg = [...messages.slice(0, idx)].reverse().find(m => m.role === 'user');
+    const userMsg = [...currentMessages.slice(0, idx)].reverse().find(m => m.role === 'user');
     if (!userMsg) return;
 
     // skipUserInsert=true：user 消息已在数据库，不重复插入
-    await callChatStream(activeConvId, userMsg.content, messageId, true);
-  };
+    await callChatStream(convId, userMsg.content, messageId, true);
+    // callChatStream 在外层闭包内捕获引用，但本身没用 useCallback —— 用 ref 模式无需把它放进依赖
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const handleRegenerateFromHere = async (userMessageId: string) => {
-    if (!activeConvId || activeStreams.has(activeConvId)) return;
+  const handleRegenerateFromHere = useCallback(async (userMessageId: string) => {
+    const convId = activeConvIdRef.current;
+    if (!convId || activeStreamsRef.current.has(convId)) return;
 
-    const userMsgIndex = messages.findIndex(m => m.id === userMessageId);
+    const currentMessages = messagesRef.current;
+    const userMsgIndex = currentMessages.findIndex(m => m.id === userMessageId);
     if (userMsgIndex === -1) return;
-    const userContent = messages[userMsgIndex].content;
+    const userContent = currentMessages[userMsgIndex].content;
 
-    const nextAssistant = messages.slice(userMsgIndex + 1).find(m => m.role === 'assistant');
+    const nextAssistant = currentMessages.slice(userMsgIndex + 1).find(m => m.role === 'assistant');
 
     if (nextAssistant) {
       // 有后续 assistant 消息：替换它，同时跳过重新插入用户消息
-      await callChatStream(activeConvId, userContent, nextAssistant.id, true);
+      await callChatStream(convId, userContent, nextAssistant.id, true);
     } else {
       // 没有后续 assistant 消息：直接生成新回复，但用户消息已在数据库里，跳过插入
-      await callChatStream(activeConvId, userContent, undefined, true);
+      await callChatStream(convId, userContent, undefined, true);
     }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const handleSwitchVersion = async (messageId: string, versionIndex: number) => {
+  const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {
     await fetch(`/api/messages/${messageId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ activeVersion: versionIndex }),
     });
     await refreshMessages();
-  };
+  }, [refreshMessages]);
 
   const handleSummarize = async () => {
     if (!activeConvId || activeStreams.has(activeConvId) || summarizing) return;
@@ -970,9 +952,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   // 消息级别生图：取目标消息及之前共 4 条消息生成 prompt，然后生图并附加到该消息
   // existingPrompt 有值时直接用（重新生成场景），否则先让 AI 生成 prompt
-  const handleGenerateImage = async (messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => {
-    const targetConversationId = conversationIdOverride || activeConvId;
-    if (!targetConversationId || !character) return;
+  const handleGenerateImage = useCallback(async (messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => {
+    const targetConversationId = conversationIdOverride || activeConvIdRef.current;
+    if (!targetConversationId || !characterRef.current) return;
     showToast(t('chat.imageGenStart'), 'info');
 
     type ImageStatus = 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
@@ -986,10 +968,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       activeVersion?: number;
     };
 
-    const targetIdx = messages.findIndex(m => m.id === messageId);
+    const currentMessages = messagesRef.current;
+    const targetIdx = currentMessages.findIndex(m => m.id === messageId);
     if (targetIdx < 0) return;
 
-    const targetMsg = messages[targetIdx];
+    const targetMsg = currentMessages[targetIdx];
     let workingMeta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
     const placeholderId = replaceImageId || Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -1095,7 +1078,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
       if (replaceImageId) {
         setTimeout(async () => {
-          const currentMsg = messages.find(m => m.id === messageId);
+          const currentMsg = messagesRef.current.find(m => m.id === messageId);
           if (!currentMsg) return;
           const currentMeta = { ...(currentMsg.metadata as Record<string, unknown> || {}) };
           const currentImages = (currentMeta.generatedImages as ImageEntry[]) || [];
@@ -1112,10 +1095,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         }, 5000);
       }
     }
-  };
+  }, [showToast, t]);
   // 删除消息中的某张生成图片
-  const handleDeleteImage = async (messageId: string, imgId: string, versionId?: string) => {
-    const targetMsg = messages.find(m => m.id === messageId);
+  const handleDeleteImage = useCallback(async (messageId: string, imgId: string, versionId?: string) => {
+    const targetMsg = messagesRef.current.find(m => m.id === messageId);
     if (!targetMsg) return;
     const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
     const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
@@ -1165,11 +1148,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
     skipScrollRef.current = true;
     setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
-  };
+  }, []);
 
   // 编辑图片的 prompt（保存到 metadata）
-  const handleEditImagePrompt = async (messageId: string, imgId: string, newPrompt: string) => {
-    const targetMsg = messages.find(m => m.id === messageId);
+  const handleEditImagePrompt = useCallback(async (messageId: string, imgId: string, newPrompt: string) => {
+    const targetMsg = messagesRef.current.find(m => m.id === messageId);
     if (!targetMsg) return;
     const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
     const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
@@ -1197,11 +1180,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     });
     skipScrollRef.current = true;
     setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
-  };
+  }, []);
 
   // 确认使用某张图：把它移到首位，作为该消息的主图展示
-  const handleSetPrimaryImage = async (messageId: string, imgId: string, versionId: string) => {
-    const targetMsg = messages.find(m => m.id === messageId);
+  const handleSetPrimaryImage = useCallback(async (messageId: string, imgId: string, versionId: string) => {
+    const targetMsg = messagesRef.current.find(m => m.id === messageId);
     if (!targetMsg) return;
     const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
     const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
@@ -1230,7 +1213,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
     skipScrollRef.current = true;
     setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
-  };
+  }, []);
 
   // 图片管理弹窗的加载、选中、批量删除等已下沉到 ImageManagerModal 内部。
   // 这里只保留打开/关闭开关与「删除完成后刷新主消息列表」的桥接。
@@ -1638,9 +1621,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         onSelect={setActiveConvId}
         onClose={() => setConvDrawerOpen(false)}
       />
-
-      {/* 全局 Toast 提示 */}
-      <Toast items={toasts} onDismiss={dismissToast} />
 
       {/* 图片管理弹窗 */}
       <ImageManagerModal

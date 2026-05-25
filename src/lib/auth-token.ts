@@ -17,6 +17,18 @@ const TOKEN_VERSION = 1;
 // Token 有效期，需与 cookie maxAge 同步
 export const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
 
+/**
+ * 鉴权 cookie 名称。
+ * 生产环境（HTTPS + secure cookie）使用 `__Host-` 前缀，强制浏览器要求：
+ *   - 必须 Secure（HTTPS 设置）
+ *   - 必须 path=/
+ *   - 禁止 domain 属性
+ * 显著降低 cookie 注入 / fixation 攻击面。
+ * 本地开发走 http，浏览器会拒绝 `__Host-` 前缀 cookie，因此 fallback 到不带前缀的名称。
+ */
+export const AUTH_COOKIE_NAME =
+  process.env.NODE_ENV === 'production' ? '__Host-lumimuse_auth' : 'lumimuse_auth';
+
 interface TokenPayload {
   v: number;
   iat: number;
@@ -52,15 +64,26 @@ const textDecoder = new TextDecoder();
 
 let cachedKey: CryptoKey | null = null;
 let cachedKeySource: string | null = null;
+let fallbackWarned = false;
 
 /**
  * 获取 HMAC 密钥。优先使用 AUTH_SECRET 环境变量，
  * 未设置时从 ACCESS_PASSWORD 派生（弱兜底，避免用户额外配置）。
  */
 async function getHmacKey(): Promise<CryptoKey> {
-  const secret = process.env.AUTH_SECRET || process.env.ACCESS_PASSWORD || '';
+  const authSecret = process.env.AUTH_SECRET;
+  const secret = authSecret || process.env.ACCESS_PASSWORD || '';
   if (!secret) {
     throw new Error('AUTH_SECRET or ACCESS_PASSWORD must be set to issue/verify tokens');
+  }
+  // 弱兜底使用 ACCESS_PASSWORD 派生密钥时，仅首次提示一次
+  if (!authSecret && !fallbackWarned) {
+    fallbackWarned = true;
+    console.warn(
+      '[auth-token] AUTH_SECRET 未设置，正在使用 ACCESS_PASSWORD 派生 HMAC 密钥（弱兜底）。' +
+        '建议设置独立的 AUTH_SECRET 环境变量（至少 32 字节随机字符串），' +
+        '以避免密码与签名密钥共用、并在不修改 ACCESS_PASSWORD 时也能轮换 token 签名密钥。',
+    );
   }
   if (cachedKey && cachedKeySource === secret) {
     return cachedKey;

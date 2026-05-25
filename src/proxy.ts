@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAuthToken } from './lib/auth-token';
+import { AUTH_COOKIE_NAME, verifyAuthToken } from './lib/auth-token';
 
 // ⚠️ Next.js 16 约定：中间件入口文件名为 `proxy.ts`，导出函数名为 `proxy`。
 // 这是 Next.js 16 官方重命名（从旧版的 `middleware.ts` / `middleware` 改来），
@@ -20,22 +20,27 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // 公开路径直接放行
-  if (PUBLIC_PATHS.some(p => pathname.startsWith(p))) {
+  // 公开路径直接放行（精确匹配或后接 `/`，避免 `/api/auth-fake` 命中 `/api/auth` 这类前缀误匹配）
+  if (PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return NextResponse.next();
   }
 
-  // 静态资源直接放行
+  // 静态资源直接放行（只放行明确的固定路径前缀，不再按扩展名通配，
+  // 否则未认证用户可通过 `/avatars/xxx.png` 等路径绕过鉴权读 public 目录）
   if (
-    pathname.startsWith('/_next') ||
+    pathname.startsWith('/_next/') ||
+    pathname === '/favicon.ico' ||
     pathname.startsWith('/favicon') ||
-    pathname.match(/\.(png|jpg|jpeg|gif|webp|svg|ico|woff|woff2|ttf)$/)
+    pathname.startsWith('/icons/') ||
+    pathname === '/manifest.json' ||
+    pathname === '/sw.js' ||
+    pathname === '/robots.txt'
   ) {
     return NextResponse.next();
   }
 
   // 验证 cookie 中的签名 token（HMAC，常量时间比较，不再存放密码原文）
-  const token = request.cookies.get('lumimuse_auth')?.value;
+  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
   const valid = await verifyAuthToken(token);
   if (valid) {
     // 兼容旧数据：/avatars/xxx、/generated/xxx 和 /attachments/xxx 重写到 /api/files/...

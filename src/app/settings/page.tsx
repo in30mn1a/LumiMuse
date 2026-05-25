@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle, ApiProvider, ArtistString } from '@/types';
 import { applyFontStyle } from '@/lib/font-stacks';
+import { writeThemeStorage } from '@/lib/theme-provider';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
@@ -34,6 +35,7 @@ export default function SettingsPage() {
     fetch('/api/settings').then(r => r.json()).then(s => {
       setSettings({ ...DEFAULT_SETTINGS, ...s });
       document.documentElement.classList.toggle('dark', s.theme === 'dark');
+      writeThemeStorage(s.theme);
       applyFontStyle((s.font_style || 'wenkai') as FontStyle);
     });
     fetch('/api/auth').then(r => r.json()).then(d => setAuthEnabled(d.authEnabled)).catch(() => {});
@@ -96,6 +98,7 @@ export default function SettingsPage() {
       }
       setLang(settings.language);
       document.documentElement.classList.toggle('dark', settings.theme === 'dark');
+      writeThemeStorage(settings.theme);
       applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
       showToast(t('settings.saveSuccess'), 'success');
     } catch (err) {

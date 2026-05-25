@@ -116,15 +116,45 @@ function buildConversationsForCharacter(db: ReturnType<typeof import('@/lib/db')
   }));
 }
 
+/**
+ * 将数组按指定大小切分，用于绕过 SQLite SQLITE_LIMIT_VARIABLE_NUMBER (默认 999) 限制。
+ */
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  if (size <= 0) return [arr];
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
 function buildAllConversations(db: ReturnType<typeof import('@/lib/db').getDb>) {
   const convs = db.prepare(
     'SELECT * FROM conversations ORDER BY character_id, updated_at DESC'
   ).all() as Record<string, unknown>[];
 
+  if (convs.length === 0) return [];
+
+  // 原先每个 conversation 都单独 SELECT 一次 messages，会话量大时 N+1 拖慢导出。
+  // 改为单次 IN 查询拉全部消息，再按 conversation_id 在内存里分桶。
+  // IN 列表分批，单批 500 个 id（留足余量避开 SQLite SQLITE_LIMIT_VARIABLE_NUMBER）。
+  const conversationIds = convs.map(c => c.id as string);
+  const messagesByConversation = new Map<string, Record<string, unknown>[]>();
+  for (const id of conversationIds) messagesByConversation.set(id, []);
+
+  for (const chunk of chunkArray(conversationIds, 500)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT * FROM messages WHERE conversation_id IN (${placeholders}) ORDER BY created_at ASC, seq ASC`
+    ).all(...chunk) as Record<string, unknown>[];
+    for (const row of rows) {
+      const bucket = messagesByConversation.get(row.conversation_id as string);
+      if (bucket) bucket.push(row);
+    }
+  }
+
   return convs.map(conv => ({
     ...conv,
-    messages: db.prepare(
-      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-    ).all(conv.id as string) as Record<string, unknown>[],
+    messages: messagesByConversation.get(conv.id as string) ?? [],
   }));
 }

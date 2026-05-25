@@ -12,7 +12,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const body = await request.json() as Partial<Character>;
-  const id = uuidv4().slice(0, 8);
+  const id = uuidv4().slice(0, 12);
   const now = new Date().toISOString();
 
   const db = getDb();

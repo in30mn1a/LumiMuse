@@ -76,6 +76,18 @@ function addReferencedFromUrl(url: string, dirName: string, set: Set<string>) {
   if (asset && asset.dir === dirName) set.add(asset.filename);
 }
 
+/**
+ * 将数组按指定大小切分成多个子数组，用于绕过 SQLite SQLITE_LIMIT_VARIABLE_NUMBER (默认 999) 限制。
+ */
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  if (size <= 0) return [arr];
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
 function getReferencedFiles(dirName: string): Set<string> {
   const db = getDb();
   const referenced = new Set<string>();
@@ -86,14 +98,30 @@ function getReferencedFiles(dirName: string): Set<string> {
       addReferencedFromUrl(row.avatar_url, dirName, referenced);
     }
   } else {
-    const rows = db.prepare('SELECT content, metadata FROM messages').all() as { content: string | null; metadata: string | null }[];
-    for (const row of rows) {
-      for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
-        addReferencedFromUrl(url, dirName, referenced);
+    // 分页扫描 messages 表，避免一次性把所有消息拉进内存导致 OOM。
+    // 使用 rowid 游标比 LIMIT/OFFSET 更稳定（OFFSET 大时扫描成本会线性增长）。
+    const PAGE_SIZE = 1000;
+    const stmt = db.prepare(
+      'SELECT rowid, content, metadata FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?'
+    );
+    let lastRowid = 0;
+    while (true) {
+      const rows = stmt.all(lastRowid, PAGE_SIZE) as {
+        rowid: number;
+        content: string | null;
+        metadata: string | null;
+      }[];
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
+          addReferencedFromUrl(url, dirName, referenced);
+        }
+        for (const url of collectLocalAssetUrlsFromContent(row.content)) {
+          addReferencedFromUrl(url, dirName, referenced);
+        }
       }
-      for (const url of collectLocalAssetUrlsFromContent(row.content)) {
-        addReferencedFromUrl(url, dirName, referenced);
-      }
+      lastRowid = rows[rows.length - 1].rowid;
+      if (rows.length < PAGE_SIZE) break;
     }
   }
 
@@ -186,11 +214,15 @@ export async function POST(request: NextRequest) {
     `).all() as { id: string }[]).map(r => r.id);
 
     if (orphanConvIds.length > 0) {
-      const placeholders = orphanConvIds.map(() => '?').join(',');
-      db.prepare(`DELETE FROM messages WHERE conversation_id IN (${placeholders})`).run(...orphanConvIds);
-      db.prepare(`DELETE FROM memory_tasks WHERE conversation_id IN (${placeholders})`).run(...orphanConvIds);
-      const convR = db.prepare(`DELETE FROM conversations WHERE id IN (${placeholders})`).run(...orphanConvIds);
-      deleted += convR.changes;
+      // 分批 DELETE，单批 500 条，留足余量避开 SQLite SQLITE_LIMIT_VARIABLE_NUMBER (默认 999)。
+      // 整个 cleanup 已经在外层事务中，所有分批 DELETE 共用同一事务，保持原子性。
+      for (const chunk of chunkArray(orphanConvIds, 500)) {
+        const placeholders = chunk.map(() => '?').join(',');
+        db.prepare(`DELETE FROM messages WHERE conversation_id IN (${placeholders})`).run(...chunk);
+        db.prepare(`DELETE FROM memory_tasks WHERE conversation_id IN (${placeholders})`).run(...chunk);
+        const convR = db.prepare(`DELETE FROM conversations WHERE id IN (${placeholders})`).run(...chunk);
+        deleted += convR.changes;
+      }
     }
 
     // 3. 孤儿记忆（角色已删除）

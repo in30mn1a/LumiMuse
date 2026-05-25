@@ -147,7 +147,7 @@ async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGen
     parameters,
   };
 
-  const response = await fetch('https://image.novelai.net/ai/generate-image', {
+  const response = await safeFetch('https://image.novelai.net/ai/generate-image', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

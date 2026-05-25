@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
   };
 
   const db = getDb();
-  const id = crypto.randomUUID().slice(0, 8);
+  const id = crypto.randomUUID().slice(0, 12);
   const now = new Date().toISOString();
 
   db.prepare(`

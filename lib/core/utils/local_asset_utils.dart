@@ -48,10 +48,25 @@ Set<String> collectLocalAssetUrlsFromContent(String? content) {
   final urls = <String>{};
   if (content == null || content.isEmpty) return urls;
 
-  // 匹配在 Markdown 或者普通文本中，可能包含 avatars, generated, attachments 目录的本地绝对路径。
-  // 路径不应包含引号、空格和括号，避免把一大段文本匹配进去。
+  // FIX: 补齐 Windows 正斜杠分支与 UNC 分支，原版只匹配
+  //   - Windows 反斜杠（C:\...\avatars\...）
+  //   - POSIX 正斜杠（/.../avatars/...）
+  // 现支持四种风格，统一用 `|` 合并到一个 RegExp 中：
+  //   1) Windows 反斜杠：`C:\path\avatars\foo.png`
+  //   2) Windows 正斜杠：`C:/path/avatars/foo.png`（Dart File API 在 Windows
+  //      上同样接受正斜杠，主项目消息里也常见此写法）
+  //   3) POSIX 正斜杠：`/home/me/avatars/foo.png`
+  //   4) UNC 路径：`\\server\share\avatars\foo.png`（局域网共享盘场景）
   final regex = RegExp(
-    r'[a-zA-Z]:\\[^"\s\(\)]*?\\(?:avatars|generated|attachments)\\[^"\s\(\)]+|/[^"\s\(\)]*?/(?:avatars|generated|attachments)/[^"\s\(\)]+',
+    // 1) Windows 反斜杠
+    r'[a-zA-Z]:\\[^"\s\(\)]*?\\(?:avatars|generated|attachments)\\[^"\s\(\)]+'
+    // 2) Windows 正斜杠
+    r'|[a-zA-Z]:/[^"\s\(\)]*?/(?:avatars|generated|attachments)/[^"\s\(\)]+'
+    // 3) POSIX 正斜杠
+    r'|/[^"\s\(\)]*?/(?:avatars|generated|attachments)/[^"\s\(\)]+'
+    // 4) UNC 反斜杠（在 Dart raw string 中 `\\\\` 表示两个字面反斜杠，
+    //    匹配实际路径开头的 `\\`）
+    r'|\\\\[^"\s\(\)]+\\(?:avatars|generated|attachments)\\[^"\s\(\)]+',
     caseSensitive: false,
   );
 

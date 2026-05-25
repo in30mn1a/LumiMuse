@@ -23,8 +23,11 @@ void main() {
       expect(item.thumbnailBytes, isNull);
     });
 
-    test('toJson 序列化包含 type、fileName、mimeType', () {
-      const item = AttachmentItem(
+    // FIX(C7)：toJson 现在持久化 filePath / fileSize，并对图片附件冗余写出
+    // url 字段做向后兼容（旧消费方仍可读取 url）。原断言"toJson 不含 filePath/fileSize"
+    // 已与新写入策略冲突，改为正向断言。
+    test('toJson 序列化包含 type/fileName/filePath/fileSize/mimeType（图片附件还含 url）', () {
+      const textItem = AttachmentItem(
         fileName: 'notes.txt',
         filePath: '/path/to/notes.txt',
         mimeType: 'text/plain',
@@ -32,21 +35,39 @@ void main() {
         fileSize: 512,
       );
 
-      final json = item.toJson();
+      final textJson = textItem.toJson();
 
-      expect(json['type'], 'text');
-      expect(json['fileName'], 'notes.txt');
-      expect(json['mimeType'], 'text/plain');
-      // filePath 和 fileSize 不持久化到 metadata
-      expect(json.containsKey('filePath'), isFalse);
-      expect(json.containsKey('fileSize'), isFalse);
+      expect(textJson['type'], 'text');
+      expect(textJson['fileName'], 'notes.txt');
+      expect(textJson['mimeType'], 'text/plain');
+      expect(textJson['filePath'], '/path/to/notes.txt');
+      expect(textJson['fileSize'], 512);
+      // 文本附件不写 url（仅图片附件保留 url 兼容旧消费方）
+      expect(textJson.containsKey('url'), isFalse);
+
+      const imageItem = AttachmentItem(
+        fileName: 'photo.jpg',
+        filePath: '/path/to/photo.jpg',
+        mimeType: 'image/jpeg',
+        type: AttachmentType.image,
+        fileSize: 1024,
+      );
+      final imageJson = imageItem.toJson();
+      expect(imageJson['filePath'], '/path/to/photo.jpg');
+      expect(imageJson['fileSize'], 1024);
+      // 图片附件冗余写 url 字段（与 filePath 等价）做向后兼容
+      expect(imageJson['url'], '/path/to/photo.jpg');
     });
 
-    test('fromJson 反序列化正确恢复字段', () {
+    // FIX(C7)：fromJson 现在能从 filePath 与 fileSize 恢复字段，并对旧数据
+    // 仅有 url 字段的情况做兼容回退（filePath 缺失 → 读 url）。
+    test('fromJson 反序列化正确恢复 filePath 与 fileSize', () {
       final json = {
         'type': 'image',
         'fileName': 'avatar.png',
         'mimeType': 'image/png',
+        'filePath': '/path/to/avatar.png',
+        'fileSize': 2048,
       };
 
       final item = AttachmentItem.fromJson(json);
@@ -54,9 +75,23 @@ void main() {
       expect(item.type, AttachmentType.image);
       expect(item.fileName, 'avatar.png');
       expect(item.mimeType, 'image/png');
-      expect(item.filePath, ''); // 无 filePath 时默认空字符串
-      expect(item.fileSize, 0); // 无 fileSize 时默认 0
+      expect(item.filePath, '/path/to/avatar.png');
+      expect(item.fileSize, 2048);
       expect(item.thumbnailBytes, isNull);
+    });
+
+    test('fromJson 在 filePath 缺失时回退读取 url（旧数据兼容）', () {
+      final json = {
+        'type': 'image',
+        'fileName': 'legacy.png',
+        'mimeType': 'image/png',
+        'url': '/legacy/path/legacy.png', // 旧数据只写 url
+      };
+
+      final item = AttachmentItem.fromJson(json);
+
+      expect(item.filePath, '/legacy/path/legacy.png');
+      expect(item.fileSize, 0); // 无 fileSize 时默认 0
     });
 
     test('fromJson 处理未知 type 时回退为 text', () {
@@ -71,7 +106,8 @@ void main() {
       expect(item.type, AttachmentType.text);
     });
 
-    test('toJson → fromJson 往返序列化保持一致', () {
+    // FIX(C7)：往返现在能完整保留 filePath 与 fileSize（之前只保 type/fileName/mimeType）
+    test('toJson → fromJson 往返序列化完整保留 filePath/fileSize', () {
       const original = AttachmentItem(
         fileName: 'data.csv',
         filePath: '/tmp/data.csv',
@@ -86,6 +122,8 @@ void main() {
       expect(restored.type, original.type);
       expect(restored.fileName, original.fileName);
       expect(restored.mimeType, original.mimeType);
+      expect(restored.filePath, original.filePath);
+      expect(restored.fileSize, original.fileSize);
     });
 
     test('copyWith 正确覆盖指定字段', () {

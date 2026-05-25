@@ -136,6 +136,17 @@ class MessageMetadata {
   }
 
   /// copyWith
+  ///
+  /// 注意（已知语义陷阱）：本方法对 nullable 字段沿用 `value ?? this.value` 写法，
+  /// 因此**传入 `null` 等同于「未传该参数」**，无法把已有值清空为 null。
+  ///
+  /// 设计选择（保守方案）：
+  /// - 全工程已有 8+ 处调用方依赖「传 null = 不变」的隐式语义（chat_provider /
+  ///   message_provider / conversation_provider / memory_extraction_service /
+  ///   character_images_actions / summarize_service 等），统一改造为哨兵方案
+  ///   风险大、收益小。
+  /// - 真正需要置空的 nullable 字段，改用专用的 `clearXxx()` 方法显式表达意图，
+  ///   语义清晰且不影响现有调用方。详见下方 [clearActiveVersion] 等方法。
   MessageMetadata copyWith({
     List<AttachmentData>? attachments,
     List<GeneratedImage>? generatedImages,
@@ -161,6 +172,94 @@ class MessageMetadata {
       summarizedIds: summarizedIds ?? this.summarizedIds,
       imageVersions: imageVersions ?? this.imageVersions,
       activeImageVersion: activeImageVersion ?? this.activeImageVersion,
+    );
+  }
+
+  // FIX: 新增专用 clearXxx 方法，弥补 copyWith 无法把 nullable 字段清空为 null 的缺陷。
+  // 仅对 MessageMetadata 中可空字段提供，方便业务在「真的需要清空」时显式表达意图。
+
+  /// 清空 [activeVersion] 为 null（其余字段保持不变）
+  MessageMetadata clearActiveVersion() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: null,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: imageVersions,
+      activeImageVersion: activeImageVersion,
+    );
+  }
+
+  /// 清空 [memoryExtractedAt] 为 null（其余字段保持不变）
+  MessageMetadata clearMemoryExtractedAt() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: null,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: imageVersions,
+      activeImageVersion: activeImageVersion,
+    );
+  }
+
+  /// 清空 [summarizedIds] 为 null（其余字段保持不变）
+  MessageMetadata clearSummarizedIds() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: null,
+      imageVersions: imageVersions,
+      activeImageVersion: activeImageVersion,
+    );
+  }
+
+  /// 清空 [imageVersions] 为 null（其余字段保持不变）
+  MessageMetadata clearImageVersions() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: null,
+      activeImageVersion: activeImageVersion,
+    );
+  }
+
+  /// 清空 [activeImageVersion] 为 null（其余字段保持不变）
+  MessageMetadata clearActiveImageVersion() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: imageVersions,
+      activeImageVersion: null,
     );
   }
 }
@@ -271,6 +370,45 @@ class GeneratedImage {
       activeVersion: activeVersion ?? this.activeVersion,
     );
   }
+
+  // FIX: 新增专用 clearXxx 方法，弥补 copyWith 对 nullable 字段无法置 null 的缺陷。
+  // 仅对真正可能需要清空的字段提供（path / prompt / error）。
+
+  /// 清空 [path] 为 null（其余字段保持不变）
+  GeneratedImage clearPath() => GeneratedImage(
+        id: id,
+        url: url,
+        path: null,
+        prompt: prompt,
+        error: error,
+        status: status,
+        versions: versions,
+        activeVersion: activeVersion,
+      );
+
+  /// 清空 [prompt] 为 null（其余字段保持不变）
+  GeneratedImage clearPrompt() => GeneratedImage(
+        id: id,
+        url: url,
+        path: path,
+        prompt: null,
+        error: error,
+        status: status,
+        versions: versions,
+        activeVersion: activeVersion,
+      );
+
+  /// 清空 [error] 为 null（其余字段保持不变，常用于重试时清除上一次错误）
+  GeneratedImage clearError() => GeneratedImage(
+        id: id,
+        url: url,
+        path: path,
+        prompt: prompt,
+        error: null,
+        status: status,
+        versions: versions,
+        activeVersion: activeVersion,
+      );
 }
 
 /// 图片版本
@@ -345,4 +483,20 @@ class MessageVersion {
       createdAt: createdAt ?? this.createdAt,
     );
   }
+
+  // FIX: 新增专用 clearXxx 方法，弥补 copyWith 对 nullable 字段无法置 null 的缺陷。
+
+  /// 清空 [tokenCount] 为 null（其余字段保持不变，用于强制下游重新估算）
+  MessageVersion clearTokenCount() => MessageVersion(
+        content: content,
+        tokenCount: null,
+        createdAt: createdAt,
+      );
+
+  /// 清空 [createdAt] 为 null（其余字段保持不变）
+  MessageVersion clearCreatedAt() => MessageVersion(
+        content: content,
+        tokenCount: tokenCount,
+        createdAt: null,
+      );
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/database/database.dart';
+import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/app_widgets.dart';
 import '../../../theme/app_breakpoints.dart';
@@ -45,6 +46,11 @@ class ChatHeader extends StatefulWidget {
   final bool isDuplicating;
   final bool hasActiveConversation;
 
+  /// FIX(i18n)：当前语言代码（'zh' / 'en'），由父级 ChatView 在 build 内
+  /// `ref.watch(localeProvider).languageCode` 传入。本 widget 是 StatefulWidget
+  /// 而非 Consumer，避免改造类层级；语言切换时父级会重 build 并把新 lang 透传。
+  final String lang;
+
   /// 移动端打开侧栏抽屉（PC 端为 null）
   final VoidCallback? onOpenSidebar;
 
@@ -66,6 +72,7 @@ class ChatHeader extends StatefulWidget {
     required this.isSummarizing,
     required this.isDuplicating,
     required this.hasActiveConversation,
+    required this.lang,
     required this.onOpenSidebar,
     required this.onNewChat,
     required this.onShowConversationList,
@@ -134,16 +141,25 @@ class _ChatHeaderState extends State<ChatHeader> {
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
-                      // 三个 chips
-                      const LumiChip(
-                        label: '角色卡片',
+                      // FIX(i18n)：三个 chips 的硬编码文案改走 I18n.tArgs。
+                      // 角色卡片为静态文案，{count} 占位符走 tArgs 注入。
+                      LumiChip(
+                        label: I18n.t('chat.header.cardChip', lang: widget.lang),
                         active: true,
                       ),
                       LumiChip(
-                        label: '${widget.conversationCount} 最近对话',
+                        label: I18n.tArgs(
+                          'chat.header.recentChip',
+                          {'count': widget.conversationCount},
+                          lang: widget.lang,
+                        ),
                       ),
                       LumiChip(
-                        label: '${widget.memoryCount} 条记忆',
+                        label: I18n.tArgs(
+                          'chat.header.memoriesChip',
+                          {'count': widget.memoryCount},
+                          lang: widget.lang,
+                        ),
                       ),
                     ],
                   ),
@@ -157,21 +173,24 @@ class _ChatHeaderState extends State<ChatHeader> {
             spacing: 8, // gap-2
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
+              // FIX(i18n)：6 枚 PC 端按钮文案改走 I18n.t / 三态文案保留三元式。
               LumiSoftButton(
                 icon: Icons.add,
-                label: '新对话',
+                label: I18n.t('chat.header.newChat', lang: widget.lang),
                 kind: LumiSoftButtonKind.primary,
                 onTap: widget.onNewChat,
               ),
               LumiSoftButton(
                 icon: Icons.edit_outlined,
-                label: '编辑',
+                label: I18n.t('chat.header.edit', lang: widget.lang),
                 kind: LumiSoftButtonKind.secondary,
                 onTap: widget.hasActiveConversation ? widget.onRename : null,
               ),
               LumiSoftButton(
                 icon: Icons.summarize_outlined,
-                label: widget.isSummarizing ? '正在总结...' : '总结上下文',
+                label: widget.isSummarizing
+                    ? I18n.t('chat.header.summarizing', lang: widget.lang)
+                    : I18n.t('chat.header.summarize', lang: widget.lang),
                 kind: LumiSoftButtonKind.secondary,
                 onTap: (!widget.hasActiveConversation ||
                         widget.isStreaming ||
@@ -181,7 +200,9 @@ class _ChatHeaderState extends State<ChatHeader> {
               ),
               LumiSoftButton(
                 icon: Icons.copy_all_outlined,
-                label: widget.isDuplicating ? '复制中...' : '复制对话',
+                label: widget.isDuplicating
+                    ? I18n.t('chat.header.duplicating', lang: widget.lang)
+                    : I18n.t('chat.header.duplicate', lang: widget.lang),
                 kind: LumiSoftButtonKind.secondary,
                 onTap: (!widget.hasActiveConversation ||
                         widget.isDuplicating)
@@ -190,13 +211,13 @@ class _ChatHeaderState extends State<ChatHeader> {
               ),
               LumiSoftButton(
                 icon: Icons.image_outlined,
-                label: '图片管理',
+                label: I18n.t('chat.header.imageManager', lang: widget.lang),
                 kind: LumiSoftButtonKind.secondary,
                 onTap: widget.onImageManager,
               ),
               LumiSoftButton(
                 icon: Icons.delete_outline,
-                label: '删除',
+                label: I18n.t('chat.header.delete', lang: widget.lang),
                 kind: LumiSoftButtonKind.danger,
                 onTap: widget.hasActiveConversation ? widget.onDelete : null,
               ),
@@ -290,14 +311,22 @@ class _ChatHeaderState extends State<ChatHeader> {
       ),
       child: Row(
         children: [
-          // chip 区域
+          // FIX(i18n)：移动端展开拉片的两个 chip 文案改走 I18n.tArgs。
           LumiChip(
-            label: '${widget.conversationCount} 最近对话',
+            label: I18n.tArgs(
+              'chat.header.recentChip',
+              {'count': widget.conversationCount},
+              lang: widget.lang,
+            ),
             tiny: true,
           ),
           const SizedBox(width: 6),
           LumiChip(
-            label: '${widget.memoryCount} 条记忆',
+            label: I18n.tArgs(
+              'chat.header.memoriesChip',
+              {'count': widget.memoryCount},
+              lang: widget.lang,
+            ),
             tiny: true,
           ),
           const Spacer(),

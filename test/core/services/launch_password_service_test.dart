@@ -8,10 +8,10 @@
 //   - 对任意 q != p，verifyPassword(q) == false
 //   - disable(p) 后 isEnabled() == false
 //
-// 注意：PBKDF2 200000 次迭代在测试中过于昂贵，这里通过
+// 注意：PBKDF2 600000 次迭代在测试中过于昂贵，这里通过
 // `LaunchPasswordService.forTesting(db, iterations: 100)` 注入 100 次迭代，
-// 默认线上仍是 200000 次。两者算法路径一致，密码哈希 round-trip 性质与
-// 迭代次数无关，因此调低迭代不会削弱属性覆盖度。
+// 默认线上是 600000 次（OWASP 2023+ 推荐）。两者算法路径一致，密码哈希
+// round-trip 性质与迭代次数无关，因此调低迭代不会削弱属性覆盖度。
 //
 // 默认 100 次迭代（glados ExploreConfig 默认值）。
 
@@ -28,7 +28,7 @@ AppDatabase _createTestDb() {
   return AppDatabase.forTesting(NativeDatabase.memory());
 }
 
-/// 测试用迭代次数 — 100 次足以覆盖算法路径，远低于线上 200000 次。
+/// 测试用迭代次数 — 100 次足以覆盖算法路径，远低于线上 600000 次。
 const int _kTestIterations = 100;
 
 /// 字符样本：覆盖 ASCII / CJK / 数字 / 标点 / 空格，由整数种子拼装确定性密码。

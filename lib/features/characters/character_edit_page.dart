@@ -286,6 +286,26 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
   bool _saving = false;
   bool _duplicating = false;
 
+  /// FIX(Q3)：用户表单延迟保存策略（编辑控件改动不会立即落库），
+  /// 离开页面时若有未保存修改则需要二次确认。
+  /// 在角色加载完成时把"初始值"快照存入这里，[_dirty] 通过逐字段比较判断。
+  /// 简化范围：只比较核心三字段（name / greeting / personality）+ 头像路径，
+  /// 其余字段（basicInfo / scenario / exampleDialogue / otherInfo / systemPrompt /
+  /// imageTags）被视作低敏感字段，命中误判概率较低；
+  /// TODO(Q3-extend)：必要时按需扩到全部字段。
+  _CharacterEditSnapshot? _initialSnapshot;
+
+  /// FIX(Q3)：当前表单是否有未保存修改 — 仅在已加载且 snapshot 存在时计算。
+  bool get _dirty {
+    final snap = _initialSnapshot;
+    if (snap == null) return false;
+    if (_saving) return false; // 保存进行中不视为脏，避免与 _save 流程互相打断
+    return _nameController.text != snap.name ||
+        _greetingController.text != snap.greeting ||
+        _personalityController.text != snap.personality ||
+        _avatarPath != snap.avatarUrl;
+  }
+
   /// 五个长任务互斥锁（保存 / AI生成 / 删除 / 复制 / 导入）
   bool get _busy => _saving || _isAiGenerating || _duplicating;
   String _aiError = '';
@@ -369,10 +389,43 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
           _systemPromptController.text = character.systemPrompt;
           _imageTagsController.text = character.imageTags;
           _avatarPath = character.avatarUrl;
+          // FIX(Q3)：记录加载时的核心字段快照供 _dirty 比较使用。
+          _initialSnapshot = _CharacterEditSnapshot(
+            name: character.name,
+            greeting: character.greeting,
+            personality: character.personality,
+            avatarUrl: character.avatarUrl,
+          );
           _loaded = true;
         }
 
-        return Scaffold(
+        // FIX(Q3)：用 PopScope 拦截"按返回键 / 手势返回"路径，
+        // 只在表单 dirty 时阻止默认 pop，并弹出 i18n 二次确认对话框；
+        // 用户确认放弃才真正 Navigator.pop。
+        // 自定义返回入口（_returnToSidebar）已在内部直接调 Navigator.pop，
+        // 同样会被 PopScope 拦截到，因此只需在外层包一次即可覆盖所有返回路径。
+        return PopScope(
+          canPop: !_dirty,
+          onPopInvokedWithResult: (didPop, result) async {
+            if (didPop) return;
+            // FIX(Q3)：跨 await 复用 context 时，先抓本地 NavigatorState，
+            // 等 await 之后再用 context.mounted 守卫；这样既能跳过 lint
+            // use_build_context_synchronously，也能在页面被 dispose
+            // 的边界情况下提前返回。
+            final navigator = Navigator.of(context);
+            final router = GoRouter.of(context);
+            final confirmed = await _confirmDiscardChanges();
+            if (!context.mounted) return;
+            if (confirmed == true) {
+              // 用户选择放弃修改 — 回退到上一级或主页。
+              if (navigator.canPop()) {
+                navigator.pop();
+              } else {
+                router.go('/');
+              }
+            }
+          },
+          child: Scaffold(
           backgroundColor: Colors.transparent,
           body: SafeArea(
             child: SingleChildScrollView(
@@ -392,6 +445,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
               ),
             ),
           ),
+        ),
         );
       },
     );
@@ -905,6 +959,16 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         systemPrompt: _systemPromptController.text,
         imageTags: _imageTagsController.text,
       );
+      // FIX(Q3)：保存成功后用最新表单值刷新快照，使 _dirty 立刻回到 false。
+      // 这一步必须放在 update 成功之后、return / setState 之前，
+      // 否则 finally 重置 _saving=false 时 _dirty 还会短暂判定为 true，
+      // 引起 PopScope 多余的拦截。
+      _initialSnapshot = _CharacterEditSnapshot(
+        name: _nameController.text,
+        greeting: _greetingController.text,
+        personality: _personalityController.text,
+        avatarUrl: _avatarPath,
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1212,6 +1276,20 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
     });
   }
 
+  /// FIX(Q3)：弹出"放弃修改"确认对话框，复用 chat_dialogs.showDeleteConversationDialog
+  /// 的 surface-panel 样式（确认按钮使用 danger 高亮 — 与"删除对话"风格一致），
+  /// 文案走 i18n（editor.dirty.*）。
+  Future<bool?> _confirmDiscardChanges() async {
+    final lang = ref.read(localeProvider).languageCode;
+    return showDeleteConversationDialog(
+      context,
+      title: I18n.t('editor.dirty.title', lang: lang),
+      body: I18n.t('editor.dirty.message', lang: lang),
+      confirmLabel: I18n.t('editor.dirty.discard', lang: lang),
+      cancelLabel: I18n.t('editor.dirty.cancel', lang: lang),
+    );
+  }
+
   void _applyCharacterCardFields(Map<String, String> fields) {
     setState(() {
       if (fields['name']?.isNotEmpty == true) {
@@ -1253,4 +1331,23 @@ class _ImportMsg {
   final String text;
   final bool isError;
   const _ImportMsg({required this.text, required this.isError});
+}
+
+/// FIX(Q3)：编辑表单的核心字段快照，用于比较"加载值 vs 当前值"判定是否 dirty。
+/// 简化范围：仅 name / greeting / personality / avatarUrl 四个核心字段；
+/// TODO(Q3-extend)：必要时扩展到 basicInfo / scenario / exampleDialogue /
+/// otherInfo / systemPrompt / imageTags（但目前一旦扩到全部字段，
+/// 复制/导入这类一键填充流程会立刻让 _dirty 变 true，可能误触发拦截）。
+class _CharacterEditSnapshot {
+  final String name;
+  final String greeting;
+  final String personality;
+  final String? avatarUrl;
+
+  const _CharacterEditSnapshot({
+    required this.name,
+    required this.greeting,
+    required this.personality,
+    required this.avatarUrl,
+  });
 }

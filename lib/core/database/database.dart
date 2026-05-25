@@ -96,6 +96,10 @@ class MemoryTasks extends Table {
   TextColumn get characterId => text()
       .named('character_id')
       .references(Characters, #id, onDelete: KeyAction.cascade)();
+  // FIX(Major-3)：conversation_id 缺 FK，导致 conversations 删除时 memory_tasks
+  // 不会级联清理；为避免本次修复触发 schema 升级风险，此处仅留 TODO，等下次
+  // schema 升级（v5→v6）时一并加 references(Conversations, #id, onDelete: cascade)。
+  // TODO(schema-v6): 升级 schema 时加 FK references Conversations(id) onDelete cascade
   TextColumn get conversationId => text().named('conversation_id')();
   TextColumn get messageIds => text().named('message_ids').withDefault(const Constant('[]'))();
   TextColumn get status => text().withDefault(const Constant('pending'))(); // pending / processing / done / failed

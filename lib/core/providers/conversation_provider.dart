@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -143,43 +146,127 @@ class ConversationActions {
   }
 
   /// 复制对话（含所有消息）
+  ///
+  /// FIX(Major-2)：原实现只复制 DB 行，message metadata 中的 url/path
+  /// 仍然指向原对话的本地文件。当用户后续删除原对话时，孤儿清理流程会扫描全库
+  /// 引用，新对话与原对话共享同一物理文件意味着删除一方仍能保留文件；但反过来，
+  /// 若用户先在副本里删除某张图片，扫描结果显示「仍被原对话引用」→ 文件保留，
+  /// 表面看起来正常；可一旦原对话先被删，扫描仍会因为副本引用而保留文件——
+  /// 但此时副本里的引用其实指向**未隔离的同一物理文件**，跨对话的删除/编辑
+  /// 会互相影响（例如 R11 角色图片管理批量删除时把"另一份副本"也清掉）。
+  ///
+  /// 修复策略与 [CharacterActions.duplicate] 对齐，分三步：
+  /// 1. pre-tx：扫描全部消息 metadata 收集本地路径（去重），逐个复制文件，
+  ///            构造旧→新路径映射 `pathMapping`，把每个新文件路径记入
+  ///            `pendingNewFiles`（局部变量，不复用实例字段）。
+  /// 2. tx：插入新对话与新消息时，用 `remapLocalPaths` 把 metadata 中的
+  ///            url/path 全部改写为新文件路径。
+  /// 3. 失败回滚：复制阶段自身失败、事务抛错都清理 `pendingNewFiles`，
+  ///            清理 IO 异常仅记录日志，不再次抛出。
   Future<String> duplicate(String id) async {
     final original = await (_db.select(_db.conversations)
           ..where((t) => t.id.equals(id)))
         .getSingle();
 
-    final newId = _uuid.v4();
-    final now = DateTime.now();
-
-    await _db.into(_db.conversations).insert(ConversationsCompanion.insert(
-      id: newId,
-      characterId: original.characterId,
-      title: Value('${original.title} (副本)'),
-      createdAt: Value(now),
-      updatedAt: Value(now),
-    ));
-
-    // 复制所有消息
+    // 预读全部消息，pre-tx 阶段先扫描资产
     final messages = await (_db.select(_db.messages)
           ..where((t) => t.conversationId.equals(id))
           ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
         .get();
 
+    // FIX(Major-2)：收集所有消息 metadata 中的本地资产路径（去重）
+    final assetSet = <String>{};
     for (final msg in messages) {
-      final msgId = _uuid.v4();
-      await _db.into(_db.messages).insert(MessagesCompanion.insert(
-        id: msgId,
-        conversationId: newId,
-        role: msg.role,
-        content: Value(msg.content),
-        tokenCount: Value(msg.tokenCount),
-        seq: Value(msg.seq),
-        createdAt: Value(msg.createdAt),
-        metadata: Value(msg.metadata),
-      ));
+      try {
+        final meta = MessageMetadata.fromJsonString(msg.metadata);
+        assetSet.addAll(extractLocalPaths(meta.toJson()));
+      } catch (_) {
+        // 单条 metadata 解析失败不阻塞复制流程
+      }
+    }
+
+    // FIX(Major-2)：每个旧路径只复制一次，构造「旧→新」映射；
+    // 局部变量随方法调用栈生命周期管理，避免跨调用串扰。
+    final pendingNewFiles = <String>[];
+    final pathMapping = <String, String>{};
+    try {
+      for (final oldPath in assetSet) {
+        final newPath = await copyLocalAsset(oldPath);
+        pendingNewFiles.add(newPath);
+        pathMapping[oldPath] = newPath;
+      }
+    } catch (_) {
+      // 复制阶段自身失败：清理已成功的新文件，避免孤儿
+      await _safeDeletePendingFiles(pendingNewFiles);
+      rethrow;
+    }
+
+    final newId = _uuid.v4();
+    final now = DateTime.now();
+
+    // FIX(Major-2)：DB 写入用事务包住，任一失败回滚后再清理已复制的新文件
+    try {
+      await _db.transaction(() async {
+        await _db
+            .into(_db.conversations)
+            .insert(ConversationsCompanion.insert(
+              id: newId,
+              characterId: original.characterId,
+              title: Value('${original.title} (副本)'),
+              createdAt: Value(now),
+              updatedAt: Value(now),
+            ));
+
+        for (final msg in messages) {
+          final msgId = _uuid.v4();
+
+          // FIX(Major-2)：解析 metadata，按 pathMapping 重写 url/path 字段
+          String newMetadataJson = msg.metadata;
+          try {
+            final meta = MessageMetadata.fromJsonString(msg.metadata);
+            final remapped = remapLocalPaths(meta.toJson(), pathMapping);
+            newMetadataJson = jsonEncode(remapped);
+          } catch (_) {
+            // 解析失败保留原 metadata；assetSet 里若没有它的路径就不会出问题，
+            // 若解析就失败的 metadata 包含本地路径则属于历史脏数据，不在本次修复范围。
+          }
+
+          await _db.into(_db.messages).insert(MessagesCompanion.insert(
+                id: msgId,
+                conversationId: newId,
+                role: msg.role,
+                content: Value(msg.content),
+                tokenCount: Value(msg.tokenCount),
+                seq: Value(msg.seq),
+                createdAt: Value(msg.createdAt),
+                metadata: Value(newMetadataJson),
+              ));
+        }
+      });
+    } catch (_) {
+      // FIX(Major-2)：事务失败时清理已复制出的新文件，避免孤儿
+      await _safeDeletePendingFiles(pendingNewFiles);
+      rethrow;
     }
 
     return newId;
+  }
+
+  /// 兜底：删除已复制出的新文件（IO 异常仅吞掉不再次抛出）
+  ///
+  /// FIX(Major-2)：与 [CharacterActions._safeDeletePendingFiles] 同构。
+  /// 参数化为 `pendingFiles`（局部 List），不依赖任何实例字段，避免跨调用串扰。
+  Future<void> _safeDeletePendingFiles(List<String> pendingFiles) async {
+    for (final path in pendingFiles) {
+      try {
+        final f = File(path);
+        if (await f.exists()) {
+          await f.delete();
+        }
+      } catch (_) {
+        debugPrint('[ConversationActions.duplicate] 清理新文件失败: $path');
+      }
+    }
   }
 
   /// 记忆提取状态批量重置 / 标记

@@ -111,7 +111,23 @@ class ChatEngine {
     if (settings.exampleDialogue) {
       usedTokens += estimateTokens(character.exampleDialogue);
     }
-    final availableBudget = settings.contextWindow - settings.maxTokens;
+
+    // FIX(Major-9): 钳制 maxTokens，防止 maxTokens >= contextWindow 时
+    // availableBudget 变为 0 或负数，导致历史消息被全部丢弃、模型「失忆」。
+    // 策略：把 maxTokens 上限钳制到 contextWindow 的 80%，给系统提示词、
+    // 示例对话、历史消息预留至少 20% 的空间。仅在 ChatEngine 内做局部钳制，
+    // 不修改 AppSettings 模型本身，避免影响保存/导入路径。
+    final clampedMaxTokens = settings.maxTokens
+        .clamp(0, (settings.contextWindow * 0.8).floor())
+        .toInt();
+    if (clampedMaxTokens != settings.maxTokens) {
+      // ignore: avoid_print
+      debugPrint(
+        '[ChatEngine] 警告：maxTokens=${settings.maxTokens} 超过 '
+        'contextWindow=${settings.contextWindow} 的 80%，已自动钳制为 $clampedMaxTokens',
+      );
+    }
+    final availableBudget = settings.contextWindow - clampedMaxTokens;
 
     // P1/R4：summary 截断 — 自后向前扫描，找到最后一条 metadata.isSummary == true 的索引；
     // 命中时仅保留该 summary 及其后的消息作为 history（包含 summary 自身），
@@ -209,15 +225,56 @@ int computeLastSummaryIdx(List<Message> messages) {
 /// 不就地修改入参，构造新列表返回；保证最终输出中不存在相邻同 role 的非 system 消息。
 ///
 /// 仅对外暴露给测试代码使用：聊天主流程通过 [ChatEngine.assemblePrompt] 间接调用。
+///
+/// FIX(Major-3): 多模态安全合并。
+/// `ChatMessage.content` 类型为 `dynamic`，既可能是 `String`（纯文本），也可能是
+/// `List<dynamic>`（OpenAI 多模态格式：`[{type:'text',text:...},{type:'image_url',...}]`）。
+/// 旧实现直接 `'${last.content}\n\n${msg.content}'` 会把 List 调用 toString() 拼成
+/// `[{type: text, text: ...}]\n\n...` 这种破坏 JSON 结构的字符串，造成下游 LLM 报 400。
+/// 这里按以下规则做类型分发：
+///   1) String + String  → 用 `\n\n` 拼接
+///   2) List   + List    → 直接 concat 两个 `List<dynamic>`，保留所有 part
+///   3) List   + String  → 把 String 包装成 `{type:'text', text:str}` 后追加到 List 末尾
+///   4) String + List    → 把已有 String 包装成 `{type:'text', text:str}` 放到新 List 头部，
+///                           再追加 List 内容
+///   5) 其它类型组合    → 兜底不合并，原样保留两条，避免破坏数据
 @visibleForTesting
 List<ChatMessage> mergeAdjacentSameRole(List<ChatMessage> chatMessages) {
   final merged = <ChatMessage>[];
   for (final msg in chatMessages) {
     final last = merged.isNotEmpty ? merged.last : null;
     if (last != null && last.role == msg.role && last.role != 'system') {
+      final lastContent = last.content;
+      final msgContent = msg.content;
+
+      dynamic newContent;
+      if (lastContent is String && msgContent is String) {
+        // 1) 纯文本拼接
+        newContent = '$lastContent\n\n$msgContent';
+      } else if (lastContent is List && msgContent is List) {
+        // 2) 多模态合并：直接拼接 part 列表
+        newContent = <dynamic>[...lastContent, ...msgContent];
+      } else if (lastContent is List && msgContent is String) {
+        // 3) 已有多模态 + 新文本：把文本包装为 text part 追加到末尾
+        newContent = <dynamic>[
+          ...lastContent,
+          {'type': 'text', 'text': msgContent},
+        ];
+      } else if (lastContent is String && msgContent is List) {
+        // 4) 已有文本 + 新多模态：把文本包装到列表头部再追加 part
+        newContent = <dynamic>[
+          {'type': 'text', 'text': lastContent},
+          ...msgContent,
+        ];
+      } else {
+        // 5) 兜底：未知类型组合不合并，原样追加，避免破坏多模态结构
+        merged.add(msg);
+        continue;
+      }
+
       merged[merged.length - 1] = ChatMessage(
         role: last.role,
-        content: '${last.content}\n\n${msg.content}',
+        content: newContent,
       );
     } else {
       merged.add(msg);

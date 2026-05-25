@@ -233,6 +233,17 @@ class MemoryExtractionService {
   }
 
   /// 处理队列
+  ///
+  /// FIX(C5): 修复 enqueueExtraction 与 _processQueue 之间的竞态：
+  /// - A 调用 `enqueueExtraction` 写入新任务后，检查 `_processing == true` 而跳过启动；
+  /// - B 此时正处于 `_processQueue` 末尾，刚好走完最后一次 select 拿到空列表 break
+  ///   出 while，但还未把 `_processing` 置回 false（或刚置回但 A 已观测过 true）。
+  /// - 结果：A 的新任务卡在 pending，永远没人触发下一轮处理。
+  ///
+  /// 修复思路：finally 把 `_processing` 置回 false 后，再做一次 pending 探测；
+  /// 若仍有 pending 任务，则 `unawaited(_processQueue())` 启动新一轮。
+  /// 新一轮内部仍然会用 `if (_processing) return` 守门，配合事件循环让出，
+  /// 不会形成同步无限递归。
   Future<void> _processQueue() async {
     if (_processing) return;
     _processing = true;
@@ -279,6 +290,24 @@ class MemoryExtractionService {
       }
     } finally {
       _processing = false;
+
+      // FIX(C5): 关闭 enqueue/_processQueue 之间的窗口期。
+      // 走到这里说明当前轮次已退出 while；如果在 break 与本行之间
+      // 有新任务被 enqueue（其当时观测到 _processing == true 直接返回，
+      // 不会触发新一轮），需要由我们自己再检查并重新启动一轮处理。
+      try {
+        final pending = await (_db.select(_db.memoryTasks)
+              ..where((t) => t.status.equals('pending'))
+              ..limit(1))
+            .get();
+        if (pending.isNotEmpty) {
+          // 用 unawaited 避免阻塞 finally 链；新一轮内部以
+          // `if (_processing) return` 守门，不会形成同步递归。
+          unawaited(_processQueue());
+        }
+      } catch (_) {
+        // 探测失败不影响主流程；下一次 enqueueExtraction 仍会再次驱动队列。
+      }
     }
   }
 
@@ -333,8 +362,18 @@ class MemoryExtractionService {
         .replaceAll('{existing_memories}', existingSummary)
         .replaceAll('{conversation_text}', convText);
 
+    // FIX(Major-6): 强制 jsonMode 提取记忆。
+    // 提示词要求模型直接输出形如 `{"memories":[...]}` 的 JSON 对象，
+    // 但默认 settings.jsonMode 跟随用户聊天配置（多数情况下为 false），
+    // 模型可能返回带 ``` 代码块标记或附加解释的文本，导致下游
+    // _parseExtractionResponse 兜底解析失败、记忆提取静默丢失。
+    // 这里在 settings 上 clone 一份只对本次调用生效的 jsonMode=true，
+    // 既保证 OpenAI 兼容 API 在支持 response_format 时返回严格 JSON，
+    // 也不污染用户的全局设置。
+    final extractionSettings = settings.copyWith(jsonMode: true);
+
     final response = await _llm.chatCompletion(
-      settings: settings,
+      settings: extractionSettings,
       messages: [ChatMessage(role: 'user', content: prompt)],
     );
 
@@ -528,15 +567,28 @@ class MemoryExtractionService {
   }
 
   /// 提取文本中的 anchor（书名号/引号内的专有名词）— 对照主项目 extractAnchors
+  ///
+  /// FIX(Major-8): 扩展引号字符类，增加对以下两类引号的匹配：
+  /// - `『』`：日语 / 中文文本中常用的内层书名号或强调引号
+  /// - `“”`（U+201C / U+201D）：中文弯引号（智能引号），多见于复制粘贴或富文本
+  /// 引号语义/来源汇总：
+  ///   - `《》`(U+300A/B)        ：中文书名号，作品名常用
+  ///   - `「」`(U+300C/D)        ：日文 / 港台中文常用直角引号
+  ///   - `『』`(U+300E/F)        ：日文 / 港台中文常用直角双引号（内层）
+  ///   - `""`(U+0022)            ：ASCII 直引号
+  ///   - `“”`(U+201C/D)          ：中文弯引号 / Smart quotes
   static Set<String> _extractAnchors(String text) {
     final anchors = <String>{};
     if (text.isEmpty) return anchors;
 
-    // 书名号《》、「」、""
+    // 各类成对引号 — 每对单独正则，确保左右匹配严格成对
     for (final pattern in [
       RegExp(r'《([^》]{1,30})》'),
       RegExp(r'「([^」]{1,30})」'),
+      RegExp(r'『([^』]{1,30})』'),
       RegExp(r'"([^"]{1,30})"'),
+      // 中文弯引号：用 unicode 转义避免源码中混入 BOM / 全角差异
+      RegExp('\u201C([^\u201D]{1,30})\u201D'),
     ]) {
       for (final match in pattern.allMatches(text)) {
         final cleaned = (match.group(1) ?? '').trim();

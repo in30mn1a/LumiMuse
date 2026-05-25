@@ -1,5 +1,22 @@
 // 文件：lib/core/providers/chat_provider_contract.dart
 //
+// FIX(Major-5)：契约目前没有任何类 implements。当前 ChatController 是
+// `StateNotifier<ChatState>` + `autoDispose.family<.., String>` 形态——按对话 ID
+// 隔离的实例，方法签名（`sendMessage(content)` / `regenerate(messageId)` /
+// `stop()`）不带 `convId` 参数；契约假设的是一个**全局多对话**控制器
+// （`send(convId, ...)` / `stop(convId)` / `activeStreams` / `abortControllers`
+// / `messagesByConv` / `activeConvId` / `smartDelete` / `switchVersion` /
+// `refreshMessagesForConversation` 等），二者形态差距已远超 30 行修改预算
+// （DeleteOutcome 不存在、forceScrollToBottom/skipScroll 在 UI 层而非 controller
+// 中、activeStreams 集合需要重写并发模型）。
+//
+// 因此本次仅保留契约文件 + TODO，不强行让 ChatController 实现，避免维护两份。
+// TODO(parity-completion): ChatController 尚未 implements 此契约。任务 5.x 完成时
+// 改 ChatController 继承此 abstract class，使 INV-1/INV-2/INV-3/INV-7 在
+// 编译期就被强约束。届时需要把 ChatController 重构为「全局多对话状态机」，
+// 把 _conversationId 字段替换为 activeConvId/messagesByConv，把 _cancelToken
+// 替换为 abortControllers map，并把 sendMessage/regenerate/stop 的 convId 参数补齐。
+//
 // flutter-pixel-perfect-parity 总纲 spec —— 任务 3.1
 // 状态机契约：把主项目 ChatView.tsx 内联的 activeStreams /
 // abortControllersRef / forceScrollToBottomRef / skipScrollRef 抽象为

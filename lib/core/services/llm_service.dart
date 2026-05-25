@@ -88,7 +88,19 @@ class LlmService {
       }
 
       if (!(cancelToken?.isCancelled ?? false)) {
-        await onDone(fullTextBuffer.toString());
+        // FIX(Major-1): 把 onDone 回调单独包一层 try/catch，
+        // 与流式接收阶段的网络/解析错误区分开。
+        // 旧实现 onDone 抛业务异常会被外层泛型 `catch (e)` 捕获、
+        // 用 `e.toString()` 上报，调用方无法分辨"流读完后保存消息失败"
+        // 与"网络中途断开"两类语义。这里固定加上"完成回调失败:"前缀
+        // 以便上层 UI / 日志做区分；同时显式 return 终止函数，避免
+        // 异常继续冒泡到外层的网络分支再触发一次 onError。
+        try {
+          await onDone(fullTextBuffer.toString());
+        } catch (e) {
+          onError('完成回调失败: $e');
+          return;
+        }
       }
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) return;

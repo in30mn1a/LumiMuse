@@ -19,10 +19,13 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 本 spec 实施前 `dependencies:` 段已有的依赖键集合。
+///
+/// FIX: M5 同步删除 riverpod_annotation / json_annotation —— 这两个包此前
+/// 在 pubspec 但项目代码从未使用，移除后基线必须随之收缩，否则 difference
+/// 计算会错误地把「白名单内允许的新增项」与「被删除项」混在一起。
 const Set<String> _baselineDependencies = <String>{
   'flutter',
   'flutter_riverpod',
-  'riverpod_annotation',
   'drift',
   'sqlite3_flutter_libs',
   'go_router',
@@ -39,7 +42,6 @@ const Set<String> _baselineDependencies = <String>{
   'url_launcher',
   'flutter_markdown',
   'cached_network_image',
-  'json_annotation',
   'google_fonts',
   'flutter_animate',
   'reorderable_grid_view',
@@ -49,14 +51,14 @@ const Set<String> _baselineDependencies = <String>{
 };
 
 /// 本 spec 实施前 `dev_dependencies:` 段已有的依赖键集合。
+///
+/// FIX: M5 同步删除 json_serializable / riverpod_generator —— 同上理由。
 const Set<String> _baselineDevDependencies = <String>{
   'flutter_test',
   'integration_test',
   'flutter_lints',
   'build_runner',
   'drift_dev',
-  'json_serializable',
-  'riverpod_generator',
   'glados',
 };
 

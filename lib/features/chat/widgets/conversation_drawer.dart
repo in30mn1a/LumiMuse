@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/database/database.dart';
+import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/lumi_scrollbar.dart';
 import '../../../theme/surfaces.dart';
@@ -28,17 +29,20 @@ Future<void> showConversationDrawer(
   required List<Conversation> conversations,
   required String? activeConversationId,
   required ValueChanged<String> onSelect,
+  // FIX(i18n)：调用方需把当前语言传入；保持参数必填，避免遗漏导致默认 zh。
+  required String lang,
 }) {
   return showGeneralDialog<void>(
     context: context,
     barrierDismissible: true,
-    barrierLabel: '关闭',
+    barrierLabel: I18n.t('chat.dialog.close', lang: lang),
     barrierColor: const Color(0x59000000), // bg-black/35 ≈ 0.35
     transitionDuration: const Duration(milliseconds: 240),
     pageBuilder: (ctx, animation, secondary) {
       return _ConversationDrawer(
         conversations: conversations,
         activeConversationId: activeConversationId,
+        lang: lang,
         onSelect: (id) {
           Navigator.of(ctx).pop();
           onSelect(id);
@@ -65,11 +69,13 @@ class _ConversationDrawer extends StatelessWidget {
   final List<Conversation> conversations;
   final String? activeConversationId;
   final ValueChanged<String> onSelect;
+  final String lang;
 
   const _ConversationDrawer({
     required this.conversations,
     required this.activeConversationId,
     required this.onSelect,
+    required this.lang,
   });
 
   @override
@@ -137,7 +143,8 @@ class _ConversationDrawer extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(
-          '最近对话',
+          // FIX(i18n)：抽屉标题改走 I18n.t（chat.drawer.recentTitle）。
+          I18n.t('chat.drawer.recentTitle', lang: lang),
           style: TextStyle(
             fontSize: 14, // text-sm
             fontWeight: FontWeight.w600,
@@ -187,7 +194,8 @@ class _ConversationDrawer extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
-          '新建一段对话，系统会自动为你保存上下文和记忆。',
+          // FIX(i18n)：空态提示改走 I18n.t（chat.drawer.empty）。
+          I18n.t('chat.drawer.empty', lang: lang),
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 14, color: muted),
         ),

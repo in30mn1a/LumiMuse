@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/providers/database_provider.dart';
 import '../../core/providers/settings_provider.dart';
 import '../../core/services/launch_password_service.dart';
+import '../../core/utils/i18n.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/surfaces.dart';
 
@@ -188,10 +189,11 @@ class _LaunchPasswordGateState extends ConsumerState<LaunchPasswordGate>
     if (_submitting) return;
     if (_isLocked) return;
     final password = _passwordController.text;
+    final lang = ref.read(localeProvider).languageCode;
     if (password.isEmpty) {
       setState(() {
-        // TODO(parity): 主项目缺失 'auth.passwordRequired' 键，硬编码兜底
-        _errorText = '请输入密码';
+        // FIX(i18n)：改走 auth.lock.passwordRequired，替换原硬编码兜底。
+        _errorText = I18n.t('auth.lock.passwordRequired', lang: lang);
       });
       return;
     }
@@ -230,8 +232,12 @@ class _LaunchPasswordGateState extends ConsumerState<LaunchPasswordGate>
       setState(() {
         _failureCount = nextCount;
         _submitting = false;
-        // TODO(parity): 主项目缺失 'auth.passwordWrong' 键，硬编码兜底
-        _errorText = '密码不正确，已尝试 $nextCount / $_kMaxFailures 次';
+        // FIX(i18n)：改走 auth.lock.passwordWrong，{count} / {max} 占位符走 tArgs。
+        _errorText = I18n.tArgs(
+          'auth.lock.passwordWrong',
+          {'count': nextCount, 'max': _kMaxFailures},
+          lang: lang,
+        );
       });
       _passwordController.clear();
     }
@@ -294,10 +300,9 @@ class _LockScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // 任务 6.5：i18n 接线 — 本闸门绝大多数文案在主项目无对照键，目前全部
-    // 使用硬编码兜底 + TODO(parity) 注释；这里仍 watch 一次 localeProvider，
-    // 以便未来主项目补键后只需替换硬编码即可生效（语言切换时整树会自动重建）。
-    ref.watch(localeProvider);
+    // 任务 6.5：i18n 接线 — 文案现在统一走 I18n.t / I18n.tArgs（auth.lock.*）。
+    // FIX(i18n)：替换原本的 TODO(parity) 硬编码兜底。
+    final lang = ref.watch(localeProvider).languageCode;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final accent = isDark ? AppTheme.darkAccent : AppTheme.accent;
     final textPrimary = isDark
@@ -305,8 +310,13 @@ class _LockScreen extends ConsumerWidget {
         : AppTheme.textPrimary;
     final textMuted = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
 
-    // TODO(parity): 主项目缺失 'auth.lockHint' 键，硬编码兜底（含 {seconds} 占位）
-    final lockHint = isLocked ? '请在 $lockRemainingSeconds 秒后再试' : null;
+    final lockHint = isLocked
+        ? I18n.tArgs(
+            'auth.lock.lockHint',
+            {'seconds': lockRemainingSeconds},
+            lang: lang,
+          )
+        : null;
     final canSubmit = !isLocked && !submitting;
 
     return Scaffold(
@@ -340,8 +350,8 @@ class _LockScreen extends ConsumerWidget {
                     ),
                     const SizedBox(height: 18),
                     Text(
-                      // TODO(parity): 主项目缺失 'auth.gateTitle' 键，硬编码兜底
-                      '请输入启动密码',
+                      // FIX(i18n)：auth.lock.gateTitle。
+                      I18n.t('auth.lock.gateTitle', lang: lang),
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 18,
@@ -351,8 +361,8 @@ class _LockScreen extends ConsumerWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      // TODO(parity): 主项目缺失 'auth.gateBody' 键，硬编码兜底
-                      '本应用已开启启动密码保护，输入正确后才会进入主界面',
+                      // FIX(i18n)：auth.lock.gateBody。
+                      I18n.t('auth.lock.gateBody', lang: lang),
                       textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 12, color: textMuted),
                     ),
@@ -369,13 +379,10 @@ class _LockScreen extends ConsumerWidget {
                         // 防止用户粘贴多行内容到密码框
                         FilteringTextInputFormatter.deny(RegExp(r'[\r\n]')),
                       ],
-                      decoration: const InputDecoration(
-                        // TODO(parity): 主项目缺失 'auth.launchPassword' 键，硬编码兜底
-                        labelText: '启动密码',
-                        // TODO(parity): 主项目缺失 'auth.placeholder' 键，硬编码兜底；
-                        // 任务 6.5 要求该键启用时切换为 I18n.t('auth.placeholder')，
-                        // 待主项目登记后再补
-                        hintText: '请输入解锁密码',
+                      decoration: InputDecoration(
+                        // FIX(i18n)：auth.lock.launchPassword / auth.lock.placeholder。
+                        labelText: I18n.t('auth.lock.launchPassword', lang: lang),
+                        hintText: I18n.t('auth.lock.placeholder', lang: lang),
                       ),
                       onSubmitted: (_) {
                         if (canSubmit) onSubmit();
@@ -398,8 +405,10 @@ class _LockScreen extends ConsumerWidget {
                     ],
                     const SizedBox(height: 22),
                     _PrimaryButton(
-                      // TODO(parity): 主项目缺失 'auth.verifying' / 'auth.unlock' 键，硬编码兜底
-                      label: submitting ? '正在校验…' : '解锁',
+                      // FIX(i18n)：auth.lock.verifying / auth.lock.unlock。
+                      label: submitting
+                          ? I18n.t('auth.lock.verifying', lang: lang)
+                          : I18n.t('auth.lock.unlock', lang: lang),
                       enabled: canSubmit,
                       onPressed: canSubmit ? onSubmit : null,
                       isDark: isDark,

@@ -243,19 +243,20 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
       builder: (ctx) {
         final lang = ref.read(localeProvider).languageCode;
         return AlertDialog(
-          // TODO(parity): 主项目缺失 'image.deleteCurrent' 键，硬编码兜底
-          title: const Text('删除当前图片'),
-          // TODO(parity): 主项目缺失 'image.deleteCurrentConfirm' 键，硬编码兜底
-          content: const Text('将从对话和本地存储中移除这张图片，确定继续？'),
+          // FIX(i18n)：image.viewer.deleteCurrentTitle 替换硬编码兜底。
+          title: Text(I18n.t('image.viewer.deleteCurrentTitle', lang: lang)),
+          // FIX(i18n)：image.viewer.deleteCurrentConfirm 替换硬编码兜底。
+          content: Text(I18n.t('image.viewer.deleteCurrentConfirm', lang: lang)),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(I18n.t('chat.cancel', lang: lang)),
+              // FIX(i18n)：使用 image.viewer.cancel 与"取消"语义对齐。
+              child: Text(I18n.t('image.viewer.cancel', lang: lang)),
             ),
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(true),
-              // 'common.delete' 属 common.* 命名空间，留待任务 6.6 替换
-              child: const Text('删除'),
+              // FIX(i18n)：image.viewer.delete 替换原硬编码 "删除"。
+              child: Text(I18n.t('image.viewer.delete', lang: lang)),
             ),
           ],
         );
@@ -289,6 +290,8 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
 
   Future<void> _showSaveMenu() async {
     if (_currentIndex < 0 || _currentIndex >= widget.imagePaths.length) return;
+    // FIX(i18n)：菜单项与取消按钮文案改走 I18n.t（image.viewer.*）。
+    final lang = ref.read(localeProvider).languageCode;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -307,9 +310,9 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
                   Icons.save_alt_rounded,
                   color: Colors.white,
                 ),
-                title: const Text(
-                  '保存到本地相册',
-                  style: TextStyle(color: Colors.white),
+                title: Text(
+                  I18n.t('image.viewer.saveToGallery', lang: lang),
+                  style: const TextStyle(color: Colors.white),
                 ),
                 onTap: () {
                   Navigator.of(ctx).pop();
@@ -322,7 +325,7 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
                   color: Colors.white.withValues(alpha: 0.72),
                 ),
                 title: Text(
-                  '取消',
+                  I18n.t('image.viewer.cancel', lang: lang),
                   style: TextStyle(color: Colors.white.withValues(alpha: 0.72)),
                 ),
                 onTap: () => Navigator.of(ctx).pop(),
@@ -336,13 +339,15 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
 
   Future<void> _saveCurrentImageToGallery() async {
     if (_currentIndex < 0 || _currentIndex >= widget.imagePaths.length) return;
+    final lang = ref.read(localeProvider).languageCode;
     final messenger = ScaffoldMessenger.of(context);
     try {
       await GallerySaverService.saveImageToGallery(widget.imagePaths[_currentIndex]);
       if (!mounted) return;
       messenger.showSnackBar(
-        const SnackBar(
-          content: Text('已保存到本地相册'),
+        SnackBar(
+          // FIX(i18n)：image.viewer.savedToGallery 替换硬编码兜底。
+          content: Text(I18n.t('image.viewer.savedToGallery', lang: lang)),
           behavior: SnackBarBehavior.floating,
           backgroundColor: AppTheme.accentDark,
         ),
@@ -351,7 +356,10 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
       if (!mounted) return;
       messenger.showSnackBar(
         SnackBar(
-          content: Text('保存失败: $e'),
+          // FIX(i18n)：image.viewer.saveError 带 {error} 占位符。
+          content: Text(
+            I18n.tArgs('image.viewer.saveError', {'error': e}, lang: lang),
+          ),
           behavior: SnackBarBehavior.floating,
           backgroundColor: Colors.red.shade400,
         ),
@@ -527,6 +535,7 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
 
   /// 构建图片加载失败占位
   Widget _buildErrorPlaceholder({required Key key}) {
+    final lang = ref.read(localeProvider).languageCode;
     return Container(
       key: key,
       width: 200,
@@ -538,19 +547,19 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
           color: Colors.white.withValues(alpha: 0.1),
         ),
       ),
-      child: const Column(
+      child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
+          const Icon(
             Icons.broken_image_outlined,
             size: 48,
             color: Colors.white54,
           ),
-          SizedBox(height: 12),
-          // TODO(parity): 主项目缺失 'image.unavailable' 键，硬编码兜底
+          const SizedBox(height: 12),
+          // FIX(i18n)：image.viewer.unavailable 替换硬编码兜底。
           Text(
-            '图片不可用',
-            style: TextStyle(
+            I18n.t('image.viewer.unavailable', lang: lang),
+            style: const TextStyle(
               color: Colors.white54,
               fontSize: 14,
             ),
@@ -605,6 +614,7 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
 
   /// 构建删除按钮（lightbox 右上角，与关闭按钮同栈）
   Widget _buildDeleteButton() {
+    final lang = ref.read(localeProvider).languageCode;
     return Material(
       color: Colors.black54,
       shape: const CircleBorder(),
@@ -617,8 +627,9 @@ class _ImageVersionViewerState extends ConsumerState<ImageVersionViewer> {
             Icons.delete_outline,
             color: Colors.white.withValues(alpha: 0.9),
             size: 22,
-            // TODO(parity): 主项目缺失 'image.deleteCurrent' 键，硬编码兜底
-            semanticLabel: '删除当前图片',
+            // FIX(i18n)：image.viewer.deleteCurrentTitle 替换硬编码兜底。
+            semanticLabel:
+                I18n.t('image.viewer.deleteCurrentTitle', lang: lang),
           ),
         ),
       ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/database/database.dart';
+import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/lumi_scrollbar.dart';
 import '../../../theme/surfaces.dart';
@@ -24,11 +25,16 @@ class QuickResumePanel extends StatelessWidget {
   final String? activeConversationId;
   final ValueChanged<String> onSelect;
 
+  /// FIX(i18n)：当前语言代码。本 widget 是 StatelessWidget，避免改造为 Consumer，
+  /// 由父级 ChatView build 内 watch(localeProvider) 后透传。
+  final String lang;
+
   const QuickResumePanel({
     super.key,
     required this.conversations,
     required this.activeConversationId,
     required this.onSelect,
+    required this.lang,
   });
 
   @override
@@ -51,7 +57,8 @@ class QuickResumePanel extends StatelessWidget {
             ),
             padding: const EdgeInsets.all(16),
             child: Text(
-              '最近对话',
+              // FIX(i18n)：顶部 section 标签改走 chat.drawer.recentTitle（与抽屉同源）。
+              I18n.t('chat.drawer.recentTitle', lang: lang),
               style: TextStyle(
                 fontSize: 12.48,
                 height: 1,
@@ -110,7 +117,8 @@ class QuickResumePanel extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
-          '新建一段对话，系统会自动为你保存上下文和记忆。',
+          // FIX(i18n)：空态文案改走 chat.drawer.empty（与抽屉同源）。
+          I18n.t('chat.drawer.empty', lang: lang),
           textAlign: TextAlign.center,
           style: TextStyle(
             fontSize: 14, // text-sm

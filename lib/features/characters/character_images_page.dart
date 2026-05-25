@@ -44,6 +44,12 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
   /// 已加载的图片条目，按 [CharacterImagesActions.listImages] 的排序原样保留
   List<CharacterImageItem> _items = const <CharacterImageItem>[];
 
+  /// FIX(Q7)：本地文件存在性预扫缓存（key = item.localPath）。
+  /// 之前 _ImageGridTile.build 直接 File(item.localPath).existsSync()，每次 grid
+  /// 刷新（滚动 / setState）都会同步 stat 磁盘 N 次；改为列表加载阶段一次性扫描，
+  /// 在网格 build 内只读 cache，避免 itemBuilder 内做同步 IO。
+  Map<String, bool> _existsCache = const <String, bool>{};
+
   /// 是否首次加载中
   bool _loading = true;
 
@@ -85,9 +91,27 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
     try {
       final actions = ref.read(characterImagesActionsProvider);
       final list = await actions.listImages(widget.characterId);
+
+      // FIX(Q7)：在 setState 之前异步预扫每个条目的本地文件存在性，
+      // 把结果合并进 _existsCache，让 _ImageGridTile.build 不再同步 stat。
+      // 用 File.exists()（异步）而非 existsSync 以避免阻塞 UI 线程。
+      final entries = await Future.wait<MapEntry<String, bool>>(
+        list.map((it) async {
+          try {
+            return MapEntry(it.localPath, await File(it.localPath).exists());
+          } catch (_) {
+            return MapEntry(it.localPath, false);
+          }
+        }),
+      );
+      final nextCache = <String, bool>{
+        for (final e in entries) e.key: e.value,
+      };
+
       if (!mounted) return;
       setState(() {
         _items = list;
+        _existsCache = nextCache;
         _loading = false;
         // 重建选中集合：丢弃已不存在的条目
         final liveKeys = list.map(_keyOf).toSet();
@@ -406,8 +430,13 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
         itemBuilder: (context, index) {
           final item = _items[index];
           final selected = _selectedKeys.contains(_keyOf(item));
+          // FIX(Q7)：从 state 缓存里查存在性，缺省回退到 false（按图片不可用渲染）。
+          // 缓存在 _loadImages 中通过异步 File.exists() 一次性填充，
+          // 替代了原来 _ImageGridTile.build 内的同步 existsSync 调用。
+          final exists = _existsCache[item.localPath] ?? false;
           return _ImageGridTile(
             item: item,
+            exists: exists,
             selectionMode: _selectionMode,
             selected: selected,
             onTap: () {
@@ -479,6 +508,11 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
 /// 单张图片缩略图 — 包含选中遮罩、勾选角标、来源对话标题
 class _ImageGridTile extends StatelessWidget {
   final CharacterImageItem item;
+
+  /// FIX(Q7)：本地文件是否存在的预扫结果。由父级 state 在 _loadImages 中
+  /// 异步 stat 一次性填充，避免每个 tile 在 build 内同步 IO。
+  final bool exists;
+
   final bool selectionMode;
   final bool selected;
   final VoidCallback onTap;
@@ -486,6 +520,7 @@ class _ImageGridTile extends StatelessWidget {
 
   const _ImageGridTile({
     required this.item,
+    required this.exists,
     required this.selectionMode,
     required this.selected,
     required this.onTap,
@@ -501,8 +536,8 @@ class _ImageGridTile extends StatelessWidget {
         ? AppTheme.darkTextSecondary
         : AppTheme.textSecondary;
 
-    final file = File(item.localPath);
-    final exists = file.existsSync();
+    // FIX(Q7)：不再在此构造 File / 调用 existsSync；exists 从父级 state 取。
+    final file = exists ? File(item.localPath) : null;
 
     return GestureDetector(
       onTap: onTap,
@@ -539,7 +574,7 @@ class _ImageGridTile extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  if (exists)
+                  if (exists && file != null)
                     Image.file(
                       file,
                       fit: BoxFit.cover,

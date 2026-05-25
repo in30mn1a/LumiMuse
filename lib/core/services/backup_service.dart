@@ -347,8 +347,22 @@ class BackupService {
 
     // 使用事务确保原子性
     await _db.transaction(() async {
-      // 导入角色
-      final characters = data['characters'] as List? ?? [];
+      // FIX(C4): 兼容三种备份格式，避免 v2 单角色备份在此分支静默丢失角色：
+      //   - v1（exportToJson）            ：顶层 `characters` 为 List<角色>
+      //   - v2 全量（exportToJson 续版）   ：顶层 `characters` 为 List<角色>
+      //   - v2 单角色（exportCharacterToJson）：顶层 `character` 为单个 Map（无 `characters` 数组）
+      // 之前直接读 `characters as List? ?? []`，导致 v2 单角色备份在 importFromJson
+      // 路径下 character 列表为空，但 conversations / messages / memories 仍会写入，
+      // 形成孤儿数据。这里把 v2 单角色 `character` 包装为 `[character]` 后再走原流程，
+      // 与上方 [validateBackupJson]（hasV2Character）/ [importWithOptions] 的处理保持一致。
+      final List characters;
+      if (data['characters'] is List) {
+        characters = data['characters'] as List;
+      } else if (data['character'] is Map) {
+        characters = [data['character'] as Map<String, dynamic>];
+      } else {
+        characters = const [];
+      }
       final characterCompanions = <CharactersCompanion>[];
       for (final c in characters) {
         final map = c as Map<String, dynamic>;

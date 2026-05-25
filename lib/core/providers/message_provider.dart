@@ -47,77 +47,95 @@ class MessageActions {
   MessageActions(this._db, this._imagesActions);
 
   /// 插入用户消息
+  ///
+  /// FIX(C2)：把「读 max(seq) → 写新行 → 更新 conversation」三步包到一个
+  /// Drift 事务中，保证 seq 分配与 INSERT 之间不会被并发 send 插入。
+  /// 之前 `_getNextSeq` + `INSERT` 不在事务内，两条几乎同时进入的 send
+  /// 会读到同一个 maxSeq，写出重复 seq，导致排序退化为按 createdAt。
   Future<String> insertUserMessage({
     required String conversationId,
     required String content,
     List<Map<String, dynamic>>? attachments,
   }) async {
-    final id = _uuid.v4().substring(0, 8);
+    // FIX(C1)：使用完整 UUID（之前 substring(0, 8) 短 UUID 在大数据量下存在
+    // 碰撞风险，与 character_provider.dart 的修复保持一致）。
+    final id = _uuid.v4();
     final now = DateTime.now();
     final tokenCount = estimateTokens(content);
-    final nextSeq = await _getNextSeq(conversationId);
 
     String metadata = '{}';
     if (attachments != null && attachments.isNotEmpty) {
       metadata = jsonEncode({'attachments': attachments});
     }
 
-    await _db
-        .into(_db.messages)
-        .insert(
-          MessagesCompanion.insert(
-            id: id,
-            conversationId: conversationId,
-            role: 'user',
-            content: Value(content),
-            tokenCount: Value(tokenCount),
-            seq: Value(nextSeq),
-            createdAt: Value(now),
-            metadata: Value(metadata),
-          ),
-        );
+    // FIX(C2)：seq 分配 + 消息写入 + 对话时间更新放进同一事务，避免并发 seq 重复
+    await _db.transaction(() async {
+      final nextSeq = await _getNextSeq(conversationId);
+      await _db
+          .into(_db.messages)
+          .insert(
+            MessagesCompanion.insert(
+              id: id,
+              conversationId: conversationId,
+              role: 'user',
+              content: Value(content),
+              tokenCount: Value(tokenCount),
+              seq: Value(nextSeq),
+              createdAt: Value(now),
+              metadata: Value(metadata),
+            ),
+          );
 
-    // 更新对话时间
-    await (_db.update(_db.conversations)
-          ..where((t) => t.id.equals(conversationId)))
-        .write(ConversationsCompanion(updatedAt: Value(now)));
+      // 更新对话时间
+      await (_db.update(_db.conversations)
+            ..where((t) => t.id.equals(conversationId)))
+          .write(ConversationsCompanion(updatedAt: Value(now)));
+    });
 
     return id;
   }
 
   /// 插入 AI 回复消息
+  ///
+  /// FIX(C2)：与 [insertUserMessage] 同样的并发 seq 修复——在事务内分配 seq
+  /// 后立即 INSERT，避免并发写入读到同一个 maxSeq。
   Future<String> insertAssistantMessage({
     required String conversationId,
     required String content,
   }) async {
-    final id = _uuid.v4().substring(0, 8);
+    // FIX(C1)：使用完整 UUID（之前 substring(0, 8) 短 UUID 在大数据量下存在
+    // 碰撞风险，与 character_provider.dart 的修复保持一致）。
+    final id = _uuid.v4();
     final now = DateTime.now();
     final tokenCount = estimateTokens(content);
-    final nextSeq = await _getNextSeq(conversationId);
 
     final meta = MessageMetadata(
       versions: [MessageVersion(content: content, tokenCount: tokenCount)],
       activeVersion: 0,
     ).toJsonString();
 
-    await _db
-        .into(_db.messages)
-        .insert(
-          MessagesCompanion.insert(
-            id: id,
-            conversationId: conversationId,
-            role: 'assistant',
-            content: Value(content),
-            tokenCount: Value(tokenCount),
-            seq: Value(nextSeq),
-            createdAt: Value(now),
-            metadata: Value(meta),
-          ),
-        );
+    // FIX(C2)：seq 分配 + 消息写入 + 对话时间更新原子化
+    await _db.transaction(() async {
+      final nextSeq = await _getNextSeq(conversationId);
+      await _db
+          .into(_db.messages)
+          .insert(
+            MessagesCompanion.insert(
+              id: id,
+              conversationId: conversationId,
+              role: 'assistant',
+              content: Value(content),
+              tokenCount: Value(tokenCount),
+              seq: Value(nextSeq),
+              createdAt: Value(now),
+              metadata: Value(meta),
+            ),
+          );
 
-    await (_db.update(_db.conversations)
-          ..where((t) => t.id.equals(conversationId)))
-        .write(ConversationsCompanion(updatedAt: Value(now)));
+      await (_db.update(_db.conversations)
+            ..where((t) => t.id.equals(conversationId)))
+          .write(ConversationsCompanion(updatedAt: Value(now)));
+    });
 
     return id;
   }
@@ -349,6 +367,11 @@ class MessageActions {
   }
 
   /// 获取下一个 seq
+  ///
+  /// FIX(C2)：调用方必须把本方法与后续 INSERT 包在同一个 [_db.transaction] 中。
+  /// 单独 SELECT max+1 后再在事务外 INSERT 会让两条并发 send 读到同一个 maxSeq，
+  /// 写出重复 seq 破坏排序。Drift 在事务闭包内访问 `_db.xxx` 会自动复用该事务的
+  /// executor，因此这里仍可直接使用 `_db.selectOnly`。
   Future<int> _getNextSeq(String conversationId) async {
     final result =
         await (_db.selectOnly(_db.messages)

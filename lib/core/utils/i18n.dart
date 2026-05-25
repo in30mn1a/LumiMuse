@@ -348,6 +348,48 @@ class I18n {
       'import.characterHint': '只会导入到当前正在编辑的角色，可选择覆盖表单资料或追加它的记忆/对话',
       'import.apply': '导入',
       'import.characterSuccess': '导入完成：{memories} 条记忆，{conversations} 段对话。角色资料如有勾选，会先覆盖当前表单，保存后生效',
+      // FIX(i18n keys)：本工作包追加 — chat 头部 / 抽屉 / 对话框 / 编辑器 dirty 提示 /
+      // 启动密码闸门 / 图片大图查看器 文案。所有 key 在 zh / en 两表对称添加，
+      // 保证 Property 20（i18n 键集合差集为空）继续通过。
+      'chat.header.cardChip': '角色卡片',
+      'chat.header.recentChip': '{count} 最近对话',
+      'chat.header.memoriesChip': '{count} 条记忆',
+      'chat.header.newChat': '新对话',
+      'chat.header.edit': '编辑',
+      'chat.header.summarize': '总结上下文',
+      'chat.header.summarizing': '正在总结...',
+      'chat.header.duplicate': '复制对话',
+      'chat.header.duplicating': '复制中...',
+      'chat.header.imageManager': '图片管理',
+      'chat.header.delete': '删除',
+      'chat.drawer.recentTitle': '最近对话',
+      'chat.drawer.empty': '新建一段对话，系统会自动为你保存上下文和记忆。',
+      'chat.dialog.close': '关闭',
+      'chat.dialog.rename.title': '重命名对话',
+      'chat.dialog.rename.placeholder': '输入新的对话名称',
+      'chat.dialog.rename.confirm': '确认修改',
+      'chat.dialog.rename.cancel': '取消',
+      'editor.dirty.title': '未保存的修改',
+      'editor.dirty.message': '确定要放弃当前修改吗？',
+      'editor.dirty.discard': '放弃',
+      'editor.dirty.cancel': '继续编辑',
+      'auth.lock.gateTitle': '请输入启动密码',
+      'auth.lock.gateBody': '本应用已开启启动密码保护，输入正确后才会进入主界面',
+      'auth.lock.launchPassword': '启动密码',
+      'auth.lock.placeholder': '请输入解锁密码',
+      'auth.lock.verifying': '正在校验…',
+      'auth.lock.unlock': '解锁',
+      'auth.lock.passwordRequired': '请输入密码',
+      'auth.lock.passwordWrong': '密码不正确，已尝试 {count} / {max} 次',
+      'auth.lock.lockHint': '请在 {seconds} 秒后再试',
+      'image.viewer.deleteCurrentTitle': '删除当前图片',
+      'image.viewer.deleteCurrentConfirm': '将从对话和本地存储中移除这张图片，确定继续？',
+      'image.viewer.delete': '删除',
+      'image.viewer.cancel': '取消',
+      'image.viewer.unavailable': '图片不可用',
+      'image.viewer.saveToGallery': '保存到本地相册',
+      'image.viewer.savedToGallery': '已保存到本地相册',
+      'image.viewer.saveError': '保存失败: {error}',
     },
     'en': <String, String>{
       'sidebar.tagline': 'Warm light · companionship · long-term memory',
@@ -666,6 +708,49 @@ class I18n {
       'import.characterHint': 'Only imports into the character currently being edited. You can overwrite form fields or append its memories/conversations.',
       'import.apply': 'Import',
       'import.characterSuccess': 'Import complete: {memories} memories, {conversations} conversations. Checked profile fields are applied to the form and need saving.',
+      // FIX(i18n keys)：与 zh 表对称追加。
+      'chat.header.cardChip': 'Card',
+      'chat.header.recentChip': '{count} recent',
+      'chat.header.memoriesChip': '{count} memories',
+      'chat.header.newChat': 'New chat',
+      'chat.header.edit': 'Edit',
+      'chat.header.summarize': 'Summarize',
+      'chat.header.summarizing': 'Summarizing...',
+      'chat.header.duplicate': 'Duplicate',
+      'chat.header.duplicating': 'Duplicating...',
+      'chat.header.imageManager': 'Image manager',
+      'chat.header.delete': 'Delete',
+      'chat.drawer.recentTitle': 'Recent chats',
+      'chat.drawer.empty':
+          'Start a new chat. Context and memories will be saved automatically.',
+      'chat.dialog.close': 'Close',
+      'chat.dialog.rename.title': 'Rename conversation',
+      'chat.dialog.rename.placeholder': 'Enter a new conversation name',
+      'chat.dialog.rename.confirm': 'Apply changes',
+      'chat.dialog.rename.cancel': 'Cancel',
+      'editor.dirty.title': 'Unsaved changes',
+      'editor.dirty.message': 'Discard your changes?',
+      'editor.dirty.discard': 'Discard',
+      'editor.dirty.cancel': 'Keep editing',
+      'auth.lock.gateTitle': 'Enter launch password',
+      'auth.lock.gateBody':
+          'Launch password protection is on; enter the correct password to continue.',
+      'auth.lock.launchPassword': 'Launch password',
+      'auth.lock.placeholder': 'Enter password to unlock',
+      'auth.lock.verifying': 'Verifying…',
+      'auth.lock.unlock': 'Unlock',
+      'auth.lock.passwordRequired': 'Please enter a password',
+      'auth.lock.passwordWrong': 'Wrong password ({count} / {max} attempts)',
+      'auth.lock.lockHint': 'Try again in {seconds} seconds',
+      'image.viewer.deleteCurrentTitle': 'Delete this image',
+      'image.viewer.deleteCurrentConfirm':
+          'This will remove the image from the conversation and local storage. Continue?',
+      'image.viewer.delete': 'Delete',
+      'image.viewer.cancel': 'Cancel',
+      'image.viewer.unavailable': 'Image unavailable',
+      'image.viewer.saveToGallery': 'Save to gallery',
+      'image.viewer.savedToGallery': 'Saved to gallery',
+      'image.viewer.saveError': 'Save failed: {error}',
     },
   };
 
@@ -709,7 +794,13 @@ class I18n {
   static String tArgs(String key, Map<String, Object?> args, {String? lang}) {
     final String result = t(key, lang: lang);
     if (args.isEmpty) return result;
-    final RegExp pattern = RegExp(r'\{([A-Za-z_][A-Za-z0-9_]*)\}');
+    // FIX(i18n)：原正则 `\{([A-Za-z_][A-Za-z0-9_]*)\}` 会贪婪地把 `{{user}}` 内
+    // 的 `{user}` 子串当成占位符匹配（最外层的 `{{`、`}}` 在 TypeScript 主项目
+    // 里仅是字面量）。改用前后向断言把两侧紧邻另一个花括号的写法排除掉，
+    // 这样 `{{user}}` 不会被误替换，单独的 `{name}` 才会进入替换分支。
+    // Dart RegExp 默认支持 `(?<!...)` lookbehind 与 `(?!...)` lookahead，
+    // 无需额外开启 unicode 标志。
+    final RegExp pattern = RegExp(r'(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})');
     return result.replaceAllMapped(pattern, (Match m) {
       final String name = m.group(1)!;
       if (!args.containsKey(name)) return m.group(0)!;

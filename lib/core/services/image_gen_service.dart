@@ -30,6 +30,13 @@ class ImageGenService {
   ));
   static const _uuid = Uuid();
 
+  // FIX(Major-4): 与 Dio receiveTimeout 5 分钟保持一致，避免轮询提前超时但 Dio 仍在等。
+  // 旧代码硬编码 60 次 × 2 秒 = 120 秒，比 receiveTimeout 短一半，长任务会先被
+  // ComfyUI 轮询循环判定为"生成超时"抛出，但 ComfyUI 服务端实际仍在出图。
+  // 提到 150 次 × 2 秒 = 300 秒（5 分钟）正好对齐 Dio 的 receiveTimeout。
+  static const int _comfyUIPollMaxAttempts = 150;
+  static const Duration _comfyUIPollInterval = Duration(seconds: 2);
+
   /// NovelAI seed 与 extra_noise_seed 的随机源
   /// 与 Node.js 端 `Math.floor(Math.random() * 2 ** 32)` 等价
   static final Random _naiRandom = Random();
@@ -510,9 +517,9 @@ class ImageGenService {
     final queueRes = await _dio.post('$baseUrl/prompt', data: {'prompt': workflow});
     final promptId = queueRes.data['prompt_id'] as String;
 
-    // 轮询等待
-    for (int i = 0; i < 60; i++) {
-      await Future.delayed(const Duration(seconds: 2));
+    // FIX(Major-4): 用类常量替代硬编码 60×2s，与 Dio receiveTimeout 5 分钟对齐。
+    for (int i = 0; i < _comfyUIPollMaxAttempts; i++) {
+      await Future.delayed(_comfyUIPollInterval);
       final historyRes = await _dio.get('$baseUrl/history/$promptId');
       final result = historyRes.data[promptId];
       if (result == null) continue;

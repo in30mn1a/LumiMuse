@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/surfaces.dart';
 
@@ -20,15 +21,17 @@ import '../../../theme/surfaces.dart';
 Future<String?> showRenameConversationDialog(
   BuildContext context, {
   required String initialValue,
+  // FIX(i18n)：调用方需把当前语言传入，让对话框文案走 I18n.t。
+  required String lang,
 }) {
   return showGeneralDialog<String?>(
     context: context,
     barrierDismissible: true,
-    barrierLabel: '关闭',
+    barrierLabel: I18n.t('chat.dialog.close', lang: lang),
     barrierColor: const Color(0x59000000), // bg-black/35
     transitionDuration: const Duration(milliseconds: 180),
     pageBuilder: (ctx, animation, secondary) {
-      return _RenameDialog(initialValue: initialValue);
+      return _RenameDialog(initialValue: initialValue, lang: lang);
     },
     transitionBuilder: (ctx, animation, secondary, child) {
       // 淡入 + 轻微缩放（fade + scale 0.96 → 1.0）
@@ -56,7 +59,8 @@ Future<bool?> showDeleteConversationDialog(
   return showGeneralDialog<bool>(
     context: context,
     barrierDismissible: true,
-    barrierLabel: '关闭',
+    // FIX(i18n)：barrierLabel 直接复用 cancelLabel — 已由调用方按 i18n 传入。
+    barrierLabel: cancelLabel,
     barrierColor: const Color(0x59000000),
     transitionDuration: const Duration(milliseconds: 180),
     pageBuilder: (ctx, animation, secondary) {
@@ -84,8 +88,9 @@ Future<bool?> showDeleteConversationDialog(
 
 class _RenameDialog extends StatefulWidget {
   final String initialValue;
+  final String lang;
 
-  const _RenameDialog({required this.initialValue});
+  const _RenameDialog({required this.initialValue, required this.lang});
 
   @override
   State<_RenameDialog> createState() => _RenameDialogState();
@@ -127,7 +132,8 @@ class _RenameDialogState extends State<_RenameDialog> {
         children: [
           // ── 标题 section-title text-xl ──
           Text(
-            '重命名对话',
+            // FIX(i18n)：标题改走 chat.dialog.rename.title。
+            I18n.t('chat.dialog.rename.title', lang: widget.lang),
             style: TextStyle(
               fontSize: 20, // text-xl
               height: 1.18,
@@ -143,7 +149,8 @@ class _RenameDialogState extends State<_RenameDialog> {
           _InputRich(
             controller: _ctrl,
             focusNode: _focus,
-            hintText: '输入新的对话名称',
+            // FIX(i18n)：占位符改走 chat.dialog.rename.placeholder。
+            hintText: I18n.t('chat.dialog.rename.placeholder', lang: widget.lang),
             isDark: isDark,
             borderLight: borderLight,
             onSubmitted: (_) => _confirm(),
@@ -155,14 +162,16 @@ class _RenameDialogState extends State<_RenameDialog> {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               _SoftBtn(
-                label: '取消',
+                // FIX(i18n)：取消按钮文案改走 chat.dialog.rename.cancel。
+                label: I18n.t('chat.dialog.rename.cancel', lang: widget.lang),
                 kind: _BtnKind.secondary,
                 isDark: isDark,
                 onTap: () => Navigator.of(context).pop(),
               ),
               const SizedBox(width: 8),
               _SoftBtn(
-                label: '确认修改',
+                // FIX(i18n)：确认按钮文案改走 chat.dialog.rename.confirm。
+                label: I18n.t('chat.dialog.rename.confirm', lang: widget.lang),
                 kind: _BtnKind.primary,
                 isDark: isDark,
                 onTap: _confirm,

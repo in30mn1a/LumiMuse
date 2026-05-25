@@ -66,6 +66,15 @@ class SseParser {
     final decoded = utf8.decode(completeChunk, allowMalformed: false);
     _buffer += decoded;
 
+    // FIX(Major-7): 统一换行符为 LF，兼容 CRLF 行尾的 SSE 流。
+    // SSE 规范允许 \r\n / \n / \r，部分服务端（特别是经过 CDN 的 OpenAI 兼容
+    // 代理）会输出 CRLF。旧实现仅 split('\n\n') 与 split('\n')，遇到 CRLF 时
+    // 事件之间的分隔符变成 `\r\n\r\n`，无法被切分；而 `data: foo\r\n` 末尾会
+    // 残留 `\r`，导致 `trimmed.startsWith('data: ')` 仍命中、jsonDecode 也能
+    // 容忍尾部空白，但安全起见先把 \r\n 一律折叠成 \n 再走原始切分逻辑，
+    // 避免后续维护中再踩坑。
+    _buffer = _buffer.replaceAll('\r\n', '\n');
+
     // 防御：buffer 超过 1MB 视为异常，清空并返回空结果
     if (_buffer.length > _maxBufferBytes) {
       // ignore: avoid_print
@@ -102,6 +111,10 @@ class SseParser {
       _buffer += decoded;
       _pendingBytes = const [];
     }
+
+    // FIX(Major-7): 同 parseChunk，flush 阶段也把 CRLF 折叠为 LF 后再切分，
+    // 避免最后一段携带 \r 的事件因为 split('\n') 残留 \r 而无法解析。
+    _buffer = _buffer.replaceAll('\r\n', '\n');
 
     if (_buffer.trim().isEmpty) return [];
     final results = <Map<String, dynamic>>[];

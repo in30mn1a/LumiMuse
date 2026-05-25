@@ -181,7 +181,9 @@ class MemoryActions {
     double confidence = 0.9,
     List<String> tags = const [],
   }) async {
-    final id = _uuid.v4().substring(0, 8);
+    // FIX(C1)：使用完整 UUID（之前 substring(0, 8) 短 UUID 在大数据量下存在
+    // 碰撞风险，与 character / message 的修复保持一致）。
+    final id = _uuid.v4();
     final now = DateTime.now();
 
     await _db.into(_db.memories).insert(MemoriesCompanion.insert(

@@ -809,6 +809,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
             isSummarizing: false,
             isDuplicating: false,
             hasActiveConversation: _resolvedConversationId != null,
+            // FIX(i18n)：把当前语言透传给 ChatHeader（StatefulWidget），
+            // 让其内部静态/带参数文案统一走 I18n.t / I18n.tArgs。
+            lang: ref.watch(localeProvider).languageCode,
             onOpenSidebar: widget.onOpenSidebar,
             onNewChat: _actions.createNewConversation,
             onShowConversationList: () => _showConversationList(context),
@@ -840,6 +843,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
                               .valueOrNull ??
                           [],
                       activeConversationId: _resolvedConversationId,
+                      // FIX(i18n)：把当前语言传给 QuickResumePanel。
+                      lang: ref.watch(localeProvider).languageCode,
                       onSelect: (id) {
                         _setConversationId(id);
                         ref
@@ -1339,6 +1344,10 @@ class _ChatViewState extends ConsumerState<ChatView> {
             : messages;
         // 仅记录最近一次观察到的消息总数，使 _hasMoreMessages getter 与本帧一致；
         // 不在 build 内修改其他可变状态字段。
+        // FIX(Q4)：本字段是"派生缓存"，只在同一 build 帧内被 _hasMoreMessages
+        // getter 消费，不属于驱动 UI 的真正状态。即便 hot reload / 父级重 build
+        // 反复改它也是无害的。真正具有副作用语义的状态写入（_seenMessageIds.add
+        // 与 _initialLoadDone）已挪到下方 post-frame 回调。
         _lastTotalMessages = totalMessages;
 
         final items = _buildItemsWithDateDividers(displayMessages);
@@ -1363,26 +1372,42 @@ class _ChatViewState extends ConsumerState<ChatView> {
             itemCount: items.length,
           );
         }
-        // 初始加载：将所有已有消息标记为"已见"，不触发动画
+        // FIX(Q4)：build 阶段只读 _seenMessageIds 推导本帧的 stagger 索引；
+        // 不再在 build 内修改集合本身。具有副作用语义的写入（把"新见到的消息 id"
+        // 加入集合 + 把 _initialLoadDone 翻为 true）统一挪到 addPostFrameCallback
+        // 中执行，避免 hot reload / 父级重 build 反复修改实例字段。
+        final newMessageStagger = <String, int>{};
+        final List<String> pendingSeenAdds = <String>[];
         if (!_initialLoadDone) {
+          // 初始加载：把已有消息全部视为"已见"，不触发动画。
           for (final item in items) {
             if (item is MessageItem) {
-              _seenMessageIds.add(item.message.id);
+              pendingSeenAdds.add(item.message.id);
             }
           }
-          _initialLoadDone = true;
+        } else {
+          // 后续帧：基于"未在 _seenMessageIds 中"的条件即时计算 stagger 索引，
+          // 命中的 id 累积到 pendingSeenAdds，post-frame 一次性写回集合。
+          int staggerIdx = 0;
+          for (final item in items) {
+            if (item is MessageItem) {
+              final msgId = item.message.id;
+              if (!_seenMessageIds.contains(msgId)) {
+                newMessageStagger[msgId] = staggerIdx++;
+                pendingSeenAdds.add(msgId);
+              }
+            }
+          }
         }
-
-        final newMessageStagger = <String, int>{};
-        int staggerIdx = 0;
-        for (final item in items) {
-          if (item is MessageItem) {
-            final msgId = item.message.id;
-            if (!_seenMessageIds.contains(msgId)) {
-              newMessageStagger[msgId] = staggerIdx++;
-              _seenMessageIds.add(msgId);
-            }
-          }
+        if (pendingSeenAdds.isNotEmpty || !_initialLoadDone) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            // 直接写实例字段、不调用 setState：本帧已经基于"未见"判定生成 stagger，
+            // 下一帧依赖更新后的 _seenMessageIds 即可避免重复触发动画；
+            // 强制 setState 反而会让消息列表多一次无意义重 build。
+            _seenMessageIds.addAll(pendingSeenAdds);
+            _initialLoadDone = true;
+          });
         }
 
         final chatState = _resolvedConversationId == null
@@ -1910,6 +1935,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
       context,
       conversations: conversations,
       activeConversationId: _resolvedConversationId,
+      // FIX(i18n)：把当前语言传入，让抽屉内"最近对话"标题与空态文案使用 i18n。
+      lang: ref.read(localeProvider).languageCode,
       onSelect: (id) {
         _setConversationId(id);
         ref.read(selectionProvider.notifier).setActiveConversation(id);
@@ -1994,6 +2021,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
     final result = await showRenameConversationDialog(
       context,
       initialValue: initial,
+      // FIX(i18n)：把当前语言传给对话框，使内部文案走 I18n.t。
+      lang: ref.read(localeProvider).languageCode,
     );
     if (result != null && result.isNotEmpty) {
       await ref.read(conversationActionsProvider).rename(id, result);

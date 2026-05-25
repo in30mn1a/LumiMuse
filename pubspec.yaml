@@ -14,7 +14,7 @@ dependencies:
 
   # 状态管理
   flutter_riverpod: ^2.6.1
-  riverpod_annotation: ^2.6.1
+  # FIX: M5 删除未用依赖 riverpod_annotation（项目 Provider 全部手写，未使用代码生成）
 
   # 数据库
   drift: ^2.22.1
@@ -39,7 +39,7 @@ dependencies:
   url_launcher: ^6.3.1
   flutter_markdown: ^0.7.6
   cached_network_image: ^3.4.1
-  json_annotation: ^4.9.0
+  # FIX: M5 删除未用依赖 json_annotation（模型全部手写 fromJson/toJson）
 
   # UI 组件
   google_fonts: ^6.2.1
@@ -60,13 +60,11 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   build_runner: ^2.4.14
   drift_dev: ^2.22.1
-  json_serializable: ^6.9.4
-  riverpod_generator: ^2.6.3
+  # FIX: M5 删除未用 dev 依赖 json_serializable / riverpod_generator（无对应代码生成）
   glados: ^1.1.7
 
-dependency_overrides:
-  # glados → test → analyzer >=8.0.0 <11.0.0，riverpod_generator → analyzer ^6.7.0 / ^7.0.0
-  analyzer: ^8.0.0
+# FIX: M5 删除 dependency_overrides 整段 —— 该 override 仅为 riverpod_generator
+# 与 glados 之间的 analyzer 版本冲突存在；删除 riverpod_generator 后不再需要。
 
 flutter:
   uses-material-design: true

@@ -333,7 +333,9 @@ class AppTheme {
         style: ElevatedButton.styleFrom(
           backgroundColor: darkAccentDark,
           foregroundColor: Colors.white,
+          // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
           elevation: 0,
+          shadowColor: Colors.transparent,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           textStyle: _body(
@@ -357,10 +359,16 @@ class AppTheme {
           borderRadius: BorderRadius.circular(16),
           side: const BorderSide(color: darkBorder),
         ),
+        // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
+        elevation: 0,
+        shadowColor: Colors.transparent,
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: darkSurfaceRaised,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
+        elevation: 16,
+        shadowColor: const Color(0x33000000),
       ),
       snackBarTheme: SnackBarThemeData(
         backgroundColor: darkSurfaceRaised,
@@ -371,6 +379,8 @@ class AppTheme {
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         behavior: SnackBarBehavior.floating,
+        // FIX: 暗色模式显式声明 elevation，避免依赖 ThemeData 默认值
+        elevation: 0,
       ),
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: darkSurfaceRaised,

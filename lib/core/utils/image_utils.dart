@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 /// 图片工具模块 — 提供文件格式验证、大小验证和缩放功能
 ///
@@ -96,6 +97,32 @@ class ImageUtils {
       throw FormatException(validationError, sourcePath);
     }
 
+    // FIX: 防止 outputPath 落到应用沙箱外（任意写入风险）。
+    // 沙箱白名单 = 应用文档目录 ∪ 应用 Support 目录 ∪ 临时目录，
+    // 与 local_asset_utils.copyLocalAsset 的语义保持一致；测试时 path_provider mock
+    // 会把这些根重定向到临时目录，行为一致。
+    final normalizedOutput = p.normalize(p.absolute(outputPath));
+    final allowedRoots = <String>[];
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      allowedRoots.add(p.normalize(dir.path));
+    } catch (_) {/* 平台不支持时忽略 */}
+    try {
+      final dir = await getApplicationSupportDirectory();
+      allowedRoots.add(p.normalize(dir.path));
+    } catch (_) {/* 平台不支持时忽略 */}
+    try {
+      final dir = await getTemporaryDirectory();
+      allowedRoots.add(p.normalize(dir.path));
+    } catch (_) {/* 平台不支持时忽略 */}
+    final inSandbox = allowedRoots.any(
+      (root) => p.isWithin(root, normalizedOutput) ||
+          p.equals(root, p.dirname(normalizedOutput)),
+    );
+    if (!inSandbox) {
+      throw FormatException('输出路径不在应用沙箱内: $outputPath', outputPath);
+    }
+
     // 读取源文件字节
     final bytes = await sourceFile.readAsBytes();
 
@@ -104,6 +131,9 @@ class ImageUtils {
     final frame = await codec.getNextFrame();
     final sourceImage = frame.image;
 
+    // FIX: 把 picture / resizedImage 提到 try 外，便于 finally 统一 dispose
+    ui.Picture? picture;
+    ui.Image? resizedImage;
     try {
       // 计算 center-crop 区域：按较短的边裁切成正方形
       final srcWidth = sourceImage.width.toDouble();
@@ -128,10 +158,11 @@ class ImageUtils {
       canvas.drawImageRect(sourceImage, srcRect, dstRect, Paint());
 
       // 生成图片
-      final picture = recorder.endRecording();
-      final resizedImage = await picture.toImage(avatarSize, avatarSize);
+      picture = recorder.endRecording();
+      resizedImage = await picture.toImage(avatarSize, avatarSize);
 
       // 编码为 PNG
+      // 备注：[ByteData] 没有 dispose API，pngData 由 GC 回收即可
       final pngData =
           await resizedImage.toByteData(format: ui.ImageByteFormat.png);
       if (pngData == null) {
@@ -139,13 +170,16 @@ class ImageUtils {
       }
 
       // 写入输出文件
-      final outputFile = File(outputPath);
+      final outputFile = File(normalizedOutput);
       await outputFile.parent.create(recursive: true);
       await outputFile.writeAsBytes(pngData.buffer.asUint8List());
 
       return outputFile;
     } finally {
+      // FIX: 显式 dispose 解码图、缩放后图与 Picture，避免原生纹理资源泄漏
       sourceImage.dispose();
+      resizedImage?.dispose();
+      picture?.dispose();
     }
   }
 }

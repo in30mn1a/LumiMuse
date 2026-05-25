@@ -12,7 +12,9 @@ import '../database/database.dart';
 /// - 复用 `Settings` KV 表，写入三键：
 ///   - `launch_password_hash`   ：base64 编码的派生哈希（256 bits / 32 字节）
 ///   - `launch_password_salt`   ：base64 编码的 16 字节随机 salt
-///   - `launch_password_iterations`：PBKDF2 迭代次数（默认 200000）
+///   - `launch_password_iterations`：PBKDF2 迭代次数
+///     （新写入用 [_kDefaultIterations] = 600000，OWASP 2023+ 推荐；
+///     旧库已写入的 200000 仍按其值验证以保留向后兼容）
 /// - 不升级 Drift schemaVersion，应用层完全用 KV 承载。
 /// - 哈希计算失败回退「启动密码功能暂不可用」：`verifyPassword` 仅返回 false，不抛异常。
 /// - 存储读取失败视为未启用：`isEnabled` 仅返回 false，不抛异常。
@@ -20,8 +22,21 @@ class LaunchPasswordService {
   /// PBKDF2 派生哈希位数（256 bits = 32 字节）
   static const int _kHashBits = 256;
 
-  /// PBKDF2 默认迭代次数（与 design.md 对齐）
-  static const int _kDefaultIterations = 200000;
+  /// PBKDF2 默认迭代次数
+  ///
+  /// FIX(Major-5): 由 200000 提升至 600000，对齐 OWASP 2023+ 对
+  /// PBKDF2-HMAC-SHA256 的最小推荐值（≥ 600,000）。
+  ///
+  /// 向后兼容：
+  /// - 旧版本写入的密码三键中包含 `launch_password_iterations`（KV 表，
+  ///   见 [_kIterationsKey]），verifyPassword 始终读取该键作为迭代次数；
+  /// - 因此已存的 200K 哈希仍能用 200K 验证，不会失效；
+  /// - 仅在 [setPassword] 路径会用本常量重新写入新值（用户自愿改密
+  ///   或恢复出厂时），实现"渐进式迁移"。
+  ///
+  /// 注意：[forTesting] 构造器仍允许显式传入 1000 次等小值，本常量
+  /// 升级不会让属性测试 / 状态机测试更慢。
+  static const int _kDefaultIterations = 600000;
 
   /// 随机 salt 字节长度
   static const int _kSaltLength = 16;
@@ -35,7 +50,7 @@ class LaunchPasswordService {
 
   /// PBKDF2 实际使用的迭代次数 — 默认走 [_kDefaultIterations]，
   /// 测试通过 [LaunchPasswordService.forTesting] 注入更小的值（例如 100）
-  /// 以避免每次属性运行都跑完整 200000 次轮次。
+  /// 以避免每次属性运行都跑完整 600000 次轮次。
   final int _iterations;
 
   LaunchPasswordService(this._db) : _iterations = _kDefaultIterations;
@@ -43,7 +58,7 @@ class LaunchPasswordService {
   /// 测试专用构造器 — 允许覆盖 PBKDF2 迭代次数，便于属性测试快速跑完。
   ///
   /// 仅在 `test/` 目录下使用；线上代码必须使用默认构造器以保留
-  /// 200000 次迭代的安全强度。
+  /// 600000 次迭代的安全强度。
   @visibleForTesting
   LaunchPasswordService.forTesting(this._db, {int iterations = 1000})
       : _iterations = iterations;

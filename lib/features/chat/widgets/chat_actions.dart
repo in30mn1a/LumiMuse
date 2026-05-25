@@ -47,7 +47,11 @@ class ChatActions {
   });
 
   String _i18n(String key, [Map<String, Object?>? args]) {
-    final lang = ref.watch(localeProvider).languageCode;
+    // FIX(Q1)：ChatActions 不是 build 上下文，订阅 localeProvider 不会引发重建，
+    // 反而会在调用 _i18n 时把当前对话的 ChatController 等订阅方与 localeProvider
+    // 错误地耦合，导致语言切换时不必要的副作用 / 测试错误。
+    // 改为 ref.read 仅取一次值，符合"普通工具方法"的语义。
+    final lang = ref.read(localeProvider).languageCode;
     if (args == null) return I18n.t(key, lang: lang);
     return I18n.tArgs(key, args, lang: lang);
   }

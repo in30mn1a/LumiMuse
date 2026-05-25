@@ -149,6 +149,23 @@ class _HomePageState extends ConsumerState<HomePage> {
   bool _globalSearchOpen = false;
 
   @override
+  void initState() {
+    super.initState();
+    // FIX(Q2)：在 initState 后用 microtask 取一次当前 settings 触发首帧恢复，
+    // 与下方 build 内的 ref.listen（仅监听后续状态变化）共同覆盖"首帧 + 后续变化"
+    // 两条路径，且不在 build 内调用副作用方法。
+    // _maybeAutoResumeLastConversation 内部 _resumeAttempted 兜底保证只跑一次，
+    // 即便 listen 与 microtask 抢跑也不会双重恢复（race-free）。
+    Future.microtask(() {
+      if (!mounted) return;
+      final settings = ref.read(settingsProvider).valueOrNull;
+      if (settings != null) {
+        _maybeAutoResumeLastConversation(settings);
+      }
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
     final isWide = width >= 768;
@@ -163,13 +180,18 @@ class _HomePageState extends ConsumerState<HomePage> {
       });
     });
 
+    // FIX(Q2)：原先在 build 内同时使用 ref.listen + ref.watch + 直接调用副作用方法，
+    // 既冗余又会在父级触发 build 时重复进入 _maybeAutoResumeLastConversation。
+    // 改为：
+    //   - initState 中安排一次 microtask 取首帧 settings（覆盖"先初始化、再
+    //     listen 不触发"的路径）；
+    //   - build 中只保留 ref.listen 监听后续 settingsProvider 变化。
+    // _resumeAttempted 兜底保证最终只会恢复一次（race-free）。
+    // 注意：当前 flutter_riverpod 2.x 的 ref.listen 不支持 fireImmediately，
+    // 因此用 initState microtask 路径替代该选项。
     ref.listen(settingsProvider, (prev, next) {
       next.whenData(_maybeAutoResumeLastConversation);
     });
-    final settings = ref.watch(settingsProvider).valueOrNull;
-    if (settings != null) {
-      _maybeAutoResumeLastConversation(settings);
-    }
 
     final inner = isWide ? _buildDesktop(context) : _buildMobile(context);
 

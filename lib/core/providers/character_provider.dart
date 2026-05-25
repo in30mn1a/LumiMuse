@@ -42,14 +42,11 @@ class CharacterActions {
   final CharacterImagesActions _imagesActions;
   static const _uuid = Uuid();
 
-  /// 角色复制阶段（R10）已成功复制出的「新文件路径」暂存列表
-  ///
-  /// - 任务 11.1（本任务）：在 Drift 事务**之外**复制头像与消息资产时把每个新路径追加到这里。
-  /// - 任务 11.2：事务内级联写入数据库（消费 [_pendingPathMapping] 与 [_pendingNewAvatarUrl]）。
-  /// - 任务 11.3：事务失败时遍历删除这里的所有文件做兜底清理，避免孤儿；事务成功后清空。
-  ///
-  /// 仅供 [duplicate] 内部使用，不对外暴露。
-  final List<String> _pendingNewFiles = <String>[];
+  // FIX(Major-1)：原本 `_pendingNewFiles` 是实例字段，多次并发 duplicate
+  // 调用会写到同一个 List 上，互相串扰（A 调用复制的新文件可能被 B 调用的
+  // 异常分支当成自己的中间产物清理掉）。现已收敛为 [duplicate] 方法的局部
+  // List<String>，并通过参数显式传给 [_safeDeletePendingFiles]。
+  // pathMapping / newAvatarUrl 一直是 [duplicate] 的局部变量，无需调整。
 
   CharacterActions(this._db, this._imagesActions);
 
@@ -205,8 +202,10 @@ class CharacterActions {
   ///         finally 中无论成功失败都清空 [_pendingNewFiles]，保证下一次调用从空列表开始。
   ///         所有清理时的 IO 异常仅记录日志，不再次抛出，避免遮蔽原始事务异常。
   Future<String> duplicate(String id) async {
-    // 进入新一次复制流程前，清掉上一次遗留的暂存（防御并发或上次异常路径）
-    _pendingNewFiles.clear();
+    // FIX(Major-1)：把原实例字段 `_pendingNewFiles` 收敛为方法内局部变量，
+    // 避免并发 duplicate 调用互相串扰。所有读写都在本方法栈内完成；
+    // 兜底清理通过参数显式传给 [_safeDeletePendingFiles]。
+    final pendingNewFiles = <String>[];
 
     final original = await (_db.select(_db.characters)
           ..where((t) => t.id.equals(id)))
@@ -231,7 +230,7 @@ class CharacterActions {
     String? newAvatarUrl = original.avatarUrl;
     if (isLocalAssetPath(original.avatarUrl)) {
       final copied = await copyLocalAsset(original.avatarUrl!);
-      _pendingNewFiles.add(copied);
+      pendingNewFiles.add(copied); // FIX(Major-1)：写入局部列表
       newAvatarUrl = copied;
     }
 
@@ -248,13 +247,13 @@ class CharacterActions {
     try {
       for (final oldPath in assetSet) {
         final newPath = await copyLocalAsset(oldPath);
-        _pendingNewFiles.add(newPath);
+        pendingNewFiles.add(newPath); // FIX(Major-1)：写入局部列表
         pathMapping[oldPath] = newPath;
       }
     } catch (_) {
       // 11.3 之外的兜底：复制阶段自身失败即清理，不留下孤儿
-      await _safeDeletePendingFiles();
-      _pendingNewFiles.clear();
+      // FIX(Major-1)：把局部列表显式传入清理函数
+      await _safeDeletePendingFiles(pendingNewFiles);
       rethrow;
     }
 
@@ -388,24 +387,26 @@ class CharacterActions {
       }
     });
 
-    // 11.3：事务成功路径走到这里（finally 会负责清空 [_pendingNewFiles]）。
+    // 11.3：事务成功路径走到这里。
+    // FIX(Major-1)：原来依赖 finally 清空实例字段，现在已收敛为局部变量，
+    // 函数返回后自动随栈帧释放，不需要手动 clear。
     return newCharId;
     } catch (_) {
       // 11.3：事务抛错时兜底清理已复制出的新文件，避免孤儿；清理本身的 IO 异常仅在
       // [_safeDeletePendingFiles] 内部记录日志，不再次抛出，避免遮蔽原始事务异常。
-      await _safeDeletePendingFiles();
+      // FIX(Major-1)：传入局部 pendingNewFiles
+      await _safeDeletePendingFiles(pendingNewFiles);
       rethrow;
-    } finally {
-      // 无论成功或失败，都把暂存列表清空，确保下次 [duplicate] 调用从空列表开始。
-      _pendingNewFiles.clear();
     }
   }
 
-  /// 兜底：删除 [_pendingNewFiles] 中已复制出的新文件，IO 异常仅吞掉不再次抛出
+  /// 兜底：删除已复制出的新文件（IO 异常仅吞掉不再次抛出）
   ///
-  /// 11.3 任务复用此方法做事务失败回滚，11.1 在「文件复制阶段自身失败」时也会调用。
-  Future<void> _safeDeletePendingFiles() async {
-    for (final path in _pendingNewFiles) {
+  /// FIX(Major-1)：参数化为 `pendingFiles`，避免依赖实例字段，从而不再被
+  /// 并发 duplicate 调用串扰。事务回滚或复制阶段失败时由调用方传入相应的
+  /// 局部列表。所有 IO 异常仅打日志，避免遮蔽原始异常。
+  Future<void> _safeDeletePendingFiles(List<String> pendingFiles) async {
+    for (final path in pendingFiles) {
       try {
         final f = File(path);
         if (await f.exists()) {

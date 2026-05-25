@@ -126,8 +126,9 @@ class CharacterImagesActions {
   Future<List<CharacterImageItem>> listImages(String characterId) async {
     // 用 customSelect 直连原生 SQL，便于一次性 JOIN 出对话标题，避免在 Dart 端
     // 逐消息再查 conversation 造成 N+1。
-    final rows = await _db.customSelect(
-      '''
+    final rows = await _db
+        .customSelect(
+          '''
       SELECT
         messages.id           AS messageId,
         messages.created_at   AS createdAt,
@@ -140,9 +141,10 @@ class CharacterImagesActions {
         AND messages.role = 'assistant'
       ORDER BY messages.created_at DESC, messages.seq DESC
       ''',
-      variables: [Variable<String>(characterId)],
-      readsFrom: {_db.messages, _db.conversations},
-    ).get();
+          variables: [Variable<String>(characterId)],
+          readsFrom: {_db.messages, _db.conversations},
+        )
+        .get();
 
     final result = <CharacterImageItem>[];
 
@@ -150,11 +152,15 @@ class CharacterImagesActions {
       final messageId = row.read<String>('messageId');
       final conversationId = row.read<String>('conversationId');
       final conversationTitle = row.read<String?>('conversationTitle') ?? '';
-      // SQLite 的 DateTime 列在 Drift 中以 unix 秒（int）存储；customSelect 不能
-      // 自动反序列化，这里手工读取
+      // customSelect 不会自动反序列化 Drift DateTime；兼容历史秒级与毫秒级整数。
       final createdAtRaw = row.read<int>('createdAt');
-      final createdAt =
-          DateTime.fromMillisecondsSinceEpoch(createdAtRaw * 1000, isUtc: false);
+      final createdAtMillis = createdAtRaw < 100000000000
+          ? createdAtRaw * 1000
+          : createdAtRaw;
+      final createdAt = DateTime.fromMillisecondsSinceEpoch(
+        createdAtMillis,
+        isUtc: false,
+      );
 
       final metadataStr = row.read<String?>('metadata') ?? '{}';
       final meta = MessageMetadata.fromJsonString(metadataStr);
@@ -170,16 +176,18 @@ class CharacterImagesActions {
           final v = versions[i];
           final localPath = _readVersionLocalPath(v);
           if (localPath.isEmpty) continue;
-          result.add(CharacterImageItem(
-            messageId: messageId,
-            conversationId: conversationId,
-            conversationTitle: conversationTitle,
-            createdAt: createdAt,
-            imageId: imageId,
-            versionId: v.id.isEmpty ? imageId : v.id,
-            localPath: localPath,
-            prompt: v.prompt ?? '',
-          ));
+          result.add(
+            CharacterImageItem(
+              messageId: messageId,
+              conversationId: conversationId,
+              conversationTitle: conversationTitle,
+              createdAt: createdAt,
+              imageId: imageId,
+              versionId: v.id.isEmpty ? imageId : v.id,
+              localPath: localPath,
+              prompt: v.prompt ?? '',
+            ),
+          );
         }
       }
     }
@@ -220,8 +228,9 @@ class CharacterImagesActions {
 
     await _db.transaction(() async {
       for (final entry in byMsg.entries) {
-        final rows = await _db.customSelect(
-          '''
+        final rows = await _db
+            .customSelect(
+              '''
           SELECT messages.id AS messageId, messages.metadata AS metadata
           FROM messages
           INNER JOIN conversations ON conversations.id = messages.conversation_id
@@ -229,12 +238,13 @@ class CharacterImagesActions {
             AND conversations.character_id = ?
           LIMIT 1
           ''',
-          variables: [
-            Variable<String>(entry.key),
-            Variable<String>(characterId),
-          ],
-          readsFrom: {_db.messages, _db.conversations},
-        ).get();
+              variables: [
+                Variable<String>(entry.key),
+                Variable<String>(characterId),
+              ],
+              readsFrom: {_db.messages, _db.conversations},
+            )
+            .get();
         if (rows.isEmpty) continue;
 
         final row = rows.first;
@@ -280,12 +290,14 @@ class CharacterImagesActions {
               ? remaining.length - 1
               : clampedActive;
           final cur = remaining[nextActive];
-          newImgs.add(image.copyWith(
-            url: cur.url.isNotEmpty ? cur.url : (cur.path ?? image.url),
-            prompt: cur.prompt ?? image.prompt ?? '',
-            versions: remaining,
-            activeVersion: nextActive,
-          ));
+          newImgs.add(
+            image.copyWith(
+              url: cur.url.isNotEmpty ? cur.url : (cur.path ?? image.url),
+              prompt: cur.prompt ?? image.prompt ?? '',
+              versions: remaining,
+              activeVersion: nextActive,
+            ),
+          );
         }
 
         final newMeta = meta.copyWith(generatedImages: newImgs);
@@ -331,10 +343,12 @@ class CharacterImagesActions {
     final referenced = <String>{};
 
     // 1) 全库消息 metadata 与 content
-    final messageRows = await _db.customSelect(
-      'SELECT metadata, content FROM messages',
-      readsFrom: {_db.messages},
-    ).get();
+    final messageRows = await _db
+        .customSelect(
+          'SELECT metadata, content FROM messages',
+          readsFrom: {_db.messages},
+        )
+        .get();
     for (final row in messageRows) {
       final raw = row.read<String?>('metadata');
       if (raw != null && raw.isNotEmpty) {
@@ -348,10 +362,12 @@ class CharacterImagesActions {
     }
 
     // 2) 全库角色头像
-    final avatarRows = await _db.customSelect(
-      'SELECT avatar_url FROM characters WHERE avatar_url IS NOT NULL',
-      readsFrom: {_db.characters},
-    ).get();
+    final avatarRows = await _db
+        .customSelect(
+          'SELECT avatar_url FROM characters WHERE avatar_url IS NOT NULL',
+          readsFrom: {_db.characters},
+        )
+        .get();
     for (final row in avatarRows) {
       final url = row.read<String?>('avatar_url');
       if (url != null && isLocalAssetPath(url)) {
@@ -384,7 +400,11 @@ class CharacterImagesActions {
     if (image.versions.isNotEmpty) return image.versions;
     final imageLocalPath = _readImageLocalPath(image);
     return [
-      ImageVersion(id: image.id, url: imageLocalPath, prompt: image.prompt ?? ''),
+      ImageVersion(
+        id: image.id,
+        url: imageLocalPath,
+        prompt: image.prompt ?? '',
+      ),
     ];
   }
 

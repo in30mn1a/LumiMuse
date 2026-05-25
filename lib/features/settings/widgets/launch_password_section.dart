@@ -45,12 +45,14 @@ class _LaunchPasswordSectionState extends ConsumerState<LaunchPasswordSection> {
       final enabled = await service.isEnabled();
       if (!mounted) return;
       setState(() => _enabled = enabled);
+      ref.read(launchPasswordEnabledProvider.notifier).state = enabled;
     } catch (e) {
       // 读取失败按未启用处理，避免阻塞 UI
       // ignore: avoid_print
       print('[settings] LaunchPasswordSection.isEnabled 失败: $e');
       if (!mounted) return;
       setState(() => _enabled = false);
+      ref.read(launchPasswordEnabledProvider.notifier).state = false;
     }
   }
 
@@ -206,10 +208,12 @@ class _LaunchPasswordSectionState extends ConsumerState<LaunchPasswordSection> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final accentDark = isDark ? AppTheme.darkAccentDark : AppTheme.accentDark;
-    final textPrimary =
-        isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary;
-    final textSecondary =
-        isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary;
+    final textPrimary = isDark
+        ? AppTheme.darkTextPrimary
+        : AppTheme.textPrimary;
+    final textSecondary = isDark
+        ? AppTheme.darkTextSecondary
+        : AppTheme.textSecondary;
 
     final enabled = _enabled;
     return Container(
@@ -276,10 +280,7 @@ class _LaunchPasswordSectionState extends ConsumerState<LaunchPasswordSection> {
                             // TODO(parity): 主项目缺失 'auth.enabledHint' / 'auth.disabledHint' 键，硬编码兜底
                             ? '冷启动时需要输入密码才能进入主界面'
                             : '默认关闭，启用后可在他人代用设备时保护隐私',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: textSecondary,
-                        ),
+                        style: TextStyle(fontSize: 12, color: textSecondary),
                       ),
                     ],
                   ),
@@ -393,10 +394,7 @@ class _CurrentPasswordDialogState
           onPressed: () => Navigator.of(context).pop(null),
           child: Text(I18n.t('common.cancel', lang: lang)),
         ),
-        TextButton(
-          onPressed: _submit,
-          child: Text(widget.submitLabel),
-        ),
+        TextButton(onPressed: _submit, child: Text(widget.submitLabel)),
       ],
     );
   }
@@ -473,9 +471,9 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
       });
       return;
     }
-    Navigator.of(context).pop(
-      _PasswordInputResult(currentPassword: current, newPassword: next),
-    );
+    Navigator.of(
+      context,
+    ).pop(_PasswordInputResult(currentPassword: current, newPassword: next));
   }
 
   @override
@@ -571,10 +569,7 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
           onPressed: () => Navigator.of(context).pop(null),
           child: Text(I18n.t('common.cancel', lang: lang)),
         ),
-        TextButton(
-          onPressed: _submit,
-          child: Text(widget.submitLabel),
-        ),
+        TextButton(onPressed: _submit, child: Text(widget.submitLabel)),
       ],
     );
   }

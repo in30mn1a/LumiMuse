@@ -17,22 +17,26 @@ import 'database_provider.dart';
 /// 数据出口统一兜底：在最终输出给 ListView 之前调用 `uniqueById`，
 /// 用于导入对话备份后旧 ID / 新 ID 重叠的兜底防御，避免 Flutter
 /// 因 `ValueKey('msg_${id}')` 重复触发 widgets 异常（参见 R17）。
-final messageListProvider =
-    StreamProvider.autoDispose.family<List<Message>, String>((ref, conversationId) {
-  final db = ref.watch(databaseProvider);
-  return (db.select(db.messages)
-        ..where((t) => t.conversationId.equals(conversationId))
-        ..orderBy([
-          (t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc),
-          (t) => OrderingTerm(expression: t.seq, mode: OrderingMode.asc),
-        ]))
-      .watch()
-      .map((rows) => uniqueById(rows));
-});
+final messageListProvider = StreamProvider.autoDispose
+    .family<List<Message>, String>((ref, conversationId) {
+      final db = ref.watch(databaseProvider);
+      return (db.select(db.messages)
+            ..where((t) => t.conversationId.equals(conversationId))
+            ..orderBy([
+              (t) =>
+                  OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc),
+              (t) => OrderingTerm(expression: t.seq, mode: OrderingMode.asc),
+            ]))
+          .watch()
+          .map((rows) => uniqueById(rows));
+    });
 
 /// 消息操作
 final messageActionsProvider = Provider<MessageActions>((ref) {
-  return MessageActions(ref.read(databaseProvider), CharacterImagesActions(ref.read(databaseProvider)));
+  return MessageActions(
+    ref.read(databaseProvider),
+    CharacterImagesActions(ref.read(databaseProvider)),
+  );
 });
 
 class MessageActions {
@@ -58,16 +62,20 @@ class MessageActions {
       metadata = jsonEncode({'attachments': attachments});
     }
 
-    await _db.into(_db.messages).insert(MessagesCompanion.insert(
-      id: id,
-      conversationId: conversationId,
-      role: 'user',
-      content: Value(content),
-      tokenCount: Value(tokenCount),
-      seq: Value(nextSeq),
-      createdAt: Value(now),
-      metadata: Value(metadata),
-    ));
+    await _db
+        .into(_db.messages)
+        .insert(
+          MessagesCompanion.insert(
+            id: id,
+            conversationId: conversationId,
+            role: 'user',
+            content: Value(content),
+            tokenCount: Value(tokenCount),
+            seq: Value(nextSeq),
+            createdAt: Value(now),
+            metadata: Value(metadata),
+          ),
+        );
 
     // 更新对话时间
     await (_db.update(_db.conversations)
@@ -92,16 +100,20 @@ class MessageActions {
       activeVersion: 0,
     ).toJsonString();
 
-    await _db.into(_db.messages).insert(MessagesCompanion.insert(
-      id: id,
-      conversationId: conversationId,
-      role: 'assistant',
-      content: Value(content),
-      tokenCount: Value(tokenCount),
-      seq: Value(nextSeq),
-      createdAt: Value(now),
-      metadata: Value(meta),
-    ));
+    await _db
+        .into(_db.messages)
+        .insert(
+          MessagesCompanion.insert(
+            id: id,
+            conversationId: conversationId,
+            role: 'assistant',
+            content: Value(content),
+            tokenCount: Value(tokenCount),
+            seq: Value(nextSeq),
+            createdAt: Value(now),
+            metadata: Value(meta),
+          ),
+        );
 
     await (_db.update(_db.conversations)
           ..where((t) => t.id.equals(conversationId)))
@@ -119,9 +131,9 @@ class MessageActions {
     required String newContent,
   }) async {
     await _db.transaction(() async {
-      final existing = await (_db.select(_db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingle();
+      final existing = await (_db.select(
+        _db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingle();
 
       final tokenCount = estimateTokens(newContent);
       final meta = MessageMetadata.fromJsonString(existing.metadata);
@@ -129,37 +141,46 @@ class MessageActions {
       var newVersions = List<MessageVersion>.from(meta.versions);
 
       if (newVersions.isEmpty) {
-        newVersions.add(MessageVersion(
-          content: existing.content,
-          tokenCount: existing.tokenCount,
-        ));
+        newVersions.add(
+          MessageVersion(
+            content: existing.content,
+            tokenCount: existing.tokenCount,
+          ),
+        );
       }
 
-      newVersions.add(MessageVersion(content: newContent, tokenCount: tokenCount));
+      newVersions.add(
+        MessageVersion(content: newContent, tokenCount: tokenCount),
+      );
 
       final newMeta = meta.copyWith(
         versions: newVersions,
         activeVersion: newVersions.length - 1,
       );
 
-      await (_db.update(_db.messages)..where((t) => t.id.equals(messageId)))
-          .write(MessagesCompanion(
-        content: Value(newContent),
-        tokenCount: Value(tokenCount),
-        metadata: Value(newMeta.toJsonString()),
-      ));
+      await (_db.update(
+        _db.messages,
+      )..where((t) => t.id.equals(messageId))).write(
+        MessagesCompanion(
+          content: Value(newContent),
+          tokenCount: Value(tokenCount),
+          metadata: Value(newMeta.toJsonString()),
+        ),
+      );
     });
   }
 
   /// 切换版本 — 更新 activeVersion 并同步 content/tokenCount
   Future<void> switchVersion(String messageId, int versionIndex) async {
-    final existing = await (_db.select(_db.messages)
-          ..where((t) => t.id.equals(messageId)))
-        .getSingle();
+    final existing = await (_db.select(
+      _db.messages,
+    )..where((t) => t.id.equals(messageId))).getSingle();
 
     final meta = MessageMetadata.fromJsonString(existing.metadata);
 
-    if (meta.versions.isEmpty || versionIndex < 0 || versionIndex >= meta.versions.length) {
+    if (meta.versions.isEmpty ||
+        versionIndex < 0 ||
+        versionIndex >= meta.versions.length) {
       return;
     }
 
@@ -169,12 +190,15 @@ class MessageActions {
 
     final newMeta = meta.copyWith(activeVersion: versionIndex);
 
-    await (_db.update(_db.messages)..where((t) => t.id.equals(messageId)))
-        .write(MessagesCompanion(
-      content: Value(content),
-      tokenCount: Value(tokenCount),
-      metadata: Value(newMeta.toJsonString()),
-    ));
+    await (_db.update(
+      _db.messages,
+    )..where((t) => t.id.equals(messageId))).write(
+      MessagesCompanion(
+        content: Value(content),
+        tokenCount: Value(tokenCount),
+        metadata: Value(newMeta.toJsonString()),
+      ),
+    );
   }
 
   /// 编辑消息内容
@@ -191,9 +215,9 @@ class MessageActions {
     final newTokens = estimateTokens(newContent);
 
     await _db.transaction(() async {
-      final existing = await (_db.select(_db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingle();
+      final existing = await (_db.select(
+        _db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingle();
 
       final meta = MessageMetadata.fromJsonString(existing.metadata);
 
@@ -202,7 +226,9 @@ class MessageActions {
 
       if (meta.versions.isNotEmpty) {
         final activeRaw = meta.activeVersion;
-        if (activeRaw != null && activeRaw >= 0 && activeRaw < meta.versions.length) {
+        if (activeRaw != null &&
+            activeRaw >= 0 &&
+            activeRaw < meta.versions.length) {
           newVersions = List<MessageVersion>.from(meta.versions);
           newVersions[activeRaw] = newVersions[activeRaw].copyWith(
             content: newContent,
@@ -220,31 +246,38 @@ class MessageActions {
         }
       }
 
-      final newMeta = metadataChanged ? meta.copyWith(versions: newVersions) : meta;
+      final newMeta = metadataChanged
+          ? meta.copyWith(versions: newVersions)
+          : meta;
 
-      await (_db.update(_db.messages)..where((t) => t.id.equals(messageId)))
-          .write(MessagesCompanion(
-        content: Value(newContent),
-        tokenCount: Value(newTokens),
-        metadata: metadataChanged
-            ? Value(newMeta.toJsonString())
-            : const Value.absent(),
-      ));
+      await (_db.update(
+        _db.messages,
+      )..where((t) => t.id.equals(messageId))).write(
+        MessagesCompanion(
+          content: Value(newContent),
+          tokenCount: Value(newTokens),
+          metadata: metadataChanged
+              ? Value(newMeta.toJsonString())
+              : const Value.absent(),
+        ),
+      );
     });
   }
 
   /// 智能删除消息 — 多版本只删当前版本，仅剩一个版本时删整条消息
   Future<void> delete(String messageId) async {
-    final existing = await (_db.select(_db.messages)
-          ..where((t) => t.id.equals(messageId)))
-        .getSingleOrNull();
+    final existing = await (_db.select(
+      _db.messages,
+    )..where((t) => t.id.equals(messageId))).getSingleOrNull();
 
     if (existing == null) return;
 
     final meta = MessageMetadata.fromJsonString(existing.metadata);
 
     if (meta.versions.length > 1) {
-      final activeVersion = meta.activeVersion ?? 0;
+      final activeVersion = (meta.activeVersion ?? 0)
+          .clamp(0, meta.versions.length - 1)
+          .toInt();
       final newVersions = List<MessageVersion>.from(meta.versions);
       newVersions.removeAt(activeVersion);
       final newActive = activeVersion >= newVersions.length
@@ -260,17 +293,21 @@ class MessageActions {
         activeVersion: newActive,
       );
 
-      await (_db.update(_db.messages)..where((t) => t.id.equals(messageId)))
-          .write(MessagesCompanion(
-        content: Value(content),
-        tokenCount: Value(tokenCount),
-        metadata: Value(newMeta.toJsonString()),
-      ));
+      await (_db.update(
+        _db.messages,
+      )..where((t) => t.id.equals(messageId))).write(
+        MessagesCompanion(
+          content: Value(content),
+          tokenCount: Value(tokenCount),
+          metadata: Value(newMeta.toJsonString()),
+        ),
+      );
     } else {
       final pendingDelete = extractLocalPaths(meta.toJson());
 
-      await (_db.delete(_db.messages)..where((t) => t.id.equals(messageId)))
-          .go();
+      await (_db.delete(
+        _db.messages,
+      )..where((t) => t.id.equals(messageId))).go();
 
       try {
         await _imagesActions.scanAndDeleteOrphanFiles(pendingDelete);
@@ -282,32 +319,42 @@ class MessageActions {
 
   /// 删除消息中的指定附件（按索引）
   Future<void> deleteAttachment(String messageId, int attachmentIndex) async {
+    final pendingDelete = <String>{};
+
     await _db.transaction(() async {
-      final existing = await (_db.select(_db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingleOrNull();
+      final existing = await (_db.select(
+        _db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingleOrNull();
       if (existing == null) return;
 
       final meta = MessageMetadata.fromJsonString(existing.metadata);
       final attachments = List<AttachmentData>.from(meta.attachments);
       if (attachmentIndex < 0 || attachmentIndex >= attachments.length) return;
 
-      attachments.removeAt(attachmentIndex);
+      final removed = attachments.removeAt(attachmentIndex);
+      if (isLocalAssetPath(removed.url)) {
+        pendingDelete.add(removed.url);
+      }
       final newMeta = meta.copyWith(attachments: attachments);
 
       await (_db.update(_db.messages)..where((t) => t.id.equals(messageId)))
-          .write(MessagesCompanion(
-        metadata: Value(newMeta.toJsonString()),
-      ));
+          .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
     });
+
+    try {
+      await _imagesActions.scanAndDeleteOrphanFiles(pendingDelete);
+    } catch (e) {
+      debugPrint('[MessageActions.deleteAttachment] 清理孤儿文件失败: $e');
+    }
   }
 
   /// 获取下一个 seq
   Future<int> _getNextSeq(String conversationId) async {
-    final result = await (_db.selectOnly(_db.messages)
-          ..addColumns([_db.messages.seq.max()])
-          ..where(_db.messages.conversationId.equals(conversationId)))
-        .getSingleOrNull();
+    final result =
+        await (_db.selectOnly(_db.messages)
+              ..addColumns([_db.messages.seq.max()])
+              ..where(_db.messages.conversationId.equals(conversationId)))
+            .getSingleOrNull();
     final maxSeq = result?.read(_db.messages.seq.max()) ?? 0;
     return maxSeq + 1;
   }

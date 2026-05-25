@@ -181,11 +181,14 @@ class _ImageGenSettingsSectionState
   }
 
   /// 更新图片生成设置并持久化
-  Future<void> _updateImageGen(ImageGenSettings Function(ImageGenSettings) updater) async {
-    final current = ref.read(settingsProvider).valueOrNull ?? const AppSettings();
+  Future<void> _updateImageGen(
+    ImageGenSettings Function(ImageGenSettings) updater,
+  ) async {
+    final current =
+        ref.read(settingsProvider).valueOrNull ?? const AppSettings();
     final newImageGen = updater(current.imageGen);
-    // P3-14: 校验引擎 URL 非空
-    if (newImageGen.enabled) {
+    // 允许先启用再填写 URL；已启用后的保存仍校验当前引擎 URL。
+    if (newImageGen.enabled && current.imageGen.enabled) {
       String? urlField;
       if (newImageGen.engine == 'sd') {
         urlField = newImageGen.sdUrl;
@@ -196,9 +199,9 @@ class _ImageGenSettingsSectionState
       }
       if (urlField != null && urlField.trim().isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('请先填写 URL 地址')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('请先填写 URL 地址')));
         }
         return;
       }
@@ -246,7 +249,8 @@ class _ImageGenSettingsSectionState
                 _buildSwitch(
                   title: I18n.t('settings.imageGenEnabled', lang: lang),
                   value: ig.enabled,
-                  onChanged: (v) => _updateImageGen((s) => s.copyWith(enabled: v)),
+                  onChanged: (v) =>
+                      _updateImageGen((s) => s.copyWith(enabled: v)),
                 ),
                 // 主项目 ChatView/Settings 对照：未启用时仅显示开关，
                 // 引擎/品质标签/参数/自动生图都隐藏，避免无效配置占据空间
@@ -261,7 +265,8 @@ class _ImageGenSettingsSectionState
                       'comfyui': I18n.t('settings.imageGenComfyUI', lang: lang),
                       'custom': I18n.t('settings.imageGenCustom', lang: lang),
                     },
-                    onChanged: (v) => _updateImageGen((s) => s.copyWith(engine: v)),
+                    onChanged: (v) =>
+                        _updateImageGen((s) => s.copyWith(engine: v)),
                   ),
                   const SizedBox(height: 8),
                   _buildTextField(
@@ -269,7 +274,8 @@ class _ImageGenSettingsSectionState
                     controller: _qualityTagsCtrl,
                     maxLength: 500,
                     maxLines: 2,
-                    onChanged: (v) => _updateImageGen((s) => s.copyWith(qualityTags: v)),
+                    onChanged: (v) =>
+                        _updateImageGen((s) => s.copyWith(qualityTags: v)),
                   ),
                 ],
               ],
@@ -279,7 +285,8 @@ class _ImageGenSettingsSectionState
             if (ig.enabled) ...[
               const SizedBox(height: 16),
               if (ig.engine == 'sd') _buildSdParams(ig, isDark, lang),
-              if (ig.engine == 'nai') _buildNaiParams(settings, ig, isDark, lang),
+              if (ig.engine == 'nai')
+                _buildNaiParams(settings, ig, isDark, lang),
               if (ig.engine == 'comfyui') _buildComfyParams(ig, isDark, lang),
               if (ig.engine == 'custom') _buildCustomParams(ig, isDark, lang),
 
@@ -294,15 +301,21 @@ class _ImageGenSettingsSectionState
                   _buildSwitch(
                     title: I18n.t('settings.imageGenAuto', lang: lang),
                     value: ig.autoGenerate,
-                    onChanged: (v) => _updateImageGen((s) => s.copyWith(autoGenerate: v)),
+                    onChanged: (v) =>
+                        _updateImageGen((s) => s.copyWith(autoGenerate: v)),
                   ),
                   if (ig.autoGenerate) ...[
                     const SizedBox(height: 8),
                     _buildTextField(
-                      label: I18n.t('settings.imageGenAutoKeywords', lang: lang),
+                      label: I18n.t(
+                        'settings.imageGenAutoKeywords',
+                        lang: lang,
+                      ),
                       controller: _autoKeywordsCtrl,
                       maxLength: 500,
-                      onChanged: (v) => _updateImageGen((s) => s.copyWith(autoGenerateKeywords: v)),
+                      onChanged: (v) => _updateImageGen(
+                        (s) => s.copyWith(autoGenerateKeywords: v),
+                      ),
                     ),
                   ],
                 ],
@@ -350,7 +363,8 @@ class _ImageGenSettingsSectionState
           min: 1,
           max: 150,
           isInt: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(sdSteps: v.toInt())),
+          onChanged: (v) =>
+              _updateImageGen((s) => s.copyWith(sdSteps: v.toInt())),
         ),
         _buildNumberInput(
           title: I18n.t('settings.imageGenSDCfg', lang: lang),
@@ -370,7 +384,9 @@ class _ImageGenSettingsSectionState
           max: 2048,
           step: 64,
           isInt: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(sdWidth: (v / 64).round() * 64)),
+          onChanged: (v) => _updateImageGen(
+            (s) => s.copyWith(sdWidth: (v / 64).round() * 64),
+          ),
         ),
         _buildNumberInput(
           title: I18n.t('settings.imageGenSDHeight', lang: lang),
@@ -380,7 +396,9 @@ class _ImageGenSettingsSectionState
           max: 2048,
           step: 64,
           isInt: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(sdHeight: (v / 64).round() * 64)),
+          onChanged: (v) => _updateImageGen(
+            (s) => s.copyWith(sdHeight: (v / 64).round() * 64),
+          ),
         ),
         const SizedBox(height: 8),
         _buildTextField(
@@ -388,7 +406,8 @@ class _ImageGenSettingsSectionState
           controller: _sdNegativeCtrl,
           maxLines: 3,
           maxLength: 2000,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(sdNegativePrompt: v)),
+          onChanged: (v) =>
+              _updateImageGen((s) => s.copyWith(sdNegativePrompt: v)),
         ),
       ],
     );
@@ -440,12 +459,14 @@ class _ImageGenSettingsSectionState
 
   Future<void> _handleDeletePreset(AppSettings settings, String lang) async {
     if (_selectedPresetId == null) return;
-    
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(I18n.t('settings.artistStringsDelete', lang: lang)),
-        content: Text(I18n.t('settings.artistStringsDeleteConfirm', lang: lang)),
+        content: Text(
+          I18n.t('settings.artistStringsDeleteConfirm', lang: lang),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -501,7 +522,12 @@ class _ImageGenSettingsSectionState
   // NovelAI 参数
   // ═══════════════════════════════════════════════════════════════
 
-  Widget _buildNaiParams(AppSettings settings, ImageGenSettings ig, bool isDark, String lang) {
+  Widget _buildNaiParams(
+    AppSettings settings,
+    ImageGenSettings ig,
+    bool isDark,
+    String lang,
+  ) {
     return _buildSection(
       isDark: isDark,
       title: 'NovelAI 参数',
@@ -529,7 +555,8 @@ class _ImageGenSettingsSectionState
         _buildTextField(
           label: I18n.t('settings.imageGenNAINoiseSchedule', lang: lang),
           controller: _naiNoiseCtrl,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(naiNoiseSchedule: v)),
+          onChanged: (v) =>
+              _updateImageGen((s) => s.copyWith(naiNoiseSchedule: v)),
         ),
         const SizedBox(height: 8),
         _buildNumberInput(
@@ -539,7 +566,8 @@ class _ImageGenSettingsSectionState
           min: 1,
           max: 50,
           isInt: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(naiSteps: v.toInt())),
+          onChanged: (v) =>
+              _updateImageGen((s) => s.copyWith(naiSteps: v.toInt())),
         ),
         _buildNumberInput(
           title: I18n.t('settings.imageGenNAIScale', lang: lang),
@@ -559,7 +587,8 @@ class _ImageGenSettingsSectionState
           max: 1,
           step: 0.01,
           decimals: 2,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(naiCfgRescale: v)),
+          onChanged: (v) =>
+              _updateImageGen((s) => s.copyWith(naiCfgRescale: v)),
         ),
         _buildNumberInput(
           title: I18n.t('settings.imageGenNAIWidth', lang: lang),
@@ -569,7 +598,9 @@ class _ImageGenSettingsSectionState
           max: 2048,
           step: 64,
           isInt: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(naiWidth: (v / 64).round() * 64)),
+          onChanged: (v) => _updateImageGen(
+            (s) => s.copyWith(naiWidth: (v / 64).round() * 64),
+          ),
         ),
         _buildNumberInput(
           title: I18n.t('settings.imageGenNAIHeight', lang: lang),
@@ -579,7 +610,9 @@ class _ImageGenSettingsSectionState
           max: 2048,
           step: 64,
           isInt: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(naiHeight: (v / 64).round() * 64)),
+          onChanged: (v) => _updateImageGen(
+            (s) => s.copyWith(naiHeight: (v / 64).round() * 64),
+          ),
         ),
         const SizedBox(height: 8),
         _buildTextField(
@@ -587,7 +620,8 @@ class _ImageGenSettingsSectionState
           controller: _naiNegativeCtrl,
           maxLines: 3,
           maxLength: 2000,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(naiNegativePrompt: v)),
+          onChanged: (v) =>
+              _updateImageGen((s) => s.copyWith(naiNegativePrompt: v)),
         ),
         const SizedBox(height: 16),
 
@@ -610,7 +644,10 @@ class _ImageGenSettingsSectionState
               decoration: InputDecoration(
                 labelText: I18n.t('settings.artistStringsSelect', lang: lang),
                 isDense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -618,12 +655,16 @@ class _ImageGenSettingsSectionState
               items: [
                 DropdownMenuItem<String>(
                   value: null,
-                  child: Text(I18n.t('settings.artistStringsCustom', lang: lang)),
+                  child: Text(
+                    I18n.t('settings.artistStringsCustom', lang: lang),
+                  ),
                 ),
-                ...settings.artistStrings.map((a) => DropdownMenuItem<String>(
-                  value: a.id,
-                  child: Text(a.name),
-                )),
+                ...settings.artistStrings.map(
+                  (a) => DropdownMenuItem<String>(
+                    value: a.id,
+                    child: Text(a.name),
+                  ),
+                ),
               ],
               onChanged: (v) => _handleSelectPreset(settings, v),
             ),
@@ -643,9 +684,15 @@ class _ImageGenSettingsSectionState
                     controller: _presetNameCtrl,
                     style: const TextStyle(fontSize: 13),
                     decoration: InputDecoration(
-                      hintText: I18n.t('settings.artistStringsNamePrompt', lang: lang),
+                      hintText: I18n.t(
+                        'settings.artistStringsNamePrompt',
+                        lang: lang,
+                      ),
                       isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 10,
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
                       ),
@@ -660,12 +707,20 @@ class _ImageGenSettingsSectionState
                   style: TextButton.styleFrom(
                     backgroundColor: AppTheme.accent.withValues(alpha: 0.12),
                     foregroundColor: AppTheme.accentDark,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                   ),
                   child: Text(
                     I18n.t('settings.artistStringsSaveAs', lang: lang),
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -680,12 +735,20 @@ class _ImageGenSettingsSectionState
                     style: TextButton.styleFrom(
                       backgroundColor: Colors.blue.withValues(alpha: 0.1),
                       foregroundColor: Colors.blue[700],
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
                     child: Text(
                       I18n.t('settings.artistStringsUpdate', lang: lang),
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -694,12 +757,20 @@ class _ImageGenSettingsSectionState
                     style: TextButton.styleFrom(
                       backgroundColor: Colors.red.withValues(alpha: 0.1),
                       foregroundColor: Colors.red[700],
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
                     child: Text(
                       I18n.t('settings.artistStringsDelete', lang: lang),
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
@@ -732,7 +803,8 @@ class _ImageGenSettingsSectionState
           label: I18n.t('settings.imageGenComfyWorkflow', lang: lang),
           controller: _comfyWorkflowCtrl,
           maxLines: 6,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(comfyuiWorkflow: v)),
+          onChanged: (v) =>
+              _updateImageGen((s) => s.copyWith(comfyuiWorkflow: v)),
         ),
       ],
     );
@@ -794,15 +866,26 @@ class _ImageGenSettingsSectionState
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(children: [
-            Icon(icon, size: 18, color: isDark ? AppTheme.darkAccentDark : AppTheme.accentDark),
-            const SizedBox(width: 8),
-            Text(title, style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
-            )),
-          ]),
+          Row(
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: isDark ? AppTheme.darkAccentDark : AppTheme.accentDark,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: isDark
+                      ? AppTheme.darkTextPrimary
+                      : AppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 12),
           ...children,
         ],
@@ -821,7 +904,11 @@ class _ImageGenSettingsSectionState
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(title, style: Theme.of(context).textTheme.bodyMedium),
-          Switch(value: value, onChanged: onChanged, activeThumbColor: AppTheme.primaryLight),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeThumbColor: AppTheme.primaryLight,
+          ),
         ],
       ),
     );
@@ -853,7 +940,10 @@ class _ImageGenSettingsSectionState
               textAlign: TextAlign.center,
               decoration: InputDecoration(
                 isDense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 6,
+                ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                   borderSide: BorderSide(color: Theme.of(context).dividerColor),
@@ -872,9 +962,15 @@ class _ImageGenSettingsSectionState
                 final parsed = double.tryParse(v);
                 if (parsed == null) return;
                 final clamped = parsed.clamp(min, max);
-                final snapped = step > 0 ? (clamped / step).round() * step : clamped;
-                final finalVal = isInt ? snapped.roundToDouble() : double.parse(snapped.toStringAsFixed(decimals));
-                controller.text = isInt ? finalVal.toInt().toString() : finalVal.toStringAsFixed(decimals);
+                final snapped = step > 0
+                    ? (clamped / step).round() * step
+                    : clamped;
+                final finalVal = isInt
+                    ? snapped.roundToDouble()
+                    : double.parse(snapped.toStringAsFixed(decimals));
+                controller.text = isInt
+                    ? finalVal.toInt().toString()
+                    : finalVal.toStringAsFixed(decimals);
                 onChanged(finalVal);
               },
             ),
@@ -899,7 +995,9 @@ class _ImageGenSettingsSectionState
           DropdownButton<String>(
             value: items.containsKey(value) ? value : items.keys.first,
             items: items.entries
-                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                .map(
+                  (e) => DropdownMenuItem(value: e.key, child: Text(e.value)),
+                )
                 .toList(),
             onChanged: (v) {
               if (v != null) onChanged(v);

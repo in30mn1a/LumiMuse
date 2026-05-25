@@ -41,58 +41,133 @@ class MemoryListPage extends ConsumerStatefulWidget {
   /// 子 spec 修改 widget 内部时不得改变 order/anchor/id；仅允许调整 build 闭包
   /// 返回的子树细节。任何破坏不变量的改动都会被回归脚本 RC-11 立即扫出。
   static List<PageRegion> get baselineRegions => [
-        // §A3.4.1 头部左半区（返回 + 装饰方块 + 标题）
-        PageRegion(
-          name: 'headerLeft',
-          slots: [
-            PageSlot(order: 1, anchor: SlotAnchor.start, id: 'back', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 2, anchor: SlotAnchor.start, id: 'decoration', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 3, anchor: SlotAnchor.start, id: 'title', build: (_) => const SizedBox.shrink()),
-          ],
+    // §A3.4.1 头部左半区（返回 + 装饰方块 + 标题）
+    PageRegion(
+      name: 'headerLeft',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'back',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.4.1 头部右半区（角色 chip + 角色 select；禁止新增导入/导出）
-        PageRegion(
-          name: 'headerRight',
-          slots: [
-            PageSlot(order: 1, anchor: SlotAnchor.end, id: 'characterChip', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 2, anchor: SlotAnchor.end, id: 'characterSelect', build: (_) => const SizedBox.shrink()),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'decoration',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.4.2 过滤栏（搜索 chip → 分类 select → 排序 select → 添加按钮）
-        PageRegion(
-          name: 'filterBar',
-          slots: [
-            PageSlot(order: 1, anchor: SlotAnchor.start, id: 'searchChip', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 2, anchor: SlotAnchor.start, id: 'categorySelect', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 3, anchor: SlotAnchor.start, id: 'sortSelect', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 4, anchor: SlotAnchor.end, id: 'addButton', build: (_) => const SizedBox.shrink()),
-          ],
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.start,
+          id: 'title',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.4.3 列表头部（label + 计数）
-        PageRegion(
-          name: 'listHeader',
-          slots: [
-            PageSlot(order: 1, anchor: SlotAnchor.start, id: 'label', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 2, anchor: SlotAnchor.end, id: 'count', build: (_) => const SizedBox.shrink()),
-          ],
+      ],
+    ),
+    // §A3.4.1 头部右半区（角色 chip + 角色 select；禁止新增导入/导出）
+    PageRegion(
+      name: 'headerRight',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.end,
+          id: 'characterChip',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.4.4 记忆列表
-        PageRegion(
-          name: 'memoryList',
-          slots: [
-            PageSlot(order: 1, anchor: SlotAnchor.start, id: 'list', build: (_) => const SizedBox.shrink()),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.end,
+          id: 'characterSelect',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.4.5 底部分页栏（页码状态 → spacer → 上一页 → 下一页）
-        PageRegion(
-          name: 'pagination',
-          slots: [
-            PageSlot(order: 1, anchor: SlotAnchor.start, id: 'status', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 2, anchor: SlotAnchor.end, id: 'prevButton', build: (_) => const SizedBox.shrink()),
-            PageSlot(order: 3, anchor: SlotAnchor.end, id: 'nextButton', build: (_) => const SizedBox.shrink()),
-          ],
+      ],
+    ),
+    // §A3.4.2 过滤栏（搜索 chip → 分类 select → 排序 select → 添加按钮）
+    PageRegion(
+      name: 'filterBar',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'searchChip',
+          build: (_) => const SizedBox.shrink(),
         ),
-      ];
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'categorySelect',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.start,
+          id: 'sortSelect',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 4,
+          anchor: SlotAnchor.end,
+          id: 'addButton',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.4.3 列表头部（label + 计数）
+    PageRegion(
+      name: 'listHeader',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'label',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.end,
+          id: 'count',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.4.4 记忆列表
+    PageRegion(
+      name: 'memoryList',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'list',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.4.5 底部分页栏（页码状态 → spacer → 上一页 → 下一页）
+    PageRegion(
+      name: 'pagination',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'status',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.end,
+          id: 'prevButton',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.end,
+          id: 'nextButton',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+  ];
 
   @override
   ConsumerState<MemoryListPage> createState() => _MemoryListPageState();
@@ -103,6 +178,12 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   String _keyword = '';
   int _page = 0; // 0-based（TSX 是 1-based，显示时 +1）
   bool _oldestFirst = false;
+  bool _addInFlight = false;
+  final Set<String> _updateInFlight = <String>{};
+  final Set<String> _deleteInFlight = <String>{};
+
+  bool get _memoryBusy =>
+      _addInFlight || _updateInFlight.isNotEmpty || _deleteInFlight.isNotEmpty;
 
   /// 添加记忆时记录新建条目的 ID，用于让 _MemoryCard 立即进入编辑态
   String? _editingMemoryId;
@@ -124,12 +205,12 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   }
 
   MemoryListParams get _params => MemoryListParams(
-        characterId: widget.characterId,
-        category: _selectedCategory,
-        keyword: _keyword.isEmpty ? null : _keyword,
-        page: _page,
-        oldestFirst: _oldestFirst,
-      );
+    characterId: widget.characterId,
+    category: _selectedCategory,
+    keyword: _keyword.isEmpty ? null : _keyword,
+    page: _page,
+    oldestFirst: _oldestFirst,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -142,7 +223,10 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
         backgroundColor: Colors.transparent,
         body: SafeArea(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.lg),
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.lg,
+              vertical: AppSpacing.lg,
+            ),
             child: Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 1280),
@@ -168,7 +252,10 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   // ═════════════════════════════════════════════════════════════
   // 顶部 surface-hero 工具栏
   // ═════════════════════════════════════════════════════════════
-  Widget _buildHeader(String lang, AsyncValue<List<Character>> charactersAsync) {
+  Widget _buildHeader(
+    String lang,
+    AsyncValue<List<Character>> charactersAsync,
+  ) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final characters = charactersAsync.valueOrNull ?? const [];
 
@@ -189,7 +276,11 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
           }
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [left, const SizedBox(height: AppSpacing.lg), right],
+            children: [
+              left,
+              const SizedBox(height: AppSpacing.lg),
+              right,
+            ],
           );
         },
       ),
@@ -280,9 +371,16 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   // ═════════════════════════════════════════════════════════════
   Widget _buildFilterPanel(String lang) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isBusy =
+        _addInFlight ||
+        _updateInFlight.isNotEmpty ||
+        _deleteInFlight.isNotEmpty;
     return Container(
       decoration: AppSurfaces.panel(isDark: isDark),
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: AppSpacing.md),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 20,
+        vertical: AppSpacing.md,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -341,7 +439,8 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                 label: I18n.t('memory.add', lang: lang),
                 icon: Icons.add,
                 kind: LumiSoftButtonKind.primary,
-                onTap: _handleAdd,
+                loading: _addInFlight,
+                onTap: isBusy ? null : _handleAdd,
               );
               if (wide) {
                 return Row(
@@ -393,10 +492,14 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   // ═════════════════════════════════════════════════════════════
   // 列表 panel — 顶部 label + count，中间记忆行项，底部分页栏
   // ═════════════════════════════════════════════════════════════
-  Widget _buildListPanel(String lang, AsyncValue<MemoryListResult> resultAsync) {
+  Widget _buildListPanel(
+    String lang,
+    AsyncValue<MemoryListResult> resultAsync,
+  ) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final borderColor =
-        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+    final borderColor = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
 
     return Container(
       decoration: AppSurfaces.panel(isDark: isDark),
@@ -457,6 +560,9 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                     isLast: i == memories.length - 1,
                     initialEditing: memories[i].id == _editingMemoryId,
                     lang: lang,
+                    isBusy: _memoryBusy,
+                    isSaving: _updateInFlight.contains(memories[i].id),
+                    isDeleting: _deleteInFlight.contains(memories[i].id),
                     onUpdate: _handleUpdate,
                     onDelete: _handleDelete,
                   ),
@@ -471,7 +577,10 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
 
   Widget _buildEmpty(String lang, bool isDark) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xxl, vertical: 48),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.xxl,
+        vertical: 48,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -511,17 +620,17 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
     );
   }
 
-  Widget _buildPagination(
-    String lang,
-    bool isDark,
-    MemoryListResult result,
-  ) {
-    final borderColor =
-        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+  Widget _buildPagination(String lang, bool isDark, MemoryListResult result) {
+    final borderColor = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
     const pageSize = _pageSize;
     final totalPages = ((result.total / pageSize).ceil()).clamp(1, 1 << 30);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.md,
+      ),
       decoration: BoxDecoration(
         border: Border(top: BorderSide(color: borderColor)),
       ),
@@ -529,15 +638,11 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
         children: [
           Expanded(
             child: Text(
-              I18n.tArgs(
-                'memory.pageStatus',
-                {
-                  'page': _page + 1,
-                  'totalPages': totalPages,
-                  'pageSize': pageSize,
-                },
-                lang: lang,
-              ),
+              I18n.tArgs('memory.pageStatus', {
+                'page': _page + 1,
+                'totalPages': totalPages,
+                'pageSize': pageSize,
+              }, lang: lang),
               style: TextStyle(
                 fontSize: 12,
                 color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
@@ -569,43 +674,77 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   // ═════════════════════════════════════════════════════════════
 
   Future<void> _handleUpdate(String id, _MemoryUpdate updates) async {
-    final actions = ref.read(memoryActionsProvider);
-    await actions.update(
-      id,
-      category: updates.category,
-      content: updates.content,
-      tags: updates.tags,
-    );
-    setState(() => _editingMemoryId = null);
-    ref.invalidate(memoryListProvider(_params));
+    if (_memoryBusy) return;
+    setState(() => _updateInFlight.add(id));
+    try {
+      final actions = ref.read(memoryActionsProvider);
+      await actions.update(
+        id,
+        category: updates.category,
+        content: updates.content,
+        tags: updates.tags,
+      );
+      if (!mounted) return;
+      setState(() => _editingMemoryId = null);
+      ref.invalidate(memoryListProvider(_params));
+    } finally {
+      if (mounted) {
+        setState(() => _updateInFlight.remove(id));
+      } else {
+        _updateInFlight.remove(id);
+      }
+    }
   }
 
   Future<void> _handleDelete(String id) async {
-    final actions = ref.read(memoryActionsProvider);
-    await actions.delete(id);
-    ref.invalidate(memoryListProvider(_params));
-    final result = await ref.read(memoryListProvider(_params).future);
-    if (result.memories.isEmpty && _page > 0) {
-      setState(() => _page--);
+    if (_memoryBusy) return;
+    setState(() => _deleteInFlight.add(id));
+    try {
+      final actions = ref.read(memoryActionsProvider);
+      await actions.delete(id);
+      if (!mounted) return;
+      ref.invalidate(memoryListProvider(_params));
+      final result = await ref.read(memoryListProvider(_params).future);
+      if (!mounted) return;
+      if (result.memories.isEmpty && _page > 0) {
+        setState(() => _page--);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _deleteInFlight.remove(id));
+      } else {
+        _deleteInFlight.remove(id);
+      }
     }
   }
 
   Future<void> _handleAdd() async {
-    final lang = ref.read(localeProvider).languageCode;
-    final actions = ref.read(memoryActionsProvider);
-    final newId = await actions.create(
-      characterId: widget.characterId,
-      category: memoryCategories[1],
-      content: I18n.t('memory.newContent', lang: lang),
-      confidence: 0.9,
-      tags: const <String>[],
-    );
-    setState(() {
-      _oldestFirst = false;
-      _page = 0;
-      _editingMemoryId = newId;
-    });
-    ref.invalidate(memoryListProvider(_params));
+    if (_memoryBusy) return;
+    setState(() => _addInFlight = true);
+    try {
+      final lang = ref.read(localeProvider).languageCode;
+      final actions = ref.read(memoryActionsProvider);
+      final newId = await actions.create(
+        characterId: widget.characterId,
+        category: memoryCategories[1],
+        content: I18n.t('memory.newContent', lang: lang),
+        confidence: 0.9,
+        tags: const <String>[],
+      );
+      if (!mounted) return;
+      setState(() {
+        _oldestFirst = false;
+        _page = 0;
+        _editingMemoryId = newId;
+      });
+      ref.invalidate(memoryListProvider(_params));
+    } finally {
+      if (mounted) {
+        setState(() => _addInFlight = false);
+      } else {
+        _addInFlight = false;
+      }
+    }
   }
 }
 
@@ -630,6 +769,9 @@ class _MemoryCard extends StatefulWidget {
   final bool isLast;
   final bool initialEditing;
   final String lang;
+  final bool isBusy;
+  final bool isSaving;
+  final bool isDeleting;
   final Future<void> Function(String id, _MemoryUpdate updates) onUpdate;
   final Future<void> Function(String id) onDelete;
 
@@ -638,6 +780,9 @@ class _MemoryCard extends StatefulWidget {
     required this.isLast,
     required this.initialEditing,
     required this.lang,
+    required this.isBusy,
+    required this.isSaving,
+    required this.isDeleting,
     required this.onUpdate,
     required this.onDelete,
   });
@@ -653,14 +798,19 @@ class _MemoryCardState extends State<_MemoryCard> {
   late String _category;
   bool _expanded = false;
   bool _hover = false;
+  bool _saveInFlight = false;
+
+  bool get _actionsDisabled =>
+      widget.isBusy || widget.isSaving || widget.isDeleting || _saveInFlight;
 
   @override
   void initState() {
     super.initState();
     _editing = widget.initialEditing;
     _contentController = TextEditingController(text: widget.memory.content);
-    _tagsController =
-        TextEditingController(text: _decodeTags(widget.memory.tags).join(' '));
+    _tagsController = TextEditingController(
+      text: _decodeTags(widget.memory.tags).join(' '),
+    );
     _category = widget.memory.category;
   }
 
@@ -702,28 +852,38 @@ class _MemoryCardState extends State<_MemoryCard> {
     return const [];
   }
 
-  String _formatShortDate(DateTime t) =>
-      '${t.year}/${t.month}/${t.day}';
+  String _formatShortDate(DateTime t) => '${t.year}/${t.month}/${t.day}';
 
   Future<void> _handleSave() async {
-    final tags = _tagsController.text
-        .split(RegExp(r'[\s,、，#]+'))
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
-    await widget.onUpdate(
-      widget.memory.id,
-      _MemoryUpdate(
-        category: _category,
-        content: _contentController.text,
-        tags: tags,
-      ),
-    );
-    if (!mounted) return;
-    setState(() {
-      _editing = false;
-      _expanded = false;
-    });
+    if (_saveInFlight ||
+        widget.isBusy ||
+        widget.isSaving ||
+        widget.isDeleting) {
+      return;
+    }
+    _saveInFlight = true;
+    try {
+      final tags = _tagsController.text
+          .split(RegExp(r'[\s,、，#]+'))
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      await widget.onUpdate(
+        widget.memory.id,
+        _MemoryUpdate(
+          category: _category,
+          content: _contentController.text,
+          tags: tags,
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _editing = false;
+        _expanded = false;
+      });
+    } finally {
+      _saveInFlight = false;
+    }
   }
 
   void _handleCancel() {
@@ -739,16 +899,15 @@ class _MemoryCardState extends State<_MemoryCard> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final borderColor =
-        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+    final borderColor = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
     final highlight = _editing || _hover;
     final bg = highlight
-        ? (isDark
-            ? AppTheme.darkWarm100
-            : AppTheme.warm100)
+        ? (isDark ? AppTheme.darkWarm100 : AppTheme.warm100)
         : (isDark
-            ? AppTheme.darkWarm50.withValues(alpha: 0.0)
-            : AppTheme.warm50.withValues(alpha: 0.0));
+              ? AppTheme.darkWarm50.withValues(alpha: 0.0)
+              : AppTheme.warm50.withValues(alpha: 0.0));
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
@@ -763,13 +922,17 @@ class _MemoryCardState extends State<_MemoryCard> {
                 : BorderSide(color: borderColor),
           ),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
         child: LayoutBuilder(
           builder: (ctx, constraints) {
             final wide = constraints.maxWidth >= 900;
             final body = _buildBody(isDark, wide);
-            final desktopActions =
-                wide ? _buildDesktopActions(isDark) : const SizedBox.shrink();
+            final desktopActions = wide
+                ? _buildDesktopActions(isDark)
+                : const SizedBox.shrink();
             if (wide) {
               return Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -813,10 +976,7 @@ class _MemoryCardState extends State<_MemoryCard> {
                 ),
               )
             else
-              LumiChip(
-                active: true,
-                label: widget.memory.category,
-              ),
+              LumiChip(active: true, label: widget.memory.category),
             const SizedBox(width: AppSpacing.sm),
             Text(
               _formatShortDate(widget.memory.createdAt),
@@ -866,8 +1026,9 @@ class _MemoryCardState extends State<_MemoryCard> {
               content,
               style: textStyle,
               maxLines: _expanded ? null : 2,
-              overflow:
-                  _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+              overflow: _expanded
+                  ? TextOverflow.visible
+                  : TextOverflow.ellipsis,
             ),
             if (isTruncated)
               Padding(
@@ -881,10 +1042,11 @@ class _MemoryCardState extends State<_MemoryCard> {
                       _expanded ? '收起' : '展开全文',
                       style: TextStyle(
                         fontSize: 11,
-                        color: (isDark
-                                ? AppTheme.darkAccentDark
-                                : AppTheme.accentDark)
-                            .withValues(alpha: 0.7),
+                        color:
+                            (isDark
+                                    ? AppTheme.darkAccentDark
+                                    : AppTheme.accentDark)
+                                .withValues(alpha: 0.7),
                       ),
                     ),
                   ),
@@ -917,7 +1079,8 @@ class _MemoryCardState extends State<_MemoryCard> {
               icon: null,
               kind: LumiSoftButtonKind.primary,
               tiny: true,
-              onTap: _handleSave,
+              loading: widget.isSaving || _saveInFlight,
+              onTap: _actionsDisabled ? null : _handleSave,
             ),
             const SizedBox(width: 6),
             LumiSoftButton(
@@ -925,7 +1088,7 @@ class _MemoryCardState extends State<_MemoryCard> {
               icon: null,
               kind: LumiSoftButtonKind.secondary,
               tiny: true,
-              onTap: _handleCancel,
+              onTap: _actionsDisabled ? null : _handleCancel,
             ),
           ],
         ],
@@ -940,12 +1103,7 @@ class _MemoryCardState extends State<_MemoryCard> {
               spacing: AppSpacing.xs,
               runSpacing: AppSpacing.xs,
               children: tags
-                  .map(
-                    (t) => LumiChip(
-                      active: false,
-                      label: '#$t',
-                    ),
-                  )
+                  .map((t) => LumiChip(active: false, label: '#$t'))
                   .toList(),
             ),
           )
@@ -955,12 +1113,16 @@ class _MemoryCardState extends State<_MemoryCard> {
           const SizedBox(width: AppSpacing.sm),
           LumiChip.icon(
             icon: Icons.edit_outlined,
-            onTap: () => setState(() => _editing = true),
+            onTap: _actionsDisabled
+                ? null
+                : () => setState(() => _editing = true),
           ),
           const SizedBox(width: 6),
           LumiChip.icon(
             icon: Icons.delete_outline,
-            onTap: () => widget.onDelete(widget.memory.id),
+            onTap: _actionsDisabled
+                ? null
+                : () => widget.onDelete(widget.memory.id),
           ),
         ],
       ],
@@ -979,14 +1141,15 @@ class _MemoryCardState extends State<_MemoryCard> {
             icon: null,
             kind: LumiSoftButtonKind.primary,
             tiny: true,
-            onTap: _handleSave,
+            loading: widget.isSaving || _saveInFlight,
+            onTap: _actionsDisabled ? null : _handleSave,
           ),
           LumiSoftButton(
             label: I18n.t('memory.cancel', lang: widget.lang),
             icon: null,
             kind: LumiSoftButtonKind.secondary,
             tiny: true,
-            onTap: _handleCancel,
+            onTap: _actionsDisabled ? null : _handleCancel,
           ),
         ],
       );
@@ -1001,20 +1164,24 @@ class _MemoryCardState extends State<_MemoryCard> {
           icon: Icons.edit_outlined,
           kind: LumiSoftButtonKind.secondary,
           tiny: true,
-          onTap: () => setState(() => _editing = true),
+          onTap: _actionsDisabled
+              ? null
+              : () => setState(() => _editing = true),
         ),
         LumiSoftButton(
           label: I18n.t('memory.delete', lang: widget.lang),
           icon: Icons.delete_outline,
           kind: LumiSoftButtonKind.danger,
           tiny: true,
-          onTap: () => widget.onDelete(widget.memory.id),
+          loading: widget.isDeleting,
+          onTap: _actionsDisabled
+              ? null
+              : () => widget.onDelete(widget.memory.id),
         ),
       ],
     );
   }
 }
-
 
 // ═══════════════════════════════════════════════════════════════
 // 公共 widget — 搜索 chip / select / input / textarea
@@ -1037,7 +1204,10 @@ class _SearchChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 4),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: 4,
+      ),
       decoration: AppSurfaces.chip(active: false, isDark: isDark),
       child: Row(
         children: [
@@ -1054,16 +1224,13 @@ class _SearchChip extends StatelessWidget {
               onSubmitted: onChanged,
               style: TextStyle(
                 fontSize: 14,
-                color:
-                    isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+                color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
               ),
               decoration: InputDecoration(
                 hintText: hint,
                 hintStyle: TextStyle(
                   fontSize: 14,
-                  color: isDark
-                      ? AppTheme.darkTextMuted
-                      : AppTheme.textMuted,
+                  color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                 ),
                 border: InputBorder.none,
                 isDense: true,
@@ -1093,7 +1260,10 @@ class _RichSelect<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 4),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: 4,
+      ),
       decoration: BoxDecoration(
         color: isDark
             ? AppTheme.darkSurface.withValues(alpha: 0.7)
@@ -1117,25 +1287,25 @@ class _RichSelect<T> extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 14,
-                    color: isDark
-                        ? AppTheme.darkTextMuted
-                        : AppTheme.textMuted,
+                    color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                   ),
                 ),
               ),
-            ...items.map((it) => DropdownMenuItem<T>(
-                  value: it.value,
-                  child: Text(
-                    it.label,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: isDark
-                          ? AppTheme.darkTextPrimary
-                          : AppTheme.textPrimary,
-                    ),
+            ...items.map(
+              (it) => DropdownMenuItem<T>(
+                value: it.value,
+                child: Text(
+                  it.label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: isDark
+                        ? AppTheme.darkTextPrimary
+                        : AppTheme.textPrimary,
                   ),
-                )),
+                ),
+              ),
+            ),
           ],
           onChanged: (v) {
             if (v != null) onChanged(v);

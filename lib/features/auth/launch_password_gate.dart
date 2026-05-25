@@ -18,6 +18,9 @@ final launchPasswordServiceProvider = Provider<LaunchPasswordService>((ref) {
   return LaunchPasswordService(ref.watch(databaseProvider));
 });
 
+/// 启动密码启用状态 Provider — 让设置页与顶层 Gate 共享同一状态
+final launchPasswordEnabledProvider = StateProvider<bool?>((ref) => null);
+
 /// 启动闸门 — 在 MaterialApp 之上挂载，包裹真实 child
 ///
 /// 行为概要（详见 design.md「P2 / R13」与 requirements 13.3 / 13.4）：
@@ -47,7 +50,8 @@ class LaunchPasswordGate extends ConsumerStatefulWidget {
   ConsumerState<LaunchPasswordGate> createState() => _LaunchPasswordGateState();
 }
 
-class _LaunchPasswordGateState extends ConsumerState<LaunchPasswordGate> with WidgetsBindingObserver {
+class _LaunchPasswordGateState extends ConsumerState<LaunchPasswordGate>
+    with WidgetsBindingObserver {
   /// 是否仍在判定「是否启用启动密码」
   bool _initializing = true;
 
@@ -88,6 +92,19 @@ class _LaunchPasswordGateState extends ConsumerState<LaunchPasswordGate> with Wi
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ref.listenManual<bool?>(launchPasswordEnabledProvider, (previous, next) {
+      if (next == null || !mounted || next == _enabled) return;
+      setState(() {
+        _enabled = next;
+        _unlocked = next;
+        _failureCount = 0;
+        _lockUntil = null;
+        _submitting = false;
+        _errorText = null;
+      });
+      _passwordController.clear();
+      _lockTicker?.cancel();
+    });
     _checkEnabled();
   }
 
@@ -121,6 +138,7 @@ class _LaunchPasswordGateState extends ConsumerState<LaunchPasswordGate> with Wi
       _enabled = enabled;
       _initializing = false;
     });
+    ref.read(launchPasswordEnabledProvider.notifier).state = enabled;
     if (enabled) {
       // 进入闸门后自动聚焦密码框，移动端会自动弹出键盘
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -200,8 +218,9 @@ class _LaunchPasswordGateState extends ConsumerState<LaunchPasswordGate> with Wi
     if (nextCount >= _kMaxFailures) {
       setState(() {
         _failureCount = 0;
-        _lockUntil = DateTime.now()
-            .add(widget.lockDurationOverride ?? _kLockDuration);
+        _lockUntil = DateTime.now().add(
+          widget.lockDurationOverride ?? _kLockDuration,
+        );
         _submitting = false;
         _errorText = null;
       });
@@ -281,8 +300,9 @@ class _LockScreen extends ConsumerWidget {
     ref.watch(localeProvider);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final accent = isDark ? AppTheme.darkAccent : AppTheme.accent;
-    final textPrimary =
-        isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary;
+    final textPrimary = isDark
+        ? AppTheme.darkTextPrimary
+        : AppTheme.textPrimary;
     final textMuted = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
 
     // TODO(parity): 主项目缺失 'auth.lockHint' 键，硬编码兜底（含 {seconds} 占位）
@@ -401,11 +421,7 @@ class _HintRow extends StatelessWidget {
   final Color color;
   final String text;
 
-  const _HintRow({
-    required this.icon,
-    required this.color,
-    required this.text,
-  });
+  const _HintRow({required this.icon, required this.color, required this.text});
 
   @override
   Widget build(BuildContext context) {
@@ -448,8 +464,9 @@ class _PrimaryButton extends StatelessWidget {
     final decoration = enabled
         ? AppSurfaces.buttonPrimary(isDark: isDark)
         : BoxDecoration(
-            color: (isDark ? AppTheme.darkAccent : AppTheme.accent)
-                .withValues(alpha: 0.18),
+            color: (isDark ? AppTheme.darkAccent : AppTheme.accent).withValues(
+              alpha: 0.18,
+            ),
             borderRadius: BorderRadius.circular(16),
           );
     return MouseRegion(
@@ -467,9 +484,7 @@ class _PrimaryButton extends StatelessWidget {
               fontWeight: FontWeight.w600,
               color: enabled
                   ? Colors.white
-                  : (isDark
-                      ? AppTheme.darkTextMuted
-                      : AppTheme.textMuted),
+                  : (isDark ? AppTheme.darkTextMuted : AppTheme.textMuted),
             ),
           ),
         ),

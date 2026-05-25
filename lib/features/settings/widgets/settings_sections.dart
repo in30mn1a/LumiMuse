@@ -327,6 +327,7 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
           ),
           const SizedBox(height: 12),
           _editField(
+            fieldKey: 'name',
             isDark: isDark,
             label: I18n.t('settings.providerName', lang: lang),
             value: ep['name'] ?? '',
@@ -337,6 +338,7 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
           ),
           const SizedBox(height: 12),
           _editField(
+            fieldKey: 'api_base',
             isDark: isDark,
             label: I18n.t('settings.apiBase', lang: lang),
             value: ep['api_base'] ?? '',
@@ -347,6 +349,7 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
           ),
           const SizedBox(height: 12),
           _editField(
+            fieldKey: 'api_key',
             isDark: isDark,
             label: I18n.t('settings.apiKey', lang: lang),
             value: ep['api_key'] ?? '',
@@ -357,6 +360,7 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
           ),
           const SizedBox(height: 12),
           _editField(
+            fieldKey: 'model',
             isDark: isDark,
             label: I18n.t('settings.model', lang: lang),
             value: ep['model'] ?? '',
@@ -389,6 +393,7 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
   }
 
   Widget _editField({
+    required String fieldKey,
     required bool isDark,
     required String label,
     required String value,
@@ -419,6 +424,7 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
             borderRadius: BorderRadius.circular(12),
           ),
           child: TextFormField(
+            key: ValueKey('${_editingProvider?['id'] ?? 'new'}_$fieldKey'),
             initialValue: value,
             obscureText: obscure,
             onChanged: onChanged,
@@ -613,11 +619,13 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
         apiBase: _apiBaseController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
       );
+      if (!mounted) return;
       setState(() => _availableModels = models);
       if (models.isEmpty) {
         setState(() => _modelError = '未获取到模型，请检查 API 配置');
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() => _modelError = '$e');
     } finally {
       if (mounted) setState(() => _loadingModels = false);
@@ -1112,10 +1120,7 @@ class DisplaySection extends ConsumerWidget {
 
 /// 字体缩放滑块：拖动时仅更新 [fontScaleProvider] 预览，松手后写库。
 class _FontScaleSlider extends ConsumerStatefulWidget {
-  const _FontScaleSlider({
-    required this.value,
-    required this.onCommit,
-  });
+  const _FontScaleSlider({required this.value, required this.onCommit});
 
   final double value;
   final Future<void> Function(double value) onCommit;

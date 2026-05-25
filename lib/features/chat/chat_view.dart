@@ -14,6 +14,7 @@
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:drift/drift.dart' as drift;
@@ -347,6 +348,13 @@ class _ChatViewState extends ConsumerState<ChatView> {
   /// 用户主动发送消息时强制跳到底部（不经过平滑动画）
   bool _forceScrollToBottom = false;
 
+  /// 搜索跳转定位用：为可见消息建立稳定锚点，并短暂高亮目标消息。
+  final Map<String, GlobalKey> _messageKeys = {};
+  String? _highlightedMessageId;
+  Timer? _highlightTimer;
+  bool _targetScrollScheduled = false;
+  bool _targetExpandScheduled = false;
+
   /// token 计数缓存 — 避免每次 build 遍历全部消息
   String _cachedTokenConvId = '';
   int _cachedTokenMsgCount = 0;
@@ -475,6 +483,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
   void dispose() {
     _scrollController.dispose();
     _chatToast.dispose();
+    _highlightTimer?.cancel();
     _extractStatusTimer?.cancel();
     super.dispose();
   }
@@ -491,14 +500,17 @@ class _ChatViewState extends ConsumerState<ChatView> {
     _resetAnimationState();
     _resetMemoryTaskSeen();
 
-    final selectionConv = ref.read(selectionProvider).conversationId;
+    final selection = ref.read(selectionProvider);
+    final selectionConv = selection.conversationId;
     if (selectionConv != null) {
+      if (selection.characterId != characterId) return;
       _setConversationId(selectionConv);
       return;
     }
 
     final list = await ref.read(conversationListProvider(characterId).future);
     if (!mounted) return;
+    if (ref.read(selectionProvider).characterId != characterId) return;
     if (list.isNotEmpty) {
       _setConversationId(list.first.id);
     } else {
@@ -535,6 +547,67 @@ class _ChatViewState extends ConsumerState<ChatView> {
         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
     });
+  }
+
+  void _scheduleTargetMessageScroll({
+    required String messageId,
+    required int itemIndex,
+    required int itemCount,
+  }) {
+    if (_targetScrollScheduled) return;
+    _targetScrollScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_scrollToTargetMessage(messageId, itemIndex, itemCount));
+    });
+  }
+
+  Future<void> _scrollToTargetMessage(
+    String messageId,
+    int itemIndex,
+    int itemCount,
+  ) async {
+    try {
+      if (!mounted) return;
+      if (!await _ensureTargetVisible(messageId)) {
+        if (!_scrollController.hasClients) return;
+        final maxScroll = _scrollController.position.maxScrollExtent;
+        final ratio = itemCount <= 1 ? 1.0 : itemIndex / (itemCount - 1);
+        await _scrollController.animateTo(
+          (maxScroll * ratio).clamp(
+            _scrollController.position.minScrollExtent,
+            _scrollController.position.maxScrollExtent,
+          ),
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+        await SchedulerBinding.instance.endOfFrame;
+        if (!mounted) return;
+        if (!await _ensureTargetVisible(messageId)) return;
+      }
+      ref.read(selectionProvider.notifier).clearTargetMessage();
+    } finally {
+      _targetScrollScheduled = false;
+    }
+  }
+
+  Future<bool> _ensureTargetVisible(String messageId) async {
+    final targetContext = _messageKeys[messageId]?.currentContext;
+    if (targetContext == null) return false;
+    await Scrollable.ensureVisible(
+      targetContext,
+      duration: const Duration(milliseconds: 360),
+      curve: Curves.easeOutCubic,
+      alignment: 0.35,
+    );
+    if (!mounted) return true;
+    _highlightTimer?.cancel();
+    setState(() => _highlightedMessageId = messageId);
+    _highlightTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted && _highlightedMessageId == messageId) {
+        setState(() => _highlightedMessageId = null);
+      }
+    });
+    return true;
   }
 
   @override
@@ -1216,7 +1289,13 @@ class _ChatViewState extends ConsumerState<ChatView> {
           return _buildEmptyChat(character);
         }
 
-        if (!_scrollScheduled) {
+        final selection = ref.watch(selectionProvider);
+        final targetMessageId =
+            selection.conversationId == _resolvedConversationId
+            ? selection.targetMessageId
+            : null;
+
+        if (!_scrollScheduled && targetMessageId == null) {
           _scrollScheduled = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _scrollScheduled = false;
@@ -1240,6 +1319,21 @@ class _ChatViewState extends ConsumerState<ChatView> {
 
         // ── 长对话分页：只显示最新的 _visibleMessageCount 条 ──
         final totalMessages = messages.length;
+        final targetMessageIndex = targetMessageId == null
+            ? -1
+            : messages.indexWhere((m) => m.id == targetMessageId);
+        if (targetMessageIndex >= 0 &&
+            totalMessages - targetMessageIndex > _visibleMessageCount &&
+            !_targetExpandScheduled) {
+          _targetExpandScheduled = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            setState(() {
+              _visibleMessageCount = totalMessages - targetMessageIndex;
+              _targetExpandScheduled = false;
+            });
+          });
+        }
         final displayMessages = totalMessages > _visibleMessageCount
             ? messages.sublist(totalMessages - _visibleMessageCount)
             : messages;
@@ -1248,6 +1342,27 @@ class _ChatViewState extends ConsumerState<ChatView> {
         _lastTotalMessages = totalMessages;
 
         final items = _buildItemsWithDateDividers(displayMessages);
+        final targetItemIndex = targetMessageId == null
+            ? -1
+            : items.indexWhere(
+                (item) =>
+                    item is MessageItem && item.message.id == targetMessageId,
+              );
+        if (targetMessageId != null && targetMessageIndex == -1) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              ref.read(selectionProvider.notifier).clearTargetMessage();
+            }
+          });
+        } else if (targetMessageId != null &&
+            targetItemIndex >= 0 &&
+            !_targetExpandScheduled) {
+          _scheduleTargetMessageScroll(
+            messageId: targetMessageId,
+            itemIndex: targetItemIndex,
+            itemCount: items.length,
+          );
+        }
         // 初始加载：将所有已有消息标记为"已见"，不触发动画
         if (!_initialLoadDone) {
           for (final item in items) {
@@ -1371,7 +1486,12 @@ class _ChatViewState extends ConsumerState<ChatView> {
                     onToggleActions: _toggleMessageActions,
                   );
 
-                  return MessageAnimationWrapper(
+                  final targetKey = _messageKeys.putIfAbsent(
+                    msg.id,
+                    () => GlobalKey(),
+                  );
+                  final isHighlighted = _highlightedMessageId == msg.id;
+                  final messageContent = MessageAnimationWrapper(
                     key: isStreamingTarget
                         ? ValueKey('streaming_${msg.id}')
                         : ValueKey('anim_${msg.id}'),
@@ -1380,6 +1500,21 @@ class _ChatViewState extends ConsumerState<ChatView> {
                     child: isStreamingTarget
                         ? _buildRegenerateStreamingBubble(character)
                         : bubble,
+                  );
+
+                  return KeyedSubtree(
+                    key: targetKey,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOut,
+                      decoration: BoxDecoration(
+                        color: isHighlighted
+                            ? AppTheme.accent.withValues(alpha: 0.10)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: messageContent,
+                    ),
                   );
                 },
               ),

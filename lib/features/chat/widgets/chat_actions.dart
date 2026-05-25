@@ -32,6 +32,7 @@ class ChatActions {
   final void Function() resetMemoryTaskSeen;
   final void Function(String id) onConversationChanged;
   bool isGeneratingImage = false;
+  bool _sendInFlight = false;
 
   ChatActions({
     required this.ref,
@@ -51,32 +52,48 @@ class ChatActions {
     return I18n.tArgs(key, args, lang: lang);
   }
 
-  Future<void> sendMessage(String text, [List<AttachmentItem>? attachments]) async {
+  Future<void> sendMessage(
+    String text, [
+    List<AttachmentItem>? attachments,
+  ]) async {
     final trimmedText = text.trim();
-    if (trimmedText.isEmpty && (attachments == null || attachments.isEmpty)) return;
-
-    final selection = ref.read(selectionProvider);
-    if (selection.characterId == null) return;
-
-    if (conversationId == null) {
-      final convActions = ref.read(conversationActionsProvider);
-      final id = await convActions.create(characterId: selection.characterId!);
-      conversationId = id;
-      onConversationChanged(id);
-      ref.read(selectionProvider.notifier).setActiveConversation(id);
+    if (_sendInFlight ||
+        (trimmedText.isEmpty && (attachments == null || attachments.isEmpty))) {
+      return;
     }
+    _sendInFlight = true;
 
-    requestScrollToBottom();
+    try {
+      final selection = ref.read(selectionProvider);
+      if (selection.characterId == null) return;
 
-    final controller =
-        ref.read(chatControllerProvider(conversationId!).notifier);
+      if (conversationId == null) {
+        final convActions = ref.read(conversationActionsProvider);
+        final id = await convActions.create(
+          characterId: selection.characterId!,
+        );
+        if (!isMounted()) return;
+        conversationId = id;
+        onConversationChanged(id);
+        ref.read(selectionProvider.notifier).setActiveConversation(id);
+      }
 
-    if (attachments != null && attachments.isNotEmpty) {
-      await controller.sendMessageWithAttachments(trimmedText, attachments);
-    } else {
-      await controller.sendMessage(trimmedText);
+      requestScrollToBottom();
+
+      final controller = ref.read(
+        chatControllerProvider(conversationId!).notifier,
+      );
+
+      if (attachments != null && attachments.isNotEmpty) {
+        await controller.sendMessageWithAttachments(trimmedText, attachments);
+      } else {
+        await controller.sendMessage(trimmedText);
+      }
+      if (!isMounted()) return;
+      requestScrollToBottom();
+    } finally {
+      _sendInFlight = false;
     }
-    requestScrollToBottom();
   }
 
   Future<void> sendFromInput(
@@ -90,9 +107,7 @@ class ChatActions {
 
   void stopGeneration() {
     if (conversationId == null) return;
-    ref
-        .read(chatControllerProvider(conversationId!).notifier)
-        .stop();
+    ref.read(chatControllerProvider(conversationId!).notifier).stop();
   }
 
   Future<void> regenerate(String messageId) async {
@@ -112,10 +127,10 @@ class ChatActions {
       showToast('找不到目标用户消息');
       return;
     }
-    final nextAssistant = msgs.skip(idx + 1).cast<Message?>().firstWhere(
-          (m) => m?.role == 'assistant',
-          orElse: () => null,
-        );
+    final nextAssistant = msgs
+        .skip(idx + 1)
+        .cast<Message?>()
+        .firstWhere((m) => m?.role == 'assistant', orElse: () => null);
     if (nextAssistant != null) {
       ref
           .read(chatControllerProvider(convId).notifier)
@@ -128,7 +143,11 @@ class ChatActions {
     }
   }
 
-  Future<void> generateImageForMessage(String messageId, {String? existingPrompt, String? replaceImageId}) async {
+  Future<void> generateImageForMessage(
+    String messageId, {
+    String? existingPrompt,
+    String? replaceImageId,
+  }) async {
     final convId = conversationId;
     if (convId == null) return;
     if (isGeneratingImage) {
@@ -147,15 +166,14 @@ class ChatActions {
     final placeholderId = replaceImageId ?? const Uuid().v4();
 
     // upsert 占位条目：path 为空时 message_bubble 渲染"正在生图…"卡片
-    Future<void> upsertPlaceholder({
-      required String prompt,
-    }) async {
-      final msg = await (db.select(db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingle();
+    Future<void> upsertPlaceholder({required String prompt}) async {
+      final msg = await (db.select(
+        db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingle();
       final meta = MessageMetadata.fromJsonString(msg.metadata);
-      final existingIndex =
-          meta.generatedImages.indexWhere((img) => img.id == placeholderId);
+      final existingIndex = meta.generatedImages.indexWhere(
+        (img) => img.id == placeholderId,
+      );
       final List<GeneratedImage> nextImages;
       if (existingIndex >= 0) {
         nextImages = [...meta.generatedImages];
@@ -187,17 +205,20 @@ class ChatActions {
       // 1) 占位处理
       if (replaceImageId != null) {
         // 原位替换：把现有图片状态改为 pending_image（保留原图显示直到新图生成完）
-        final msg = await (db.select(db.messages)
-              ..where((t) => t.id.equals(messageId)))
-            .getSingle();
+        final msg = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals(messageId))).getSingle();
         final meta = MessageMetadata.fromJsonString(msg.metadata);
         final updatedForPending = meta.generatedImages.map((img) {
           if (img.id != replaceImageId) return img;
           return img.copyWith(status: 'pending_image');
         }).toList();
         final pendingMeta = meta.copyWith(generatedImages: updatedForPending);
-        await (db.update(db.messages)..where((t) => t.id.equals(messageId)))
-            .write(MessagesCompanion(metadata: Value(pendingMeta.toJsonString())));
+        await (db.update(
+          db.messages,
+        )..where((t) => t.id.equals(messageId))).write(
+          MessagesCompanion(metadata: Value(pendingMeta.toJsonString())),
+        );
       } else {
         // 新图片：写入空 prompt 占位
         await upsertPlaceholder(prompt: existingPrompt ?? '');
@@ -242,9 +263,9 @@ class ChatActions {
       imageService.dispose();
 
       // 5) 用真实路径替换占位
-      final msg = await (db.select(db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingle();
+      final msg = await (db.select(
+        db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingle();
       final meta = MessageMetadata.fromJsonString(msg.metadata);
 
       List<GeneratedImage> updatedImages;
@@ -255,21 +276,26 @@ class ChatActions {
           // 归一化 versions
           var versions = List<ImageVersion>.from(img.versions);
           if (versions.isEmpty && img.url.isNotEmpty) {
-            versions.add(ImageVersion(
-              id: img.id,
-              url: img.url,
-              path: img.path,
-              prompt: img.prompt,
-            ));
+            versions.add(
+              ImageVersion(
+                id: img.id,
+                url: img.url,
+                path: img.path,
+                prompt: img.prompt,
+              ),
+            );
           }
           // 追加新版本
-          final newVersionId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
-          versions.add(ImageVersion(
-            id: newVersionId,
-            url: imagePath,
-            path: imagePath,
-            prompt: positivePrompt,
-          ));
+          final newVersionId = DateTime.now().millisecondsSinceEpoch
+              .toRadixString(36);
+          versions.add(
+            ImageVersion(
+              id: newVersionId,
+              url: imagePath,
+              path: imagePath,
+              prompt: positivePrompt,
+            ),
+          );
           return img.copyWith(
             url: imagePath,
             path: imagePath,
@@ -282,15 +308,17 @@ class ChatActions {
       } else {
         // 新图片：直接替换占位
         updatedImages = meta.generatedImages
-            .map((img) => img.id == placeholderId
-                ? GeneratedImage(
-                    id: placeholderId,
-                    url: imagePath,
-                    path: imagePath,
-                    prompt: positivePrompt,
-                    status: 'ready',
-                  )
-                : img)
+            .map(
+              (img) => img.id == placeholderId
+                  ? GeneratedImage(
+                      id: placeholderId,
+                      url: imagePath,
+                      path: imagePath,
+                      prompt: positivePrompt,
+                      status: 'ready',
+                    )
+                  : img,
+            )
             .toList();
       }
 
@@ -304,21 +332,23 @@ class ChatActions {
     } catch (e) {
       // 失败时将占位状态设为 failed，保留占位让用户可重试
       try {
-        final msg = await (db.select(db.messages)
-              ..where((t) => t.id.equals(messageId)))
-            .getSingle();
+        final msg = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals(messageId))).getSingle();
         final meta = MessageMetadata.fromJsonString(msg.metadata);
         final updated = meta.copyWith(
           generatedImages: meta.generatedImages
-              .map((img) => img.id == placeholderId
-                  ? GeneratedImage(
-                      id: placeholderId,
-                      url: '',
-                      path: '',
-                      prompt: img.prompt,
-                      status: 'failed',
-                    )
-                  : img)
+              .map(
+                (img) => img.id == placeholderId
+                    ? GeneratedImage(
+                        id: placeholderId,
+                        url: '',
+                        path: '',
+                        prompt: img.prompt,
+                        status: 'failed',
+                      )
+                    : img,
+              )
               .toList(),
         );
         await (db.update(db.messages)..where((t) => t.id.equals(messageId)))
@@ -427,10 +457,18 @@ class ChatActions {
       final imagePlaceholderId = const Uuid().v4();
       final placeholderMeta = MessageMetadata(
         generatedImages: [
-          GeneratedImage(id: imagePlaceholderId, url: '', path: '', prompt: p.positive, status: 'pending'),
+          GeneratedImage(
+            id: imagePlaceholderId,
+            url: '',
+            path: '',
+            prompt: p.positive,
+            status: 'pending',
+          ),
         ],
       );
-      await (db.update(db.messages)..where((t) => t.id.equals(placeholderId!))).write(
+      await (db.update(
+        db.messages,
+      )..where((t) => t.id.equals(placeholderId!))).write(
         MessagesCompanion(metadata: Value(placeholderMeta.toJsonString())),
       );
       refreshMessages();
@@ -446,14 +484,19 @@ class ChatActions {
 
       final doneMeta = MessageMetadata(
         generatedImages: [
-          GeneratedImage(id: imagePlaceholderId, url: '', path: imagePath, prompt: p.positive, status: 'ready'),
+          GeneratedImage(
+            id: imagePlaceholderId,
+            url: '',
+            path: imagePath,
+            prompt: p.positive,
+            status: 'ready',
+          ),
         ],
       );
-      await (db.update(db.messages)..where((t) => t.id.equals(placeholderId!))).write(
-        MessagesCompanion(metadata: Value(doneMeta.toJsonString())),
-      );
+      await (db.update(db.messages)..where((t) => t.id.equals(placeholderId!)))
+          .write(MessagesCompanion(metadata: Value(doneMeta.toJsonString())));
 
-          requestScrollToBottom();
+      requestScrollToBottom();
       if (!isMounted()) return;
       showToast('图片生成完成', type: ChatToastType.info);
     } catch (e) {
@@ -461,16 +504,18 @@ class ChatActions {
       if (placeholderId != null) {
         try {
           final db = ref.read(databaseProvider);
-          final msg = await (db.select(db.messages)
-                ..where((t) => t.id.equals(placeholderId!)))
-              .getSingle();
+          final msg = await (db.select(
+            db.messages,
+          )..where((t) => t.id.equals(placeholderId!))).getSingle();
           final meta = MessageMetadata.fromJsonString(msg.metadata);
           final updatedMeta = meta.copyWith(
             generatedImages: meta.generatedImages
                 .map((img) => img.copyWith(status: 'failed'))
                 .toList(),
           );
-          await (db.update(db.messages)..where((t) => t.id.equals(placeholderId!))).write(
+          await (db.update(
+            db.messages,
+          )..where((t) => t.id.equals(placeholderId!))).write(
             MessagesCompanion(metadata: Value(updatedMeta.toJsonString())),
           );
         } catch (_) {}
@@ -525,16 +570,13 @@ class ChatActions {
   Set<String> _collectImagePaths(Map<String, dynamic> image) =>
       img_del.collectImagePaths(image);
 
-  Future<void> deleteGeneratedImage(
-    String messageId,
-    String imageId,
-  ) async {
+  Future<void> deleteGeneratedImage(String messageId, String imageId) async {
     final db = ref.read(databaseProvider);
     Set<String> removed = const <String>{};
     try {
-      final msg = await (db.select(db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingle();
+      final msg = await (db.select(
+        db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingle();
       final meta = MessageMetadata.fromJsonString(msg.metadata);
       final metaMap = meta.toJson();
 
@@ -553,8 +595,7 @@ class ChatActions {
 
       final newMetaMap = img_del.removeGeneratedImage(metaMap, imageId);
       await db.transaction(() async {
-        await (db.update(db.messages)
-              ..where((t) => t.id.equals(messageId)))
+        await (db.update(db.messages)..where((t) => t.id.equals(messageId)))
             .write(MessagesCompanion(metadata: Value(jsonEncode(newMetaMap))));
       });
     } catch (e) {
@@ -584,9 +625,9 @@ class ChatActions {
     if (versionLocalPath.isEmpty) return;
     final db = ref.read(databaseProvider);
     try {
-      final msg = await (db.select(db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingle();
+      final msg = await (db.select(
+        db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingle();
       final meta = MessageMetadata.fromJsonString(msg.metadata);
       final metaMap = meta.toJson();
 
@@ -596,15 +637,16 @@ class ChatActions {
         versionLocalPath,
       );
 
-      final beforeJson = jsonEncode(meta.generatedImages.map((e) => e.toJson()).toList());
+      final beforeJson = jsonEncode(
+        meta.generatedImages.map((e) => e.toJson()).toList(),
+      );
       final afterJson = jsonEncode(newMetaMap['generatedImages'] ?? const []);
       if (beforeJson == afterJson) {
         return;
       }
 
       await db.transaction(() async {
-        await (db.update(db.messages)
-              ..where((t) => t.id.equals(messageId)))
+        await (db.update(db.messages)..where((t) => t.id.equals(messageId)))
             .write(MessagesCompanion(metadata: Value(jsonEncode(newMetaMap))));
       });
     } catch (e) {
@@ -633,9 +675,9 @@ class ChatActions {
     String newPrompt,
   ) async {
     final db = ref.read(databaseProvider);
-    final msg = await (db.select(db.messages)
-          ..where((t) => t.id.equals(messageId)))
-        .getSingle();
+    final msg = await (db.select(
+      db.messages,
+    )..where((t) => t.id.equals(messageId))).getSingle();
     final meta = MessageMetadata.fromJsonString(msg.metadata);
 
     final updatedImages = meta.generatedImages.map((img) {
@@ -656,8 +698,9 @@ class ChatActions {
     }).toList();
 
     final newMeta = meta.copyWith(generatedImages: updatedImages);
-    await (db.update(db.messages)..where((t) => t.id.equals(messageId)))
-        .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
+    await (db.update(db.messages)..where((t) => t.id.equals(messageId))).write(
+      MessagesCompanion(metadata: Value(newMeta.toJsonString())),
+    );
     refreshMessages();
   }
 
@@ -668,15 +711,17 @@ class ChatActions {
     int versionIndex,
   ) async {
     final db = ref.read(databaseProvider);
-    final msg = await (db.select(db.messages)
-          ..where((t) => t.id.equals(messageId)))
-        .getSingle();
+    final msg = await (db.select(
+      db.messages,
+    )..where((t) => t.id.equals(messageId))).getSingle();
     final meta = MessageMetadata.fromJsonString(msg.metadata);
 
     final updatedImages = meta.generatedImages.map((img) {
       if (img.id != imageId) return img;
       final versions = img.versions;
-      if (versions.isEmpty || versionIndex < 0 || versionIndex >= versions.length) {
+      if (versions.isEmpty ||
+          versionIndex < 0 ||
+          versionIndex >= versions.length) {
         return img;
       }
       final selected = versions[versionIndex];
@@ -689,8 +734,9 @@ class ChatActions {
     }).toList();
 
     final newMeta = meta.copyWith(generatedImages: updatedImages);
-    await (db.update(db.messages)..where((t) => t.id.equals(messageId)))
-        .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
+    await (db.update(db.messages)..where((t) => t.id.equals(messageId))).write(
+      MessagesCompanion(metadata: Value(newMeta.toJsonString())),
+    );
     refreshMessages();
   }
 }

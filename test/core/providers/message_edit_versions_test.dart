@@ -18,6 +18,7 @@
 // 默认 100 次迭代（glados ExploreConfig 默认值）。
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
@@ -36,9 +37,21 @@ AppDatabase _createTestDb() {
 
 /// 字符样本：覆盖 ASCII / CJK / 空白与标点，用于由种子拼装确定性文本。
 const _charPalette = <String>[
-  'a', 'B', '7', ' ', '\n',
-  '猫', '光', '星', '夜', '茶',
-  '。', '：', ',', '!', '?',
+  'a',
+  'B',
+  '7',
+  ' ',
+  '\n',
+  '猫',
+  '光',
+  '星',
+  '夜',
+  '茶',
+  '。',
+  '：',
+  ',',
+  '!',
+  '?',
 ];
 
 /// 由整数种子拼装一段确定性文本，长度 ∈ [0, 16]。
@@ -80,10 +93,7 @@ Future<void> _seedMessage(
 }) async {
   await db.customInsert(
     'INSERT INTO characters (id, name) VALUES (?, ?)',
-    variables: [
-      Variable.withString('char-1'),
-      Variable.withString('测试角色'),
-    ],
+    variables: [Variable.withString('char-1'), Variable.withString('测试角色')],
   );
   await db.customInsert(
     'INSERT INTO conversations (id, character_id, title) VALUES (?, ?, ?)',
@@ -123,56 +133,75 @@ void main() {
       any.intInRange(0, 1 << 20), // activeVersion 选择种子
       any.intInRange(0, 1 << 20), // newContent 种子
       ExploreConfig(numRuns: 100),
-    ).test(
-      'editContent + switchVersion(active) 后顶层与 versions[active] 同步',
-      (versionsSeed, activeSeed, newContentSeed) async {
-        final db = _createTestDb();
-        try {
-          final versions = _buildVersions(versionsSeed);
-          final activeVersion = activeSeed.abs() % versions.length;
-          final newContent = _contentFromSeed(newContentSeed);
-          final expectedTokens = estimateTokens(newContent);
+    ).test('editContent + switchVersion(active) 后顶层与 versions[active] 同步', (
+      versionsSeed,
+      activeSeed,
+      newContentSeed,
+    ) async {
+      final db = _createTestDb();
+      try {
+        final versions = _buildVersions(versionsSeed);
+        final activeVersion = activeSeed.abs() % versions.length;
+        final newContent = _contentFromSeed(newContentSeed);
+        final expectedTokens = estimateTokens(newContent);
 
-          const messageId = 'msg-1';
-          await _seedMessage(
-            db,
-            messageId: messageId,
-            versions: versions,
-            activeVersion: activeVersion,
-          );
+        const messageId = 'msg-1';
+        await _seedMessage(
+          db,
+          messageId: messageId,
+          versions: versions,
+          activeVersion: activeVersion,
+        );
 
-          final actions = MessageActions(db, CharacterImagesActions(db));
-          await actions.editContent(messageId, newContent);
-          await actions.switchVersion(messageId, activeVersion);
+        final actions = MessageActions(db, CharacterImagesActions(db));
+        await actions.editContent(messageId, newContent);
+        await actions.switchVersion(messageId, activeVersion);
 
-          final row = await (db.select(db.messages)
-                ..where((t) => t.id.equals(messageId)))
-              .getSingle();
+        final row = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals(messageId))).getSingle();
 
-          // 顶层字段：messages.content / token_count
-          expect(row.content, newContent,
-              reason: 'messages.content 应等于 newContent');
-          expect(row.tokenCount, expectedTokens,
-              reason: 'messages.token_count 应等于 estimateTokens(newContent)');
+        // 顶层字段：messages.content / token_count
+        expect(
+          row.content,
+          newContent,
+          reason: 'messages.content 应等于 newContent',
+        );
+        expect(
+          row.tokenCount,
+          expectedTokens,
+          reason: 'messages.token_count 应等于 estimateTokens(newContent)',
+        );
 
-          // metadata.versions[active] 同步状态
-          final meta = jsonDecode(row.metadata) as Map<String, dynamic>;
-          final versionsBack = meta['versions'] as List<dynamic>;
-          expect(versionsBack.length, versions.length,
-              reason: 'editContent 不应改变版本数量');
-          final activeBack = meta['activeVersion'] as int;
-          expect(activeBack, activeVersion,
-              reason: 'switchVersion(activeVersion) 不应改变 activeVersion');
-          final activeMap = versionsBack[activeBack] as Map<String, dynamic>;
-          expect(activeMap['content'], newContent,
-              reason: 'versions[active].content 应等于 newContent');
-          expect(activeMap['token_count'], expectedTokens,
-              reason: 'versions[active].token_count 应等于 estimateTokens(newContent)');
-        } finally {
-          await db.close();
-        }
-      },
-    );
+        // metadata.versions[active] 同步状态
+        final meta = jsonDecode(row.metadata) as Map<String, dynamic>;
+        final versionsBack = meta['versions'] as List<dynamic>;
+        expect(
+          versionsBack.length,
+          versions.length,
+          reason: 'editContent 不应改变版本数量',
+        );
+        final activeBack = meta['activeVersion'] as int;
+        expect(
+          activeBack,
+          activeVersion,
+          reason: 'switchVersion(activeVersion) 不应改变 activeVersion',
+        );
+        final activeMap = versionsBack[activeBack] as Map<String, dynamic>;
+        expect(
+          activeMap['content'],
+          newContent,
+          reason: 'versions[active].content 应等于 newContent',
+        );
+        expect(
+          activeMap['token_count'],
+          expectedTokens,
+          reason: 'versions[active].token_count 应等于 estimateTokens(newContent)',
+        );
+      } finally {
+        await db.close();
+      }
+    });
 
     // 例测：单版本消息（最简边界，作双层保护）
     test('单版本消息：编辑后 versions[0] 与顶层均同步', () async {
@@ -193,9 +222,9 @@ void main() {
         await actions.editContent('msg-x', newContent);
         await actions.switchVersion('msg-x', 0);
 
-        final row = await (db.select(db.messages)
-              ..where((t) => t.id.equals('msg-x')))
-            .getSingle();
+        final row = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals('msg-x'))).getSingle();
         expect(row.content, newContent);
         expect(row.tokenCount, estimateTokens(newContent));
         final meta = jsonDecode(row.metadata) as Map<String, dynamic>;
@@ -229,22 +258,134 @@ void main() {
         await actions.editContent('msg-mid', newContent);
         await actions.switchVersion('msg-mid', 1);
 
-        final row = await (db.select(db.messages)
-              ..where((t) => t.id.equals('msg-mid')))
-            .getSingle();
+        final row = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals('msg-mid'))).getSingle();
         expect(row.content, newContent);
         expect(row.tokenCount, estimateTokens(newContent));
         final meta = jsonDecode(row.metadata) as Map<String, dynamic>;
         final versionsBack = (meta['versions'] as List).cast<Map>();
-        expect(versionsBack[0]['content'], 'v0 旧',
-            reason: '非活跃版本 v0 不应被编辑波及');
-        expect(versionsBack[1]['content'], newContent,
-            reason: '活跃版本 v1 应已同步为 newContent');
+        expect(versionsBack[0]['content'], 'v0 旧', reason: '非活跃版本 v0 不应被编辑波及');
+        expect(
+          versionsBack[1]['content'],
+          newContent,
+          reason: '活跃版本 v1 应已同步为 newContent',
+        );
         expect(versionsBack[1]['token_count'], estimateTokens(newContent));
-        expect(versionsBack[2]['content'], 'v2 旧',
-            reason: '非活跃版本 v2 不应被编辑波及');
+        expect(versionsBack[2]['content'], 'v2 旧', reason: '非活跃版本 v2 不应被编辑波及');
       } finally {
         await db.close();
+      }
+    });
+
+    test('delete：activeVersion 越界时夹到合法范围，不抛 RangeError', () async {
+      final db = _createTestDb();
+      try {
+        final versions = <Map<String, dynamic>>[
+          {'content': 'v0', 'token_count': estimateTokens('v0')},
+          {'content': 'v1', 'token_count': estimateTokens('v1')},
+          {'content': 'v2', 'token_count': estimateTokens('v2')},
+        ];
+        await _seedMessage(
+          db,
+          messageId: 'msg-invalid-active',
+          versions: versions,
+          activeVersion: 0,
+        );
+        await (db.update(
+          db.messages,
+        )..where((t) => t.id.equals('msg-invalid-active'))).write(
+          MessagesCompanion(
+            metadata: Value(
+              jsonEncode({'versions': versions, 'activeVersion': 99}),
+            ),
+          ),
+        );
+
+        final actions = MessageActions(db, CharacterImagesActions(db));
+        await actions.delete('msg-invalid-active');
+
+        final row = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals('msg-invalid-active'))).getSingle();
+        final meta = jsonDecode(row.metadata) as Map<String, dynamic>;
+        final versionsBack = meta['versions'] as List<dynamic>;
+        expect(versionsBack.length, 2);
+        expect(meta['activeVersion'], 1);
+        expect(row.content, 'v1');
+      } finally {
+        await db.close();
+      }
+    });
+
+    test('deleteAttachment：被删附件无其它引用时清理本地孤儿文件', () async {
+      final db = _createTestDb();
+      final assetRoot = Directory(
+        '${Directory.current.path}${Platform.pathSeparator}.dart_tool${Platform.pathSeparator}message_provider_assets',
+      );
+      try {
+        if (!await assetRoot.exists()) {
+          await assetRoot.create(recursive: true);
+        }
+        final asset = File(
+          '${assetRoot.path}${Platform.pathSeparator}orphan_attachment.png',
+        );
+        await asset.writeAsBytes(<int>[1, 2, 3]);
+
+        await db.customInsert(
+          'INSERT INTO characters (id, name) VALUES (?, ?)',
+          variables: [
+            Variable.withString('char-attach'),
+            Variable.withString('附件角色'),
+          ],
+        );
+        await db.customInsert(
+          'INSERT INTO conversations (id, character_id, title) VALUES (?, ?, ?)',
+          variables: [
+            Variable.withString('conv-attach'),
+            Variable.withString('char-attach'),
+            Variable.withString('附件对话'),
+          ],
+        );
+        await db.customInsert(
+          'INSERT INTO messages '
+          '(id, conversation_id, role, content, token_count, seq, metadata) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?)',
+          variables: [
+            Variable.withString('msg-attach'),
+            Variable.withString('conv-attach'),
+            Variable.withString('user'),
+            Variable.withString('带附件'),
+            Variable.withInt(1),
+            Variable.withInt(0),
+            Variable.withString(
+              jsonEncode({
+                'attachments': [
+                  {
+                    'type': 'image',
+                    'url': asset.path,
+                    'name': 'orphan_attachment.png',
+                  },
+                ],
+              }),
+            ),
+          ],
+        );
+
+        final actions = MessageActions(db, CharacterImagesActions(db));
+        await actions.deleteAttachment('msg-attach', 0);
+
+        final row = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals('msg-attach'))).getSingle();
+        final meta = jsonDecode(row.metadata) as Map<String, dynamic>;
+        expect(meta.containsKey('attachments'), isFalse);
+        expect(await asset.exists(), isFalse);
+      } finally {
+        await db.close();
+        if (await assetRoot.exists()) {
+          await assetRoot.delete(recursive: true);
+        }
       }
     });
   });

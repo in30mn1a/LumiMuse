@@ -51,6 +51,9 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
   /// 本地缓存的排序（拖拽时乐观更新）
   List<Character>? _localOrder;
 
+  /// 是否正在创建角色，防止快速重复点击创建多个空角色
+  bool _creatingCharacter = false;
+
   /// 角色列表滚动控制器
   final _scrollController = ScrollController();
 
@@ -61,11 +64,17 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
   }
 
   Future<void> _createCharacter(BuildContext context) async {
-    final actions = ref.read(characterActionsProvider);
-    final id = await actions.create();
-    if (!context.mounted) return;
-    ref.read(selectionProvider.notifier).selectCharacter(id);
-    context.push('/characters/$id/edit');
+    if (_creatingCharacter) return;
+    setState(() => _creatingCharacter = true);
+    try {
+      final actions = ref.read(characterActionsProvider);
+      final id = await actions.create();
+      if (!context.mounted) return;
+      ref.read(selectionProvider.notifier).selectCharacter(id);
+      context.push('/characters/$id/edit');
+    } finally {
+      if (mounted) setState(() => _creatingCharacter = false);
+    }
   }
 
   Future<void> _onReorder(
@@ -107,8 +116,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
         if (_localOrder != null) {
           final localIds = _localOrder!.map((c) => c.id).toSet();
           final dbIds = loaded.map((c) => c.id).toSet();
-          if (localIds.length != dbIds.length ||
-              !localIds.containsAll(dbIds)) {
+          if (localIds.length != dbIds.length || !localIds.containsAll(dbIds)) {
             _localOrder = null;
           }
         }
@@ -120,7 +128,9 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: _PrimaryButton(
-                onTap: () => _createCharacter(context),
+                onTap: _creatingCharacter
+                    ? null
+                    : () => _createCharacter(context),
                 isDark: isDark,
                 label: I18n.t('sidebar.create', lang: lang),
               ),
@@ -170,9 +180,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
               child: Icon(
                 Icons.auto_awesome,
                 size: 20,
-                color: isDark
-                    ? AppTheme.darkAccentDark
-                    : AppTheme.accentDark,
+                color: isDark ? AppTheme.darkAccentDark : AppTheme.accentDark,
               ),
             ),
             const SizedBox(height: 12),
@@ -181,9 +189,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w500,
-                color: isDark
-                    ? AppTheme.darkTextPrimary
-                    : AppTheme.textPrimary,
+                color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
               ),
               textAlign: TextAlign.center,
             ),
@@ -193,11 +199,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
     );
   }
 
-  Widget _buildList(
-    List<Character> list,
-    String? selectedId,
-    bool isDark,
-  ) {
+  Widget _buildList(List<Character> list, String? selectedId, bool isDark) {
     return LumiScrollbar(
       controller: _scrollController,
       child: ReorderableListView.builder(
@@ -213,8 +215,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
             child: Opacity(opacity: 0.6, child: child),
           );
         },
-        onReorder: (oldIndex, newIndex) =>
-            _onReorder(oldIndex, newIndex, list),
+        onReorder: (oldIndex, newIndex) => _onReorder(oldIndex, newIndex, list),
         itemBuilder: (context, index) {
           final character = list[index];
           return _CharacterCard(
@@ -243,7 +244,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
 //   hover: translateY(-1px)
 // ═════════════════════════════════════════════════════════════════
 class _PrimaryButton extends StatefulWidget {
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final bool isDark;
   final String label;
 
@@ -262,26 +263,31 @@ class _PrimaryButtonState extends State<_PrimaryButton> {
 
   @override
   Widget build(BuildContext context) {
+    final enabled = widget.onTap != null;
     return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
+      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      onEnter: enabled ? (_) => setState(() => _hover = true) : null,
+      onExit: enabled ? (_) => setState(() => _hover = false) : null,
       child: AnimatedScale(
-        scale: _hover ? 1.02 : 1.0,
+        scale: enabled && _hover ? 1.02 : 1.0,
         duration: const Duration(milliseconds: 150),
         curve: Curves.easeOutCubic,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
-          transform: Matrix4.translationValues(0, _hover ? -1 : 0, 0),
+          transform: Matrix4.translationValues(
+            0,
+            enabled && _hover ? -1 : 0,
+            0,
+          ),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppRadius.md),
-            boxShadow: _hover
+            boxShadow: enabled && _hover
                 ? [
                     BoxShadow(
                       color: AppTheme.accent.withValues(alpha: 0.35),
                       blurRadius: 16,
                       offset: const Offset(0, 6),
-                    )
+                    ),
                   ]
                 : null,
           ),
@@ -294,7 +300,10 @@ class _PrimaryButtonState extends State<_PrimaryButton> {
               child: InkWell(
                 onTap: widget.onTap,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   constraints: const BoxConstraints(minHeight: 45), // 2.8rem
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -381,8 +390,9 @@ class _CharacterCardState extends State<_CharacterCard> {
   Widget build(BuildContext context) {
     final isDark = widget.isDark;
     final selected = widget.selected;
-    final borderLight =
-        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+    final borderLight = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
     // bg-[rgba(155,124,240,0.10)]
     final selectedBg = AppTheme.accent.withValues(alpha: 0.10);
     // bg-white/48 / bg-white/78
@@ -411,9 +421,7 @@ class _CharacterCardState extends State<_CharacterCard> {
             duration: const Duration(milliseconds: 200),
             curve: Curves.easeInOut,
             decoration: BoxDecoration(
-              color: selected
-                  ? selectedBg
-                  : (_cardHover ? hoverBg : defaultBg),
+              color: selected ? selectedBg : (_cardHover ? hoverBg : defaultBg),
               border: Border.all(
                 color: selected
                     ? selectedBorder
@@ -423,7 +431,9 @@ class _CharacterCardState extends State<_CharacterCard> {
               boxShadow: _cardHover || selected
                   ? [
                       BoxShadow(
-                        color: isDark ? Colors.black38 : const Color(0x0A000000),
+                        color: isDark
+                            ? Colors.black38
+                            : const Color(0x0A000000),
                         blurRadius: _cardHover ? 8 : 4,
                         offset: Offset(0, _cardHover ? 4 : 2),
                       ),
@@ -460,8 +470,8 @@ class _CharacterCardState extends State<_CharacterCard> {
                                 color: selected
                                     ? AppTheme.accent
                                     : (isDark
-                                        ? AppTheme.darkTextMuted
-                                        : AppTheme.textMuted),
+                                          ? AppTheme.darkTextMuted
+                                          : AppTheme.textMuted),
                               ),
                             ),
                           ),
@@ -499,7 +509,8 @@ class _CharacterCardState extends State<_CharacterCard> {
   Widget _buildAvatar() {
     final isDark = widget.isDark;
     final selected = widget.selected;
-    final hasAvatar = widget.character.avatarUrl != null &&
+    final hasAvatar =
+        widget.character.avatarUrl != null &&
         widget.character.avatarUrl!.isNotEmpty;
     // ring-accent/20 vs ring-border-light
     final ringColor = selected
@@ -542,17 +553,13 @@ class _CharacterCardState extends State<_CharacterCard> {
     final isDark = widget.isDark;
     return Center(
       child: Text(
-        widget.character.name.isNotEmpty
-            ? widget.character.name[0]
-            : '?',
+        widget.character.name.isNotEmpty ? widget.character.name[0] : '?',
         style: TextStyle(
           fontSize: 14, // text-sm
           fontWeight: FontWeight.w600,
           color: selected
               ? Colors.white
-              : (isDark
-                  ? AppTheme.darkTextSecondary
-                  : AppTheme.textSecondary),
+              : (isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary),
         ),
       ),
     );

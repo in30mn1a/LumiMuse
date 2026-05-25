@@ -74,7 +74,7 @@ class _Scenario {
   /// 版本数组反向展开（最新版本在前）。每个元素为
   /// `(messageId, imageId, versionId, url)`。
   final List<({String messageId, String imageId, String versionId, String url})>
-      expectedItems;
+  expectedItems;
 
   /// 期望条目总数 == 所有 image 的 `versions.length`（缺失按 1 计），
   /// 与不变量 1 严格对应。
@@ -88,30 +88,32 @@ Future<_Scenario> _seedScenario(AppDatabase db, int msgCount, int seed) async {
   final rng = math.Random(seed);
 
   // 1. 角色：本角色 + 一个干扰角色（用于断言 listImages 不会越权）
-  await db.into(db.characters).insert(
-        CharactersCompanion.insert(
-          id: _charId,
-          name: const Value('图片管理测试角色'),
-        ),
+  await db
+      .into(db.characters)
+      .insert(
+        CharactersCompanion.insert(id: _charId, name: const Value('图片管理测试角色')),
       );
-  await db.into(db.characters).insert(
-        CharactersCompanion.insert(
-          id: _otherCharId,
-          name: const Value('干扰角色'),
-        ),
+  await db
+      .into(db.characters)
+      .insert(
+        CharactersCompanion.insert(id: _otherCharId, name: const Value('干扰角色')),
       );
 
   // 2. 对话：1 个本角色对话 + 1 个干扰角色对话
   const convId = 'conv-list-images';
   const otherConvId = 'conv-other';
-  await db.into(db.conversations).insert(
+  await db
+      .into(db.conversations)
+      .insert(
         ConversationsCompanion.insert(
           id: convId,
           characterId: _charId,
           title: const Value('测试对话'),
         ),
       );
-  await db.into(db.conversations).insert(
+  await db
+      .into(db.conversations)
+      .insert(
         ConversationsCompanion.insert(
           id: otherConvId,
           characterId: _otherCharId,
@@ -120,33 +122,44 @@ Future<_Scenario> _seedScenario(AppDatabase db, int msgCount, int seed) async {
       );
 
   // 3. 干扰角色消息 + generatedImages：listImages 不应返回任何这条
-  await db.into(db.messages).insert(
+  await db
+      .into(db.messages)
+      .insert(
         MessagesCompanion.insert(
           id: 'omsg-other',
           conversationId: otherConvId,
           role: 'assistant',
           content: const Value('其他角色的消息'),
           seq: const Value(0),
-          createdAt:
-              Value(DateTime.fromMillisecondsSinceEpoch(1700000000 * 1000)),
-          metadata: Value(jsonEncode({
-            'generatedImages': [
-              {
-                'id': 'oimg-0',
-                'url': '/should/not/appear.png',
-                'prompt': 'p',
-                'versions': [
-                  {'id': 'ov-0', 'url': '/should/not/appear.png', 'prompt': 'p'},
-                ],
-              }
-            ],
-          })),
+          createdAt: Value(
+            DateTime.fromMillisecondsSinceEpoch(1700000000 * 1000),
+          ),
+          metadata: Value(
+            jsonEncode({
+              'generatedImages': [
+                {
+                  'id': 'oimg-0',
+                  'url': '/should/not/appear.png',
+                  'prompt': 'p',
+                  'versions': [
+                    {
+                      'id': 'ov-0',
+                      'url': '/should/not/appear.png',
+                      'prompt': 'p',
+                    },
+                  ],
+                },
+              ],
+            }),
+          ),
         ),
       );
 
   // 4. 本角色 user 消息（带 generatedImages 也不应被 listImages 选中，因为只取 assistant）
   if (rng.nextBool()) {
-    await db.into(db.messages).insert(
+    await db
+        .into(db.messages)
+        .insert(
           MessagesCompanion.insert(
             id: 'umsg-user',
             conversationId: convId,
@@ -154,23 +167,26 @@ Future<_Scenario> _seedScenario(AppDatabase db, int msgCount, int seed) async {
             content: const Value('user 消息'),
             seq: const Value(-1),
             createdAt: Value(
-                DateTime.fromMillisecondsSinceEpoch(1700000010 * 1000)),
-            metadata: Value(jsonEncode({
-              'generatedImages': [
-                {
-                  'id': 'uimg-0',
-                  'url': '/user/should-skip.png',
-                  'prompt': 'q',
-                  'versions': [
-                    {
-                      'id': 'uv-0',
-                      'url': '/user/should-skip.png',
-                      'prompt': 'q'
-                    },
-                  ],
-                }
-              ],
-            })),
+              DateTime.fromMillisecondsSinceEpoch(1700000010 * 1000),
+            ),
+            metadata: Value(
+              jsonEncode({
+                'generatedImages': [
+                  {
+                    'id': 'uimg-0',
+                    'url': '/user/should-skip.png',
+                    'prompt': 'q',
+                    'versions': [
+                      {
+                        'id': 'uv-0',
+                        'url': '/user/should-skip.png',
+                        'prompt': 'q',
+                      },
+                    ],
+                  },
+                ],
+              }),
+            ),
           ),
         );
   }
@@ -182,7 +198,14 @@ Future<_Scenario> _seedScenario(AppDatabase db, int msgCount, int seed) async {
   // messages.seq DESC` 严格对齐。
   final base = DateTime(2026, 1, 1);
   final perMessage =
-      <({String msgId, DateTime createdAt, int seq, List<Map<String, dynamic>> imgs})>[];
+      <
+        ({
+          String msgId,
+          DateTime createdAt,
+          int seq,
+          List<Map<String, dynamic>> imgs,
+        })
+      >[];
   for (var m = 0; m < msgCount; m++) {
     final msgId = 'amsg-$m';
     // 60% 概率独立秒，40% 概率与上一条共享秒（覆盖 seq DESC 二级排序）
@@ -228,11 +251,16 @@ Future<_Scenario> _seedScenario(AppDatabase db, int msgCount, int seed) async {
       }
     }
 
-    perMessage.add(
-      (msgId: msgId, createdAt: createdAt, seq: seqVal, imgs: imgs),
-    );
+    perMessage.add((
+      msgId: msgId,
+      createdAt: createdAt,
+      seq: seqVal,
+      imgs: imgs,
+    ));
 
-    await db.into(db.messages).insert(
+    await db
+        .into(db.messages)
+        .insert(
           MessagesCompanion.insert(
             id: msgId,
             conversationId: convId,
@@ -270,11 +298,7 @@ Future<_Scenario> _seedScenario(AppDatabase db, int msgCount, int seed) async {
       } else {
         // 归一化：单版本，id 退化为 image.id，url 退化为 image.url
         normalized = [
-          {
-            'id': img['id'],
-            'url': img['url'],
-            'prompt': img['prompt'] ?? '',
-          },
+          {'id': img['id'], 'url': img['url'], 'prompt': img['prompt'] ?? ''},
         ];
       }
       // 反向展开：最新版本（数组末尾）排在前
@@ -371,13 +395,14 @@ void main() {
     test('空角色（无 assistant 消息）→ 返回空列表', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
-      await db.into(db.characters).insert(
-            CharactersCompanion.insert(
-              id: _charId,
-              name: const Value('空角色'),
-            ),
+      await db
+          .into(db.characters)
+          .insert(
+            CharactersCompanion.insert(id: _charId, name: const Value('空角色')),
           );
-      await db.into(db.conversations).insert(
+      await db
+          .into(db.conversations)
+          .insert(
             ConversationsCompanion.insert(
               id: 'conv-empty',
               characterId: _charId,
@@ -391,37 +416,44 @@ void main() {
     test('单消息单 image 单 version → 返回 1 条', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
-      await db.into(db.characters).insert(
-            CharactersCompanion.insert(
-              id: _charId,
-              name: const Value('单图角色'),
-            ),
+      final createdAt = DateTime(2026, 1, 1, 12, 34, 56, 789);
+      await db
+          .into(db.characters)
+          .insert(
+            CharactersCompanion.insert(id: _charId, name: const Value('单图角色')),
           );
-      await db.into(db.conversations).insert(
+      await db
+          .into(db.conversations)
+          .insert(
             ConversationsCompanion.insert(
               id: 'conv-single',
               characterId: _charId,
             ),
           );
-      await db.into(db.messages).insert(
+      await db
+          .into(db.messages)
+          .insert(
             MessagesCompanion.insert(
               id: 'msg-single',
               conversationId: 'conv-single',
               role: 'assistant',
               content: const Value('hi'),
               seq: const Value(1),
-              metadata: Value(jsonEncode({
-                'generatedImages': [
-                  {
-                    'id': 'img-1',
-                    'url': '/local/img-1.png',
-                    'prompt': 'p',
-                    'versions': [
-                      {'id': 'v-1', 'url': '/local/img-1.png', 'prompt': 'p'},
-                    ],
-                  }
-                ],
-              })),
+              createdAt: Value(createdAt),
+              metadata: Value(
+                jsonEncode({
+                  'generatedImages': [
+                    {
+                      'id': 'img-1',
+                      'url': '/local/img-1.png',
+                      'prompt': 'p',
+                      'versions': [
+                        {'id': 'v-1', 'url': '/local/img-1.png', 'prompt': 'p'},
+                      ],
+                    },
+                  ],
+                }),
+              ),
             ),
           );
 
@@ -431,41 +463,39 @@ void main() {
       expect(result[0].imageId, 'img-1');
       expect(result[0].versionId, 'v-1');
       expect(result[0].localPath, '/local/img-1.png');
+      expect(result[0].createdAt, DateTime(2026, 1, 1, 12, 34, 56));
     });
 
-    test('versions 缺失 → 归一化为单版本（按 1 计），versionId 退化为 imageId',
-        () async {
+    test('versions 缺失 → 归一化为单版本（按 1 计），versionId 退化为 imageId', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
-      await db.into(db.characters).insert(
-            CharactersCompanion.insert(
-              id: _charId,
-              name: const Value('旧消息角色'),
-            ),
+      await db
+          .into(db.characters)
+          .insert(
+            CharactersCompanion.insert(id: _charId, name: const Value('旧消息角色')),
           );
-      await db.into(db.conversations).insert(
-            ConversationsCompanion.insert(
-              id: 'conv-old',
-              characterId: _charId,
-            ),
+      await db
+          .into(db.conversations)
+          .insert(
+            ConversationsCompanion.insert(id: 'conv-old', characterId: _charId),
           );
-      await db.into(db.messages).insert(
+      await db
+          .into(db.messages)
+          .insert(
             MessagesCompanion.insert(
               id: 'msg-old',
               conversationId: 'conv-old',
               role: 'assistant',
               content: const Value('旧消息'),
               seq: const Value(1),
-              metadata: Value(jsonEncode({
-                'generatedImages': [
-                  // 故意不写 versions：覆盖归一化分支
-                  {
-                    'id': 'img-old',
-                    'url': '/local/old.png',
-                    'prompt': '',
-                  }
-                ],
-              })),
+              metadata: Value(
+                jsonEncode({
+                  'generatedImages': [
+                    // 故意不写 versions：覆盖归一化分支
+                    {'id': 'img-old', 'url': '/local/old.png', 'prompt': ''},
+                  ],
+                }),
+              ),
             ),
           );
 
@@ -473,74 +503,88 @@ void main() {
       final result = await actions.listImages(_charId);
       expect(result.length, 1);
       expect(result[0].imageId, 'img-old');
-      expect(result[0].versionId, 'img-old',
-          reason: 'versions 缺失时 versionId 应退化为 image.id');
+      expect(
+        result[0].versionId,
+        'img-old',
+        reason: 'versions 缺失时 versionId 应退化为 image.id',
+      );
       expect(result[0].localPath, '/local/old.png');
     });
 
     test('多版本按数组反向展开（最新版本即数组末尾排在前）', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
-      await db.into(db.characters).insert(
-            CharactersCompanion.insert(
-              id: _charId,
-              name: const Value('多版本角色'),
-            ),
+      await db
+          .into(db.characters)
+          .insert(
+            CharactersCompanion.insert(id: _charId, name: const Value('多版本角色')),
           );
-      await db.into(db.conversations).insert(
+      await db
+          .into(db.conversations)
+          .insert(
             ConversationsCompanion.insert(
               id: 'conv-multi',
               characterId: _charId,
             ),
           );
-      await db.into(db.messages).insert(
+      await db
+          .into(db.messages)
+          .insert(
             MessagesCompanion.insert(
               id: 'msg-multi',
               conversationId: 'conv-multi',
               role: 'assistant',
               content: const Value('多版本'),
               seq: const Value(1),
-              metadata: Value(jsonEncode({
-                'generatedImages': [
-                  {
-                    'id': 'img-multi',
-                    'url': '/local/v2.png',
-                    'prompt': 'p',
-                    'activeVersion': 2,
-                    'versions': [
-                      {'id': 'v-0', 'url': '/local/v0.png', 'prompt': 'p0'},
-                      {'id': 'v-1', 'url': '/local/v1.png', 'prompt': 'p1'},
-                      {'id': 'v-2', 'url': '/local/v2.png', 'prompt': 'p2'},
-                    ],
-                  }
-                ],
-              })),
+              metadata: Value(
+                jsonEncode({
+                  'generatedImages': [
+                    {
+                      'id': 'img-multi',
+                      'url': '/local/v2.png',
+                      'prompt': 'p',
+                      'activeVersion': 2,
+                      'versions': [
+                        {'id': 'v-0', 'url': '/local/v0.png', 'prompt': 'p0'},
+                        {'id': 'v-1', 'url': '/local/v1.png', 'prompt': 'p1'},
+                        {'id': 'v-2', 'url': '/local/v2.png', 'prompt': 'p2'},
+                      ],
+                    },
+                  ],
+                }),
+              ),
             ),
           );
 
       final actions = CharacterImagesActions(db);
       final result = await actions.listImages(_charId);
-      expect(result.map((e) => e.versionId).toList(), ['v-2', 'v-1', 'v-0'],
-          reason: '同一 image 内多版本应反向展开（最新版本在前）');
+      expect(
+        result.map((e) => e.versionId).toList(),
+        ['v-2', 'v-1', 'v-0'],
+        reason: '同一 image 内多版本应反向展开（最新版本在前）',
+      );
     });
 
     test('两条消息 createdAt 相同时按 seq DESC 排序', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
-      await db.into(db.characters).insert(
-            CharactersCompanion.insert(
-              id: _charId,
-              name: const Value('同秒角色'),
-            ),
+      await db
+          .into(db.characters)
+          .insert(
+            CharactersCompanion.insert(id: _charId, name: const Value('同秒角色')),
           );
-      await db.into(db.conversations).insert(
+      await db
+          .into(db.conversations)
+          .insert(
             ConversationsCompanion.insert(
               id: 'conv-same-sec',
               characterId: _charId,
             ),
           );
       final sameSec = DateTime(2026, 1, 1, 10, 0, 0);
-      await db.into(db.messages).insert(
+      await db
+          .into(db.messages)
+          .insert(
             MessagesCompanion.insert(
               id: 'msg-low-seq',
               conversationId: 'conv-same-sec',
@@ -548,21 +592,25 @@ void main() {
               content: const Value('seq 较小'),
               seq: const Value(1),
               createdAt: Value(sameSec),
-              metadata: Value(jsonEncode({
-                'generatedImages': [
-                  {
-                    'id': 'img-low',
-                    'url': '/local/low.png',
-                    'prompt': '',
-                    'versions': [
-                      {'id': 'lv-0', 'url': '/local/low.png', 'prompt': ''},
-                    ],
-                  }
-                ],
-              })),
+              metadata: Value(
+                jsonEncode({
+                  'generatedImages': [
+                    {
+                      'id': 'img-low',
+                      'url': '/local/low.png',
+                      'prompt': '',
+                      'versions': [
+                        {'id': 'lv-0', 'url': '/local/low.png', 'prompt': ''},
+                      ],
+                    },
+                  ],
+                }),
+              ),
             ),
           );
-      await db.into(db.messages).insert(
+      await db
+          .into(db.messages)
+          .insert(
             MessagesCompanion.insert(
               id: 'msg-high-seq',
               conversationId: 'conv-same-sec',
@@ -570,26 +618,30 @@ void main() {
               content: const Value('seq 较大'),
               seq: const Value(2),
               createdAt: Value(sameSec),
-              metadata: Value(jsonEncode({
-                'generatedImages': [
-                  {
-                    'id': 'img-high',
-                    'url': '/local/high.png',
-                    'prompt': '',
-                    'versions': [
-                      {'id': 'hv-0', 'url': '/local/high.png', 'prompt': ''},
-                    ],
-                  }
-                ],
-              })),
+              metadata: Value(
+                jsonEncode({
+                  'generatedImages': [
+                    {
+                      'id': 'img-high',
+                      'url': '/local/high.png',
+                      'prompt': '',
+                      'versions': [
+                        {'id': 'hv-0', 'url': '/local/high.png', 'prompt': ''},
+                      ],
+                    },
+                  ],
+                }),
+              ),
             ),
           );
 
       final actions = CharacterImagesActions(db);
       final result = await actions.listImages(_charId);
-      expect(result.map((e) => e.messageId).toList(),
-          ['msg-high-seq', 'msg-low-seq'],
-          reason: 'createdAt 相同 → seq DESC 决定顺序');
+      expect(
+        result.map((e) => e.messageId).toList(),
+        ['msg-high-seq', 'msg-low-seq'],
+        reason: 'createdAt 相同 → seq DESC 决定顺序',
+      );
     });
   });
 
@@ -600,148 +652,138 @@ void main() {
     Glados<int>(
       any.intInRange(0, 1 << 30),
       ExploreConfig(numRuns: 100),
-    ).test(
-      '全删/部分删/activeVersion 重指向/deletedCount/事务后仅删除无引用本地路径',
-      (seed) async {
-        // 每次迭代独立的临时目录承载本地资产文件，互不污染。
-        final tmp = await Directory.systemTemp
-            .createTemp('lumimuse_p19_${seed}_');
-        final db = _createTestDb();
-        try {
-          // ── 1. 构造场景：随机若干 image，每 image 随机 versions ──────
-          final scenario = await _seedDeleteScenario(db, tmp, seed);
+    ).test('全删/部分删/activeVersion 重指向/deletedCount/事务后仅删除无引用本地路径', (seed) async {
+      // 每次迭代独立的临时目录承载本地资产文件，互不污染。
+      final tmp = await Directory.systemTemp.createTemp(
+        'lumimuse_p19_${seed}_',
+      );
+      final db = _createTestDb();
+      try {
+        // ── 1. 构造场景：随机若干 image，每 image 随机 versions ──────
+        final scenario = await _seedDeleteScenario(db, tmp, seed);
 
-          // ── 2. 调用 deleteImages ──────────────────────────────────
-          final actions = CharacterImagesActions(db);
-          final result = await actions.deleteImages(
-            _charId,
-            scenario.items,
-          );
+        // ── 2. 调用 deleteImages ──────────────────────────────────
+        final actions = CharacterImagesActions(db);
+        final result = await actions.deleteImages(_charId, scenario.items);
 
-          // ── 3. 断言不变量 ─────────────────────────────────────────
-          // 不变量 4：deletedCount == items 命中删除对数（生成器仅生成实际存在的目标）
+        // ── 3. 断言不变量 ─────────────────────────────────────────
+        // 不变量 4：deletedCount == items 命中删除对数（生成器仅生成实际存在的目标）
+        expect(
+          result.deletedCount,
+          scenario.expectedDeletedCount,
+          reason: '返回 deletedCount 应等于命中删除的 (imageId, versionId) 对数',
+        );
+
+        // 重新读取目标消息 metadata，验证不变量 1/2/3
+        final updatedRow = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals(_targetMsgId))).getSingle();
+        final updatedMeta =
+            jsonDecode(updatedRow.metadata) as Map<String, dynamic>;
+        final updatedImgs =
+            (updatedMeta['generatedImages'] as List? ?? const []).cast<Map>();
+
+        // 不变量 1：被全删的 image 整条移除
+        final survivingImageIds = updatedImgs
+            .map((m) => m['id'] as String)
+            .toSet();
+        for (final imageId in scenario.fullyDeletedImageIds) {
           expect(
-            result.deletedCount,
-            scenario.expectedDeletedCount,
+            survivingImageIds.contains(imageId),
+            isFalse,
+            reason: 'image $imageId 的所有 version 都被删 → 应整条移除',
+          );
+        }
+
+        // 不变量 2：仅部分删除的 image，image.id 不变、versions 长度恰好减少
+        //          被删数量、剩余 versions 顺序与原数组一致
+        for (final entry in scenario.partiallyDeleted.entries) {
+          final imageId = entry.key;
+          final spec = entry.value;
+          expect(
+            survivingImageIds.contains(imageId),
+            isTrue,
+            reason: '部分删除时 image.id 必须保持不变，仍存在于 generatedImages',
+          );
+          final survived = updatedImgs.firstWhere((m) => m['id'] == imageId);
+          final survivedVersions = (survived['versions'] as List).cast<Map>();
+          expect(
+            survivedVersions.length,
+            spec.originalVersions.length - spec.deletedVersionIds.length,
+            reason: '部分删除后 versions 长度应等于 原长度 - 被删数量；image=$imageId',
+          );
+          // 剩余 versions 顺序与原数组（去除被删后）一致
+          final expectedRemainingIds = spec.originalVersions
+              .map((v) => v['id'] as String)
+              .where((id) => !spec.deletedVersionIds.contains(id))
+              .toList();
+          expect(
+            survivedVersions.map((v) => v['id'] as String).toList(),
+            expectedRemainingIds,
+            reason: '剩余 versions 顺序应与原数组（去除被删）一致；image=$imageId',
+          );
+          // 剩余 versions 不应包含任一被删 versionId
+          for (final v in survivedVersions) {
+            expect(
+              spec.deletedVersionIds.contains(v['id'] as String),
+              isFalse,
+              reason: '剩余 versions 不应再含被删 versionId；image=$imageId',
+            );
+          }
+
+          // 不变量 3：activeVersion 在 [0, remaining.length-1] 范围内；当原
+          //         activeVersion 指向被删 version 时应重新指向
+          //         min(prevActive, remaining.length-1)
+          final newActive = survived['activeVersion'] as int;
+          expect(
+            newActive >= 0 && newActive < survivedVersions.length,
+            isTrue,
             reason:
-                '返回 deletedCount 应等于命中删除的 (imageId, versionId) 对数',
+                'activeVersion=$newActive 应在 [0, ${survivedVersions.length - 1}]；image=$imageId',
           );
 
-          // 重新读取目标消息 metadata，验证不变量 1/2/3
-          final updatedRow = await (db.select(db.messages)
-                ..where((t) => t.id.equals(_targetMsgId)))
-              .getSingle();
-          final updatedMeta =
-              jsonDecode(updatedRow.metadata) as Map<String, dynamic>;
-          final updatedImgs =
-              (updatedMeta['generatedImages'] as List? ?? const []).cast<Map>();
-
-          // 不变量 1：被全删的 image 整条移除
-          final survivingImageIds =
-              updatedImgs.map((m) => m['id'] as String).toSet();
-          for (final imageId in scenario.fullyDeletedImageIds) {
+          final prevActive = spec.prevActiveVersion;
+          final prevActiveId =
+              spec.originalVersions[prevActive]['id'] as String;
+          if (spec.deletedVersionIds.contains(prevActiveId)) {
+            // 原 activeVersion 指向被删 → 新 activeVersion 必须 ==
+            // min(prevActive, remaining.length-1)（且非负）
+            final clampedPrev = prevActive < 0 ? 0 : prevActive;
+            final expectedNext = clampedPrev >= survivedVersions.length
+                ? survivedVersions.length - 1
+                : clampedPrev;
             expect(
-              survivingImageIds.contains(imageId),
-              isFalse,
-              reason: 'image $imageId 的所有 version 都被删 → 应整条移除',
-            );
-          }
-
-          // 不变量 2：仅部分删除的 image，image.id 不变、versions 长度恰好减少
-          //          被删数量、剩余 versions 顺序与原数组一致
-          for (final entry in scenario.partiallyDeleted.entries) {
-            final imageId = entry.key;
-            final spec = entry.value;
-            expect(
-              survivingImageIds.contains(imageId),
-              isTrue,
-              reason: '部分删除时 image.id 必须保持不变，仍存在于 generatedImages',
-            );
-            final survived = updatedImgs.firstWhere(
-              (m) => m['id'] == imageId,
-            );
-            final survivedVersions =
-                (survived['versions'] as List).cast<Map>();
-            expect(
-              survivedVersions.length,
-              spec.originalVersions.length - spec.deletedVersionIds.length,
+              newActive,
+              expectedNext,
               reason:
-                  '部分删除后 versions 长度应等于 原长度 - 被删数量；image=$imageId',
+                  '原 activeVersion 指向被删 version 时，新值应等于 min(prevActive, remaining.length-1)；image=$imageId',
             );
-            // 剩余 versions 顺序与原数组（去除被删后）一致
-            final expectedRemainingIds = spec.originalVersions
-                .map((v) => v['id'] as String)
-                .where((id) => !spec.deletedVersionIds.contains(id))
-                .toList();
-            expect(
-              survivedVersions.map((v) => v['id'] as String).toList(),
-              expectedRemainingIds,
-              reason: '剩余 versions 顺序应与原数组（去除被删）一致；image=$imageId',
-            );
-            // 剩余 versions 不应包含任一被删 versionId
-            for (final v in survivedVersions) {
-              expect(
-                spec.deletedVersionIds.contains(v['id'] as String),
-                isFalse,
-                reason: '剩余 versions 不应再含被删 versionId；image=$imageId',
-              );
-            }
-
-            // 不变量 3：activeVersion 在 [0, remaining.length-1] 范围内；当原
-            //         activeVersion 指向被删 version 时应重新指向
-            //         min(prevActive, remaining.length-1)
-            final newActive = survived['activeVersion'] as int;
-            expect(
-              newActive >= 0 && newActive < survivedVersions.length,
-              isTrue,
-              reason:
-                  'activeVersion=$newActive 应在 [0, ${survivedVersions.length - 1}]；image=$imageId',
-            );
-
-            final prevActive = spec.prevActiveVersion;
-            final prevActiveId =
-                spec.originalVersions[prevActive]['id'] as String;
-            if (spec.deletedVersionIds.contains(prevActiveId)) {
-              // 原 activeVersion 指向被删 → 新 activeVersion 必须 ==
-              // min(prevActive, remaining.length-1)（且非负）
-              final clampedPrev = prevActive < 0 ? 0 : prevActive;
-              final expectedNext =
-                  clampedPrev >= survivedVersions.length
-                      ? survivedVersions.length - 1
-                      : clampedPrev;
-              expect(
-                newActive,
-                expectedNext,
-                reason:
-                    '原 activeVersion 指向被删 version 时，新值应等于 min(prevActive, remaining.length-1)；image=$imageId',
-              );
-            }
-          }
-
-          // 不变量 5：事务后仅删除「无引用」的本地路径
-          for (final entry in scenario.expectedFileExistence.entries) {
-            final path = entry.key;
-            final shouldExist = entry.value;
-            expect(
-              await File(path).exists(),
-              shouldExist,
-              reason: shouldExist
-                  ? '路径仍被引用（同库另一消息 image_versions 或另一角色 avatar），不应被删；path=$path'
-                  : '路径已无任何引用，事务后应被删除；path=$path',
-            );
-          }
-        } finally {
-          await db.close();
-          try {
-            if (await tmp.exists()) {
-              await tmp.delete(recursive: true);
-            }
-          } catch (_) {
-            // Windows 上偶发文件锁，忽略残余清理失败
           }
         }
-      },
-    );
+
+        // 不变量 5：事务后仅删除「无引用」的本地路径
+        for (final entry in scenario.expectedFileExistence.entries) {
+          final path = entry.key;
+          final shouldExist = entry.value;
+          expect(
+            await File(path).exists(),
+            shouldExist,
+            reason: shouldExist
+                ? '路径仍被引用（同库另一消息 image_versions 或另一角色 avatar），不应被删；path=$path'
+                : '路径已无任何引用，事务后应被删除；path=$path',
+          );
+        }
+      } finally {
+        await db.close();
+        try {
+          if (await tmp.exists()) {
+            await tmp.delete(recursive: true);
+          }
+        } catch (_) {
+          // Windows 上偶发文件锁，忽略残余清理失败
+        }
+      }
+    });
   });
 }
 
@@ -841,20 +883,23 @@ Future<_DeleteScenario> _seedDeleteScenario(
   final rng = math.Random(seed);
 
   // 1) 角色 + 对话
-  await db.into(db.characters).insert(
-        CharactersCompanion.insert(
-          id: _charId,
-          name: const Value('删除测试角色'),
-        ),
+  await db
+      .into(db.characters)
+      .insert(
+        CharactersCompanion.insert(id: _charId, name: const Value('删除测试角色')),
       );
-  await db.into(db.characters).insert(
+  await db
+      .into(db.characters)
+      .insert(
         CharactersCompanion.insert(
           id: _otherCharForRefId,
           name: const Value('avatar 引用角色'),
         ),
       );
   const convId = 'conv-delete-target';
-  await db.into(db.conversations).insert(
+  await db
+      .into(db.conversations)
+      .insert(
         ConversationsCompanion.insert(
           id: convId,
           characterId: _charId,
@@ -866,8 +911,7 @@ Future<_DeleteScenario> _seedDeleteScenario(
   final imgCount = 1 + rng.nextInt(3); // 1..3
   final originalImgs = <Map<String, dynamic>>[];
   // 收集所有 (imageId, versionId, path) 三元组，方便后续选择删除目标
-  final allEntries =
-      <({String imageId, String versionId, String path})>[];
+  final allEntries = <({String imageId, String versionId, String path})>[];
 
   for (var i = 0; i < imgCount; i++) {
     final imageId = 'img-$i';
@@ -880,11 +924,7 @@ Future<_DeleteScenario> _seedDeleteScenario(
         p.join('img-$i-v-$v.png'),
         seed + i * 1000 + v,
       );
-      versions.add({
-        'id': versionId,
-        'url': path,
-        'prompt': 'p-$i-$v',
-      });
+      versions.add({'id': versionId, 'url': path, 'prompt': 'p-$i-$v'});
       allEntries.add((imageId: imageId, versionId: versionId, path: path));
     }
     final activeVersion = rng.nextInt(verCount);
@@ -897,7 +937,9 @@ Future<_DeleteScenario> _seedDeleteScenario(
     });
   }
 
-  await db.into(db.messages).insert(
+  await db
+      .into(db.messages)
+      .insert(
         MessagesCompanion.insert(
           id: _targetMsgId,
           conversationId: convId,
@@ -905,7 +947,8 @@ Future<_DeleteScenario> _seedDeleteScenario(
           content: const Value('目标消息'),
           seq: const Value(1),
           createdAt: Value(
-              DateTime.fromMillisecondsSinceEpoch(1700000000 * 1000)),
+            DateTime.fromMillisecondsSinceEpoch(1700000000 * 1000),
+          ),
           metadata: Value(jsonEncode({'generatedImages': originalImgs})),
         ),
       );
@@ -919,11 +962,10 @@ Future<_DeleteScenario> _seedDeleteScenario(
 
   for (var i = 0; i < imgCount; i++) {
     final imageId = 'img-$i';
-    final imgEntries =
-        allEntries.where((e) => e.imageId == imageId).toList();
+    final imgEntries = allEntries.where((e) => e.imageId == imageId).toList();
     final verCount = imgEntries.length;
-    final originalVersions =
-        (originalImgs[i]['versions'] as List).cast<Map<String, dynamic>>();
+    final originalVersions = (originalImgs[i]['versions'] as List)
+        .cast<Map<String, dynamic>>();
     final prevActive = originalImgs[i]['activeVersion'] as int;
 
     final mode = rng.nextInt(3); // 0: 不删，1: 部分删（仅 verCount>=2 时），2: 全删
@@ -937,11 +979,13 @@ Future<_DeleteScenario> _seedDeleteScenario(
     if (mode == 2) {
       // 全删
       for (final e in imgEntries) {
-        items.add(DeleteImageTarget(
-          messageId: _targetMsgId,
-          imageId: e.imageId,
-          versionId: e.versionId,
-        ));
+        items.add(
+          DeleteImageTarget(
+            messageId: _targetMsgId,
+            imageId: e.imageId,
+            versionId: e.versionId,
+          ),
+        );
         pathInDeleteSet[e.path] = true;
       }
       fullyDeletedImageIds.add(imageId);
@@ -954,11 +998,13 @@ Future<_DeleteScenario> _seedDeleteScenario(
     final deletedVersionIds = <String>{};
     for (final e in imgEntries) {
       if (toDelete.contains(e)) {
-        items.add(DeleteImageTarget(
-          messageId: _targetMsgId,
-          imageId: e.imageId,
-          versionId: e.versionId,
-        ));
+        items.add(
+          DeleteImageTarget(
+            messageId: _targetMsgId,
+            imageId: e.imageId,
+            versionId: e.versionId,
+          ),
+        );
         pathInDeleteSet[e.path] = true;
         deletedVersionIds.add(e.versionId);
       } else {
@@ -998,7 +1044,9 @@ Future<_DeleteScenario> _seedDeleteScenario(
     final imageVersions = referencedByOtherMsg
         .map((path) => {'id': 'ref-${path.hashCode}', 'url': path})
         .toList();
-    await db.into(db.messages).insert(
+    await db
+        .into(db.messages)
+        .insert(
           MessagesCompanion.insert(
             id: _refMsgId,
             conversationId: convId,
@@ -1006,7 +1054,8 @@ Future<_DeleteScenario> _seedDeleteScenario(
             content: const Value('外部引用消息'),
             seq: const Value(2),
             createdAt: Value(
-                DateTime.fromMillisecondsSinceEpoch(1700000010 * 1000)),
+              DateTime.fromMillisecondsSinceEpoch(1700000010 * 1000),
+            ),
             metadata: Value(jsonEncode({'image_versions': imageVersions})),
           ),
         );

@@ -54,10 +54,9 @@ class ChatState {
     return ChatState(
       isGenerating: isGenerating ?? this.isGenerating,
       currentStreamText: currentStreamText ?? this.currentStreamText,
-      streamingTargetMessageId:
-          clearStreamingTargetMessageId
-              ? null
-              : (streamingTargetMessageId ?? this.streamingTargetMessageId),
+      streamingTargetMessageId: clearStreamingTargetMessageId
+          ? null
+          : (streamingTargetMessageId ?? this.streamingTargetMessageId),
       error: error,
     );
   }
@@ -71,10 +70,10 @@ class ChatState {
 /// - dispose 时会取消正在进行的流式请求（CancelToken.cancel），
 ///   防止过期回调误触发 onDone/onError 写库
 /// - 错误状态记录在各自实例的 state 中，不会跨对话污染
-final chatControllerProvider =
-    StateNotifierProvider.autoDispose.family<ChatController, ChatState, String>(
-  (ref, conversationId) => ChatController(ref, conversationId),
-);
+final chatControllerProvider = StateNotifierProvider.autoDispose
+    .family<ChatController, ChatState, String>(
+      (ref, conversationId) => ChatController(ref, conversationId),
+    );
 
 class ChatController extends StateNotifier<ChatState> {
   final Ref _ref;
@@ -99,6 +98,9 @@ class ChatController extends StateNotifier<ChatState> {
 
   /// 最近一条用户消息内容（用于关键词检测和自动生图）
   String _lastUserContent = '';
+
+  /// 同步请求锁，覆盖插入用户消息前的短竞态窗口。
+  bool _requestInFlight = false;
 
   ChatController(this._ref, this._conversationId) : super(const ChatState());
 
@@ -133,49 +135,87 @@ class ChatController extends StateNotifier<ChatState> {
     }
   }
 
+  /// 空响应也必须完成收尾，否则 UI 会停留在生成中。
+  Future<void> _finishEmptyResponse(int requestSeq) async {
+    if (requestSeq != _requestSeq) return;
+    await _waitForMessagesUpdate();
+    if (requestSeq != _requestSeq) return;
+    _requestInFlight = false;
+    if (mounted) {
+      state = const ChatState(
+        isGenerating: false,
+        currentStreamText: '',
+        error: '模型返回了空响应，请重试',
+      );
+    }
+  }
+
+  void _finishWithError(int requestSeq, String error) {
+    if (requestSeq != _requestSeq) return;
+    _requestInFlight = false;
+    if (mounted) {
+      state = ChatState(
+        isGenerating: false,
+        currentStreamText: '',
+        error: error,
+      );
+    }
+  }
+
+  void _releaseRequestLock(int requestSeq) {
+    if (requestSeq == _requestSeq) {
+      _requestInFlight = false;
+    }
+  }
+
   /// 发送消息并获取 AI 回复
   Future<void> sendMessage(String content) async {
-    if (content.trim().isEmpty || state.isGenerating) return;
+    if (content.trim().isEmpty || state.isGenerating || _requestInFlight) {
+      return;
+    }
+    _requestInFlight = true;
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
 
-    final db = _ref.read(databaseProvider);
-    final messageActions = _ref.read(messageActionsProvider);
-    final settingsAsync = _ref.read(settingsProvider);
-    final settings = settingsAsync.valueOrNull ?? const AppSettings();
-
-    // 记录用户消息内容（用于后续记忆关键词和自动生图检测）
-    _lastUserContent = content;
-    _unextractedMessageCount += 1; // 用户消息计数
-
-    // 1. 插入用户消息
-    await messageActions.insertUserMessage(
-      conversationId: _conversationId,
-      content: content,
-    );
-
-    // 2. 开始生成
-    state = const ChatState(isGenerating: true, currentStreamText: '');
-    _cancelToken = CancelToken();
-
     try {
+      final db = _ref.read(databaseProvider);
+      final messageActions = _ref.read(messageActionsProvider);
+      final settingsAsync = _ref.read(settingsProvider);
+      final settings = settingsAsync.valueOrNull ?? const AppSettings();
+
+      // 记录用户消息内容（用于后续记忆关键词和自动生图检测）
+      _lastUserContent = content;
+      _unextractedMessageCount += 1; // 用户消息计数
+
+      // 1. 插入用户消息
+      await messageActions.insertUserMessage(
+        conversationId: _conversationId,
+        content: content,
+      );
+
+      // 2. 开始生成
+      state = const ChatState(isGenerating: true, currentStreamText: '');
+      final cancelToken = CancelToken();
+      _cancelToken = cancelToken;
+
       // 3. 加载上下文
-      final conversation = await (db.select(db.conversations)
-            ..where((t) => t.id.equals(_conversationId)))
-          .getSingle();
+      final conversation = await (db.select(
+        db.conversations,
+      )..where((t) => t.id.equals(_conversationId))).getSingle();
 
-      final character = await (db.select(db.characters)
-            ..where((t) => t.id.equals(conversation.characterId)))
-          .getSingle();
+      final character = await (db.select(
+        db.characters,
+      )..where((t) => t.id.equals(conversation.characterId))).getSingle();
 
-      final messages = await (db.select(db.messages)
-            ..where((t) => t.conversationId.equals(_conversationId))
-            ..orderBy([
-              (t) => OrderingTerm.asc(t.createdAt),
-              (t) => OrderingTerm.asc(t.seq),
-            ]))
-          .get();
+      final messages =
+          await (db.select(db.messages)
+                ..where((t) => t.conversationId.equals(_conversationId))
+                ..orderBy([
+                  (t) => OrderingTerm.asc(t.createdAt),
+                  (t) => OrderingTerm.asc(t.seq),
+                ]))
+              .get();
 
       // 4. 检索相关记忆
       List<String> memoryContents = [];
@@ -184,8 +224,9 @@ class ChatController extends StateNotifier<ChatState> {
         final relevant = await memoryEngine.retrieveRelevantMemories(
           queryText: content,
           characterId: conversation.characterId,
-          maxMemories:
-              settings.limitInject ? settings.memoryMaxInject : _kMaxMemoriesUnlimited,
+          maxMemories: settings.limitInject
+              ? settings.memoryMaxInject
+              : _kMaxMemoriesUnlimited,
         );
         memoryContents = relevant.map((m) => m.content).toList();
       }
@@ -215,56 +256,64 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            // 过期回调直接跳过，避免污染新一轮请求的状态与数据库
-            if (mySeq != _requestSeq) return;
-            // 先清除流式状态，让流式占位气泡消失
-            if (mounted) {
-              state = const ChatState(isGenerating: false, currentStreamText: '');
-            }
-            // 再将完整内容写入数据库，使真实消息出现在列表中
+            // 过期或已取消回调直接跳过，避免污染新一轮请求的状态与数据库
+            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
             final cleaned = _stripTimestampPrefix(finalText);
+            if (cleaned.trim().isEmpty) {
+              await _finishEmptyResponse(mySeq);
+              return;
+            }
             await messageActions.insertAssistantMessage(
               conversationId: _conversationId,
               content: cleaned,
             );
+            await _waitForMessagesUpdate();
+            if (mySeq != _requestSeq) return;
+            _releaseRequestLock(mySeq);
+            if (mounted) {
+              state = const ChatState(
+                isGenerating: false,
+                currentStreamText: '',
+              );
+            }
             // 后处理：记忆触发 → 自动生图
             _unextractedMessageCount += 1; // AI 回复计数
             await _postReplyProcessing(settings, conversation.characterId);
           },
           onError: (error) {
-            if (mySeq != _requestSeq) return;
-            // 错误记录到本对话的 state，不影响其他对话
-            if (mounted) {
-              state = ChatState(isGenerating: false, error: error);
-            }
+            _finishWithError(mySeq, error);
           },
-          cancelToken: _cancelToken,
+          cancelToken: cancelToken,
         );
       } else {
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
-          cancelToken: _cancelToken,
+          cancelToken: cancelToken,
         );
-        // 非流式分支也做防重入校验：在 await 期间若已经被新一轮请求覆盖，丢弃结果
-        if (mySeq != _requestSeq) return;
+        // 非流式分支也做防重入与取消校验：在 await 期间若已停止或被新请求覆盖，丢弃结果
+        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
         final cleaned = _stripTimestampPrefix(result);
-        if (mounted) {
-          state = const ChatState(isGenerating: false, currentStreamText: '');
+        if (cleaned.trim().isEmpty) {
+          await _finishEmptyResponse(mySeq);
+          return;
         }
         await messageActions.insertAssistantMessage(
           conversationId: _conversationId,
           content: cleaned,
         );
+        await _waitForMessagesUpdate();
+        if (mySeq != _requestSeq) return;
+        _releaseRequestLock(mySeq);
+        if (mounted) {
+          state = const ChatState(isGenerating: false, currentStreamText: '');
+        }
         // 后处理：记忆触发 → 自动生图
         _unextractedMessageCount += 1; // AI 回复计数
         await _postReplyProcessing(settings, conversation.characterId);
       }
     } catch (e) {
-      if (mySeq != _requestSeq) return;
-      if (mounted) {
-        state = ChatState(isGenerating: false, error: e.toString());
-      }
+      _finishWithError(mySeq, e.toString());
     }
   }
 
@@ -278,67 +327,70 @@ class ChatController extends StateNotifier<ChatState> {
     String content,
     List<AttachmentItem> attachments,
   ) async {
-    if (state.isGenerating) return;
+    if (state.isGenerating || _requestInFlight) return;
+    _requestInFlight = true;
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
 
-    final db = _ref.read(databaseProvider);
-    final messageActions = _ref.read(messageActionsProvider);
-    final settingsAsync = _ref.read(settingsProvider);
-    final settings = settingsAsync.valueOrNull ?? const AppSettings();
-
-    // 记录用户消息内容（用于后续记忆关键词和自动生图检测）
-    _lastUserContent = content;
-    _unextractedMessageCount += 1; // 用户消息计数
-
-    // 1. 处理文本附件 — 追加到消息文本
-    String enrichedContent = content;
-    for (final att in attachments) {
-      if (att.type == AttachmentType.text) {
-        final textContent = await AttachmentProcessor.readTextFile(
-          att.filePath,
-          fileName: att.fileName,
-        );
-        enrichedContent = enrichedContent.isEmpty
-            ? textContent
-            : '$enrichedContent\n\n$textContent';
-      }
-    }
-
-    // 2. 插入用户消息（含附件 metadata）
-    final attachmentsMeta = attachments.map((a) => a.toJson()).toList();
-    await messageActions.insertUserMessage(
-      conversationId: _conversationId,
-      content: enrichedContent,
-      attachments: attachmentsMeta,
-    );
-
-    // 3. 开始生成
-    state = const ChatState(
-      isGenerating: true,
-      currentStreamText: '',
-      streamingTargetMessageId: null,
-    );
-    _cancelToken = CancelToken();
-
     try {
+      final db = _ref.read(databaseProvider);
+      final messageActions = _ref.read(messageActionsProvider);
+      final settingsAsync = _ref.read(settingsProvider);
+      final settings = settingsAsync.valueOrNull ?? const AppSettings();
+
+      // 记录用户消息内容（用于后续记忆关键词和自动生图检测）
+      _lastUserContent = content;
+      _unextractedMessageCount += 1; // 用户消息计数
+
+      // 1. 处理文本附件 — 追加到消息文本
+      String enrichedContent = content;
+      for (final att in attachments) {
+        if (att.type == AttachmentType.text) {
+          final textContent = await AttachmentProcessor.readTextFile(
+            att.filePath,
+            fileName: att.fileName,
+          );
+          enrichedContent = enrichedContent.isEmpty
+              ? textContent
+              : '$enrichedContent\n\n$textContent';
+        }
+      }
+
+      // 2. 插入用户消息（含附件 metadata）
+      final attachmentsMeta = attachments.map((a) => a.toJson()).toList();
+      await messageActions.insertUserMessage(
+        conversationId: _conversationId,
+        content: enrichedContent,
+        attachments: attachmentsMeta,
+      );
+
+      // 3. 开始生成
+      state = const ChatState(
+        isGenerating: true,
+        currentStreamText: '',
+        streamingTargetMessageId: null,
+      );
+      final cancelToken = CancelToken();
+      _cancelToken = cancelToken;
+
       // 4. 加载上下文
-      final conversation = await (db.select(db.conversations)
-            ..where((t) => t.id.equals(_conversationId)))
-          .getSingle();
+      final conversation = await (db.select(
+        db.conversations,
+      )..where((t) => t.id.equals(_conversationId))).getSingle();
 
-      final character = await (db.select(db.characters)
-            ..where((t) => t.id.equals(conversation.characterId)))
-          .getSingle();
+      final character = await (db.select(
+        db.characters,
+      )..where((t) => t.id.equals(conversation.characterId))).getSingle();
 
-      final messages = await (db.select(db.messages)
-            ..where((t) => t.conversationId.equals(_conversationId))
-            ..orderBy([
-              (t) => OrderingTerm.asc(t.createdAt),
-              (t) => OrderingTerm.asc(t.seq),
-            ]))
-          .get();
+      final messages =
+          await (db.select(db.messages)
+                ..where((t) => t.conversationId.equals(_conversationId))
+                ..orderBy([
+                  (t) => OrderingTerm.asc(t.createdAt),
+                  (t) => OrderingTerm.asc(t.seq),
+                ]))
+              .get();
 
       // 5. 检索相关记忆
       List<String> memoryContents = [];
@@ -347,8 +399,9 @@ class ChatController extends StateNotifier<ChatState> {
         final relevant = await memoryEngine.retrieveRelevantMemories(
           queryText: enrichedContent,
           characterId: conversation.characterId,
-          maxMemories:
-              settings.limitInject ? settings.memoryMaxInject : _kMaxMemoriesUnlimited,
+          maxMemories: settings.limitInject
+              ? settings.memoryMaxInject
+              : _kMaxMemoriesUnlimited,
         );
         memoryContents = relevant.map((m) => m.content).toList();
       }
@@ -363,17 +416,19 @@ class ChatController extends StateNotifier<ChatState> {
       );
 
       // 7. 如果有图片附件，构建多模态内容替换最后一条用户消息
-      final imageAttachments =
-          attachments.where((a) => a.type == AttachmentType.image).toList();
+      final imageAttachments = attachments
+          .where((a) => a.type == AttachmentType.image)
+          .toList();
       if (imageAttachments.isNotEmpty && chatMessages.isNotEmpty) {
-        final lastUserIdx =
-            chatMessages.lastIndexWhere((m) => m.role == 'user');
+        final lastUserIdx = chatMessages.lastIndexWhere(
+          (m) => m.role == 'user',
+        );
         if (lastUserIdx >= 0) {
           final multimodalContent =
               await AttachmentProcessor.buildMultimodalContent(
-            chatMessages[lastUserIdx].content as String? ?? '',
-            imageAttachments,
-          );
+                chatMessages[lastUserIdx].content as String? ?? '',
+                imageAttachments,
+              );
           // 替换为多模态内容（content 为 List 时 API 按 vision 格式发送）
           chatMessages[lastUserIdx] = ChatMessage(
             role: 'user',
@@ -395,58 +450,69 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq) return;
-            if (mounted) {
-              state =
-                  const ChatState(isGenerating: false, currentStreamText: '');
-            }
+            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
             final cleaned = _stripTimestampPrefix(finalText);
+            if (cleaned.trim().isEmpty) {
+              await _finishEmptyResponse(mySeq);
+              return;
+            }
             await messageActions.insertAssistantMessage(
               conversationId: _conversationId,
               content: cleaned,
             );
+            await _waitForMessagesUpdate();
+            if (mySeq != _requestSeq) return;
+            _releaseRequestLock(mySeq);
+            if (mounted) {
+              state = const ChatState(
+                isGenerating: false,
+                currentStreamText: '',
+              );
+            }
             // 后处理：记忆触发 → 自动生图
             _unextractedMessageCount += 1;
             await _postReplyProcessing(settings, conversation.characterId);
           },
           onError: (error) {
-            if (mySeq != _requestSeq) return;
-            if (mounted) {
-              state = ChatState(isGenerating: false, error: error);
-            }
+            _finishWithError(mySeq, error);
           },
-          cancelToken: _cancelToken,
+          cancelToken: cancelToken,
         );
       } else {
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
-          cancelToken: _cancelToken,
+          cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq) return;
+        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
         final cleaned = _stripTimestampPrefix(result);
-        if (mounted) {
-          state = const ChatState(isGenerating: false, currentStreamText: '');
+        if (cleaned.trim().isEmpty) {
+          await _finishEmptyResponse(mySeq);
+          return;
         }
         await messageActions.insertAssistantMessage(
           conversationId: _conversationId,
           content: cleaned,
         );
+        await _waitForMessagesUpdate();
+        if (mySeq != _requestSeq) return;
+        _releaseRequestLock(mySeq);
+        if (mounted) {
+          state = const ChatState(isGenerating: false, currentStreamText: '');
+        }
         // 后处理：记忆触发 → 自动生图
         _unextractedMessageCount += 1;
         await _postReplyProcessing(settings, conversation.characterId);
       }
     } catch (e) {
-      if (mySeq != _requestSeq) return;
-      if (mounted) {
-        state = ChatState(isGenerating: false, error: e.toString());
-      }
+      _finishWithError(mySeq, e.toString());
     }
   }
 
   /// 重新生成指定 assistant 消息
   Future<void> regenerate(String messageId) async {
-    if (state.isGenerating) return;
+    if (state.isGenerating || _requestInFlight) return;
+    _requestInFlight = true;
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
@@ -461,29 +527,32 @@ class ChatController extends StateNotifier<ChatState> {
       currentStreamText: '',
       streamingTargetMessageId: messageId,
     );
-    _cancelToken = CancelToken();
+    final cancelToken = CancelToken();
+    _cancelToken = cancelToken;
 
     try {
-      final conversation = await (db.select(db.conversations)
-            ..where((t) => t.id.equals(_conversationId)))
-          .getSingle();
+      final conversation = await (db.select(
+        db.conversations,
+      )..where((t) => t.id.equals(_conversationId))).getSingle();
 
-      final character = await (db.select(db.characters)
-            ..where((t) => t.id.equals(conversation.characterId)))
-          .getSingle();
+      final character = await (db.select(
+        db.characters,
+      )..where((t) => t.id.equals(conversation.characterId))).getSingle();
 
-      final allMessages = await (db.select(db.messages)
-            ..where((t) => t.conversationId.equals(_conversationId))
-            ..orderBy([
-              (t) => OrderingTerm.asc(t.createdAt),
-              (t) => OrderingTerm.asc(t.seq),
-            ]))
-          .get();
+      final allMessages =
+          await (db.select(db.messages)
+                ..where((t) => t.conversationId.equals(_conversationId))
+                ..orderBy([
+                  (t) => OrderingTerm.asc(t.createdAt),
+                  (t) => OrderingTerm.asc(t.seq),
+                ]))
+              .get();
 
       // 排除目标消息及之后的消息
       final targetIdx = allMessages.indexWhere((m) => m.id == messageId);
-      final contextMessages =
-          targetIdx >= 0 ? allMessages.sublist(0, targetIdx) : allMessages;
+      final contextMessages = targetIdx >= 0
+          ? allMessages.sublist(0, targetIdx)
+          : allMessages;
 
       // 获取被重新生成消息的 created_at 作为时间上下文
       DateTime? regenTimeContext;
@@ -507,8 +576,9 @@ class ChatController extends StateNotifier<ChatState> {
         final relevant = await memoryEngine.retrieveRelevantMemories(
           queryText: queryText,
           characterId: conversation.characterId,
-          maxMemories:
-              settings.limitInject ? settings.memoryMaxInject : _kMaxMemoriesUnlimited,
+          maxMemories: settings.limitInject
+              ? settings.memoryMaxInject
+              : _kMaxMemoriesUnlimited,
         );
         memoryContents = relevant.map((m) => m.content).toList();
       }
@@ -534,47 +604,56 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq) return;
+            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
             final cleaned = _stripTimestampPrefix(finalText);
+            if (cleaned.trim().isEmpty) {
+              await _finishEmptyResponse(mySeq);
+              return;
+            }
             await messageActions.updateAssistantRegenerate(
               messageId: messageId,
               newContent: cleaned,
             );
             await _waitForMessagesUpdate();
+            if (mySeq != _requestSeq) return;
+            _releaseRequestLock(mySeq);
             if (mounted) {
-              state = const ChatState(isGenerating: false, currentStreamText: '');
+              state = const ChatState(
+                isGenerating: false,
+                currentStreamText: '',
+              );
             }
           },
           onError: (error) {
-            if (mySeq != _requestSeq) return;
-            if (mounted) {
-            state = ChatState(isGenerating: false, error: error);
-          }
-        },
-          cancelToken: _cancelToken,
+            _finishWithError(mySeq, error);
+          },
+          cancelToken: cancelToken,
         );
       } else {
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
-          cancelToken: _cancelToken,
+          cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq) return;
+        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
         final cleaned = _stripTimestampPrefix(result);
+        if (cleaned.trim().isEmpty) {
+          await _finishEmptyResponse(mySeq);
+          return;
+        }
         await messageActions.updateAssistantRegenerate(
           messageId: messageId,
           newContent: cleaned,
         );
         await _waitForMessagesUpdate();
+        if (mySeq != _requestSeq) return;
+        _releaseRequestLock(mySeq);
         if (mounted) {
           state = const ChatState(isGenerating: false, currentStreamText: '');
         }
       }
     } catch (e) {
-      if (mySeq != _requestSeq) return;
-      if (mounted) {
-        state = ChatState(isGenerating: false, error: e.toString());
-      }
+      _finishWithError(mySeq, e.toString());
     }
   }
 
@@ -584,7 +663,10 @@ class ChatController extends StateNotifier<ChatState> {
   /// - 不插入新的用户消息（skipUserInsert = true）
   /// - streamingTargetMessageId 为 null，流式气泡追加在消息列表末尾
   Future<void> sendMessageSkipUserInsert(String userContent) async {
-    if (userContent.trim().isEmpty || state.isGenerating) return;
+    if (userContent.trim().isEmpty || state.isGenerating || _requestInFlight) {
+      return;
+    }
+    _requestInFlight = true;
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
@@ -596,24 +678,26 @@ class ChatController extends StateNotifier<ChatState> {
     _lastUserContent = userContent;
 
     state = const ChatState(isGenerating: true, currentStreamText: '');
-    _cancelToken = CancelToken();
+    final cancelToken = CancelToken();
+    _cancelToken = cancelToken;
 
     try {
-      final conversation = await (db.select(db.conversations)
-            ..where((t) => t.id.equals(_conversationId)))
-          .getSingle();
+      final conversation = await (db.select(
+        db.conversations,
+      )..where((t) => t.id.equals(_conversationId))).getSingle();
 
-      final character = await (db.select(db.characters)
-            ..where((t) => t.id.equals(conversation.characterId)))
-          .getSingle();
+      final character = await (db.select(
+        db.characters,
+      )..where((t) => t.id.equals(conversation.characterId))).getSingle();
 
-      final messages = await (db.select(db.messages)
-            ..where((t) => t.conversationId.equals(_conversationId))
-            ..orderBy([
-              (t) => OrderingTerm.asc(t.createdAt),
-              (t) => OrderingTerm.asc(t.seq),
-            ]))
-          .get();
+      final messages =
+          await (db.select(db.messages)
+                ..where((t) => t.conversationId.equals(_conversationId))
+                ..orderBy([
+                  (t) => OrderingTerm.asc(t.createdAt),
+                  (t) => OrderingTerm.asc(t.seq),
+                ]))
+              .get();
 
       List<String> memoryContents = [];
       if (settings.memoryInject) {
@@ -621,8 +705,9 @@ class ChatController extends StateNotifier<ChatState> {
         final relevant = await memoryEngine.retrieveRelevantMemories(
           queryText: userContent,
           characterId: conversation.characterId,
-          maxMemories:
-              settings.limitInject ? settings.memoryMaxInject : _kMaxMemoriesUnlimited,
+          maxMemories: settings.limitInject
+              ? settings.memoryMaxInject
+              : _kMaxMemoriesUnlimited,
         );
         memoryContents = relevant.map((m) => m.content).toList();
       }
@@ -647,55 +732,62 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq) return;
-            // 先清除流式状态（与 sendMessage 顺序一致），让流式占位气泡消失。
-            // sendMessageSkipUserInsert 的流式气泡在消息列表末尾，
-            // 不存在"原位置占位"语义，所以可以走与 sendMessage 同样的快路径：
-            // 先 setState(isGenerating: false) → 再 await 写库。
-            if (mounted) {
-              state = const ChatState(isGenerating: false, currentStreamText: '');
-            }
+            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
             final cleaned = _stripTimestampPrefix(finalText);
+            if (cleaned.trim().isEmpty) {
+              await _finishEmptyResponse(mySeq);
+              return;
+            }
             final messageActions = _ref.read(messageActionsProvider);
             await messageActions.insertAssistantMessage(
               conversationId: _conversationId,
               content: cleaned,
             );
+            await _waitForMessagesUpdate();
+            if (mySeq != _requestSeq) return;
+            _releaseRequestLock(mySeq);
+            if (mounted) {
+              state = const ChatState(
+                isGenerating: false,
+                currentStreamText: '',
+              );
+            }
             _unextractedMessageCount += 1;
             await _postReplyProcessing(settings, conversation.characterId);
           },
           onError: (error) {
-            if (mySeq != _requestSeq) return;
-            if (mounted) {
-              state = ChatState(isGenerating: false, error: error);
-            }
+            _finishWithError(mySeq, error);
           },
-          cancelToken: _cancelToken,
+          cancelToken: cancelToken,
         );
       } else {
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
-          cancelToken: _cancelToken,
+          cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq) return;
+        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
         final cleaned = _stripTimestampPrefix(result);
-        final messageActions = _ref.read(messageActionsProvider);
-        if (mounted) {
-          state = const ChatState(isGenerating: false, currentStreamText: '');
+        if (cleaned.trim().isEmpty) {
+          await _finishEmptyResponse(mySeq);
+          return;
         }
+        final messageActions = _ref.read(messageActionsProvider);
         await messageActions.insertAssistantMessage(
           conversationId: _conversationId,
           content: cleaned,
         );
+        await _waitForMessagesUpdate();
+        if (mySeq != _requestSeq) return;
+        _releaseRequestLock(mySeq);
+        if (mounted) {
+          state = const ChatState(isGenerating: false, currentStreamText: '');
+        }
         _unextractedMessageCount += 1;
         await _postReplyProcessing(settings, conversation.characterId);
       }
     } catch (e) {
-      if (mySeq != _requestSeq) return;
-      if (mounted) {
-        state = ChatState(isGenerating: false, error: e.toString());
-      }
+      _finishWithError(mySeq, e.toString());
     }
   }
 
@@ -704,6 +796,8 @@ class ChatController extends StateNotifier<ChatState> {
   /// 每个 ChatController 实例拥有独立的 _cancelToken，
   /// 调用 stop() 仅取消本对话的请求，不影响其他对话的生成。
   void stop() {
+    _requestSeq++;
+    _requestInFlight = false;
     _cancelToken?.cancel();
     state = const ChatState(isGenerating: false, currentStreamText: '');
   }
@@ -741,17 +835,17 @@ class ChatController extends StateNotifier<ChatState> {
 
     try {
       // 生成新图片
-      final conversation = await (db.select(db.conversations)
-            ..where((t) => t.id.equals(_conversationId)))
-          .getSingle();
+      final conversation = await (db.select(
+        db.conversations,
+      )..where((t) => t.id.equals(_conversationId))).getSingle();
 
-      final character = await (db.select(db.characters)
-            ..where((t) => t.id.equals(conversation.characterId)))
-          .getSingleOrNull();
+      final character = await (db.select(
+        db.characters,
+      )..where((t) => t.id.equals(conversation.characterId))).getSingleOrNull();
 
-      final msg = await (db.select(db.messages)
-            ..where((t) => t.id.equals(messageId)))
-          .getSingle();
+      final msg = await (db.select(
+        db.messages,
+      )..where((t) => t.id.equals(messageId))).getSingle();
       final meta = MessageMetadata.fromJsonString(msg.metadata);
 
       GeneratedImage? targetImage;
@@ -759,19 +853,25 @@ class ChatController extends StateNotifier<ChatState> {
       for (final image in meta.generatedImages) {
         if (image.path == currentImagePath ||
             image.url == currentImagePath ||
-            image.versions.any((version) =>
-                version.path == currentImagePath ||
-                version.url == currentImagePath) ||
+            image.versions.any(
+              (version) =>
+                  version.path == currentImagePath ||
+                  version.url == currentImagePath,
+            ) ||
             (currentImagePath.isEmpty && image.status == 'failed')) {
           targetImage = image;
-          final matchedVersions = image.versions.where((version) =>
-              version.path == currentImagePath ||
-              version.url == currentImagePath);
+          final matchedVersions = image.versions.where(
+            (version) =>
+                version.path == currentImagePath ||
+                version.url == currentImagePath,
+          );
           if (matchedVersions.isNotEmpty) {
             targetVersion = matchedVersions.first;
           } else if (image.versions.isNotEmpty) {
-            final activeIdx =
-                image.activeVersion.clamp(0, image.versions.length - 1);
+            final activeIdx = image.activeVersion.clamp(
+              0,
+              image.versions.length - 1,
+            );
             targetVersion = image.versions[activeIdx];
           }
           break;
@@ -786,12 +886,12 @@ class ChatController extends StateNotifier<ChatState> {
       final resolvedPrompt = versionPrompt?.isNotEmpty == true
           ? versionPrompt!
           : (explicitPrompt?.isNotEmpty == true
-              ? explicitPrompt!
-              : (imagePrompt?.isNotEmpty == true
-                  ? imagePrompt!
-                  : (imageTags.isNotEmpty
-                      ? imageTags
-                      : 'high quality illustration')));
+                ? explicitPrompt!
+                : (imagePrompt?.isNotEmpty == true
+                      ? imagePrompt!
+                      : (imageTags.isNotEmpty
+                            ? imageTags
+                            : 'high quality illustration')));
 
       final imageService = factory();
       late final String newPath;
@@ -812,34 +912,42 @@ class ChatController extends StateNotifier<ChatState> {
       var updatedImages = List<GeneratedImage>.from(meta.generatedImages);
       for (int i = 0; i < updatedImages.length; i++) {
         final img = updatedImages[i];
-        final matchesCurrentImage = img.path == currentImagePath ||
+        final matchesCurrentImage =
+            img.path == currentImagePath ||
             img.url == currentImagePath ||
-            img.versions.any((version) =>
-                version.path == currentImagePath ||
-                version.url == currentImagePath) ||
+            img.versions.any(
+              (version) =>
+                  version.path == currentImagePath ||
+                  version.url == currentImagePath,
+            ) ||
             (currentImagePath.isEmpty && img.status == 'failed');
         if (matchesCurrentImage) {
           // 归一化现有 versions
           var versions = List<ImageVersion>.from(img.versions);
           if (versions.isEmpty) {
             // 首次重新生成：把当前图片作为第一个版本
-            versions.add(ImageVersion(
-              id: img.id.isNotEmpty ? img.id : 'v0',
-              url: currentImagePath,
-              path: currentImagePath,
-              prompt: img.prompt,
-              createdAt: now,
-            ));
+            versions.add(
+              ImageVersion(
+                id: img.id.isNotEmpty ? img.id : 'v0',
+                url: currentImagePath,
+                path: currentImagePath,
+                prompt: img.prompt,
+                createdAt: now,
+              ),
+            );
           }
           // 添加新版本
-          final newVersionId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
-          versions.add(ImageVersion(
-            id: newVersionId,
-            url: newPath,
-            path: newPath,
-            prompt: resolvedPrompt,
-            createdAt: now,
-          ));
+          final newVersionId = DateTime.now().millisecondsSinceEpoch
+              .toRadixString(36);
+          versions.add(
+            ImageVersion(
+              id: newVersionId,
+              url: newPath,
+              path: newPath,
+              prompt: resolvedPrompt,
+              createdAt: now,
+            ),
+          );
 
           updatedImages[i] = img.copyWith(
             url: newPath,
@@ -908,15 +1016,15 @@ class ChatController extends StateNotifier<ChatState> {
   }) {
     final memoryText = settings.memoryInject && memories.isNotEmpty
         ? memories
-            .asMap()
-            .entries
-            .map((e) => '${e.key + 1}. ${e.value}')
-            .join('\n')
+              .asMap()
+              .entries
+              .map((e) => '${e.key + 1}. ${e.value}')
+              .join('\n')
         : '';
 
     final systemPrompt = _buildSystemPrompt(character, memoryText, timeContext);
     final result = <ChatMessage>[
-      ChatMessage(role: 'system', content: systemPrompt)
+      ChatMessage(role: 'system', content: systemPrompt),
     ];
 
     // 示例对话
@@ -929,7 +1037,10 @@ class ChatController extends StateNotifier<ChatState> {
     if (settings.exampleDialogue) {
       usedTokens += estimateTokens(character.exampleDialogue);
     }
-    final availableBudget = (settings.contextWindow - settings.maxTokens).clamp(0, settings.contextWindow);
+    final availableBudget = (settings.contextWindow - settings.maxTokens).clamp(
+      0,
+      settings.contextWindow,
+    );
 
     // 从最新往前填充
     final history = <ChatMessage>[];
@@ -941,15 +1052,18 @@ class ChatController extends StateNotifier<ChatState> {
         if (!meta.isSummary) continue;
       }
 
-      final msgTokens =
-          msg.tokenCount > 0 ? msg.tokenCount : estimateTokens(msg.content);
+      final msgTokens = msg.tokenCount > 0
+          ? msg.tokenCount
+          : estimateTokens(msg.content);
       if (usedTokens + msgTokens > availableBudget) break;
       usedTokens += msgTokens;
 
       final meta = MessageMetadata.fromJsonString(msg.metadata);
       if (meta.isSummary) {
         history.insert(
-            0, ChatMessage(role: 'assistant', content: '[对话总结]\n${msg.content}'));
+          0,
+          ChatMessage(role: 'assistant', content: '[对话总结]\n${msg.content}'),
+        );
         continue;
       }
 
@@ -977,7 +1091,10 @@ class ChatController extends StateNotifier<ChatState> {
           result.last.role == msg.role &&
           msg.role != 'system') {
         final merged = '${result.last.content}\n\n${msg.content}';
-        result[result.length - 1] = ChatMessage(role: msg.role, content: merged);
+        result[result.length - 1] = ChatMessage(
+          role: msg.role,
+          content: merged,
+        );
       } else {
         result.add(msg);
       }
@@ -990,7 +1107,10 @@ class ChatController extends StateNotifier<ChatState> {
   /// [timeContext] 不为 null 时，在"行为要求"段落之前注入时间上下文段落。
   /// DateTime 无效时跳过注入，不阻塞系统提示词构建。
   String _buildSystemPrompt(
-      Character character, String memoryText, DateTime? timeContext) {
+    Character character,
+    String memoryText,
+    DateTime? timeContext,
+  ) {
     String? timeContextStr;
     if (timeContext != null) {
       try {
@@ -1056,14 +1176,17 @@ class ChatController extends StateNotifier<ChatState> {
   /// 对话级 `ignore_memory == 1` 时，整个自动后处理流程（自动记忆触发 +
   /// 自动生图）一并跳过；该开关仅作用于自动触发流程，记忆管理页等
   /// 手动入口不受影响。与 design.md「P1 / R5」一节伪代码保持一致。
-  Future<void> _postReplyProcessing(AppSettings settings, String characterId) async {
+  Future<void> _postReplyProcessing(
+    AppSettings settings,
+    String characterId,
+  ) async {
     // 入口先查询当前对话的 ignore_memory，等于 1 时直接跳过所有自动触发逻辑
     // （消息数 / 时间间隔 / 关键词）。读库失败时不阻塞后处理，保留原行为。
     try {
       final db = _ref.read(databaseProvider);
-      final conv = await (db.select(db.conversations)
-            ..where((t) => t.id.equals(_conversationId)))
-          .getSingleOrNull();
+      final conv = await (db.select(
+        db.conversations,
+      )..where((t) => t.id.equals(_conversationId))).getSingleOrNull();
       if (conv != null && shouldSkipAutoMemoryTrigger(conv.ignoreMemory)) {
         return;
       }
@@ -1092,7 +1215,10 @@ class ChatController extends StateNotifier<ChatState> {
   /// 1. 消息数达到 memoryInterval
   /// 2. 时间超过 memoryTriggerTimeHours
   /// 3. 用户消息包含 memoryTriggerKeywords 关键词
-  Future<void> _checkMemoryTrigger(AppSettings settings, String characterId) async {
+  Future<void> _checkMemoryTrigger(
+    AppSettings settings,
+    String characterId,
+  ) async {
     bool shouldTrigger = false;
 
     // 条件 1：按消息数触发
@@ -1129,16 +1255,18 @@ class ChatController extends StateNotifier<ChatState> {
 
     // 收集未提取用户消息及其紧随的 assistant 回复。
     final db = _ref.read(databaseProvider);
-    final messages = await (db.select(db.messages)
-          ..where((t) => t.conversationId.equals(_conversationId))
-          ..orderBy([
-            (t) => OrderingTerm.asc(t.createdAt),
-            (t) => OrderingTerm.asc(t.seq),
-          ]))
-        .get();
+    final messages =
+        await (db.select(db.messages)
+              ..where((t) => t.conversationId.equals(_conversationId))
+              ..orderBy([
+                (t) => OrderingTerm.asc(t.createdAt),
+                (t) => OrderingTerm.asc(t.seq),
+              ]))
+            .get();
 
-    final extractionIds =
-        MemoryExtractionService.selectExtractionMessageIds(messages);
+    final extractionIds = MemoryExtractionService.selectExtractionMessageIds(
+      messages,
+    );
 
     if (extractionIds.isEmpty) return;
 
@@ -1161,7 +1289,10 @@ class ChatController extends StateNotifier<ChatState> {
   /// 检测用户消息是否包含 autoGenerateKeywords 中任一关键词。
   /// autoGenerate 为 false 时跳过。
   /// 提示词组装：角色 image_tags + 用户消息移除首个匹配关键词后的剩余文本。
-  Future<void> _checkAutoImageGen(AppSettings settings, String characterId) async {
+  Future<void> _checkAutoImageGen(
+    AppSettings settings,
+    String characterId,
+  ) async {
     final imageGen = settings.imageGen;
     if (!imageGen.enabled || !imageGen.autoGenerate) return;
 
@@ -1185,13 +1316,16 @@ class ChatController extends StateNotifier<ChatState> {
     // 对照主项目：找到最后一条 assistant 消息，把图片附加到它上面
     // （而不是创建新的空消息）
     final db = _ref.read(databaseProvider);
-    final lastAssistant = await (db.select(db.messages)
-          ..where((t) =>
-              t.conversationId.equals(_conversationId) &
-              t.role.equals('assistant'))
-          ..orderBy([(t) => OrderingTerm.desc(t.seq)])
-          ..limit(1))
-        .getSingleOrNull();
+    final lastAssistant =
+        await (db.select(db.messages)
+              ..where(
+                (t) =>
+                    t.conversationId.equals(_conversationId) &
+                    t.role.equals('assistant'),
+              )
+              ..orderBy([(t) => OrderingTerm.desc(t.seq)])
+              ..limit(1))
+            .getSingleOrNull();
 
     if (lastAssistant == null) return;
 
@@ -1216,9 +1350,9 @@ class ChatController extends StateNotifier<ChatState> {
       imageService.dispose();
 
       // 把图片附加到最后一条 assistant 消息的 metadata
-      final msg = await (db.select(db.messages)
-            ..where((t) => t.id.equals(lastAssistant.id)))
-          .getSingle();
+      final msg = await (db.select(
+        db.messages,
+      )..where((t) => t.id.equals(lastAssistant.id))).getSingle();
       final meta = MessageMetadata.fromJsonString(msg.metadata);
       final imageId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
       final newMeta = meta.copyWith(
@@ -1233,7 +1367,8 @@ class ChatController extends StateNotifier<ChatState> {
           ),
         ],
       );
-      await (db.update(db.messages)..where((t) => t.id.equals(lastAssistant.id)))
+      await (db.update(db.messages)
+            ..where((t) => t.id.equals(lastAssistant.id)))
           .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
     } catch (_) {
       // 自动生图失败不中断对话流程
@@ -1244,6 +1379,7 @@ class ChatController extends StateNotifier<ChatState> {
   void dispose() {
     // autoDispose 销毁时先取消正在进行的网络请求，避免回调进入已销毁的 state；
     // 配合 _requestSeq 防重入校验，过期回调不会写库或 setState。
+    _requestSeq++;
     _cancelToken?.cancel();
     _llm.dispose();
     super.dispose();

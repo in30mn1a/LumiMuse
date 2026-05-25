@@ -72,7 +72,12 @@ class SearchActions {
     final dateRange = _parseDateQuery(query);
 
     if (dateRange != null) {
-      return _searchByDate(dateRange.$1, dateRange.$2, limit: limit, offset: offset);
+      return _searchByDate(
+        dateRange.$1,
+        dateRange.$2,
+        limit: limit,
+        offset: offset,
+      );
     }
 
     // 关键词搜索 — 使用 LIKE（CJK 兼容），转义用户输入中的通配符
@@ -80,8 +85,9 @@ class SearchActions {
     final escaped = _escapeLikeWildcards(query.trim());
     final keyword = '%$escaped%';
 
-    final results = await _db.customSelect(
-      '''
+    final results = await _db
+        .customSelect(
+          '''
       SELECT m.id as msg_id, m.conversation_id, m.role, m.content, m.created_at,
              c.id as char_id, c.name as char_name, conv.title as conv_title
       FROM messages m
@@ -91,13 +97,14 @@ class SearchActions {
       ORDER BY m.created_at DESC
       LIMIT ? OFFSET ?
       ''',
-      variables: [
-        Variable.withString(keyword),
-        Variable.withInt(limit + 1),
-        Variable.withInt(offset),
-      ],
-      readsFrom: {_db.messages, _db.conversations, _db.characters},
-    ).get();
+          variables: [
+            Variable.withString(keyword),
+            Variable.withInt(limit + 1),
+            Variable.withInt(offset),
+          ],
+          readsFrom: {_db.messages, _db.conversations, _db.characters},
+        )
+        .get();
 
     // 判断是否还有更多：查询到 limit+1 条说明还有下一页
     final hasMore = results.length > limit;
@@ -115,7 +122,8 @@ class SearchActions {
           role: row.read<String>('role'),
           snippet: _buildSnippet(content, query),
           createdAt: DateTime.fromMillisecondsSinceEpoch(
-              row.read<int>('created_at') * 1000),
+            row.read<int>('created_at'),
+          ),
         );
       }).toList(),
       hasMore: hasMore,
@@ -129,11 +137,12 @@ class SearchActions {
     int limit = 30,
     int offset = 0,
   }) async {
-    final startEpoch = start.millisecondsSinceEpoch ~/ 1000;
-    final endEpoch = end.millisecondsSinceEpoch ~/ 1000;
+    final startEpoch = start.millisecondsSinceEpoch;
+    final endEpoch = end.millisecondsSinceEpoch;
 
-    final results = await _db.customSelect(
-      '''
+    final results = await _db
+        .customSelect(
+          '''
       SELECT m.id as msg_id, m.conversation_id, m.role, m.content, m.created_at,
              c.id as char_id, c.name as char_name, conv.title as conv_title
       FROM messages m
@@ -143,14 +152,15 @@ class SearchActions {
       ORDER BY m.created_at DESC
       LIMIT ? OFFSET ?
       ''',
-      variables: [
-        Variable.withInt(startEpoch),
-        Variable.withInt(endEpoch),
-        Variable.withInt(limit + 1),
-        Variable.withInt(offset),
-      ],
-      readsFrom: {_db.messages, _db.conversations, _db.characters},
-    ).get();
+          variables: [
+            Variable.withInt(startEpoch),
+            Variable.withInt(endEpoch),
+            Variable.withInt(limit + 1),
+            Variable.withInt(offset),
+          ],
+          readsFrom: {_db.messages, _db.conversations, _db.characters},
+        )
+        .get();
 
     // 判断是否还有更多
     final hasMore = results.length > limit;
@@ -166,9 +176,12 @@ class SearchActions {
           characterName: row.read<String>('char_name'),
           conversationTitle: row.read<String>('conv_title'),
           role: row.read<String>('role'),
-          snippet: content.length > 80 ? '${content.substring(0, 80)}...' : content,
+          snippet: content.length > 80
+              ? '${content.substring(0, 80)}...'
+              : content,
           createdAt: DateTime.fromMillisecondsSinceEpoch(
-              row.read<int>('created_at') * 1000),
+            row.read<int>('created_at'),
+          ),
         );
       }).toList(),
       hasMore: hasMore,
@@ -195,7 +208,9 @@ class SearchActions {
     final trimmed = query.trim();
 
     // 格式: 2026/3/30 或 2026-3-30 或 2026.3.30
-    final slashMatch = RegExp(r'^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$').firstMatch(trimmed);
+    final slashMatch = RegExp(
+      r'^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$',
+    ).firstMatch(trimmed);
     if (slashMatch != null) {
       return _buildDateRange(
         int.parse(slashMatch.group(1)!),
@@ -206,7 +221,9 @@ class SearchActions {
 
     // 格式: 3月30日 或 3月30（中文直写，与 AGENTS.md「编码防护」原则一致；
     // 受 RC-10 扫描契约约束，禁止使用 \uXXXX 转义）
-    final monthDayMatch = RegExp(r'^(\d{1,2})月(\d{1,2})日?$').firstMatch(trimmed);
+    final monthDayMatch = RegExp(
+      r'^(\d{1,2})月(\d{1,2})日?$',
+    ).firstMatch(trimmed);
     if (monthDayMatch != null) {
       final now = DateTime.now();
       return _buildDateRange(
@@ -217,7 +234,9 @@ class SearchActions {
     }
 
     // 格式: 2026年3月30日（中文直写，禁止 \uXXXX 转义）
-    final fullCnMatch = RegExp(r'^(\d{4})年(\d{1,2})月(\d{1,2})日?$').firstMatch(trimmed);
+    final fullCnMatch = RegExp(
+      r'^(\d{4})年(\d{1,2})月(\d{1,2})日?$',
+    ).firstMatch(trimmed);
     if (fullCnMatch != null) {
       return _buildDateRange(
         int.parse(fullCnMatch.group(1)!),
@@ -227,7 +246,9 @@ class SearchActions {
     }
 
     // 格式: 3/30 或 03-30（月/日，无年份，假设当前年）— 对照主项目
-    final shortDateMatch = RegExp(r'^(\d{1,2})[/\-](\d{1,2})$').firstMatch(trimmed);
+    final shortDateMatch = RegExp(
+      r'^(\d{1,2})[/\-](\d{1,2})$',
+    ).firstMatch(trimmed);
     if (shortDateMatch != null) {
       final now = DateTime.now();
       return _buildDateRange(

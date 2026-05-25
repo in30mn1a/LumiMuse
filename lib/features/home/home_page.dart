@@ -146,6 +146,7 @@ class HomePage extends ConsumerStatefulWidget {
 class _HomePageState extends ConsumerState<HomePage> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _resumeAttempted = false;
+  bool _globalSearchOpen = false;
 
   @override
   Widget build(BuildContext context) {
@@ -205,8 +206,9 @@ class _HomePageState extends ConsumerState<HomePage> {
       target =
           await (db.select(db.conversations)
                 ..where(
-                  (t) =>
-                      t.characterId.equals(settings.lastConversationCharacterId),
+                  (t) => t.characterId.equals(
+                    settings.lastConversationCharacterId,
+                  ),
                 )
                 ..orderBy([
                   (t) => drift.OrderingTerm(
@@ -229,6 +231,8 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   /// 打开全局搜索弹窗，命中结果后写入 selectionProvider 并跳到主页
   void _openGlobalSearch() {
+    if (_globalSearchOpen) return;
+    _globalSearchOpen = true;
     showGlobalSearchDialog(
       context,
       onSelect: (characterId, conversationId, messageId) {
@@ -240,7 +244,9 @@ class _HomePageState extends ConsumerState<HomePage> {
               targetMessageId: messageId,
             );
       },
-    );
+    ).whenComplete(() {
+      _globalSearchOpen = false;
+    });
   }
 
   Widget _buildDesktop(BuildContext context) {

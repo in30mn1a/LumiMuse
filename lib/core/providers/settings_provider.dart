@@ -34,7 +34,9 @@ Future<void> rememberLastConversation(
   required String characterId,
   required String conversationId,
 }) async {
-  await ref.read(settingsProvider.notifier).updateLastConversation(
+  await ref
+      .read(settingsProvider.notifier)
+      .updateLastConversation(
         characterId: characterId,
         conversationId: conversationId,
       );
@@ -139,7 +141,11 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   /// 更新设置
   Future<void> updateSettings(AppSettings newSettings) async {
     final db = ref.read(databaseProvider);
-    final entries = _settingsToMap(newSettings);
+    final activeProviderId = ref.read(activeProviderIdProvider);
+    final nextSettings = newSettings.copyWith(
+      activeProviderId: activeProviderId,
+    );
+    final entries = _settingsToMap(nextSettings);
 
     await db.batch((batch) {
       for (final entry in entries.entries) {
@@ -154,9 +160,9 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       }
     });
 
-    _syncDerivedProviders(newSettings);
+    _syncDerivedProviders(nextSettings);
 
-    state = AsyncData(newSettings);
+    state = AsyncData(nextSettings);
   }
 
   /// 更新单个设置项

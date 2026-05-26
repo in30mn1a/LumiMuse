@@ -4,6 +4,7 @@ import { Message, Character } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { estimateTokens } from '@/lib/token-counter';
 import { safeFetch } from '@/lib/ssrf-guard';
+import { parseSseStream } from '@/lib/sse-parser';
 import { serializeTypedMessages } from '@/lib/messages';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -98,52 +99,20 @@ ${convText}`;
 
     // 读取流式响应，累积完整内容
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
     let summaryContent = '';
-    let buffer = '';
 
     try {
-      while (true) {
-        if (request.signal.aborted) {
-          await reader.cancel();
-          return new Response(JSON.stringify({ error: '请求已取消' }), { status: 499 });
-        }
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop()!;
-
-        for (const part of parts) {
-          for (const line of part.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed === 'data: [DONE]') continue;
-            if (!trimmed.startsWith('data: ')) continue;
-            try {
-              const json = JSON.parse(trimmed.slice(6));
-              const delta = json.choices?.[0]?.delta?.content;
-              if (delta) summaryContent += delta;
-            } catch { /* 跳过格式不完整的分片 */ }
-          }
-        }
-      }
+      await parseSseStream(reader, ({ text }) => {
+        if (text) summaryContent += text;
+      }, { signal: request.signal });
     } finally {
       // 无论正常结束还是异常都释放 reader
       try { await reader.cancel(); } catch { /* ignore */ }
     }
 
-    // 处理剩余缓冲区
-    if (buffer.trim()) {
-      for (const line of buffer.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === 'data: [DONE]' || !trimmed.startsWith('data: ')) continue;
-        try {
-          const json = JSON.parse(trimmed.slice(6));
-          const delta = json.choices?.[0]?.delta?.content;
-          if (delta) summaryContent += delta;
-        } catch { /* 跳过 */ }
-      }
+    // 客户端主动取消时，parseSseStream 内部已静默返回；这里映射成 499
+    if (request.signal.aborted) {
+      return new Response(JSON.stringify({ error: '请求已取消' }), { status: 499 });
     }
 
     if (!summaryContent.trim()) {

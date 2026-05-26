@@ -40,9 +40,9 @@ function ChatToolbarImpl({
           <button
             onClick={onOpenResetExtraction}
             className="chip cursor-pointer text-[10px] md:text-xs text-text-muted border-border-light opacity-60 hover:opacity-90"
-            title="本对话已忽略记忆提取，点击管理"
+            title={t('chat.ignoredHintTitle')}
           >
-            已忽略提取
+            {t('chat.ignoredHint')}
           </button>
         ) : unextractedCount > 0 ? (
           <button

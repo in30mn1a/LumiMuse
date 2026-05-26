@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
+import Modal from '@/components/ui/Modal';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -49,39 +50,36 @@ function ExportDialog({ characterId, onClose }: { characterId: string; onClose: 
   const nothingSelected = !includeCharacter && !includeMemories && !includeConversations;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-      <div className="absolute inset-0 bg-black/35 backdrop-blur-sm" onClick={onClose} />
-      <div className="surface-hero relative z-10 w-full max-w-sm px-6 py-6">
-        <h2 className="section-title mb-1 text-lg">{t('export.characterTitle')}</h2>
-        <p className="mb-5 text-sm text-text-muted">{t('export.characterHint')}</p>
-        <div className="space-y-2">
-          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
-            {t('export.includeCharacters')}
-          </label>
-          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
-            {t('export.includeMemories')}
-          </label>
-          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
-            {t('export.includeConversations')}
-          </label>
-        </div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onClose} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
-          <button
-            onClick={handleExport}
-            disabled={nothingSelected}
-            className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {t('export.download')}
-          </button>
-        </div>
+    <Modal open onClose={onClose} title={t('export.characterTitle')} maxWidth="max-w-sm">
+      <p className="mb-4 text-sm text-text-muted">{t('export.characterHint')}</p>
+      <div className="space-y-2">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
+          {t('export.includeCharacters')}
+        </label>
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
+          {t('export.includeMemories')}
+        </label>
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
+          {t('export.includeConversations')}
+        </label>
       </div>
-    </div>
+      <div className="mt-5 flex justify-end gap-2">
+        <button onClick={onClose} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
+        <button
+          onClick={handleExport}
+          disabled={nothingSelected}
+          className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {t('export.download')}
+        </button>
+      </div>
+    </Modal>
   );
 }
+
 function ImportDialog({
   fileName,
   onCancel,
@@ -98,38 +96,34 @@ function ImportDialog({
   const nothingSelected = !includeCharacter && !includeMemories && !includeConversations;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-      <div className="absolute inset-0 bg-black/35 backdrop-blur-sm" onClick={onCancel} />
-      <div className="surface-hero relative z-10 w-full max-w-sm px-6 py-6">
-        <h2 className="section-title mb-1 text-lg">{t('import.characterTitle')}</h2>
-        <p className="mb-3 text-sm text-text-muted">{t('import.characterHint')}</p>
-        <p className="mb-5 truncate rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-xs text-text-muted">{fileName}</p>
-        <div className="space-y-2">
-          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
-            {t('export.includeCharacters')}
-          </label>
-          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
-            {t('export.includeMemories')}
-          </label>
-          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
-            {t('export.includeConversations')}
-          </label>
-        </div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onCancel} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
-          <button
-            onClick={() => onConfirm({ includeCharacter, includeMemories, includeConversations })}
-            disabled={nothingSelected}
-            className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {t('import.apply')}
-          </button>
-        </div>
+    <Modal open onClose={onCancel} title={t('import.characterTitle')} maxWidth="max-w-sm">
+      <p className="mb-3 text-sm text-text-muted">{t('import.characterHint')}</p>
+      <p className="mb-5 truncate rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-xs text-text-muted">{fileName}</p>
+      <div className="space-y-2">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
+          {t('export.includeCharacters')}
+        </label>
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
+          {t('export.includeMemories')}
+        </label>
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
+          {t('export.includeConversations')}
+        </label>
       </div>
-    </div>
+      <div className="mt-5 flex justify-end gap-2">
+        <button onClick={onCancel} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
+        <button
+          onClick={() => onConfirm({ includeCharacter, includeMemories, includeConversations })}
+          disabled={nothingSelected}
+          className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {t('import.apply')}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -178,14 +172,14 @@ export default function CharacterEditor({ params }: Props) {
     return [
       {
         role: 'user',
-        content: '我今天有点累，想听你慢慢说话。',
+        content: t('editor.previewUserSample'),
       },
       {
         role: 'assistant',
-        content: previewText(character.greeting, '我会在这里陪着你。', 96),
+        content: previewText(character.greeting, t('editor.previewAssistantFallback'), 96),
       },
     ];
-  }, [character]);
+  }, [character, t]);
 
   const returnToSidebar = () => {
     sessionStorage.setItem('lumimuse_open_sidebar', '1');

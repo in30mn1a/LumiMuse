@@ -1,5 +1,6 @@
 import { Settings } from '@/types';
 import { safeFetch } from './ssrf-guard';
+import { parseSseStream } from './sse-parser';
 
 /**
  * 清理上游响应中可能回显的敏感字段（Authorization 头、API key 片段等），
@@ -74,49 +75,19 @@ export async function chatCompletionStream(
   }
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   let fullText = '';
-  let buffer = '';
 
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      // 检查是否已被 abort
-      if (callbacks.signal?.aborted) {
-        reader.cancel();
-        return; // 不调用 onDone，不保存消息
+    await parseSseStream(reader, ({ text }) => {
+      if (text) {
+        fullText += text;
+        callbacks.onChunk(text);
       }
-
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split('\n\n');
-      // 保留最后一段可能不完整的数据
-      buffer = parts.pop()!;
-
-      for (const part of parts) {
-        for (const line of part.split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === 'data: [DONE]') continue;
-          if (!trimmed.startsWith('data: ')) continue;
-
-          try {
-            const json = JSON.parse(trimmed.slice(6));
-            const delta = json.choices?.[0]?.delta?.content;
-            if (delta) {
-              fullText += delta;
-              callbacks.onChunk(delta);
-            }
-          } catch {
-            // 跳过格式不完整的分片
-          }
-        }
-      }
-    }
+    }, { signal: callbacks.signal });
   } catch (err) {
     // reader.read() 被 abort 时抛出 AbortError，直接返回不保存
     if (err instanceof Error && (err.name === 'AbortError' || callbacks.signal?.aborted)) {
-      reader.cancel();
+      try { await reader.cancel(); } catch { /* ignore */ }
       return;
     }
     // 非 abort 错误：若已累积部分内容，先保存再向上抛出，避免用户已看到的回复丢失
@@ -130,24 +101,8 @@ export async function chatCompletionStream(
     throw err;
   }
 
-  // 检查循环结束后是否已被 abort
+  // parseSseStream 在 abort 时静默返回，这里再次确认避免误调用 onDone
   if (callbacks.signal?.aborted) return;
-
-  // 处理剩余缓冲区
-  if (buffer.trim()) {
-    for (const line of buffer.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === 'data: [DONE]' || !trimmed.startsWith('data: ')) continue;
-      try {
-        const json = JSON.parse(trimmed.slice(6));
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) {
-          fullText += delta;
-          callbacks.onChunk(delta);
-        }
-      } catch { /* 跳过 */ }
-    }
-  }
 
   await callbacks.onDone(fullText);
 }

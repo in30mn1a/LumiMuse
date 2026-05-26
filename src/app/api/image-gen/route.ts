@@ -13,6 +13,43 @@ import { v4 as uuid } from 'uuid';
  * 返回: { url: string } 或 { error: string }
  */
 
+// ===== 安全限制常量 =====
+/** 单张图片最大字节数（含解码后的 base64 与远程下载），超过则拒绝以避免 OOM */
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB
+/** ComfyUI 自定义工作流 JSON 字符串的最大字节数（UTF-8 编码后） */
+const MAX_COMFYUI_WORKFLOW_SIZE = 64 * 1024; // 64KB
+
+type ImageFormat = 'png' | 'jpeg' | 'webp';
+
+/**
+ * 校验图片 magic bytes，识别 PNG / JPEG / WEBP。
+ * 失败时返回 null，调用方应据此拒绝写入。
+ */
+function detectImageFormat(buffer: Buffer | Uint8Array): ImageFormat | null {
+  if (buffer.length < 12) return null;
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return 'png';
+  }
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'jpeg';
+  }
+  // WEBP: 'RIFF' .. .. .. .. 'WEBP'
+  if (
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) {
+    return 'webp';
+  }
+  return null;
+}
+
+/** 根据 magic bytes 返回对应的文件扩展名 */
+function extForFormat(fmt: ImageFormat): string {
+  return fmt === 'jpeg' ? 'jpg' : fmt;
+}
+
 // 确保生图输出目录存在
 async function ensureOutputDir(): Promise<string> {
   const dir = path.join(process.cwd(), 'public', 'generated');
@@ -20,26 +57,78 @@ async function ensureOutputDir(): Promise<string> {
   return dir;
 }
 
-// 保存 base64 图片到本地
-async function saveBase64Image(base64: string): Promise<string> {
+/**
+ * 抓取远端图片，统一执行：
+ *   1. Content-Length 预检（若上游返回该头，>maxSize 直接拒绝，避免下载大体积响应）
+ *   2. 读 arrayBuffer 后再校验实际字节数（防止上游不返回 Content-Length 或伪报）
+ *
+ * 不做 magic bytes 校验——交给调用方决定是否需要（部分场景可能是 zip 等非图片二进制）。
+ */
+async function safeFetchImage(
+  url: string,
+  maxSize: number,
+  init?: Parameters<typeof safeFetch>[1],
+): Promise<{ buffer: Buffer; contentType: string; response: Response }> {
+  const response = await safeFetch(url, init);
+  if (!response.ok) {
+    throw new Error(`下载图片失败: ${response.status}`);
+  }
+  const contentLengthHeader = response.headers.get('content-length');
+  if (contentLengthHeader) {
+    const declared = Number.parseInt(contentLengthHeader, 10);
+    if (Number.isFinite(declared) && declared > maxSize) {
+      throw new Error(`响应体过大: ${declared} 字节超过上限 ${maxSize}`);
+    }
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength > maxSize) {
+    throw new Error(`响应体过大: ${arrayBuffer.byteLength} 字节超过上限 ${maxSize}`);
+  }
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    contentType: response.headers.get('content-type') || '',
+    response,
+  };
+}
+
+/**
+ * 将一段已经在内存里的 buffer 落地为生图文件：校验大小 + magic bytes，
+ * 通过则按真实格式写入，并返回可访问 URL。
+ */
+async function persistImageBuffer(buffer: Buffer | Uint8Array): Promise<string> {
+  if (buffer.length === 0) {
+    throw new Error('图片数据为空');
+  }
+  if (buffer.length > MAX_IMAGE_SIZE) {
+    throw new Error(`图片过大: ${buffer.length} 字节超过上限 ${MAX_IMAGE_SIZE}`);
+  }
+  const fmt = detectImageFormat(buffer);
+  if (!fmt) {
+    throw new Error('未识别的图片格式（仅支持 PNG / JPEG / WEBP）');
+  }
   const dir = await ensureOutputDir();
-  const filename = `${uuid()}.png`;
+  const filename = `${uuid()}.${extForFormat(fmt)}`;
   const filepath = path.join(dir, filename);
-  const buffer = Buffer.from(base64, 'base64');
   await writeFile(filepath, buffer);
   return `/api/files/generated/${filename}`;
 }
 
+// 保存 base64 图片到本地（自动按 magic bytes 选择扩展名 + 大小限制）
+async function saveBase64Image(base64: string): Promise<string> {
+  // 提前估算解码后大小，避免对超大 base64 字符串先解码再丢弃
+  // base64 每 4 字符约对应 3 字节
+  const approxDecodedSize = Math.floor((base64.length * 3) / 4);
+  if (approxDecodedSize > MAX_IMAGE_SIZE) {
+    throw new Error(`图片过大: 约 ${approxDecodedSize} 字节超过上限 ${MAX_IMAGE_SIZE}`);
+  }
+  const buffer = Buffer.from(base64, 'base64');
+  return persistImageBuffer(buffer);
+}
+
 // 保存远程图片 URL 到本地（远端 URL 必须经过 SSRF 校验，避免恶意 ComfyUI/custom 输出指向内网）
-async function saveRemoteImage(imageUrl: string): Promise<string> {
-  const dir = await ensureOutputDir();
-  const filename = `${uuid()}.png`;
-  const filepath = path.join(dir, filename);
-  const response = await safeFetch(imageUrl);
-  if (!response.ok) throw new Error(`下载图片失败: ${response.status}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  await writeFile(filepath, buffer);
-  return `/api/files/generated/${filename}`;
+async function saveRemoteImage(imageUrl: string, init?: Parameters<typeof safeFetch>[1]): Promise<string> {
+  const { buffer } = await safeFetchImage(imageUrl, MAX_IMAGE_SIZE, init);
+  return persistImageBuffer(buffer);
 }
 
 // ========== SD WebUI ==========
@@ -161,8 +250,19 @@ async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGen
     throw new Error(`NovelAI 错误 ${response.status}: ${text.slice(0, 300)}`);
   }
 
-  // NAI 返回 zip 格式，里面有一张 png
+  // 大小预检：NAI 可能返回 zip（多张图）或单张 png，zip 体积通常 < 10MB，
+  // 这里仍然按 MAX_IMAGE_SIZE 限制响应体本身，避免恶意/异常上游打爆内存
+  const contentLengthHeader = response.headers.get('content-length');
+  if (contentLengthHeader) {
+    const declared = Number.parseInt(contentLengthHeader, 10);
+    if (Number.isFinite(declared) && declared > MAX_IMAGE_SIZE) {
+      throw new Error(`NovelAI 响应过大: ${declared} 字节超过上限 ${MAX_IMAGE_SIZE}`);
+    }
+  }
   const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength > MAX_IMAGE_SIZE) {
+    throw new Error(`NovelAI 响应过大: ${arrayBuffer.byteLength} 字节超过上限 ${MAX_IMAGE_SIZE}`);
+  }
   const contentType = response.headers.get('content-type') || '';
 
   if (contentType.includes('application/json')) {
@@ -186,38 +286,23 @@ async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGen
       throw new Error('NovelAI zip 中未找到图片文件');
     }
     const fileData = await firstEntry.async('nodebuffer');
-
-    const dir = await ensureOutputDir();
-    const filename = `${uuid()}.png`;
-    const filepath = path.join(dir, filename);
-    await writeFile(filepath, fileData);
     console.log('[image-gen/nai] 从 zip 解压成功, 文件名:', firstEntry.name, '解压后大小:', fileData.length);
-    return `/api/files/generated/${filename}`;
+    // persistImageBuffer 会做 magic bytes + 大小校验
+    return persistImageBuffer(fileData);
   }
 
-  // 不是 zip，检查是否直接是 PNG
-  if (uint8[0] === 0x89 && uint8[1] === 0x50 && uint8[2] === 0x4E && uint8[3] === 0x47) {
-    const dir = await ensureOutputDir();
-    const filename = `${uuid()}.png`;
-    const filepath = path.join(dir, filename);
-    await writeFile(filepath, Buffer.from(arrayBuffer));
-    return `/api/files/generated/${filename}`;
-  }
-
-  // 兜底
-  if (arrayBuffer.byteLength > 1000) {
-    const dir = await ensureOutputDir();
-    const filename = `${uuid()}.png`;
-    const filepath = path.join(dir, filename);
-    await writeFile(filepath, Buffer.from(arrayBuffer));
-    return `/api/files/generated/${filename}`;
-  }
-
-  throw new Error(`NovelAI 返回格式无法解析 (content-type: ${contentType}, size: ${arrayBuffer.byteLength})`);
+  // 非 zip：直接当作图片二进制处理，由 persistImageBuffer 识别 PNG / JPEG / WEBP
+  // 无法识别时抛出明确错误，不再静默兜底写入未知二进制（防止把错误页/HTML 当图片落地）
+  return persistImageBuffer(Buffer.from(arrayBuffer));
 }
 
 // ========== ComfyUI ==========
-async function generateComfyUI(prompt: string, negativePrompt: string, cfg: ImageGenSettings): Promise<string> {
+async function generateComfyUI(
+  prompt: string,
+  negativePrompt: string,
+  cfg: ImageGenSettings,
+  signal?: AbortSignal,
+): Promise<string> {
   const fullPrompt = cfg.quality_tags ? `${cfg.quality_tags}, ${prompt}` : prompt;
 
   // 使用默认的简单工作流或用户自定义工作流
@@ -260,7 +345,14 @@ async function generateComfyUI(prompt: string, negativePrompt: string, cfg: Imag
   let outputImages: { filename: string; subfolder: string; type: string }[] = [];
 
   while (Date.now() - start < maxWait) {
+    // 客户端断连时立即中止轮询，避免继续 hammer ComfyUI
+    if (signal?.aborted) {
+      throw new Error('ComfyUI 轮询被客户端中止');
+    }
     await new Promise(r => setTimeout(r, 2000));
+    if (signal?.aborted) {
+      throw new Error('ComfyUI 轮询被客户端中止');
+    }
     const historyRes = await safeFetch(`${baseUrl}/history/${prompt_id}`);
     if (!historyRes.ok) continue;
     const history = await historyRes.json();
@@ -285,7 +377,7 @@ async function generateComfyUI(prompt: string, negativePrompt: string, cfg: Imag
     throw new Error('ComfyUI 生成超时或无输出');
   }
 
-  // 下载第一张图片
+  // 下载第一张图片（saveRemoteImage 已内置大小 + magic bytes 校验）
   const img = outputImages[0];
   const imgUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
   return saveRemoteImage(imgUrl);
@@ -386,6 +478,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '生图功能未启用，请先在设置中开启' }, { status: 400 });
     }
 
+    // L5: ComfyUI 工作流大小限制——避免恶意/异常 override 传入数 MB 的 JSON
+    // 仅对实际会用到的引擎做校验，其他引擎即便误带超长 workflow 也无影响
+    if (imgCfg.engine === 'comfyui' && imgCfg.comfyui_workflow) {
+      const workflowBytes = Buffer.byteLength(imgCfg.comfyui_workflow, 'utf8');
+      if (workflowBytes > MAX_COMFYUI_WORKFLOW_SIZE) {
+        return NextResponse.json(
+          {
+            error: `ComfyUI 工作流过大: ${workflowBytes} 字节超过上限 ${MAX_COMFYUI_WORKFLOW_SIZE}`,
+          },
+          { status: 400 },
+        );
+      }
+    }
+
     let url: string;
 
     switch (imgCfg.engine) {
@@ -396,7 +502,7 @@ export async function POST(request: NextRequest) {
         url = await generateNAI(prompt, negative_prompt || '', imgCfg);
         break;
       case 'comfyui':
-        url = await generateComfyUI(prompt, negative_prompt || '', imgCfg);
+        url = await generateComfyUI(prompt, negative_prompt || '', imgCfg, request.signal);
         break;
       case 'custom':
         url = await generateCustom(prompt, imgCfg);

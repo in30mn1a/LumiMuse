@@ -74,7 +74,7 @@ function ChatHeaderImpl({
             <button
               onClick={onOpenSidebar}
               className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label="打开角色列表"
+              aria-label={t('chat.openCharacterList')}
             >
               <MenuIcon className="h-4 w-4" />
             </button>
@@ -92,7 +92,7 @@ function ChatHeaderImpl({
             <button
               onClick={onOpenConvDrawer}
               className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label="切换对话"
+              aria-label={t('chat.switchConversation')}
             >
               <ListIcon className="h-4 w-4" />
             </button>
@@ -100,7 +100,7 @@ function ChatHeaderImpl({
               onClick={onNewChat}
               disabled={creating}
               className="rounded-xl bg-accent p-2 text-white shadow-sm disabled:opacity-50"
-              aria-label="新对话"
+              aria-label={t('chat.newConversation')}
             >
               {creating ? <span className="spinner-sm" aria-hidden="true" /> : <PlusIcon className="h-4 w-4" />}
             </button>
@@ -108,7 +108,7 @@ function ChatHeaderImpl({
               <button
                 onClick={onOpenSearch}
                 className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-                aria-label="搜索"
+                aria-label={t('chat.searchMessages')}
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
                   <circle cx="11" cy="11" r="6.5" /><path d="M16 16l5 5" />
@@ -118,7 +118,7 @@ function ChatHeaderImpl({
             <button
               onClick={onToggleToolbar}
               className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label={toolbarExpanded ? '收起工具栏' : '展开工具栏'}
+              aria-label={toolbarExpanded ? t('chat.collapseToolbar') : t('chat.expandToolbar')}
               aria-expanded={toolbarExpanded}
             >
               <ChevronDownIcon className={`h-4 w-4 transition-transform duration-200 ${toolbarExpanded ? 'rotate-180' : ''}`} />
@@ -164,7 +164,7 @@ function ChatHeaderImpl({
                 <button
                   onClick={onOpenImageManager}
                   className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-                  aria-label="图片管理"
+                  aria-label={t('chat.imageManagerTitle')}
                 >
                   <ImageIcon className="h-4 w-4" />
                 </button>
@@ -220,7 +220,7 @@ function ChatHeaderImpl({
               onClick={onSummarize}
               disabled={!activeConversation || isStreamingHere || summarizing}
               className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title="总结当前上下文，之前的消息将不再发送给 AI"
+              title={t('chat.summarizeTitle')}
             >
               {summarizing ? <span className="spinner-sm" aria-hidden="true" /> : <SummaryIcon className="h-4 w-4" />}
               <span>{summarizing ? t('chat.summarizing') : t('chat.summarize')}</span>
@@ -229,7 +229,7 @@ function ChatHeaderImpl({
               onClick={onDuplicate}
               disabled={!activeConversation || duplicating}
               className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title="复制这段对话为副本"
+              title={t('chat.duplicateTitle')}
             >
               {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
               <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
@@ -237,10 +237,10 @@ function ChatHeaderImpl({
             <button
               onClick={onOpenImageManager}
               className="soft-button soft-button-secondary px-4 py-2 text-sm"
-              title="查看和管理所有生成图片"
+              title={t('chat.imageManagerTitleHint')}
             >
               <ImageIcon className="h-4 w-4" />
-              <span>图片管理</span>
+              <span>{t('chat.imageManagerTitle')}</span>
             </button>
             <button
               onClick={onRequestDelete}

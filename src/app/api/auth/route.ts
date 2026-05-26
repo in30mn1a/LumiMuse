@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AUTH_COOKIE_NAME, issueAuthToken, timingSafeEqualString, TOKEN_TTL_MS } from '@/lib/auth-token';
+import { bumpAuthMinIat } from '@/lib/settings';
 
 // ====== 进程内内存级速率限制 ======
 // 同一 IP 在 RATE_LIMIT_WINDOW_MS 时间窗内最多允许 RATE_LIMIT_MAX 次失败
@@ -93,8 +94,20 @@ export async function POST(request: NextRequest) {
   return response;
 }
 
-// DELETE /api/auth — 退出登录，清除 cookie
+// DELETE /api/auth — 退出登录，清除 cookie 并作废所有已签发的 token
 export async function DELETE() {
+  // 服务端撤销：推进 min_iat，让所有签发时间早于此刻的 token 全部失效。
+  // 这是真正的"登出"——即便 cookie 已被窃取或浏览器外其他副本仍持有，也会立即失效。
+  // 仅在启用了访问密码的部署中才需要撤销（无密码模式下 token 体系本就不生效）。
+  if (process.env.ACCESS_PASSWORD) {
+    try {
+      bumpAuthMinIat();
+    } catch (err) {
+      // 撤销写入失败不应阻塞登出响应（cookie 清除依然有效），但要可见
+      console.error('[auth] bumpAuthMinIat failed during logout:', err);
+    }
+  }
+
   const response = NextResponse.json({ ok: true });
   // 清除 cookie 时也需要带上写入时的属性（secure / path），否则浏览器视作不同 cookie 而无法删除
   response.cookies.set(AUTH_COOKIE_NAME, '', {

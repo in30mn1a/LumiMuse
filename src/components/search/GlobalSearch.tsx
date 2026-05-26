@@ -78,7 +78,7 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
       // 阅读时会暂停背景 DOM 的朗读，专注于搜索界面
       role="dialog"
       aria-modal="true"
-      aria-label={t('search.placeholder') || '搜索'}
+      aria-label={t('search.placeholder') || t('search.dialogLabel')}
     >
       <div
         className="surface-panel w-full max-w-xl overflow-hidden"

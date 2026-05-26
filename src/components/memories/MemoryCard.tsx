@@ -104,7 +104,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                     onClick={() => setExpanded(prev => !prev)}
                     className="mt-1 text-[11px] text-accent-dark/70 hover:text-accent-dark transition-colors"
                   >
-                    {expanded ? '收起' : '展开全文'}
+                    {expanded ? t('memory.collapse') : t('memory.expand')}
                   </button>
                 )}
               </div>
@@ -116,7 +116,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
               <input
                 value={editTags}
                 onChange={e => setEditTags(e.target.value)}
-                placeholder="用空格分隔标签"
+                placeholder={t('memory.tagsPlaceholder')}
                 className="input-rich min-h-0 flex-1 rounded-full px-3 py-2 text-xs"
               />
             ) : tags.length > 0 ? (

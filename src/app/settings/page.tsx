@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS, FontStyle, ApiProvider, ArtistString } from '@/types';
 import { applyFontStyle } from '@/lib/font-stacks';
 import { writeThemeStorage } from '@/lib/theme-provider';
+import { API_KEY_MASK } from '@/lib/constants';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
@@ -60,9 +61,9 @@ export default function SettingsPage() {
       const body: Record<string, unknown> = { refresh: true };
       const usingBase = apiBase || settings.api_base;
       if (usingBase) body.api_base = usingBase;
-      const usingKey = (apiKey && apiKey !== '********')
+      const usingKey = (apiKey && apiKey !== API_KEY_MASK)
         ? apiKey
-        : (settings.api_key && settings.api_key !== '********' ? settings.api_key : undefined);
+        : (settings.api_key && settings.api_key !== API_KEY_MASK ? settings.api_key : undefined);
       if (usingKey) body.api_key = usingKey;
       const response = await fetch('/api/models', {
         method: 'POST',
@@ -648,7 +649,7 @@ export default function SettingsPage() {
                       type="text"
                       value={settings.memory_trigger_keywords}
                       onChange={e => update('memory_trigger_keywords', e.target.value)}
-                      placeholder="晚安"
+                      placeholder={t('settings.triggerKeywordsPlaceholder')}
                       className="input-rich"
                     />
                   </div>
@@ -714,8 +715,8 @@ export default function SettingsPage() {
                     onChange={e => update('language', e.target.value as 'zh' | 'en')}
                     className="select-rich"
                   >
-                    <option value="zh">中文</option>
-                    <option value="en">English</option>
+                    <option value="zh">{t('settings.languageZh')}</option>
+                    <option value="en">{t('settings.languageEn')}</option>
                   </select>
                 </label>
 
@@ -744,7 +745,7 @@ export default function SettingsPage() {
                             ? "'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
                             : "'Noto Serif SC', 'SimSun', Georgia, serif"
                         }}>
-                          {f === 'wenkai' ? '霞鹜文楷' : f === 'system' ? '系统字体' : '衬线字体'}
+                          {f === 'wenkai' ? t('settings.fontNameWenkai') : f === 'system' ? t('settings.fontNameSystem') : t('settings.fontNameSerif')}
                         </span>
                         <span className="mt-0.5 block text-xs text-text-muted">{t(`settings.font${f.charAt(0).toUpperCase() + f.slice(1)}`)}</span>
                       </button>
@@ -1123,7 +1124,7 @@ function ImageGenSettingsSection({
                   value={imgGen.auto_generate_keywords}
                   onChange={e => updateImg('auto_generate_keywords', e.target.value)}
                   className="input-rich"
-                  placeholder="画,生图,来一张,看看"
+                  placeholder={t('settings.imageGenAutoKeywordsPlaceholder')}
                 />
               </div>
             )}

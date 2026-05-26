@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Character } from '@/types';
 import { collectAllLocalAssetUrls, collectCharacterLocalAssetUrls, deleteLocalAssetUrls } from '@/lib/character-file-utils';
+import { characterUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET(
   _request: NextRequest,
@@ -19,7 +20,20 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const body = await request.json() as Partial<Character>;
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = characterUpdateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
   const db = getDb();
 
   const existing = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as Character | undefined;

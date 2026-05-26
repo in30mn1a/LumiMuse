@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { serializeMessage, serializeTypedMessages } from '@/lib/messages';
+import { conversationMessageCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET(
   _request: NextRequest,
@@ -21,12 +22,20 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const { role, content, token_count, metadata } = await request.json() as {
-    role: string;
-    content: string;
-    token_count?: number;
-    metadata?: Record<string, unknown>;
-  };
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = conversationMessageCreateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const { role, content, token_count, metadata } = parsed.data;
   const db = getDb();
 
   const { v4: uuidv4 } = await import('uuid');

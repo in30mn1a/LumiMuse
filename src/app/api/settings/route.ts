@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { loadSettings } from '@/lib/settings';
 import { DEFAULT_SETTINGS, Settings } from '@/types';
-
-const API_KEY_MASK = '********';
+import { API_KEY_MASK } from '@/lib/constants';
 
 
 export async function GET() {

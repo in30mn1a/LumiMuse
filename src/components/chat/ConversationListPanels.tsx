@@ -94,7 +94,7 @@ export function ConversationMobileDrawer({ open, conversations, activeConvId, on
             <button
               onClick={onClose}
               className="rounded-full p-1.5 text-text-muted hover:bg-warm-100"
-              aria-label="关闭"
+              aria-label={t('chat.closeDrawer')}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
                 <path d="M18 6L6 18M6 6l12 12" />

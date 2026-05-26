@@ -7,9 +7,18 @@ import {
   deleteLocalAssetUrls,
   filterUnreferencedLocalAssetUrls,
 } from '@/lib/character-file-utils';
+import { messageUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 type MessageRecord = Record<string, unknown>;
 
+/**
+ * 收集单条消息所有版本（含当前 content 和 metadata）涉及的本地资源 URL。
+ * 包含来源：
+ *  - 当前 content 内嵌 URL
+ *  - metadata.attachments / metadata.generatedImages
+ *  - metadata.versions[i].content 内嵌 URL（非激活版本独占的 URL）
+ *  - metadata.versions[i].attachments（兼容历史/扩展数据，类型层未声明但运行时可能存在）
+ */
 function collectMessageLocalAssetUrls(message: MessageRecord): Set<string> {
   const urls = collectLocalAssetUrlsFromMetadata(message.metadata);
   const contentUrls = collectLocalAssetUrlsFromContent(
@@ -18,6 +27,23 @@ function collectMessageLocalAssetUrls(message: MessageRecord): Set<string> {
 
   for (const url of contentUrls) {
     urls.add(url);
+  }
+
+  // 历史版本内嵌的 URL 也要算进来，否则多版本场景下会漏判
+  const meta = parseMessageMetadata(message.metadata);
+  const versions = meta.versions as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(versions)) {
+    for (const version of versions) {
+      if (!version || typeof version !== 'object') continue;
+      const versionContent = typeof version.content === 'string' ? version.content : null;
+      for (const url of collectLocalAssetUrlsFromContent(versionContent)) {
+        urls.add(url);
+      }
+      // 兼容历史/扩展数据：版本内自带 attachments
+      for (const url of collectLocalAssetUrlsFromMetadata({ attachments: version.attachments })) {
+        urls.add(url);
+      }
+    }
   }
 
   return urls;
@@ -46,7 +72,20 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const body = await request.json() as { content?: string; metadata?: Record<string, unknown>; activeVersion?: number; attachments?: unknown[] };
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = messageUpdateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
   const db = getDb();
 
   const existing = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;

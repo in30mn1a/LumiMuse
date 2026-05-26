@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { serializeTypedMessages } from '@/lib/messages';
+import { messageCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
@@ -53,17 +54,20 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const { conversation_id, role, content, token_count, metadata } = await request.json() as {
-    conversation_id?: string;
-    role: string;
-    content: string;
-    token_count?: number;
-    metadata?: Record<string, unknown>;
-  };
-
-  if (!conversation_id) {
-    return NextResponse.json({ error: 'Missing conversation_id' }, { status: 400 });
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
+  const parsed = messageCreateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const { conversation_id, role, content, token_count, metadata } = parsed.data;
 
   const db = getDb();
   const { v4: uuidv4 } = await import('uuid');

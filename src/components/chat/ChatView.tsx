@@ -1433,7 +1433,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             <button
               onClick={onOpenSidebar}
               className="rounded-xl bg-white/80 p-2.5 text-text-secondary shadow-sm ring-1 ring-border-light backdrop-blur-sm hover:bg-white"
-              aria-label="打开角色列表"
+              aria-label={t('chat.openCharacterList')}
             >
               <MenuIcon className="h-5 w-5" />
             </button>
@@ -1451,7 +1451,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             LumiMuse
           </h1>
           <p className="mt-5 text-base leading-relaxed text-text-muted md:text-lg">
-            让TA慢慢填满你的房间。
+            {t('chat.homeTagline')}
           </p>
         </div>
       </div>

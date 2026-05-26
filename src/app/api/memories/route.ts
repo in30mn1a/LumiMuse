@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Memory } from '@/types';
 import { normalizeMemoryCategory } from '@/lib/memory-category';
+import { memoryCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET(request: NextRequest) {
   const db = getDb();
@@ -64,13 +65,20 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json() as {
-    character_id: string;
-    category: string;
-    content: string;
-    confidence?: number;
-    tags?: string[];
-  };
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = memoryCreateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
 
   const db = getDb();
   const id = crypto.randomUUID().slice(0, 12);

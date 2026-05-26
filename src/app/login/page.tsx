@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import Image from 'next/image';
+import { useTranslation } from '@/lib/i18n-context';
 
 // 限制登录后跳转地址只能是站内相对路径，避免开放重定向
 function safeReturnTo(from: string | null): string {
@@ -17,6 +18,7 @@ function safeReturnTo(from: string | null): string {
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { t } = useTranslation();
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -46,12 +48,12 @@ function LoginForm() {
         router.replace(from);
       } else {
         const data = await res.json();
-        setError(data.error || '密码不正确');
+        setError(data.error || t('login.passwordIncorrect'));
         setPassword('');
         inputRef.current?.focus();
       }
     } catch {
-      setError('连接失败，请稍后重试');
+      setError(t('login.connectError'));
     } finally {
       setLoading(false);
     }
@@ -100,7 +102,7 @@ function LoginForm() {
                 LumiMuse
               </h1>
               <p className="mt-1 text-sm" style={{ color: 'var(--color-text-muted)' }}>
-                请输入访问密码
+                {t('login.passwordPrompt')}
               </p>
             </div>
           </div>
@@ -116,7 +118,7 @@ function LoginForm() {
                   setPassword(e.target.value);
                   setError('');
                 }}
-                placeholder="输入密码..."
+                placeholder={t('login.passwordPlaceholder')}
                 className="input-rich text-center tracking-widest"
                 style={{ fontSize: '1.1rem', letterSpacing: '0.2em' }}
                 autoComplete="current-password"
@@ -147,7 +149,7 @@ function LoginForm() {
                   <span className="typing-dot" style={{ animationDelay: '320ms' }} />
                 </span>
               ) : (
-                '进入'
+                t('login.submit')
               )}
             </button>
           </form>
@@ -155,7 +157,7 @@ function LoginForm() {
 
         {/* 底部装饰文字 */}
         <p className="mt-4 text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
-          LumiMuse · 让TA慢慢填满你的房间
+          {t('login.tagline')}
         </p>
       </div>
     </div>

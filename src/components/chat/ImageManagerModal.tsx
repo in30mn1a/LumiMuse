@@ -5,6 +5,7 @@ import type { Character } from '@/types';
 import { ImageIcon, TrashIcon } from '@/components/ui/icons';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
+import Modal from '@/components/ui/Modal';
 import JSZip from 'jszip';
 
 const PAGE_SIZE = 12;
@@ -52,6 +53,10 @@ async function fetchImagesWithConcurrency(images: CharacterImage[]): Promise<Arr
  * 角色图库管理弹窗。
  * 外层负责开关控制：未打开时直接返回 null，避免在 effect 中重置 state。
  * 内层组件每次打开时重新挂载，state 通过 useState 初始化自然重置。
+ *
+ * 视觉外壳统一使用通用 <Modal> 组件，复用焦点陷阱 / ESC / Portal / aria-modal。
+ * 因为图库需要"标题栏 + 滚动网格 + 翻页栏"的三栏布局，
+ * 我们用 Modal 的 padded={false} + dialogClassName 自管 padding 与 max-height。
  */
 export default function ImageManagerModal(props: Props) {
   if (!props.open) return null;
@@ -161,9 +166,9 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(downloadUrl);
-      showToast(`已下载 ${blobs.length} 张图片`, 'info');
+      showToast(formatTemplate(t('chat.imageDownloaded'), { count: blobs.length }), 'info');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '下载失败');
+      showToast(err instanceof Error ? err.message : t('chat.imageDownloadFail'));
     } finally {
       setDownloading(false);
     }
@@ -177,206 +182,209 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
   const canNext = previewIndex !== null && previewIndex < images.length - 1;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={close}>
-      <div
-        className="surface-panel flex w-full max-w-3xl flex-col overflow-hidden"
-        style={{ maxHeight: '90dvh' }}
-        onClick={e => e.stopPropagation()}
+    <>
+      <Modal
+        open
+        onClose={close}
+        padded={false}
+        dialogClassName="surface-panel flex w-full max-w-3xl flex-col overflow-hidden outline-none"
       >
-        {/* 标题栏 */}
-        <div className="flex shrink-0 items-center justify-between border-b border-border-light px-5 py-4">
-          <div className="flex items-center gap-3">
-            <h3 className="section-title text-lg">图片管理</h3>
-            <span className="chip text-xs">{images.length} 张</span>
-          </div>
-          <div className="flex items-center gap-2">
-            {selected.size > 0 && (
-              <>
+        <div style={{ maxHeight: '90dvh' }} className="flex flex-col">
+          {/* 标题栏 */}
+          <div className="flex shrink-0 items-center justify-between border-b border-border-light px-5 py-4">
+            <div className="flex items-center gap-3">
+              <h3 className="section-title text-lg">{t('chat.imageManagerTitle')}</h3>
+              <span className="chip text-xs">{formatTemplate(t('chat.imageCount'), { count: images.length })}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {selected.size > 0 && (
+                <>
+                  <button
+                    onClick={() => void handleDownload()}
+                    disabled={downloading}
+                    className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
+                  >
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+                      <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
+                      <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                    </svg>
+                    <span>{downloading ? t('chat.imageDownloading') : formatTemplate(t('chat.imageDownloadSelected'), { count: selected.size })}</span>
+                  </button>
+                  <button
+                    onClick={() => void handleBatchDelete()}
+                    className="soft-button soft-button-danger px-3 py-1.5 text-sm"
+                  >
+                    <TrashIcon className="h-3.5 w-3.5" />
+                    <span>{formatTemplate(t('chat.imageDeleteSelected'), { count: selected.size })}</span>
+                  </button>
+                </>
+              )}
+              {images.length > 0 && (
                 <button
-                  onClick={() => void handleDownload()}
-                  disabled={downloading}
+                  onClick={() => {
+                    if (selected.size === images.length) {
+                      setSelected(new Set());
+                    } else {
+                      setSelected(new Set(images.map(img => `${img.messageId}::${img.imageId}::${img.versionId}`)));
+                    }
+                  }}
                   className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
                 >
-                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
-                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
-                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
-                  </svg>
-                  <span>{downloading ? '打包中...' : `下载选中 (${selected.size})`}</span>
+                  {selected.size === images.length ? t('chat.imageUnselectAll') : t('chat.imageSelectAll')}
                 </button>
-                <button
-                  onClick={() => void handleBatchDelete()}
-                  className="soft-button soft-button-danger px-3 py-1.5 text-sm"
-                >
-                  <TrashIcon className="h-3.5 w-3.5" />
-                  <span>删除选中 ({selected.size})</span>
-                </button>
-              </>
-            )}
-            {images.length > 0 && (
-              <button
-                onClick={() => {
-                  if (selected.size === images.length) {
-                    setSelected(new Set());
-                  } else {
-                    setSelected(new Set(images.map(img => `${img.messageId}::${img.imageId}::${img.versionId}`)));
-                  }
-                }}
-                className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
-              >
-                {selected.size === images.length ? '取消全选' : '全选'}
-              </button>
-            )}
-            <button onClick={close} className="rounded-xl p-2 text-text-muted hover:bg-warm-100" aria-label="关闭">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        {/* 图片网格 */}
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          {loading ? (
-            <div className="flex h-40 items-center justify-center text-sm text-text-muted">加载中...</div>
-          ) : images.length === 0 ? (
-            <div className="flex h-40 flex-col items-center justify-center gap-2 text-sm text-text-muted">
-              <ImageIcon className="h-8 w-8 opacity-30" />
-              <span>还没有生成过图片</span>
-            </div>
-          ) : (
-            <div className="grid grid-cols-4 gap-3">
-              {pageImages.map((img, indexInPage) => {
-                const globalIndex = currentPage * PAGE_SIZE + indexInPage;
-                const key = `${img.messageId}::${img.imageId}::${img.versionId}`;
-                const isSelected = selected.has(key);
-                return (
-                  <div key={key} className="group relative aspect-square overflow-hidden rounded-xl">
-                    <button
-                      className="block h-full w-full"
-                      onClick={() => setPreviewIndex(globalIndex)}
-                      aria-label="查看大图"
-                    >
-                      {/* 展示来自 /api/files/... 的生成/上传图片，路径动态、非静态资源，next/image 无法优化 */}
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={img.url}
-                        alt=""
-                        className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
-                        loading="lazy"
-                      />
-                    </button>
-                    <button
-                      className={`absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border-2 transition-all ${
-                        isSelected
-                          ? 'border-accent bg-accent opacity-100'
-                          : 'border-white/80 bg-black/25 opacity-0 group-hover:opacity-100'
-                      }`}
-                      onClick={e => {
-                        e.stopPropagation();
-                        setSelected(prev => {
-                          const next = new Set(prev);
-                          if (next.has(key)) next.delete(key);
-                          else next.add(key);
-                          return next;
-                        });
-                      }}
-                      aria-label={isSelected ? '取消选中' : '选中'}
-                    >
-                      {isSelected && (
-                        <svg viewBox="0 0 10 8" fill="none" className="h-2.5 w-2.5" aria-hidden="true">
-                          <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      )}
-                    </button>
-                    {isSelected && (
-                      <div className="pointer-events-none absolute inset-0 rounded-xl ring-2 ring-accent ring-offset-1" />
-                    )}
-                    <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 pb-1.5 pt-4 opacity-0 transition-opacity group-hover:opacity-100">
-                      <p className="truncate text-[10px] text-white/90">{img.conversationTitle}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* 翻页栏 */}
-        {!loading && images.length > PAGE_SIZE && (
-          <div className="flex shrink-0 items-center justify-between border-t border-border-light px-5 py-3">
-            <button
-              onClick={() => setPage(p => Math.max(0, p - 1))}
-              disabled={currentPage === 0}
-              className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:opacity-40"
-            >
-              ‹ 上一页
-            </button>
-            <span className="text-sm text-text-muted">
-              第 {currentPage + 1} / {totalPages} 页
-            </span>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-              disabled={currentPage >= totalPages - 1}
-              className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:opacity-40"
-            >
-              下一页 ›
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* 大图预览 Lightbox */}
-      {previewImage && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80"
-          onClick={e => { e.stopPropagation(); setPreviewIndex(null); }}
-        >
-          <div className="relative flex max-h-[90dvh] max-w-[90vw] items-center justify-center" onClick={e => e.stopPropagation()}>
-            {canPrev && (
-              <button
-                onClick={() => setPreviewIndex(i => i !== null ? i - 1 : i)}
-                className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-3 text-white/90 backdrop-blur-sm hover:bg-black/60"
-                aria-label="上一张"
-              >
-                <span className="block text-xl leading-none">‹</span>
-              </button>
-            )}
-            {/* 展示来自 /api/files/... 的生成/上传图片，路径动态、非静态资源，next/image 无法优化 */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={previewImage.url}
-              alt=""
-              className="max-h-[90dvh] max-w-[90vw] rounded-2xl shadow-2xl"
-            />
-            {canNext && (
-              <button
-                onClick={() => setPreviewIndex(i => i !== null ? i + 1 : i)}
-                className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-3 text-white/90 backdrop-blur-sm hover:bg-black/60"
-                aria-label="下一张"
-              >
-                <span className="block text-xl leading-none">›</span>
-              </button>
-            )}
-            <div className="absolute right-3 top-3 flex items-center gap-2">
-              <span className="rounded-full bg-black/40 px-3 py-1 text-xs text-white/85 backdrop-blur-sm">
-                {previewIndex! + 1} / {images.length}
-              </span>
-              <button
-                onClick={() => setPreviewIndex(null)}
-                className="rounded-full bg-black/40 p-2 text-white/90 backdrop-blur-sm hover:bg-black/60"
-                aria-label="关闭预览"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+              )}
+              <button onClick={close} className="rounded-xl p-2 text-text-muted hover:bg-warm-100" aria-label={t('common.close')}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
               </button>
             </div>
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-xs text-white/85 backdrop-blur-sm">
-              {previewImage.conversationTitle}
-            </div>
           </div>
+
+          {/* 图片网格 */}
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {loading ? (
+              <div className="flex h-40 items-center justify-center text-sm text-text-muted">{t('common.loading')}</div>
+            ) : images.length === 0 ? (
+              <div className="flex h-40 flex-col items-center justify-center gap-2 text-sm text-text-muted">
+                <ImageIcon className="h-8 w-8 opacity-30" />
+                <span>{t('chat.imageEmpty')}</span>
+              </div>
+            ) : (
+              <div className="grid grid-cols-4 gap-3">
+                {pageImages.map((img, indexInPage) => {
+                  const globalIndex = currentPage * PAGE_SIZE + indexInPage;
+                  const key = `${img.messageId}::${img.imageId}::${img.versionId}`;
+                  const isSelected = selected.has(key);
+                  return (
+                    <div key={key} className="group relative aspect-square overflow-hidden rounded-xl">
+                      <button
+                        className="block h-full w-full"
+                        onClick={() => setPreviewIndex(globalIndex)}
+                        aria-label={t('chat.imageViewLarge')}
+                      >
+                        {/* 展示来自 /api/files/... 的生成/上传图片，路径动态、非静态资源，next/image 无法优化 */}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={img.url}
+                          alt=""
+                          className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+                          loading="lazy"
+                        />
+                      </button>
+                      <button
+                        className={`absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border-2 transition-all ${
+                          isSelected
+                            ? 'border-accent bg-accent opacity-100'
+                            : 'border-white/80 bg-black/25 opacity-0 group-hover:opacity-100'
+                        }`}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setSelected(prev => {
+                            const next = new Set(prev);
+                            if (next.has(key)) next.delete(key);
+                            else next.add(key);
+                            return next;
+                          });
+                        }}
+                        aria-label={isSelected ? t('chat.imageUnselect') : t('chat.imageSelect')}
+                      >
+                        {isSelected && (
+                          <svg viewBox="0 0 10 8" fill="none" className="h-2.5 w-2.5" aria-hidden="true">
+                            <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </button>
+                      {isSelected && (
+                        <div className="pointer-events-none absolute inset-0 rounded-xl ring-2 ring-accent ring-offset-1" />
+                      )}
+                      <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 pb-1.5 pt-4 opacity-0 transition-opacity group-hover:opacity-100">
+                        <p className="truncate text-[10px] text-white/90">{img.conversationTitle}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 翻页栏 */}
+          {!loading && images.length > PAGE_SIZE && (
+            <div className="flex shrink-0 items-center justify-between border-t border-border-light px-5 py-3">
+              <button
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                disabled={currentPage === 0}
+                className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:opacity-40"
+              >
+                {t('chat.imagePrevPage')}
+              </button>
+              <span className="text-sm text-text-muted">
+                {formatTemplate(t('chat.imagePageStatus'), { current: currentPage + 1, total: totalPages })}
+              </span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                disabled={currentPage >= totalPages - 1}
+                className="soft-button soft-button-secondary px-3 py-1.5 text-sm disabled:opacity-40"
+              >
+                {t('chat.imageNextPage')}
+              </button>
+            </div>
+          )}
         </div>
+      </Modal>
+
+      {/* 大图预览 Lightbox：单独走一层 Modal，叠在图库之上 */}
+      {previewImage && (
+        <Modal
+          open
+          onClose={() => setPreviewIndex(null)}
+          padded={false}
+          dialogClassName="relative flex max-h-[90dvh] max-w-[90vw] items-center justify-center bg-transparent outline-none"
+        >
+          {canPrev && (
+            <button
+              onClick={() => setPreviewIndex(i => i !== null ? i - 1 : i)}
+              className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-3 text-white/90 backdrop-blur-sm hover:bg-black/60"
+              aria-label={t('chat.imagePreviewPrev')}
+            >
+              <span className="block text-xl leading-none">‹</span>
+            </button>
+          )}
+          {/* 展示来自 /api/files/... 的生成/上传图片，路径动态、非静态资源，next/image 无法优化 */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={previewImage.url}
+            alt=""
+            className="max-h-[90dvh] max-w-[90vw] rounded-2xl shadow-2xl"
+          />
+          {canNext && (
+            <button
+              onClick={() => setPreviewIndex(i => i !== null ? i + 1 : i)}
+              className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/40 p-3 text-white/90 backdrop-blur-sm hover:bg-black/60"
+              aria-label={t('chat.imagePreviewNext')}
+            >
+              <span className="block text-xl leading-none">›</span>
+            </button>
+          )}
+          <div className="absolute right-3 top-3 flex items-center gap-2">
+            <span className="rounded-full bg-black/40 px-3 py-1 text-xs text-white/85 backdrop-blur-sm">
+              {previewIndex! + 1} / {images.length}
+            </span>
+            <button
+              onClick={() => setPreviewIndex(null)}
+              className="rounded-full bg-black/40 p-2 text-white/90 backdrop-blur-sm hover:bg-black/60"
+              aria-label={t('chat.imagePreviewClose')}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-xs text-white/85 backdrop-blur-sm">
+            {previewImage.conversationTitle}
+          </div>
+        </Modal>
       )}
-    </div>
+    </>
   );
 }

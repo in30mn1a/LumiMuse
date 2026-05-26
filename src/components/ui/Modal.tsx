@@ -12,6 +12,17 @@ interface ModalProps {
   maxWidth?: string;
   /** 点击 backdrop 是否关闭，默认 true */
   closeOnBackdrop?: boolean;
+  /**
+   * children 容器是否套用默认内边距 (px-5 py-4)。
+   * 设为 false 时调用方完全自管 padding/布局，适合带标题栏+滚动区+底栏的复合弹窗。
+   * 默认 true。
+   */
+  padded?: boolean;
+  /**
+   * 自定义 dialog 容器额外类名，用于覆盖默认 rounded-2xl + bg-white，
+   * 或追加诸如 flex flex-col、max-h-* 等布局类。
+   */
+  dialogClassName?: string;
 }
 
 /**
@@ -32,6 +43,8 @@ export default function Modal({
   children,
   maxWidth = 'max-w-lg',
   closeOnBackdrop = true,
+  padded = true,
+  dialogClassName,
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // 保存打开 modal 之前的焦点元素，用于关闭后恢复
@@ -131,7 +144,10 @@ export default function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`w-full ${maxWidth} rounded-2xl bg-white shadow-xl outline-none dark:bg-zinc-900`}
+        className={
+          dialogClassName ??
+          `w-full ${maxWidth} rounded-2xl bg-white shadow-xl outline-none dark:bg-zinc-900`
+        }
         onClick={(e) => e.stopPropagation()}
       >
         {title && (
@@ -141,7 +157,7 @@ export default function Modal({
             </h2>
           </div>
         )}
-        <div className="px-5 py-4">{children}</div>
+        {padded ? <div className="px-5 py-4">{children}</div> : children}
       </div>
     </div>
   );

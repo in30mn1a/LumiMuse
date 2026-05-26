@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { Character } from '@/types';
 import { v4 as uuidv4 } from 'uuid';
+import { characterCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET() {
   const db = getDb();
@@ -11,7 +11,20 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json() as Partial<Character>;
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = characterCreateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
   const id = uuidv4().slice(0, 12);
   const now = new Date().toISOString();
 

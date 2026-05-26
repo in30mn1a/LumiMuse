@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { loadSettings } from '@/lib/settings';
 import { safeFetch } from '@/lib/ssrf-guard';
+import { API_KEY_MASK } from '@/lib/constants';
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 分钟
 
@@ -35,7 +36,7 @@ async function readPostParams(request: NextRequest): Promise<ModelsRequestParams
   }
   return {
     apiBase: body.api_base || settings.api_base || '',
-    apiKey: (body.api_key && body.api_key !== '********') ? body.api_key : (settings.api_key || ''),
+    apiKey: (body.api_key && body.api_key !== API_KEY_MASK) ? body.api_key : (settings.api_key || ''),
     forceRefresh: body.refresh === true,
   };
 }

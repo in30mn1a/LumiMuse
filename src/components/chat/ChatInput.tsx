@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
+import { formatTemplate } from '@/lib/i18n';
 import { SparkIcon, StopIcon } from '@/components/ui/icons';
 import type { AttachmentItem } from '@/lib/chat-engine';
 
@@ -184,7 +185,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
 
     for (const file of files) {
       if (file.size > MAX_FILE_SIZE) {
-        setAttachError(`${file.name} 超过 10MB 限制`);
+        setAttachError(formatTemplate(t('input.attachExceedSize'), { name: file.name }));
         continue;
       }
 
@@ -205,18 +206,18 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
         const uploadResponse = await fetch('/api/upload', { method: 'POST', body: formData });
         const data = await uploadResponse.json() as { url?: string; error?: string };
         if (!uploadResponse.ok || !data.url) {
-          setAttachError(data.error || `${file.name} 上传失败`);
+          setAttachError(data.error || formatTemplate(t('input.attachUploadFail'), { name: file.name }));
           continue;
         }
         newAttachments.push({ id: genAttachmentId(), type: 'image', name: file.name, data: dataUrl, url: data.url, mimeType: file.type });
       } else if (isText) {
         if (file.size > MAX_TEXT_SIZE) {
-          setAttachError(`${file.name} 文本文件超过 200KB，可能导致 token 过多`);
+          setAttachError(formatTemplate(t('input.attachTextWarn'), { name: file.name }));
         }
         const text = await file.text();
         newAttachments.push({ id: genAttachmentId(), type: 'text', name: file.name, data: text, mimeType: file.type || 'text/plain' });
       } else {
-        setAttachError(`${file.name} 不支持的格式（支持 JPG、PNG、TXT、MD、JSON 等文本文件）`);
+        setAttachError(formatTemplate(t('input.attachUnsupported'), { name: file.name }));
       }
     }
 
@@ -252,7 +253,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 <button
                   onClick={() => removeAttachment(att.id)}
                   className="ml-1 rounded-full p-0.5 text-text-muted hover:bg-red-50 hover:text-red-500"
-                  aria-label={`移除 ${att.name}`}
+                  aria-label={formatTemplate(t('message.removeAttachmentShort'), { name: att.name })}
                 >
                   <XIcon className="h-3 w-3" />
                 </button>
@@ -271,8 +272,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             onClick={() => fileInputRef.current?.click()}
             disabled={disabled}
             className="shrink-0 self-end mb-1.5 rounded-xl p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40"
-            title="附加文件（图片 JPG/PNG，文本 TXT/MD/JSON 等）"
-            aria-label="附加文件"
+            title={t('input.attachFileTitle')}
+            aria-label={t('input.attachFileLabel')}
           >
             <PaperclipIcon className="h-4 w-4" />
           </button>

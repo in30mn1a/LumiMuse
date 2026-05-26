@@ -18,6 +18,8 @@
 
 import { lookup } from 'dns/promises';
 import net from 'net';
+import { Agent, buildConnector, fetch as undiciFetch } from 'undici';
+import type { Dispatcher } from 'undici';
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
 
@@ -169,11 +171,74 @@ export async function assertSafeUrl(rawUrl: string): Promise<URL> {
 }
 
 /**
- * 包装 fetch，先做 SSRF 校验再发起请求。
+ * 构建一个带 socket 层 IP 校验的 undici Agent。
  *
- * 注意：DNS 解析与实际请求之间存在 TOCTOU 窗口（DNS rebinding 攻击）。
- * 完全防御需要在 socket 层校验，超出本应用范围。本实现已能阻止常见的
- * 直接配置内网 URL 的攻击场景。
+ * 防御目标：DNS 预解析（第一道防线）与实际连接之间存在 TOCTOU 窗口。
+ * 攻击者可以让域名首次解析返回公网 IP，第二次（fetch 内部）解析返回内网 IP，
+ * 即所谓的 DNS rebinding。本 Agent 在 socket 建立 *之后* 检查真实 remoteAddress，
+ * 命中黑名单则立刻 destroy socket。
+ *
+ * 注意：destroy(err) 会让上层 fetch 抛错，调用方收到的错误信息会包含具体 IP，
+ * 与 assertSafeUrl 的拒绝原因风格保持一致。
+ */
+function createGuardedAgent(allowLocal: boolean): Dispatcher {
+  const defaultConnector = buildConnector({});
+
+  return new Agent({
+    connect(opts, callback) {
+      defaultConnector(opts, (err, socket) => {
+        if (err || !socket) {
+          callback(err, null);
+          return;
+        }
+
+        // 拿到真实远端 IP（DNS 二次解析后实际连接的对象）
+        const remoteAddress = socket.remoteAddress;
+        if (!remoteAddress) {
+          // 极少数情况：连接已断开/未就绪，保守拒绝
+          socket.destroy();
+          callback(new Error('SSRF 防护拒绝: 无法获取远端 IP'), null);
+          return;
+        }
+
+        const reason = classifyIp(remoteAddress, allowLocal);
+        if (reason) {
+          socket.destroy();
+          callback(
+            new Error(`SSRF 防护拒绝（socket 层）: ${reason} (${remoteAddress})`),
+            null,
+          );
+          return;
+        }
+
+        callback(null, socket);
+      });
+    },
+  });
+}
+
+// 按 ALLOW_LOCAL_NETWORK 缓存两份 dispatcher，避免重复创建连接池
+let guardedAgentStrict: Dispatcher | null = null;
+let guardedAgentAllowLocal: Dispatcher | null = null;
+
+function getGuardedAgent(allowLocal: boolean): Dispatcher {
+  if (allowLocal) {
+    if (!guardedAgentAllowLocal) {
+      guardedAgentAllowLocal = createGuardedAgent(true);
+    }
+    return guardedAgentAllowLocal;
+  }
+  if (!guardedAgentStrict) {
+    guardedAgentStrict = createGuardedAgent(false);
+  }
+  return guardedAgentStrict;
+}
+
+/**
+ * 包装 fetch，做双层 SSRF 防护：
+ * 1. DNS 预解析层（assertSafeUrl）：fail-fast，避免明显的内网 URL 浪费 socket
+ * 2. socket 层（undici Agent connect hook）：真实连接 IP 再校验一次，
+ *    防御 DNS rebinding（首次解析返回公网 IP，fetch 内部二次解析返回内网 IP）
  */
 export async function safeFetch(
   rawUrl: string,
@@ -181,12 +246,18 @@ export async function safeFetch(
 ): Promise<Response> {
   let currentUrl = await assertSafeUrl(rawUrl);
   const maxRedirects = 5;
+  const allowLocal = process.env.ALLOW_LOCAL_NETWORK === '1';
+  const dispatcher = getGuardedAgent(allowLocal);
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
-    const response = await fetch(currentUrl.toString(), {
-      ...init,
+    // 使用 undici fetch，附带带 socket 层校验的 dispatcher
+    // 类型转换：undici 与 Node lib 的 Response/RequestInit 类型不完全等价，
+    // 但运行时兼容（Node 18+ 的全局 fetch 即基于 undici）
+    const response = (await undiciFetch(currentUrl.toString(), {
+      ...(init as Parameters<typeof undiciFetch>[1]),
       redirect: 'manual',
-    });
+      dispatcher,
+    })) as unknown as Response;
 
     if (response.status < 300 || response.status >= 400) {
       return response;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { collectConversationLocalAssetUrls, collectAllLocalAssetUrls, deleteLocalAssetUrls } from '@/lib/character-file-utils';
+import { conversationUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET(
   _request: NextRequest,
@@ -46,7 +47,20 @@ export async function PUT(
 ) {
   const { id } = await params;
   const db = getDb();
-  const body = await request.json();
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = conversationUpdateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
   const updates: string[] = [];
   const values: unknown[] = [];
 

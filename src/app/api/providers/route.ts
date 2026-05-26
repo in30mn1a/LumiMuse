@@ -3,8 +3,8 @@ import { getDb } from '@/lib/db';
 import { loadSettings } from '@/lib/settings';
 import { ApiProvider } from '@/types';
 import { randomUUID } from 'crypto';
-
-const API_KEY_MASK = '********';
+import { providerCreateSchema, providerUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
+import { API_KEY_MASK } from '@/lib/constants';
 
 async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
   if (!process.env.ACCESS_PASSWORD) return null;
@@ -49,7 +49,20 @@ export async function POST(request: NextRequest) {
   const unauthorized = await requireAuth(request);
   if (unauthorized) return unauthorized;
 
-  const body = await request.json() as Partial<ApiProvider> & { save_as_current?: boolean };
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = providerCreateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
   const db = getDb();
 
   const id = randomUUID();
@@ -98,7 +111,20 @@ export async function PUT(request: NextRequest) {
   const unauthorized = await requireAuth(request);
   if (unauthorized) return unauthorized;
 
-  const body = await request.json() as Partial<ApiProvider> & { save_as_current?: boolean };
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = providerUpdateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
   const db = getDb();
 
   if (!isUuid(body.id)) {

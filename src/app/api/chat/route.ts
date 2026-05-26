@@ -1,25 +1,41 @@
 import { NextRequest } from 'next/server';
-import { runChat, AttachmentItem } from '@/lib/chat-engine';
+import { runChat } from '@/lib/chat-engine';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages } from '@/lib/messages';
+import { chatBodySchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function POST(request: NextRequest) {
-  const { conversation_id, content, regenerate_assistant_id, skip_user_insert, attachments, client_now_iso, client_timezone, client_utc_offset_minutes } = await request.json() as {
-    conversation_id: string;
-    content: string;
-    regenerate_assistant_id?: string;
-    skip_user_insert?: boolean;
-    attachments?: AttachmentItem[];
-    client_now_iso?: string;
-    client_timezone?: string;
-    client_utc_offset_minutes?: number;
-  };
+  let parsedBody: unknown;
+  try {
+    parsedBody = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400 });
+  }
 
-  if (!conversation_id || (!regenerate_assistant_id && !content && (!attachments || attachments.length === 0))) {
+  const parsed = chatBodySchema.safeParse(parsedBody);
+  if (!parsed.success) {
+    return new Response(
+      JSON.stringify({ error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  const {
+    conversation_id,
+    content,
+    regenerate_assistant_id,
+    skip_user_insert,
+    attachments,
+    client_now_iso,
+    client_timezone,
+    client_utc_offset_minutes,
+  } = parsed.data;
+
+  if (!regenerate_assistant_id && !content && (!attachments || attachments.length === 0)) {
     return new Response(JSON.stringify({ error: 'Missing conversation_id or content' }), { status: 400 });
   }
 

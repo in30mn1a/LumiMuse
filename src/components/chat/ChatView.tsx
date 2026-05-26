@@ -470,11 +470,27 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       let cancelled = false;
       let resizeObs: ResizeObserver | null = null;
       let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+      // 静置计时：内容看似已撑满视口后，给图片等异步资源留 300ms 缓冲。
+      // 期间任何 ResizeObserver / 图片 load 触发的 tryScroll 都会重置该计时，
+      // 直到 300ms 内不再有高度变化才真正退出。
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
       const finish = () => {
         scrollToBottomOnLoadRef.current = false;
         if (resizeObs) resizeObs.disconnect();
         if (fallbackTimer) clearTimeout(fallbackTimer);
+        if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+        scroller.removeEventListener('load', onAssetLoad, true);
+      };
+
+      const scheduleSettle = () => {
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => {
+          if (cancelled) return;
+          // 静置期满前再滚一次，吃掉静置开始到现在期间的最终高度
+          end.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+          finish();
+        }, 300);
       };
 
       const tryScroll = () => {
@@ -484,9 +500,25 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         if (sentinel) {
           const rect = sentinel.getBoundingClientRect();
           const inView = rect.top >= 0 && rect.bottom <= window.innerHeight;
-          if (!inView) finish();
+          if (!inView) {
+            // 哨兵已离开视口：进入/重置静置计时，等异步图片落定再退出。
+            // 这是修复刷新后首次进入对话「离最底部还差一段」的关键：
+            // 之前直接 finish() 会在图片加载前关闭监听，导致后续高度增长无人响应。
+            scheduleSettle();
+          } else if (settleTimer) {
+            // 哨兵又回到视口（例如 totalSize 缩水），取消静置继续观察
+            clearTimeout(settleTimer);
+            settleTimer = null;
+          }
         }
       };
+
+      // 图片加载完成会改变 row 真实高度。ResizeObserver 只监听了 scroller 直接子节点的快照，
+      // 这里用捕获阶段的 load 事件作为补充信号，覆盖头像 / 附件 / 生成图片首次加载的场景。
+      function onAssetLoad() {
+        if (cancelled) return;
+        requestAnimationFrame(tryScroll);
+      }
 
       // ResizeObserver 监听 scroller 直接子元素：virtualizer inner 的 height 由 inline style 设置，
       // 每次 totalSize 变化都会触发 contentRect 变化 → 回调被调用。
@@ -495,19 +527,22 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         requestAnimationFrame(tryScroll);
       });
       Array.from(scroller.children).forEach(child => resizeObs!.observe(child as Element));
+      scroller.addEventListener('load', onAssetLoad, true);
 
       const rafId = requestAnimationFrame(tryScroll);
-      // 兜底：1.5s 后强制结束，防止极端情况下 ResizeObserver 不触发导致 ref 一直未清
+      // 兜底：3s 后强制结束，弱网下首次加载图片可能需要 1-2s，原 1.5s 不够
       fallbackTimer = setTimeout(() => {
         tryScroll();
         finish();
-      }, 1500);
+      }, 3000);
 
       return () => {
         cancelled = true;
         cancelAnimationFrame(rafId);
         if (resizeObs) resizeObs.disconnect();
         if (fallbackTimer) clearTimeout(fallbackTimer);
+        if (settleTimer) clearTimeout(settleTimer);
+        scroller.removeEventListener('load', onAssetLoad, true);
       };
     }
   }, [visibleMessages]);

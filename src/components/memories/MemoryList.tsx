@@ -73,7 +73,12 @@ export default function MemoryList({ characterId }: Props) {
   const totalPages = Math.max(1, Math.ceil(totalMemories / PAGE_SIZE));
 
   const handleDelete = async (id: string) => {
-    await fetch(`/api/memories/${id}`, { method: 'DELETE' });
+    // 注意：proxy.ts 的 CSRF 校验会要求所有写方法（含 DELETE）带 application/json
+    // Content-Type；缺这个头的 DELETE 会被拦截返回 415，UI 表现为"点击无反应"
+    await fetch(`/api/memories/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    });
     const nextPage = memories.length === 1 && page > 1 ? page - 1 : page;
     if (nextPage !== page) {
       setPage(nextPage);

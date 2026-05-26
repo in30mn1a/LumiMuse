@@ -13,6 +13,7 @@ interface Props {
   memoryExtractStatus: ExtractStatus;
   tokenCount: number;
   onOpenResetExtraction: () => void;
+  onOpenTokenBreakdown: () => void;
 }
 
 /**
@@ -26,6 +27,7 @@ function ChatToolbarImpl({
   memoryExtractStatus,
   tokenCount,
   onOpenResetExtraction,
+  onOpenTokenBreakdown,
 }: Props) {
   const { t } = useTranslation();
 
@@ -74,7 +76,14 @@ function ChatToolbarImpl({
               : t('chat.extractFailed')}
           </span>
         )}
-        <span className="chip text-[10px] md:text-xs">≈{tokenCount} {t('status.tokens')}</span>
+        <button
+          type="button"
+          onClick={onOpenTokenBreakdown}
+          className="chip cursor-pointer text-[10px] md:text-xs hover:bg-white/80"
+          title={t('token.breakdownTitle')}
+        >
+          ≈{tokenCount} {t('status.tokens')}
+        </button>
       </div>
     </div>
   );

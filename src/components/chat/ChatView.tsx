@@ -11,6 +11,7 @@ import RenameConvModal from './RenameConvModal';
 import DeleteConvModal from './DeleteConvModal';
 import ResetExtractionModal from './ResetExtractionModal';
 import ImageManagerModal from './ImageManagerModal';
+import TokenBreakdownModal, { type TokenBreakdownItem } from './TokenBreakdownModal';
 import { ConversationDesktopAside, ConversationMobileDrawer } from './ConversationListPanels';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
@@ -199,6 +200,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
   // 图片管理弹窗（仅保留开关；列表/选中/分页等已下沉到 ImageManagerModal 内部）
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
+
+  // Token 拆分弹窗
+  const [tokenBreakdownOpen, setTokenBreakdownOpen] = useState(false);
   const seenMemoryTaskRef = useRef<Record<string, string>>({});
   const previousCharacterIdRef = useRef<string | null>(character?.id ?? null);
   const streamingFrameRef = useRef<number | null>(null);
@@ -308,19 +312,61 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     return Math.max(localSum, serverValue);
   }, [visibleMessages, serverTotalTokens, activeConvId]);
 
-  const systemPromptTokens = useMemo(() => {
-    if (!character) return 0;
-    let text = '';
-    if (character.system_prompt) text += character.system_prompt + '\n';
-    if (character.personality) text += character.personality + '\n';
-    if (character.scenario) text += character.scenario + '\n';
-    if (character.example_dialogue) text += character.example_dialogue + '\n';
+  // 把 system prompt 拆分到字段粒度，方便点击 token chip 时弹窗展示占比。
+  // 这里只覆盖 ChatView 自身的 token 估算口径（与 ChatToolbar chip 显示一致），
+  // 真正发给 LLM 的拼接细节仍由 chat-engine 的 buildSystemPrompt 决定。
+  const systemPromptParts = useMemo(() => {
+    if (!character) {
+      return { systemPrompt: 0, basicInfo: 0, personality: 0, scenario: 0, otherInfo: 0, exampleDialogue: 0 };
+    }
+    return {
+      systemPrompt: character.system_prompt ? estimateTokens(character.system_prompt) : 0,
+      basicInfo: character.basic_info ? estimateTokens(character.basic_info) : 0,
+      personality: character.personality ? estimateTokens(character.personality) : 0,
+      scenario: character.scenario ? estimateTokens(character.scenario) : 0,
+      otherInfo: character.other_info ? estimateTokens(character.other_info) : 0,
+      exampleDialogue: character.example_dialogue ? estimateTokens(character.example_dialogue) : 0,
+    };
+  }, [character]);
+
+  const memoriesTokens = useMemo(() => {
+    if (memories.length === 0) return 0;
     const memText = memories.map((m, i) => `${i + 1}. ${m.content}`).join('\n');
-    if (memText) text += memText + '\n';
-    return estimateTokens(text);
-  }, [character, memories]);
+    return estimateTokens(memText);
+  }, [memories]);
+
+  const systemPromptTokens = useMemo(() => {
+    return (
+      systemPromptParts.systemPrompt
+      + systemPromptParts.basicInfo
+      + systemPromptParts.personality
+      + systemPromptParts.scenario
+      + systemPromptParts.otherInfo
+      + systemPromptParts.exampleDialogue
+      + memoriesTokens
+    );
+  }, [systemPromptParts, memoriesTokens]);
 
   const tokenCount = messageTokens + systemPromptTokens;
+
+  // 弹窗展示用的拆分项。fields 顺序按"出现在 system prompt 中的顺序"排列，
+  // 让用户读起来和角色卡编辑界面对得上。零 token 项也保留，避免缺失误以为统计有 bug。
+  const tokenBreakdownItems = useMemo<TokenBreakdownItem[]>(() => {
+    return [
+      { labelKey: 'token.systemPrompt', tokens: systemPromptParts.systemPrompt },
+      { labelKey: 'token.basicInfo', tokens: systemPromptParts.basicInfo },
+      { labelKey: 'token.personality', tokens: systemPromptParts.personality },
+      { labelKey: 'token.scenario', tokens: systemPromptParts.scenario },
+      { labelKey: 'token.otherInfo', tokens: systemPromptParts.otherInfo },
+      { labelKey: 'token.exampleDialogue', tokens: systemPromptParts.exampleDialogue },
+      {
+        labelKey: 'token.memories',
+        tokens: memoriesTokens,
+        detail: formatTemplate(t('token.memoriesDetail'), { count: memories.length }),
+      },
+      { labelKey: 'token.messages', tokens: messageTokens },
+    ];
+  }, [systemPromptParts, memoriesTokens, messageTokens, memories.length, t]);
 
   // 未提取记忆的用户消息数（使用服务端返回的真实数量，不受前端分页限制）
   const unextractedCount = serverUnextractedCount;
@@ -810,7 +856,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     setDeleteOpen(false);
     // 关键点：DELETE 用上面快照下来的 targetConvId，
     // 即便用户在 await 期间又切到别的对话也只会删自己最初确认的那一条
-    await fetch(`/api/conversations/${targetConvId}`, { method: 'DELETE' });
+    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
+    await fetch(`/api/conversations/${targetConvId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    });
     setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
     void refreshConversationState(next?.id || null);
   };
@@ -826,7 +876,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   }, [refreshMessages]);
 
   const handleDeleteMessage = useCallback(async (id: string) => {
-    const res = await fetch(`/api/messages/${id}`, { method: 'DELETE' });
+    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
+    const res = await fetch(`/api/messages/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    });
     const data = await res.json() as { ok: boolean; deleted: 'message' | 'version'; message?: Message };
     if (data.deleted === 'version' && data.message) {
       // 只删了一个版本，用返回的更新后消息替换
@@ -1035,7 +1089,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     if (!activeConvId || duplicating) return;
     setDuplicating(true);
     try {
-      const res = await fetch(`/api/conversations/${activeConvId}/duplicate`, { method: 'POST' });
+      // 注意：proxy.ts 的 CSRF 校验要求写方法带 application/json 头
+      const res = await fetch(`/api/conversations/${activeConvId}/duplicate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
       if (!res.ok) {
         const err = await res.json() as { error?: string };
         throw new Error(err.error || t('chat.duplicateError'));
@@ -1621,6 +1679,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             memoryExtractStatus={memoryExtractStatus}
             tokenCount={tokenCount}
             onOpenResetExtraction={() => setResetExtractionOpen(true)}
+            onOpenTokenBreakdown={() => setTokenBreakdownOpen(true)}
           />
 
           <ChatMessageList
@@ -1732,6 +1791,13 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           if (activeConvId) await refreshMessages();
         }}
         showToast={showToast}
+      />
+
+      {/* Token 拆分弹窗 */}
+      <TokenBreakdownModal
+        open={tokenBreakdownOpen}
+        onClose={() => setTokenBreakdownOpen(false)}
+        items={tokenBreakdownItems}
       />
     </div>
   );

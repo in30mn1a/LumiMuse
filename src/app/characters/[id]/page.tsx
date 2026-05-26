@@ -219,7 +219,11 @@ export default function CharacterEditor({ params }: Props) {
   const handleDelete = async () => {
     if (!confirm(t('editor.deleteConfirm'))) return;
     try {
-      const response = await fetch(`/api/characters/${id}`, { method: 'DELETE' });
+      // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
+      const response = await fetch(`/api/characters/${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
@@ -236,7 +240,11 @@ export default function CharacterEditor({ params }: Props) {
     if (!confirm(t('editor.duplicateConfirm'))) return;
     setDuplicating(true);
     try {
-      const response = await fetch(`/api/characters/${id}/duplicate`, { method: 'POST' });
+      // 注意：proxy.ts 的 CSRF 校验要求写方法带 application/json 头
+      const response = await fetch(`/api/characters/${id}/duplicate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || t('editor.duplicateError'));
       router.push(`/characters/${data.id}`);

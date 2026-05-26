@@ -111,7 +111,12 @@ export default function SettingsPage() {
 
   const handleLogout = async () => {
     if (!window.confirm(t('auth.logoutConfirm'))) return;
-    await fetch('/api/auth', { method: 'DELETE' });
+    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头，
+    // 否则会被 415 拦截，登出表面上"点了没反应"
+    await fetch('/api/auth', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    });
     router.replace('/login');
   };
 
@@ -131,7 +136,11 @@ export default function SettingsPage() {
 
   const handleDeleteProvider = async (id: string) => {
     if (!window.confirm(t('settings.providerDeleteConfirm'))) return;
-    await fetch(`/api/providers?id=${id}`, { method: 'DELETE' });
+    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
+    await fetch(`/api/providers?id=${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    });
     loadProviders();
   };
 
@@ -1165,7 +1174,11 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
   const handleCleanup = async () => {
     setStatus('cleaning');
     try {
-      const res = await fetch('/api/maintenance', { method: 'POST' });
+      // 注意：proxy.ts 的 CSRF 校验要求写方法带 application/json 头
+      const res = await fetch('/api/maintenance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
       const data = await res.json() as { dbDeleted: number; fileResults: Record<string, { deleted: number; errors: number }> };
       setCleanedCount(data.dbDeleted);
       setFileResults(data.fileResults);

@@ -45,11 +45,26 @@ export async function GET(request: NextRequest) {
      AND (metadata IS NULL OR metadata = '{}' OR json_extract(metadata, '$.memory_extracted') IS NULL)`
   ).get(conversationId) as { cnt: number };
 
+  // 整对话的 token 总和（基于服务端持久化的 token_count），用于前端在分页未加载完时正确显示。
+  // 与前端 messageTokens 的语义一致：若存在 summary 消息，则从最后一条 summary 起累加；否则全量。
+  const lastSummaryRow = db.prepare(
+    `SELECT seq FROM messages
+     WHERE conversation_id = ? AND json_extract(metadata, '$.isSummary') = 1
+     ORDER BY seq DESC LIMIT 1`
+  ).get(conversationId) as { seq: number } | undefined;
+  const tokenSumRow = (lastSummaryRow
+    ? db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ? AND seq >= ?')
+        .get(conversationId, lastSummaryRow.seq)
+    : db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ?')
+        .get(conversationId)) as { s: number | null };
+  const totalTokens = tokenSumRow.s ?? 0;
+
   return NextResponse.json({
     messages: serializeTypedMessages(messages),
     hasMore,
     oldestSeq: messages[0]?.seq ?? null,
     unextractedCount: unextractedRow.cnt,
+    totalTokens,
   });
 }
 

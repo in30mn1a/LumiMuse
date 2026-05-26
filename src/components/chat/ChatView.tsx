@@ -42,6 +42,8 @@ type MessagesResponse = {
   hasMore: boolean;
   oldestSeq: number | null;
   unextractedCount?: number;
+  /** 整对话（自最后一条 summary 起，无 summary 则全量）的 token_count 总和，用于分页未加载完时正确显示 */
+  totalTokens?: number;
 };
 
 function messagesUrl(conversationId: string, options?: { limit?: number; beforeSeq?: number | null; all?: boolean }): string {
@@ -184,6 +186,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [resetExtractionOpen, setResetExtractionOpen] = useState(false);
   // 服务端返回的真实未提取消息数量（不受前端分页限制）
   const [serverUnextractedCount, setServerUnextractedCount] = useState<number>(0);
+  // 服务端返回的整对话 token 总和（自最后一条 summary 起，无 summary 则全量），用于分页未加载完时正确显示。
+  // 带 convId 是为了切换对话时能识别"旧值过期"，避免新对话短暂显示旧对话的 token 数。
+  const [serverTotalTokens, setServerTotalTokens] = useState<{ convId: string; value: number } | null>(null);
   // 记忆提取状态：'idle' | 'extracting' | 'done' | 'failed'
   const [memoryExtractStatus, setMemoryExtractStatus] = useState<'idle' | 'extracting' | 'done' | 'failed'>('idle');
   // 提取状态自动隐藏定时器
@@ -292,8 +297,16 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       return meta.isSummary === true;
     });
     const relevant = lastSummaryIdx >= 0 ? visibleMessages.slice(lastSummaryIdx) : visibleMessages;
-    return relevant.reduce((sum, m) => sum + (m.token_count || 0), 0);
-  }, [visibleMessages]);
+    const localSum = relevant.reduce((sum, m) => sum + (m.token_count || 0), 0);
+    // 取本地求和与服务端总量的较大值：
+    // - 分页未加载完时，服务端总量包含未加载的旧消息（localSum 偏小）→ 取服务端
+    // - 本地刚发送新消息但服务端总量还未刷新时，localSum 暂时领先 → 取 localSum
+    // - 全加载完且服务端已同步时，两者相等
+    // serverTotalTokens 带 convId 是为了识别"切对话后旧值未清"的过渡态：
+    // convId 不匹配时视为 0，避免短暂显示别的对话的 token 数
+    const serverValue = serverTotalTokens && serverTotalTokens.convId === activeConvId ? serverTotalTokens.value : 0;
+    return Math.max(localSum, serverValue);
+  }, [visibleMessages, serverTotalTokens, activeConvId]);
 
   const systemPromptTokens = useMemo(() => {
     if (!character) return 0;
@@ -381,12 +394,14 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     if (!activeConvId) return;
     const ctl = new AbortController();
     const needsTarget = Boolean(targetMessageId);
-    fetchMessagesPage(activeConvId, { limit: PAGE_SIZE, all: needsTarget, signal: ctl.signal })
-      .then(({ messages: msgs, hasMore, oldestSeq, unextractedCount: uc }) => {
+    const loadingConvId = activeConvId;
+    fetchMessagesPage(loadingConvId, { limit: PAGE_SIZE, all: needsTarget, signal: ctl.signal })
+      .then(({ messages: msgs, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt }) => {
         setMessages(uniqueMessagesById(msgs));
         setHasOlderMessages(hasMore);
         setOldestLoadedSeq(oldestSeq);
         if (uc !== undefined) setServerUnextractedCount(uc);
+        if (tt !== undefined) setServerTotalTokens({ convId: loadingConvId, value: tt });
 
         if (targetMessageId) {
           const idx = msgs.findIndex(m => m.id === targetMessageId);
@@ -408,8 +423,12 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === 'visible' && activeConvId) {
-        fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) })
-          .then(({ unextractedCount: uc }) => { if (uc !== undefined) setServerUnextractedCount(uc); })
+        const cid = activeConvId;
+        fetchMessagesPage(cid, { limit: Math.max(PAGE_SIZE, messages.length) })
+          .then(({ unextractedCount: uc, totalTokens: tt }) => {
+            if (uc !== undefined) setServerUnextractedCount(uc);
+            if (tt !== undefined) setServerTotalTokens({ convId: cid, value: tt });
+          })
           .catch(() => {});
       }
     };
@@ -437,22 +456,59 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
     // 初始加载阶段：messages 变化后滚到底部（instant 不产生动画）
     // 直到顶部哨兵不再触发为止（即内容已超出视口高度）
+    //
+    // 虚拟列表特殊处理：初次渲染时 virtualizer 还没测量任何 row，totalSize 是用 estimateSize(120)
+    // 估算的值，scrollIntoView 会滚到错误位置；待 ResizeObserver 测完真实高度后 totalSize 才会更新。
+    // 因此用 ResizeObserver 监听 scroller 子节点（含 virtualizer inner 容器）的尺寸变化，
+    // 在每次高度变化后反复 scrollIntoView，直到 sentinel 离开视口为止。
     if (scrollToBottomOnLoadRef.current) {
-      const raf = requestAnimationFrame(() => {
-        const end = messagesEndRef.current;
-        if (!end) return;
+      const end = messagesEndRef.current;
+      if (!end) return;
+      const scroller = end.parentElement;
+      if (!scroller) return;
+
+      let cancelled = false;
+      let resizeObs: ResizeObserver | null = null;
+      let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = () => {
+        scrollToBottomOnLoadRef.current = false;
+        if (resizeObs) resizeObs.disconnect();
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+      };
+
+      const tryScroll = () => {
+        if (cancelled || !scrollToBottomOnLoadRef.current) return;
         end.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
-        // 检查顶部哨兵是否还在视口内，若已不可见说明内容足够长，初始加载完成
         const sentinel = topSentinelRef.current;
         if (sentinel) {
           const rect = sentinel.getBoundingClientRect();
           const inView = rect.top >= 0 && rect.bottom <= window.innerHeight;
-          if (!inView) {
-            scrollToBottomOnLoadRef.current = false;
-          }
+          if (!inView) finish();
         }
+      };
+
+      // ResizeObserver 监听 scroller 直接子元素：virtualizer inner 的 height 由 inline style 设置，
+      // 每次 totalSize 变化都会触发 contentRect 变化 → 回调被调用。
+      resizeObs = new ResizeObserver(() => {
+        if (cancelled) return;
+        requestAnimationFrame(tryScroll);
       });
-      return () => cancelAnimationFrame(raf);
+      Array.from(scroller.children).forEach(child => resizeObs!.observe(child as Element));
+
+      const rafId = requestAnimationFrame(tryScroll);
+      // 兜底：1.5s 后强制结束，防止极端情况下 ResizeObserver 不触发导致 ref 一直未清
+      fallbackTimer = setTimeout(() => {
+        tryScroll();
+        finish();
+      }, 1500);
+
+      return () => {
+        cancelled = true;
+        cancelAnimationFrame(rafId);
+        if (resizeObs) resizeObs.disconnect();
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+      };
     }
   }, [visibleMessages]);
 
@@ -485,12 +541,14 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     // 找到从 prev 中消失的 convId（即刚完成的流）
     if (activeConvId && prev.has(activeConvId) && !activeStreams.has(activeConvId)) {
       // 当前对话的流刚完成，刷新消息
-      fetchMessagesPage(activeConvId, { limit: Math.max(PAGE_SIZE, messages.length) })
-        .then(({ messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc }) => {
+      const cid = activeConvId;
+      fetchMessagesPage(cid, { limit: Math.max(PAGE_SIZE, messages.length) })
+        .then(({ messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt }) => {
           setMessages(uniqueMessagesById(freshMessages));
           setHasOlderMessages(hasMore);
           setOldestLoadedSeq(oldestSeq);
           if (uc !== undefined) setServerUnextractedCount(uc);
+          if (tt !== undefined) setServerTotalTokens({ convId: cid, value: tt });
         })
         .catch(() => {});
     }
@@ -517,19 +575,21 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     const convId = activeConvIdRef.current;
     if (!convId) return;
     // 用 ref 读取最新 messages 长度，避免 callback 引用因 messages 变化而频繁重建
-    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(convId, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
+    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt } = await fetchMessagesPage(convId, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
     setMessages(uniqueMessagesById(freshMessages));
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
     if (uc !== undefined) setServerUnextractedCount(uc);
+    if (tt !== undefined) setServerTotalTokens({ convId, value: tt });
   }, []);
 
   const refreshMessagesForConversation = useCallback(async (conversationIdToRefresh: string) => {
-    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc } = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
+    const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt } = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
     setMessages(uniqueMessagesById(freshMessages));
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
     if (uc !== undefined) setServerUnextractedCount(uc);
+    if (tt !== undefined) setServerTotalTokens({ convId: conversationIdToRefresh, value: tt });
   }, []);
 
   const loadOlderMessages = useCallback(async () => {
@@ -606,9 +666,12 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
           // 刷新未提取消息数量
           fetchMessagesPage(convId, { limit: Math.max(PAGE_SIZE, messages.length) })
-            .then(({ unextractedCount: uc }) => { if (uc !== undefined) setServerUnextractedCount(uc); })
+            .then(({ unextractedCount: uc, totalTokens: tt }) => {
+              if (uc !== undefined) setServerUnextractedCount(uc);
+              if (tt !== undefined) setServerTotalTokens({ convId, value: tt });
+            })
             .catch(() => {});
-          
+
           extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
         }
         return;
@@ -621,7 +684,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       setMemoryExtractStatus('failed');
       // 即使轮询超时了，也尝试在最后刷新一次未提取数量，防止后台任务在最后一刻成功喵
       fetchMessagesPage(convId, { limit: Math.max(PAGE_SIZE, messages.length) })
-        .then(({ unextractedCount: uc }) => { if (uc !== undefined) setServerUnextractedCount(uc); })
+        .then(({ unextractedCount: uc, totalTokens: tt }) => {
+          if (uc !== undefined) setServerUnextractedCount(uc);
+          if (tt !== undefined) setServerTotalTokens({ convId, value: tt });
+        })
         .catch(() => {});
       extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
     }

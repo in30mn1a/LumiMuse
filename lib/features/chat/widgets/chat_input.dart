@@ -153,6 +153,8 @@ class _ChatInputState extends ConsumerState<ChatInput> {
         event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter;
     if (!isEnter) return;
+    // 中文 / 日文等 IME 选词期间 Enter 不应触发发送，交给输入法处理选词确认
+    if (_controller.value.composing.isValid) return;
     final isShift = HardwareKeyboard.instance.isShiftPressed;
     if (isShift) return; // Shift+Enter 走默认换行
     _submit();

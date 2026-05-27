@@ -289,10 +289,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
   /// FIX(Q3)：用户表单延迟保存策略（编辑控件改动不会立即落库），
   /// 离开页面时若有未保存修改则需要二次确认。
   /// 在角色加载完成时把"初始值"快照存入这里，[_dirty] 通过逐字段比较判断。
-  /// 简化范围：只比较核心三字段（name / greeting / personality）+ 头像路径，
-  /// 其余字段（basicInfo / scenario / exampleDialogue / otherInfo / systemPrompt /
-  /// imageTags）被视作低敏感字段，命中误判概率较低；
-  /// TODO(Q3-extend)：必要时按需扩到全部字段。
+  /// 覆盖全部 9 个文本字段 + 头像路径，确保任意字段编辑后离开都能被拦截。
   _CharacterEditSnapshot? _initialSnapshot;
 
   /// FIX(Q3)：当前表单是否有未保存修改 — 仅在已加载且 snapshot 存在时计算。
@@ -303,7 +300,31 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
     return _nameController.text != snap.name ||
         _greetingController.text != snap.greeting ||
         _personalityController.text != snap.personality ||
+        _basicInfoController.text != snap.basicInfo ||
+        _scenarioController.text != snap.scenario ||
+        _exampleDialogueController.text != snap.exampleDialogue ||
+        _otherInfoController.text != snap.otherInfo ||
+        _systemPromptController.text != snap.systemPrompt ||
+        _imageTagsController.text != snap.imageTags ||
         _avatarPath != snap.avatarUrl;
+  }
+
+  /// FIX(Q3)：用当前 controller / 头像值刷新 snapshot，让"刚填入"的内容不计入 dirty。
+  /// AI 生成 / 导入草稿 / 保存成功 等批量改字段的入口完成后必须调用，
+  /// 否则一次填入就会立刻让 PopScope 把退出动作拦下来。
+  void _refreshSnapshot() {
+    _initialSnapshot = _CharacterEditSnapshot(
+      name: _nameController.text,
+      greeting: _greetingController.text,
+      personality: _personalityController.text,
+      basicInfo: _basicInfoController.text,
+      scenario: _scenarioController.text,
+      exampleDialogue: _exampleDialogueController.text,
+      otherInfo: _otherInfoController.text,
+      systemPrompt: _systemPromptController.text,
+      imageTags: _imageTagsController.text,
+      avatarUrl: _avatarPath,
+    );
   }
 
   /// 五个长任务互斥锁（保存 / AI生成 / 删除 / 复制 / 导入）
@@ -389,13 +410,8 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
           _systemPromptController.text = character.systemPrompt;
           _imageTagsController.text = character.imageTags;
           _avatarPath = character.avatarUrl;
-          // FIX(Q3)：记录加载时的核心字段快照供 _dirty 比较使用。
-          _initialSnapshot = _CharacterEditSnapshot(
-            name: character.name,
-            greeting: character.greeting,
-            personality: character.personality,
-            avatarUrl: character.avatarUrl,
-          );
+          // FIX(Q3)：记录加载时的全字段快照供 _dirty 比较使用。
+          _refreshSnapshot();
           _loaded = true;
         }
 
@@ -417,6 +433,9 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
             final confirmed = await _confirmDiscardChanges();
             if (!context.mounted) return;
             if (confirmed == true) {
+              // FIX(Q3)：用户放弃修改时，若头像被改成新的临时本地文件（仅未保存的
+              // avatar_<timestamp>.png 模式），清理它避免成为磁盘孤儿。
+              await _cleanupAbandonedAvatar();
               // 用户选择放弃修改 — 回退到上一级或主页。
               if (navigator.canPop()) {
                 navigator.pop();
@@ -853,16 +872,34 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
     );
   }
 
-  Future<void> _handleAvatarChanged(String? newPath) async {
+  /// FIX(Q3)：头像变更只更新内存态 + 触发预览刷新；不再立即 actions.update 落库。
+  /// 这样 dirty 判定能把头像变化纳入 PopScope 拦截范围，
+  /// 用户点取消时新头像不会成为孤儿（由 [_returnToSidebar] 处的放弃分支清理临时文件，
+  /// 最终 commit 由 [_save] 把 _avatarPath 一并写库）。
+  void _handleAvatarChanged(String? newPath) {
     setState(() => _avatarPath = newPath);
-    final actions = ref.read(characterActionsProvider);
+  }
+
+  /// FIX(Q3)：放弃修改时清理刚生成、尚未落库的本地头像临时文件。
+  /// 只匹配 `avatar_<timestamp>.png` 这类裁剪流程刚生成的本地文件名，
+  /// 避免误删原有头像（snapshot 中记录的旧路径）或外部图床 URL。
+  /// 文件不存在 / 删除异常一律 swallow，不阻塞退出流程。
+  Future<void> _cleanupAbandonedAvatar() async {
+    final snap = _initialSnapshot;
+    final current = _avatarPath;
+    if (snap == null) return;
+    if (current == null || current.isEmpty) return;
+    if (current == snap.avatarUrl) return;
+    // 仅清理本地临时文件（avatar_<digits>.png）；放过 http(s) / 其他路径
+    final basename = current.split(RegExp(r'[\\/]')).last;
+    if (!RegExp(r'^avatar_\d+\.png$').hasMatch(basename)) return;
     try {
-      await actions.update(widget.characterId, avatarUrl: newPath);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存头像失败: $e')),
-      );
+      final f = File(current);
+      if (await f.exists()) {
+        await f.delete();
+      }
+    } catch (_) {
+      // swallow — 文件不在 / 锁定 / 权限不足都不视作失败
     }
   }
 
@@ -922,6 +959,8 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         }
         _showAiGenPanel = false;
       });
+      // FIX(Q3)：AI 一键填入相当于"刚加载新值"，刷新 snapshot 让这次填入不计 dirty。
+      _refreshSnapshot();
       _showImportMsg(
         text: 'AI 生成完成，请检查后保存',
         isError: false,
@@ -963,12 +1002,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       // 这一步必须放在 update 成功之后、return / setState 之前，
       // 否则 finally 重置 _saving=false 时 _dirty 还会短暂判定为 true，
       // 引起 PopScope 多余的拦截。
-      _initialSnapshot = _CharacterEditSnapshot(
-        name: _nameController.text,
-        greeting: _greetingController.text,
-        personality: _personalityController.text,
-        avatarUrl: _avatarPath,
-      );
+      _refreshSnapshot();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1323,6 +1357,8 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         _avatarPath = fields['avatar_url']!.isEmpty ? null : fields['avatar_url']!;
       }
     });
+    // FIX(Q3)：导入草稿相当于"刚加载新值"，刷新 snapshot 让这次填入不计 dirty。
+    _refreshSnapshot();
   }
 }
 
@@ -1333,21 +1369,32 @@ class _ImportMsg {
   const _ImportMsg({required this.text, required this.isError});
 }
 
-/// FIX(Q3)：编辑表单的核心字段快照，用于比较"加载值 vs 当前值"判定是否 dirty。
-/// 简化范围：仅 name / greeting / personality / avatarUrl 四个核心字段；
-/// TODO(Q3-extend)：必要时扩展到 basicInfo / scenario / exampleDialogue /
-/// otherInfo / systemPrompt / imageTags（但目前一旦扩到全部字段，
-/// 复制/导入这类一键填充流程会立刻让 _dirty 变 true，可能误触发拦截）。
+/// FIX(Q3)：编辑表单的全字段快照，用于比较"加载值 vs 当前值"判定是否 dirty。
+/// 覆盖全部 9 个文本字段 + 头像路径；AI 生成 / 导入草稿 / 保存成功 等
+/// 批量填字段的入口在完成后必须调 [_CharacterEditPageState._refreshSnapshot]，
+/// 否则一次填入就会让 PopScope 把退出动作拦下来。
 class _CharacterEditSnapshot {
   final String name;
   final String greeting;
   final String personality;
+  final String basicInfo;
+  final String scenario;
+  final String exampleDialogue;
+  final String otherInfo;
+  final String systemPrompt;
+  final String imageTags;
   final String? avatarUrl;
 
   const _CharacterEditSnapshot({
     required this.name,
     required this.greeting,
     required this.personality,
+    required this.basicInfo,
+    required this.scenario,
+    required this.exampleDialogue,
+    required this.otherInfo,
+    required this.systemPrompt,
+    required this.imageTags,
     required this.avatarUrl,
   });
 }

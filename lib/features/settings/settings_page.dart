@@ -525,11 +525,16 @@ class _ImportExportSectionState extends ConsumerState<_ImportExportSection> {
 
   Future<void> _handleExport() async {
     final String lang = ref.read(localeProvider).languageCode;
+    // FIX(security)：导出整库会包含 settings 表中的 API Key / NovelAI / 自定义 API
+    // token 等敏感凭据，必须让用户显式确认是否包含。默认不包含。
+    final includeSecrets = await _showExportDialog();
+    if (!mounted) return;
+    if (includeSecrets == null) return; // 用户取消
     setState(() => _isExporting = true);
     try {
       final db = ref.read(databaseProvider);
       final service = BackupService(db);
-      final jsonStr = await service.exportToJson();
+      final jsonStr = await service.exportToJson(includeSecrets: includeSecrets);
       final isMobileExport = Platform.isAndroid || Platform.isIOS;
       final exportBytes = Uint8List.fromList(utf8.encode(jsonStr));
 
@@ -585,6 +590,59 @@ class _ImportExportSectionState extends ConsumerState<_ImportExportSection> {
     } finally {
       if (mounted) setState(() => _isExporting = false);
     }
+  }
+
+  /// FIX(security)：导出前确认对话框。返回值含义：
+  /// - null  → 用户取消
+  /// - false → 不包含敏感凭据（默认，可安全分享）
+  /// - true  → 包含 API Key 等敏感凭据（备份可还原所有 API 配置）
+  // TODO(parity): i18n — 暂用硬编码，后续若有 'export.includeSecrets*' key 再迁移。
+  Future<bool?> _showExportDialog() async {
+    bool includeSecrets = false;
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return AlertDialog(
+              title: const Text('导出备份'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('即将导出完整的角色 / 对话 / 记忆数据。'),
+                  const SizedBox(height: 12),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    value: includeSecrets,
+                    onChanged: (v) => setLocal(() => includeSecrets = v ?? false),
+                    title: const Text('包含 API Key 等敏感凭据'),
+                    subtitle: const Text(
+                      '勾选后备份文件可还原所有 API 配置，请谨慎分享',
+                      style: TextStyle(
+                        color: Color(0xFFB91C1C),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, null),
+                  child: const Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, includeSecrets),
+                  child: const Text('导出'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _handleImport() async {

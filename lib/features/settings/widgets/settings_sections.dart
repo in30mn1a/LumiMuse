@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dio/dio.dart';
 
 import '../../../core/models/app_settings.dart';
 import '../../../core/providers/api_provider_provider.dart';
@@ -24,6 +25,24 @@ double _parseDouble(String v) {
 int _parseInt(String v) {
   final n = int.tryParse(v);
   return n ?? 0;
+}
+
+// TODO(parity): i18n —— 错误提示文案待接入 i18n
+/// 过滤 LLM/HTTP 异常的对外文案：
+/// - DioException 只露状态码，避免泄漏含 key 的完整 URL 与 stack；
+/// - 其他异常：先替换 URL 与 key-like 长串，再截断长度——顺序反了会把
+///   URL/Key 截成残段绕过正则，泄漏头部明文。
+String _sanitizeApiError(Object e) {
+  if (e is DioException) {
+    final code = e.response?.statusCode;
+    return '连接失败：${code ?? "无响应"}';
+  }
+  var msg = e.toString();
+  // 先替换，再截断。
+  msg = msg.replaceAll(RegExp(r'https?://[^\s]+'), '<URL>');
+  msg = msg.replaceAll(RegExp(r'[A-Za-z0-9_\-]{24,}'), '<KEY>');
+  if (msg.length > 200) msg = '${msg.substring(0, 200)}…';
+  return msg;
 }
 
 class OverviewSection extends ConsumerWidget {
@@ -413,40 +432,49 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
           ),
         ),
         const SizedBox(height: 6),
-        Container(
-          decoration: BoxDecoration(
-            color: isDark
-                ? AppTheme.darkSurface.withValues(alpha: 0.7)
-                : Colors.white.withValues(alpha: 0.86),
-            border: Border.all(
-              color: isDark ? AppTheme.darkBorderLight : AppTheme.borderLight,
-            ),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: TextFormField(
+        if (obscure)
+          _SecretField(
+            // 复用同一个 ValueKey 确保切换 provider 时清空内容。
             key: ValueKey('${_editingProvider?['id'] ?? 'new'}_$fieldKey'),
             initialValue: value,
-            obscureText: obscure,
+            placeholder: placeholder,
             onChanged: onChanged,
-            style: TextStyle(
-              fontSize: 14,
-              color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
-            ),
-            decoration: InputDecoration(
-              hintText: placeholder,
-              hintStyle: TextStyle(
-                fontSize: 13,
-                color: (isDark ? AppTheme.darkTextMuted : AppTheme.textMuted)
-                    .withValues(alpha: 0.7),
+          )
+        else
+          Container(
+            decoration: BoxDecoration(
+              color: isDark
+                  ? AppTheme.darkSurface.withValues(alpha: 0.7)
+                  : Colors.white.withValues(alpha: 0.86),
+              border: Border.all(
+                color: isDark ? AppTheme.darkBorderLight : AppTheme.borderLight,
               ),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 10,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: TextFormField(
+              key: ValueKey('${_editingProvider?['id'] ?? 'new'}_$fieldKey'),
+              initialValue: value,
+              obscureText: obscure,
+              onChanged: onChanged,
+              style: TextStyle(
+                fontSize: 14,
+                color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+              ),
+              decoration: InputDecoration(
+                hintText: placeholder,
+                hintStyle: TextStyle(
+                  fontSize: 13,
+                  color: (isDark ? AppTheme.darkTextMuted : AppTheme.textMuted)
+                      .withValues(alpha: 0.7),
+                ),
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
               ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -465,7 +493,7 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
+        ).showSnackBar(SnackBar(content: Text('保存失败: ${_sanitizeApiError(e)}')));
       }
     }
   }
@@ -626,7 +654,7 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() => _modelError = '$e');
+      setState(() => _modelError = _sanitizeApiError(e));
     } finally {
       if (mounted) setState(() => _loadingModels = false);
     }
@@ -657,9 +685,8 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
           SettingsLabeledField(
             label: I18n.t('settings.apiKey', lang: lang),
             hintBelow: I18n.t('settings.apiKeyHint', lang: lang),
-            child: SettingsRichInput(
+            child: _SecretField(
               controller: _apiKeyController,
-              obscure: true,
               onChanged: (v) => _updateSetting('api_key', v),
             ),
           ),
@@ -1215,7 +1242,7 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
         setState(() => _maintStatus = _MaintStatus.idle);
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('$e')));
+        ).showSnackBar(SnackBar(content: Text(_sanitizeApiError(e))));
       }
     }
   }
@@ -1245,7 +1272,7 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
         setState(() => _maintStatus = _MaintStatus.idle);
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('$e')));
+        ).showSnackBar(SnackBar(content: Text(_sanitizeApiError(e))));
       }
     }
   }
@@ -1606,6 +1633,108 @@ class _DatabaseStatsViewState extends ConsumerState<DatabaseStatsView> {
           ],
         );
       },
+    );
+  }
+}
+
+/// 私有 API Key 输入框：obscure + 显隐 IconButton。
+/// 视觉与 SettingsRichInput 保持一致（半透明白底 + borderLight + 圆角 12 / md）。
+/// 支持两种构造：传 controller（与外部状态同步）或传 initialValue（内部建临时 controller）。
+class _SecretField extends StatefulWidget {
+  final TextEditingController? controller;
+  final String? initialValue;
+  final String? placeholder;
+  final ValueChanged<String>? onChanged;
+
+  const _SecretField({
+    super.key,
+    this.controller,
+    this.initialValue,
+    this.placeholder,
+    this.onChanged,
+  });
+
+  @override
+  State<_SecretField> createState() => _SecretFieldState();
+}
+
+class _SecretFieldState extends State<_SecretField> {
+  bool _obscure = true;
+  TextEditingController? _internalCtrl;
+
+  TextEditingController get _effectiveCtrl =>
+      widget.controller ?? _internalCtrl!;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.controller == null) {
+      _internalCtrl = TextEditingController(text: widget.initialValue ?? '');
+    }
+  }
+
+  @override
+  void dispose() {
+    _internalCtrl?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark
+            ? AppTheme.darkSurface.withValues(alpha: 0.7)
+            : Colors.white.withValues(alpha: 0.86),
+        border: Border.all(
+          color: isDark ? AppTheme.darkBorderLight : AppTheme.borderLight,
+        ),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _effectiveCtrl,
+              obscureText: _obscure,
+              onChanged: widget.onChanged,
+              style: TextStyle(
+                fontSize: 15,
+                height: 1.5,
+                color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+              ),
+              decoration: InputDecoration(
+                hintText: widget.placeholder,
+                hintStyle: TextStyle(
+                  fontSize: 14,
+                  color:
+                      (isDark ? AppTheme.darkTextMuted : AppTheme.textMuted)
+                          .withValues(alpha: 0.7),
+                ),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 15,
+                  vertical: 12,
+                ),
+                isDense: false,
+              ),
+            ),
+          ),
+          IconButton(
+            // TODO(parity): i18n —— tooltip 待接入 i18n
+            tooltip: _obscure ? '显示' : '隐藏',
+            icon: Icon(
+              _obscure ? Icons.visibility : Icons.visibility_off,
+              size: 18,
+              color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
+            ),
+            onPressed: () => setState(() => _obscure = !_obscure),
+          ),
+        ],
+      ),
     );
   }
 }

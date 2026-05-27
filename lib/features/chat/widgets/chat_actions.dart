@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/services.dart';
@@ -111,7 +112,11 @@ class ChatActions {
 
   void stopGeneration() {
     if (conversationId == null) return;
-    ref.read(chatControllerProvider(conversationId!).notifier).stop();
+    // stop() 现已是 async（需 await partial 落库），但本入口保留 void 签名
+    // 以适配 ChatInput.onStop: VoidCallback。fire-and-forget 用 unawaited 标注。
+    unawaited(
+      ref.read(chatControllerProvider(conversationId!).notifier).stop(),
+    );
   }
 
   Future<void> regenerate(String messageId) async {

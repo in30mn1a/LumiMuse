@@ -14,6 +14,7 @@
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -348,6 +349,13 @@ class _ChatViewState extends ConsumerState<ChatView> {
   /// 用户主动发送消息时强制跳到底部（不经过平滑动画）
   bool _forceScrollToBottom = false;
 
+  /// 流式生成期间的"自动跟随"粘性标志。
+  ///
+  /// true（默认）：流式新 chunk 到达时自动滚到底部跟随。
+  /// false：用户主动向上滚后置为 false，新 chunk 不再拽用户回底部；
+  /// 用户重新滚动到接近底部时再翻回 true。
+  bool _followingStream = true;
+
   /// 搜索跳转定位用：为可见消息建立稳定锚点，并短暂高亮目标消息。
   final Map<String, GlobalKey> _messageKeys = {};
   String? _highlightedMessageId;
@@ -387,6 +395,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
       _resolvedConversationId = id;
       if (changed) {
         _scrollToBottomOnLoad = id != null;
+        // 切换对话视为"重新打开"，重置流式跟随粘性
+        _followingStream = true;
       }
     });
     _actions.conversationId = id;
@@ -468,6 +478,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
       refreshMessages: () => setState(() {}),
       requestScrollToBottom: () {
         _forceScrollToBottom = true;
+        // 用户主动发送新消息时，强制重新开启流式跟随
+        _followingStream = true;
         _scrollToBottom(animate: false);
       },
       isMounted: () => mounted,
@@ -1316,7 +1328,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
               if (mounted) {
                 setState(() => _scrollToBottomOnLoad = false);
               }
-            } else if (_isNearBottom()) {
+            } else if (_followingStream && _isNearBottom()) {
+              // 仅当用户未上滑（仍处于"跟随"状态）时，新 chunk 才把视图拽到底部
               _scrollToBottom(animate: true);
             }
           });
@@ -1423,6 +1436,20 @@ class _ChatViewState extends ConsumerState<ChatView> {
           controller: _scrollController,
           child: NotificationListener<ScrollNotification>(
             onNotification: (notification) {
+              if (notification is UserScrollNotification) {
+                // ListView 非 reverse：手指向下滑（看历史）= ScrollDirection.forward
+                // 手指向上滑（往新消息看）= ScrollDirection.reverse
+                final dir = notification.direction;
+                if (dir == ScrollDirection.forward) {
+                  // 用户主动上滑，停止跟随
+                  if (_followingStream) _followingStream = false;
+                } else if (dir == ScrollDirection.reverse) {
+                  // 用户朝底部方向滑且回到接近底部时，重新开启跟随
+                  if (!_followingStream && _isNearBottom()) {
+                    _followingStream = true;
+                  }
+                }
+              }
               if (notification is ScrollUpdateNotification) {
                 final metrics = notification.metrics;
                 if (metrics.pixels <= metrics.minScrollExtent + 60) {
@@ -1484,7 +1511,19 @@ class _ChatViewState extends ConsumerState<ChatView> {
                               )
                         : null,
                     onCopy: () => _actions.copyMessage(msg.content),
-                    onDelete: () => _actions.deleteMessage(msg.id),
+                    onDelete: () async {
+                      // TODO(parity): i18n — 主项目暂无对应 key，硬编码兜底
+                      final confirmed = await showDeleteConversationDialog(
+                        context,
+                        title: '删除消息？',
+                        body: '此消息将被永久删除，无法恢复。',
+                        confirmLabel: '删除',
+                        cancelLabel: '取消',
+                      );
+                      if (!mounted) return;
+                      if (confirmed != true) return;
+                      await _actions.deleteMessage(msg.id);
+                    },
                     onSwitchVersion: (v) => _actions.switchVersion(msg.id, v),
                     onEdit: msg.role != 'system'
                         ? () => _showEditDialog(msg)

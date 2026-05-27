@@ -144,21 +144,87 @@ class BackupService {
 
   BackupService(this._db);
 
+  /// 敏感配置 key 匹配片段（全部小写比较）。命中任一片段的 settings.key 视为敏感凭据，
+  /// 在 [exportToJson] 中默认（includeSecrets = false）会被剔除。
+  /// 这些片段覆盖 OpenAI 兼容 api key / NovelAI / 自定义 API / token / 密码 等典型场景。
+  static const List<String> _secretKeyFragments = <String>[
+    'api_key',
+    'apikey',
+    'token',
+    'secret',
+    'password',
+    'naiapikey',
+    'customapikey',
+  ];
+
+  static bool _isSecretSettingKey(String key) {
+    final lower = key.toLowerCase();
+    for (final frag in _secretKeyFragments) {
+      if (lower.contains(frag)) return true;
+    }
+    return false;
+  }
+
+  /// 对 settings 表中 `image_gen` 这一行的 value（ImageGenSettings.toJson 后
+  /// jsonEncode 的字符串）解析后剔除敏感子字段（如 nai_api_key、custom_api_key），
+  /// 再重新 jsonEncode。解析失败原样返回（保守兜底，宁可漏过滤也不破坏备份）。
+  ///
+  /// 修复：仅按顶层 row key 过滤会让嵌套在 `image_gen` JSON 内的 API key
+  /// 整段漏出，与"默认导出不含敏感凭据"目标相悖。
+  static String _sanitizeImageGenJsonValue(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return raw;
+      final filtered = <String, dynamic>{};
+      decoded.forEach((k, v) {
+        if (_isSecretSettingKey(k)) return;
+        filtered[k] = v;
+      });
+      return jsonEncode(filtered);
+    } catch (_) {
+      return raw;
+    }
+  }
+
   /// 导出所有数据为 JSON
-  Future<String> exportToJson() async {
+  ///
+  /// [includeSecrets] 控制是否把 settings 表中的敏感凭据（API Key / token /
+  /// password 等，详见 [_secretKeyFragments]）一并写入备份。
+  /// 默认为 false — 备份文件可以被安全分享；显式传 true 时备份文件包含
+  /// 可还原所有 API 配置的明文凭据，调用方必须在 UI 上提示用户。
+  Future<String> exportToJson({bool includeSecrets = false}) async {
     final result = await _db.transaction(() async {
       final characters = await _db.select(_db.characters).get();
       final conversations = await _db.select(_db.conversations).get();
       final messages = await _db.select(_db.messages).get();
       final memories = await _db.select(_db.memories).get();
-      return (characters, conversations, messages, memories);
+      final settings = await _db.select(_db.settings).get();
+      return (characters, conversations, messages, memories, settings);
     });
 
-    final (characters, conversations, messages, memories) = result;
+    final (characters, conversations, messages, memories, settings) = result;
+
+    // 按 includeSecrets 过滤敏感 settings 条目；并对 image_gen 嵌套 JSON 内的
+    // 敏感子字段（nai_api_key、custom_api_key 等）做嵌套过滤。
+    final settingsMap = <String, String>{};
+    for (final s in settings) {
+      if (!includeSecrets && _isSecretSettingKey(s.key)) {
+        continue;
+      }
+      if (!includeSecrets && s.key == 'image_gen') {
+        settingsMap[s.key] = _sanitizeImageGenJsonValue(s.value);
+        continue;
+      }
+      settingsMap[s.key] = s.value;
+    }
 
     final data = {
       'version': 1,
       'exported_at': DateTime.now().toIso8601String(),
+      '_meta': {
+        'includesSecrets': includeSecrets,
+        'exportedAt': DateTime.now().toIso8601String(),
+      },
       'characters': characters.map((c) => {
         'id': c.id,
         'name': c.name,
@@ -204,6 +270,7 @@ class BackupService {
         'created_at': m.createdAt.toIso8601String(),
         'updated_at': m.updatedAt.toIso8601String(),
       }).toList(),
+      'settings': settingsMap,
     };
 
     if (kIsWeb) {

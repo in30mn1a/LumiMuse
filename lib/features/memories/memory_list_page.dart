@@ -29,6 +29,7 @@ import '../../theme/app_widgets.dart';
 import '../../theme/page_region.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/app_shell.dart';
+import '../chat/widgets/chat_dialogs.dart';
 
 /// 记忆管理页面 — 严格 1:1 对照 src/app/memories/page.tsx + components/memories/{MemoryList,MemoryCard}.tsx
 class MemoryListPage extends ConsumerStatefulWidget {
@@ -803,6 +804,20 @@ class _MemoryCardState extends State<_MemoryCard> {
   bool get _actionsDisabled =>
       widget.isBusy || widget.isSaving || widget.isDeleting || _saveInFlight;
 
+  // TODO(parity): i18n —— 单条记忆删除二次确认文案待接入 i18n
+  Future<void> _confirmAndDelete() async {
+    final ok = await showDeleteConversationDialog(
+      context,
+      title: '删除该条记忆？',
+      body: '记忆将被永久删除，不可恢复。',
+      confirmLabel: '删除',
+      cancelLabel: '取消',
+    );
+    if (!mounted) return;
+    if (ok != true) return;
+    await widget.onDelete(widget.memory.id);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1122,7 +1137,7 @@ class _MemoryCardState extends State<_MemoryCard> {
             icon: Icons.delete_outline,
             onTap: _actionsDisabled
                 ? null
-                : () => widget.onDelete(widget.memory.id),
+                : () => _confirmAndDelete(),
           ),
         ],
       ],
@@ -1176,7 +1191,7 @@ class _MemoryCardState extends State<_MemoryCard> {
           loading: widget.isDeleting,
           onTap: _actionsDisabled
               ? null
-              : () => widget.onDelete(widget.memory.id),
+              : () => _confirmAndDelete(),
         ),
       ],
     );

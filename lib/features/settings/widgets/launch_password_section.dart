@@ -433,6 +433,21 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
   String? _newError;
   String? _confirmError;
 
+  // 三个密码输入框共用一个显隐开关。
+  bool _obscure = true;
+
+  // TODO(parity): i18n —— tooltip 待接入 i18n
+  Widget _eyeSuffix() {
+    return IconButton(
+      tooltip: _obscure ? '显示' : '隐藏',
+      icon: Icon(
+        _obscure ? Icons.visibility : Icons.visibility_off,
+        size: 18,
+      ),
+      onPressed: () => setState(() => _obscure = !_obscure),
+    );
+  }
+
   @override
   void dispose() {
     _currentCtrl.dispose();
@@ -494,7 +509,7 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
             if (widget.requireCurrent) ...[
               TextField(
                 controller: _currentCtrl,
-                obscureText: true,
+                obscureText: _obscure,
                 autofocus: true,
                 autocorrect: false,
                 enableSuggestions: false,
@@ -508,6 +523,7 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
                   // TODO(parity): 主项目缺失 'auth.currentPasswordHint' 键，硬编码兜底
                   hintText: '请输入当前启动密码',
                   errorText: _currentError,
+                  suffixIcon: _eyeSuffix(),
                 ),
                 onSubmitted: (_) => FocusScope.of(context).nextFocus(),
               ),
@@ -515,7 +531,7 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
             ],
             TextField(
               controller: _newCtrl,
-              obscureText: true,
+              obscureText: _obscure,
               autofocus: !widget.requireCurrent,
               autocorrect: false,
               enableSuggestions: false,
@@ -531,6 +547,7 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
                 // TODO(parity): 主项目缺失 'auth.newPasswordHint' 键，硬编码兜底
                 hintText: '长度至少 $_kMinLength 位',
                 errorText: _newError,
+                suffixIcon: _eyeSuffix(),
               ),
               onSubmitted: (_) {
                 if (widget.requireConfirm) {
@@ -544,7 +561,7 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
               const SizedBox(height: 12),
               TextField(
                 controller: _confirmCtrl,
-                obscureText: true,
+                obscureText: _obscure,
                 autocorrect: false,
                 enableSuggestions: false,
                 textInputAction: TextInputAction.done,
@@ -557,6 +574,7 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
                   // TODO(parity): 主项目缺失 'auth.confirmPasswordHint' 键，硬编码兜底
                   hintText: '请再次输入新密码',
                   errorText: _confirmError,
+                  suffixIcon: _eyeSuffix(),
                 ),
                 onSubmitted: (_) => _submit(),
               ),

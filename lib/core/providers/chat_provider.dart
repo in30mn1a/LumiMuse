@@ -102,6 +102,24 @@ class ChatController extends StateNotifier<ChatState> {
   /// 同步请求锁，覆盖插入用户消息前的短竞态窗口。
   bool _requestInFlight = false;
 
+  /// 本轮请求 finalize 互斥位：onDone（流式收尾落库）与 stop()（中断时落库
+  /// partial）之间的 CAS 锁。每次新请求开始时（mySeq++ 后）重置为 false；
+  /// 任一路径在写入 assistant 消息前调用 [_claimFinalize] 抢占；失败方直接 return。
+  ///
+  /// 修复场景：onDone 已经过了 mySeq/cancelled 检查、进入 `await insertAssistantMessage`
+  /// 的 microtask 期间，用户点 stop()——若没有此锁，stop 也会写入一条 partial
+  /// 消息，导致同一轮对话出现 partial + 完整 两条 assistant 消息。
+  bool _finalized = false;
+
+  /// CAS：在 [insertAssistantMessage] / [updateAssistantRegenerate] 之前调用。
+  /// 返回 true 表示当前路径成功抢占 finalize，可继续写库；
+  /// 返回 false 表示已被其他路径（通常是 stop()）抢占，调用方应立即 return。
+  bool _claimFinalize() {
+    if (_finalized) return false;
+    _finalized = true;
+    return true;
+  }
+
   ChatController(this._ref, this._conversationId) : super(const ChatState());
 
   /// 流式 / 非流式生成完成后统一收尾。
@@ -177,6 +195,7 @@ class ChatController extends StateNotifier<ChatState> {
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
+    _finalized = false; // 抢占新一轮 finalize 锁
 
     try {
       final db = _ref.read(databaseProvider);
@@ -257,7 +276,7 @@ class ChatController extends StateNotifier<ChatState> {
           },
           onDone: (finalText) async {
             // 过期或已取消回调直接跳过，避免污染新一轮请求的状态与数据库
-            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -292,7 +311,7 @@ class ChatController extends StateNotifier<ChatState> {
           cancelToken: cancelToken,
         );
         // 非流式分支也做防重入与取消校验：在 await 期间若已停止或被新请求覆盖，丢弃结果
-        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -332,6 +351,7 @@ class ChatController extends StateNotifier<ChatState> {
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
+    _finalized = false; // 抢占新一轮 finalize 锁
 
     try {
       final db = _ref.read(databaseProvider);
@@ -450,7 +470,7 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -484,7 +504,7 @@ class ChatController extends StateNotifier<ChatState> {
           messages: chatMessages,
           cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -516,6 +536,7 @@ class ChatController extends StateNotifier<ChatState> {
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
+    _finalized = false; // 抢占新一轮 finalize 锁
 
     final db = _ref.read(databaseProvider);
     final messageActions = _ref.read(messageActionsProvider);
@@ -604,7 +625,7 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -635,7 +656,7 @@ class ChatController extends StateNotifier<ChatState> {
           messages: chatMessages,
           cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -670,6 +691,7 @@ class ChatController extends StateNotifier<ChatState> {
 
     // 进入新一轮请求：自增序号并快照本轮序号，用于异步回调防重入
     final mySeq = ++_requestSeq;
+    _finalized = false; // 抢占新一轮 finalize 锁
 
     final db = _ref.read(databaseProvider);
     final settingsAsync = _ref.read(settingsProvider);
@@ -732,7 +754,7 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -766,7 +788,7 @@ class ChatController extends StateNotifier<ChatState> {
           messages: chatMessages,
           cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq || cancelToken.isCancelled) return;
+        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -795,11 +817,44 @@ class ChatController extends StateNotifier<ChatState> {
   ///
   /// 每个 ChatController 实例拥有独立的 _cancelToken，
   /// 调用 stop() 仅取消本对话的请求，不影响其他对话的生成。
-  void stop() {
+  ///
+  /// 修复：若已有非空 partial 流式文本，先把它落库为 assistant 消息再清状态，
+  /// 避免用户看到的内容直接消失。truncated 标记暂未持久化（MessageMetadata
+  /// 模型当前无此字段，按精准修改原则不扩展）。
+  ///
+  /// 双写防护：stop() 与 onDone 共用 [_finalized] 互斥位。若 onDone 已经过
+  /// 入口检查并 claim（即 `_finalized == true`），表示对方正在或已经把完整
+  /// 文本落库，此处不再写 partial，避免同一轮对话出现两条 assistant 消息。
+  // TODO(parity): MessageMetadata 增加 truncated 字段后，在此写入 metadata 中。
+  Future<void> stop() async {
+    // 1) 先快照 partial 文本，再自增序号 + 取消 cancelToken，
+    //    阻止流式 onDone/onError 过期回调继续写入。
+    final partial = state.currentStreamText;
     _requestSeq++;
     _requestInFlight = false;
     _cancelToken?.cancel();
-    state = const ChatState(isGenerating: false, currentStreamText: '');
+
+    // 2) 若有 partial 内容且 onDone 尚未 claim finalize，落库为 assistant 消息，
+    //    并等待 watcher 派发新行，再切换 state，避免出现"气泡消失 + 列表无新消息"的中间空白。
+    final cleaned = _stripTimestampPrefix(partial);
+    if (cleaned.trim().isNotEmpty && _claimFinalize()) {
+      try {
+        final messageActions = _ref.read(messageActionsProvider);
+        await messageActions.insertAssistantMessage(
+          conversationId: _conversationId,
+          content: cleaned,
+        );
+        await _waitForMessagesUpdate();
+      } catch (e) {
+        // 落库失败不阻塞 stop 主流程，state 仍需被重置避免 UI 卡在生成中；
+        // 但需要日志以便线上排查为何 partial 内容消失。
+        debugPrint('ChatController.stop: insert partial failed: $e');
+      }
+    }
+
+    if (mounted) {
+      state = const ChatState(isGenerating: false, currentStreamText: '');
+    }
   }
 
   /// 重新生成图片（带版本历史管理）

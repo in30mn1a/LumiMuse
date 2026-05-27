@@ -8,6 +8,7 @@ import '../../../core/providers/database_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/lumi_scrollbar.dart';
 import '../../../theme/surfaces.dart';
+import 'chat_dialogs.dart';
 
 /// 重置提取状态弹窗 — 严格 1:1 对照
 /// src/components/chat/ChatView.tsx 第 1998~2122 行 `resetExtractionOpen`。
@@ -319,7 +320,22 @@ class _ResetExtractionDialogState
           label: '全部重置',
           kind: _SmallBtnKind.secondary,
           isDark: isDark,
-          onTap: () => _execute(action: ExtractionAction.reset, allTargets: true),
+          onTap: () async {
+            // TODO(parity): i18n — 主项目暂无对应 key，硬编码兜底
+            final confirmed = await showDeleteConversationDialog(
+              context,
+              title: '全部重置？',
+              body: '将清除该对话所有消息的「已提取」标记，下次会重新对它们进行记忆提取。',
+              confirmLabel: '重置',
+              cancelLabel: '取消',
+            );
+            if (!mounted) return;
+            if (confirmed != true) return;
+            await _execute(
+              action: ExtractionAction.reset,
+              allTargets: true,
+            );
+          },
         ),
         // 标记已提取（选中）
         _SmallBtn(

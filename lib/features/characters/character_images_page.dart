@@ -9,6 +9,7 @@ import '../../theme/app_form_fields.dart';
 import '../../theme/app_page_scaffold.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/lumi_scrollbar.dart';
+import '../chat/widgets/chat_dialogs.dart';
 import '../chat/widgets/image_version_viewer.dart';
 
 /// 角色图片管理页（R11 / Task 12.4）
@@ -206,24 +207,16 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
     if (_selectedKeys.isEmpty || _deleting) return;
 
     final count = _selectedKeys.length;
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('确认删除'),
-        content: Text('将删除选中的 $count 个图片版本，此操作不可撤销。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('确认删除'),
-          ),
-        ],
-      ),
+    // FIX：批量删除走项目通用确认 dialog，统一视觉与 i18n 兜底。
+    // TODO(parity): i18n — 暂用硬编码，后续若有 'characterImages.delete*' key 再迁移。
+    final confirm = await showDeleteConversationDialog(
+      context,
+      title: '删除 $count 张图片？',
+      body: '选中的图片将被永久删除，无法恢复。',
+      confirmLabel: '删除',
+      cancelLabel: '取消',
     );
+    if (!mounted) return;
     if (confirm != true) return;
 
     setState(() => _deleting = true);

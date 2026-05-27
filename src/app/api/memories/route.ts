@@ -64,6 +64,50 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(normalized);
 }
 
+export async function DELETE(request: NextRequest) {
+  let rawBody: unknown;
+  try {
+    rawBody = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+    return NextResponse.json({ error: 'Body must be a JSON object' }, { status: 400 });
+  }
+
+  const body = rawBody as { ids?: unknown; character_id?: unknown };
+
+  const ids = body.ids;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return NextResponse.json({ error: 'ids must be a non-empty array' }, { status: 400 });
+  }
+  if (ids.length > 500) {
+    return NextResponse.json({ error: 'Too many ids (max 500)' }, { status: 400 });
+  }
+  if (!ids.every(id => typeof id === 'string' && id.length > 0)) {
+    return NextResponse.json({ error: 'Each id must be a non-empty string' }, { status: 400 });
+  }
+  if (body.character_id !== undefined && typeof body.character_id !== 'string') {
+    return NextResponse.json({ error: 'character_id must be a string' }, { status: 400 });
+  }
+
+  // 归属校验：若请求声明了 character_id，确认所有待删记录都属于该角色
+  const claimedCharId = request.nextUrl.searchParams.get('character_id') || body.character_id || null;
+  if (claimedCharId) {
+    const db = getDb();
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT DISTINCT character_id FROM memories WHERE id IN (${placeholders})`).all(...ids) as { character_id: string }[];
+    if (rows.some(r => r.character_id !== claimedCharId)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+  }
+
+  const db = getDb();
+  const placeholders = ids.map(() => '?').join(',');
+  const result = db.prepare(`DELETE FROM memories WHERE id IN (${placeholders})`).run(...ids);
+  return NextResponse.json({ ok: true, deleted: result.changes });
+}
+
 export async function POST(request: NextRequest) {
   let raw: unknown;
   try {

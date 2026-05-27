@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/providers/character_images_actions.dart';
 import '../../core/providers/character_provider.dart';
+import '../../core/providers/settings_provider.dart';
+import '../../core/utils/i18n.dart';
 import '../../theme/app_form_fields.dart';
 import '../../theme/app_page_scaffold.dart';
 import '../../theme/app_theme.dart';
@@ -208,13 +210,13 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
 
     final count = _selectedKeys.length;
     // FIX：批量删除走项目通用确认 dialog，统一视觉与 i18n 兜底。
-    // TODO(parity): i18n — 暂用硬编码，后续若有 'characterImages.delete*' key 再迁移。
+    final lang = ref.read(localeProvider).languageCode;
     final confirm = await showDeleteConversationDialog(
       context,
-      title: '删除 $count 张图片？',
-      body: '选中的图片将被永久删除，无法恢复。',
-      confirmLabel: '删除',
-      cancelLabel: '取消',
+      title: I18n.tArgs('image.viewer.batchDeleteTitle', {'count': count}, lang: lang),
+      body: I18n.t('image.viewer.batchDeleteBody', lang: lang),
+      confirmLabel: I18n.t('image.viewer.delete', lang: lang),
+      cancelLabel: I18n.t('image.viewer.cancel', lang: lang),
     );
     if (!mounted) return;
     if (confirm != true) return;

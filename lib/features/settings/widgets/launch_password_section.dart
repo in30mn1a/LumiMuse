@@ -436,10 +436,12 @@ class _PasswordInputDialogState extends ConsumerState<_PasswordInputDialog> {
   // 三个密码输入框共用一个显隐开关。
   bool _obscure = true;
 
-  // TODO(parity): i18n —— tooltip 待接入 i18n
   Widget _eyeSuffix() {
+    final lang = ref.watch(localeProvider).languageCode;
     return IconButton(
-      tooltip: _obscure ? '显示' : '隐藏',
+      tooltip: _obscure
+          ? I18n.t('common.reveal', lang: lang)
+          : I18n.t('common.hide', lang: lang),
       icon: Icon(
         _obscure ? Icons.visibility : Icons.visibility_off,
         size: 18,

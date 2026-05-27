@@ -223,6 +223,24 @@ class MemoryActions {
     await (_db.delete(_db.memories)..where((t) => t.id.equals(id))).go();
   }
 
+  /// 批量删除记忆（多选模式调用）。
+  ///
+  /// - 输入 `ids` 为空时直接返回 0，不发起事务。
+  /// - 在单个事务内执行 `DELETE ... WHERE id IN (...)`，保证原子性。
+  /// - 记忆条目当前无任何本地文件资产（不像角色头像 / 图片），
+  ///   因此不需要 CLAUDE.md 中描述的「孤儿文件清理三步模式」；
+  ///   如未来记忆扩展出文件资产，必须改为 pre-tx 收集 → tx 删行 →
+  ///   post-tx `scanAndDeleteOrphanFiles()` 三步。
+  /// - 返回实际删除的条目数，用于 UI 层 SnackBar / Toast 反馈。
+  Future<int> batchDelete(List<String> ids) async {
+    if (ids.isEmpty) return 0;
+    return await _db.transaction(() async {
+      return await (_db.delete(_db.memories)
+            ..where((t) => t.id.isIn(ids)))
+          .go();
+    });
+  }
+
   /// 删除角色的所有记忆
   Future<void> deleteAllForCharacter(String characterId) async {
     await (_db.delete(_db.memories)

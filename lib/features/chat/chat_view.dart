@@ -32,6 +32,8 @@ import '../../core/utils/i18n.dart';
 import '../../core/services/llm_service.dart';
 import '../../core/services/memory_engine.dart';
 import '../../core/services/memory_extraction_service.dart';
+import '../../core/utils/token_counter.dart';
+import '../../core/models/message_metadata.dart';
 import '../../theme/app_breakpoints.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
@@ -53,6 +55,7 @@ import 'widgets/message_bubble.dart';
 import 'widgets/message_header.dart';
 import 'widgets/quick_resume_panel.dart';
 import 'widgets/reset_extraction_dialog.dart';
+import 'widgets/token_breakdown_dialog.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 /// 聊天视图 — 作为 Widget 嵌入 HomePage 右侧
@@ -366,7 +369,9 @@ class _ChatViewState extends ConsumerState<ChatView> {
   /// token 计数缓存 — 避免每次 build 遍历全部消息
   String _cachedTokenConvId = '';
   int _cachedTokenMsgCount = 0;
-  int _cachedTokenCount = 0;
+  int _cachedTokenMemoryCount = 0;
+  String? _cachedTokenCharacterId;
+  _TokenBreakdown? _cachedTokenBreakdown;
 
   /// 记忆任务订阅本地状态 — 用于检测「processing → done」边沿
   /// 与 mergeCount Toast 的去重；taskId 变化时重置 _lastSeenStatus，
@@ -912,7 +917,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
               ?.cast<Conversation?>()
               .firstWhere((c) => c?.id == convId, orElse: () => null);
 
-    final tokenCount = _estimateTokenCount(character);
+    final breakdown = _computeTokenBreakdown(character);
+    final tokenCount = breakdown.total;
     final ignoreMemory = (conv?.ignoreMemory ?? 0) == 1;
     final unextractedCount = convId == null
         ? 0
@@ -923,18 +929,71 @@ class _ChatViewState extends ConsumerState<ChatView> {
 
     // 提取状态：使用前端状态（3 秒后自动回到 idle），不直接读数据库
     final memoryStatus = _memoryExtractStatus;
+    final lang = ref.watch(localeProvider).languageCode;
 
     return MessageHeader(
       title: conv?.title,
-      // TODO(parity): 主项目缺失 'chat.noConversationTitle' 默认文案直写
-      fallbackTitle: '还没有开始这段关系',
+      fallbackTitle: I18n.t('chat.noConversationTitle', lang: lang),
       ignoreMemory: ignoreMemory,
       // TODO(2D)：未提取计数需要查 messages 表中 role='user' AND
       unextractedCount: unextractedCount,
       memoryExtractStatus: memoryStatus,
       tokenCount: tokenCount,
       onOpenExtractionManager: _openResetExtractionDialog,
+      onOpenTokenBreakdown: () => _openTokenBreakdownDialog(breakdown),
+      lang: lang,
     );
+  }
+
+  /// 弹出 token 占比拆分弹窗 — 对照 ChatToolbar.tsx `onOpenTokenBreakdown`。
+  ///
+  /// 字段顺序按"出现在 system prompt 中的顺序"排列（systemPrompt → basicInfo →
+  /// personality → scenario → otherInfo → exampleDialogue → memories → messages），
+  /// 与主项目 ChatView.tsx 第 354~369 行一致。
+  /// 零 token 项也传入，避免缺失误以为统计有 bug。
+  void _openTokenBreakdownDialog(_TokenBreakdown breakdown) {
+    final lang = ref.read(localeProvider).languageCode;
+    final memoriesDetail = I18n.tArgs(
+      'token.memoriesDetail',
+      {'count': '${breakdown.memoriesCount}'},
+      lang: lang,
+    );
+    final items = <TokenBreakdownItem>[
+      TokenBreakdownItem(
+        labelKey: 'token.systemPrompt',
+        tokens: breakdown.systemPrompt,
+      ),
+      TokenBreakdownItem(
+        labelKey: 'token.basicInfo',
+        tokens: breakdown.basicInfo,
+      ),
+      TokenBreakdownItem(
+        labelKey: 'token.personality',
+        tokens: breakdown.personality,
+      ),
+      TokenBreakdownItem(
+        labelKey: 'token.scenario',
+        tokens: breakdown.scenario,
+      ),
+      TokenBreakdownItem(
+        labelKey: 'token.otherInfo',
+        tokens: breakdown.otherInfo,
+      ),
+      TokenBreakdownItem(
+        labelKey: 'token.exampleDialogue',
+        tokens: breakdown.exampleDialogue,
+      ),
+      TokenBreakdownItem(
+        labelKey: 'token.memories',
+        tokens: breakdown.memoriesTokens,
+        detail: memoriesDetail,
+      ),
+      TokenBreakdownItem(
+        labelKey: 'token.messages',
+        tokens: breakdown.messageTokens,
+      ),
+    ];
+    showTokenBreakdownDialog(context, items: items, lang: lang);
   }
 
   /// 弹出重置提取面板 — 对照 TSX 第 1998~2122 行 `resetExtractionOpen`
@@ -1042,29 +1101,115 @@ class _ChatViewState extends ConsumerState<ChatView> {
     }
   }
 
-  /// 估算 token：粗略按字符数 ÷ 2 估算，避免引入 token-counter 依赖。
-  /// 带缓存避免每次 build 遍历全部消息（Bug #8）。
-  int _estimateTokenCount(Character character) {
-    if (_resolvedConversationId == null) return 0;
+  /// 估算当前会话发给 LLM 的 token 总量，并按字段拆分。
+  ///
+  /// 严格 1:1 对照主项目 ChatView.tsx 第 296~369 行：
+  /// - `messageTokens`：visibleMessages 的 token 之和；若存在 isSummary 消息，
+  ///   只算最后一条 summary 及之后的消息（反映真实发给 LLM 的上下文大小）。
+  /// - `systemPromptParts`：6 个角色字段各自 estimateTokens。
+  /// - `memoriesTokens`：拼接 `"1. ...\n2. ..."` 再 estimate（与主项目一致）。
+  /// - `tokenCount = messageTokens + systemPromptTokens`，
+  ///   其中 systemPromptTokens = 6 字段之和 + memoriesTokens。
+  ///
+  /// 带缓存：convId / 消息总数 / 记忆总数 / 角色 id 任一变化即重算
+  /// （流式内容增长不触发重算，避免 chunk 高频抖动）。
+  _TokenBreakdown _computeTokenBreakdown(Character character) {
+    if (_resolvedConversationId == null) {
+      return _TokenBreakdown.empty();
+    }
     final convId = _resolvedConversationId!;
     final messagesAsync = ref.watch(messageListProvider(convId));
     final msgs = messagesAsync.valueOrNull ?? const [];
+    final memoryAsync = ref.watch(
+      memoryListProvider(MemoryListParams(characterId: character.id)),
+    );
+    final memoryResult = memoryAsync.valueOrNull;
+    final memories = memoryResult?.memories ?? const [];
 
-    // 消息总数变化时自动失效（流式内容变化不触发重算）
     final msgCount = msgs.length;
-    if (_cachedTokenConvId == convId && _cachedTokenMsgCount == msgCount) {
-      return _cachedTokenCount;
+    final memoryCount = memories.length;
+    if (_cachedTokenConvId == convId &&
+        _cachedTokenMsgCount == msgCount &&
+        _cachedTokenMemoryCount == memoryCount &&
+        _cachedTokenCharacterId == character.id &&
+        _cachedTokenBreakdown != null) {
+      return _cachedTokenBreakdown!;
     }
 
-    int sum = 0;
-    for (final m in msgs) {
-      sum += (m.content.length / 2).round();
+    // ── messageTokens：与主项目 lastSummaryIdx 切片逻辑对齐 ──
+    int lastSummaryIdx = -1;
+    for (int i = msgs.length - 1; i >= 0; i--) {
+      final meta = MessageMetadata.fromJsonString(msgs[i].metadata);
+      if (meta.isSummary) {
+        lastSummaryIdx = i;
+        break;
+      }
     }
-    sum += (character.systemPrompt.length / 2).round();
+    final relevant = lastSummaryIdx >= 0 ? msgs.sublist(lastSummaryIdx) : msgs;
+    int messageTokens = 0;
+    for (final m in relevant) {
+      // Drift Message 表的 tokenCount 在插入时已被 estimateTokens 填充；
+      // 0 兜底（与主项目 `m.token_count || 0` 一致）。
+      messageTokens += m.tokenCount;
+    }
+
+    // ── 6 个角色字段各自估算 ──
+    final spSystemPrompt = character.systemPrompt.isNotEmpty
+        ? estimateTokens(character.systemPrompt)
+        : 0;
+    final spBasicInfo =
+        character.basicInfo.isNotEmpty ? estimateTokens(character.basicInfo) : 0;
+    final spPersonality = character.personality.isNotEmpty
+        ? estimateTokens(character.personality)
+        : 0;
+    final spScenario =
+        character.scenario.isNotEmpty ? estimateTokens(character.scenario) : 0;
+    final spOtherInfo = character.otherInfo.isNotEmpty
+        ? estimateTokens(character.otherInfo)
+        : 0;
+    final spExampleDialogue = character.exampleDialogue.isNotEmpty
+        ? estimateTokens(character.exampleDialogue)
+        : 0;
+
+    // ── 记忆 token：拼接全文再估算（与主项目第 333~336 行一致） ──
+    int memoriesTokens = 0;
+    if (memories.isNotEmpty) {
+      final buf = StringBuffer();
+      for (int i = 0; i < memories.length; i++) {
+        if (i > 0) buf.write('\n');
+        buf.write('${i + 1}. ${memories[i].content}');
+      }
+      memoriesTokens = estimateTokens(buf.toString());
+    }
+
+    final systemPromptTokens = spSystemPrompt +
+        spBasicInfo +
+        spPersonality +
+        spScenario +
+        spOtherInfo +
+        spExampleDialogue +
+        memoriesTokens;
+    final total = messageTokens + systemPromptTokens;
+
+    final breakdown = _TokenBreakdown(
+      systemPrompt: spSystemPrompt,
+      basicInfo: spBasicInfo,
+      personality: spPersonality,
+      scenario: spScenario,
+      otherInfo: spOtherInfo,
+      exampleDialogue: spExampleDialogue,
+      memoriesTokens: memoriesTokens,
+      memoriesCount: memoryCount,
+      messageTokens: messageTokens,
+      total: total,
+    );
+
     _cachedTokenConvId = convId;
     _cachedTokenMsgCount = msgCount;
-    _cachedTokenCount = sum;
-    return sum;
+    _cachedTokenMemoryCount = memoryCount;
+    _cachedTokenCharacterId = character.id;
+    _cachedTokenBreakdown = breakdown;
+    return breakdown;
   }
 
   /// 删除当前对话（带二次确认）— 对照 TSX `handleDeleteConv`
@@ -2393,4 +2538,60 @@ class _BlinkingCursorState extends State<_BlinkingCursor>
       ),
     );
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Token 拆分快照 — 由 _computeTokenBreakdown 返回，
+// 供 token chip 显示合计值 + 弹窗按字段渲染占比。
+// 严格 1:1 对照主项目 ChatView.tsx 第 296~369 行的 systemPromptParts /
+// memoriesTokens / messageTokens / tokenCount 计算。
+// ═══════════════════════════════════════════════════════════════
+
+class _TokenBreakdown {
+  /// 6 个 character 字段各自的 token 估算
+  final int systemPrompt;
+  final int basicInfo;
+  final int personality;
+  final int scenario;
+  final int otherInfo;
+  final int exampleDialogue;
+
+  /// 记忆拼接 "1. ...\n2. ..." 整体估算的 token 数
+  final int memoriesTokens;
+
+  /// 记忆条目数（用于 detail 展示 "{count} 条"）
+  final int memoriesCount;
+
+  /// 消息 token 之和（已排除 lastSummary 之前的消息）
+  final int messageTokens;
+
+  /// 合计：messageTokens + systemPromptTokens
+  /// （systemPromptTokens = 6 字段之和 + memoriesTokens）
+  final int total;
+
+  const _TokenBreakdown({
+    required this.systemPrompt,
+    required this.basicInfo,
+    required this.personality,
+    required this.scenario,
+    required this.otherInfo,
+    required this.exampleDialogue,
+    required this.memoriesTokens,
+    required this.memoriesCount,
+    required this.messageTokens,
+    required this.total,
+  });
+
+  factory _TokenBreakdown.empty() => const _TokenBreakdown(
+        systemPrompt: 0,
+        basicInfo: 0,
+        personality: 0,
+        scenario: 0,
+        otherInfo: 0,
+        exampleDialogue: 0,
+        memoriesTokens: 0,
+        memoriesCount: 0,
+        messageTokens: 0,
+        total: 0,
+      );
 }

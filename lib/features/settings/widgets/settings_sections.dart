@@ -19,15 +19,17 @@ import '../../../theme/app_theme.dart';
 import '../../../theme/app_widgets.dart';
 import 'settings_form_widgets.dart';
 
-// TODO(parity): i18n —— 错误提示文案待接入 i18n
 /// 过滤 LLM/HTTP 异常的对外文案：
 /// - DioException 只露状态码，避免泄漏含 key 的完整 URL 与 stack；
 /// - 其他异常：先替换 URL 与 key-like 长串，再截断长度——顺序反了会把
 ///   URL/Key 截成残段绕过正则，泄漏头部明文。
-String _sanitizeApiError(Object e) {
+/// 文案通过 i18n 注入；[lang] 缺省为 zh，便于无上下文的简易调用。
+String _sanitizeApiError(Object e, {String? lang}) {
   if (e is DioException) {
     final code = e.response?.statusCode;
-    return '连接失败：${code ?? "无响应"}';
+    return I18n.tArgs('settings.connectFailed', {
+      'code': code ?? (lang == 'en' ? 'no response' : '无响应'),
+    }, lang: lang);
   }
   var msg = e.toString();
   // 先替换，再截断。
@@ -483,9 +485,13 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
           .saveCurrentAsProvider(name.trim());
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('保存失败: ${_sanitizeApiError(e)}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${I18n.t('settings.saveFailed', lang: lang)}: ${_sanitizeApiError(e, lang: lang)}',
+            ),
+          ),
+        );
       }
     }
   }
@@ -646,7 +652,8 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() => _modelError = _sanitizeApiError(e));
+      final lang = ref.read(localeProvider).languageCode;
+      setState(() => _modelError = _sanitizeApiError(e, lang: lang));
     } finally {
       if (mounted) setState(() => _loadingModels = false);
     }
@@ -1359,9 +1366,10 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
     } catch (e) {
       if (mounted) {
         setState(() => _maintStatus = _MaintStatus.idle);
+        final lang = ref.read(localeProvider).languageCode;
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(_sanitizeApiError(e))));
+        ).showSnackBar(SnackBar(content: Text(_sanitizeApiError(e, lang: lang))));
       }
     }
   }
@@ -1389,9 +1397,10 @@ class _MaintenanceSectionState extends ConsumerState<MaintenanceSection> {
     } catch (e) {
       if (mounted) {
         setState(() => _maintStatus = _MaintStatus.idle);
+        final lang = ref.read(localeProvider).languageCode;
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(_sanitizeApiError(e))));
+        ).showSnackBar(SnackBar(content: Text(_sanitizeApiError(e, lang: lang))));
       }
     }
   }
@@ -1759,7 +1768,7 @@ class _DatabaseStatsViewState extends ConsumerState<DatabaseStatsView> {
 /// 私有 API Key 输入框：obscure + 显隐 IconButton。
 /// 视觉与 SettingsRichInput 保持一致（半透明白底 + borderLight + 圆角 12 / md）。
 /// 支持两种构造：传 controller（与外部状态同步）或传 initialValue（内部建临时 controller）。
-class _SecretField extends StatefulWidget {
+class _SecretField extends ConsumerStatefulWidget {
   final TextEditingController? controller;
   final String? initialValue;
   final String? placeholder;
@@ -1774,10 +1783,10 @@ class _SecretField extends StatefulWidget {
   });
 
   @override
-  State<_SecretField> createState() => _SecretFieldState();
+  ConsumerState<_SecretField> createState() => _SecretFieldState();
 }
 
-class _SecretFieldState extends State<_SecretField> {
+class _SecretFieldState extends ConsumerState<_SecretField> {
   bool _obscure = true;
   TextEditingController? _internalCtrl;
 
@@ -1843,8 +1852,9 @@ class _SecretFieldState extends State<_SecretField> {
             ),
           ),
           IconButton(
-            // TODO(parity): i18n —— tooltip 待接入 i18n
-            tooltip: _obscure ? '显示' : '隐藏',
+            tooltip: _obscure
+                ? I18n.t('common.reveal', lang: ref.watch(localeProvider).languageCode)
+                : I18n.t('common.hide', lang: ref.watch(localeProvider).languageCode),
             icon: Icon(
               _obscure ? Icons.visibility : Icons.visibility_off,
               size: 18,

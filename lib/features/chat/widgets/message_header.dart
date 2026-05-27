@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 
 /// 消息区副标题栏（surface-panel 顶部边框下） — 严格 1:1 对照
@@ -32,6 +33,12 @@ class MessageHeader extends StatelessWidget {
   /// 点击「未提取计数 / 已忽略 / 提取管理」chip 时弹出重置提取面板
   final VoidCallback onOpenExtractionManager;
 
+  /// 点击 token chip 时弹出 token 占比拆分弹窗（可为 null，null 时 chip 不可点击）
+  final VoidCallback? onOpenTokenBreakdown;
+
+  /// 当前语言（用于 i18n 文案）。父级从 localeProvider 取后传入，避免本组件直接订阅 Provider。
+  final String lang;
+
   const MessageHeader({
     super.key,
     required this.title,
@@ -41,6 +48,8 @@ class MessageHeader extends StatelessWidget {
     required this.memoryExtractStatus,
     required this.tokenCount,
     required this.onOpenExtractionManager,
+    required this.lang,
+    this.onOpenTokenBreakdown,
   });
 
   @override
@@ -103,7 +112,7 @@ class MessageHeader extends StatelessWidget {
     if (ignoreMemory) {
       // 已忽略：text-text-muted opacity-60 hover:opacity-90
       chips.add(_ManageChip(
-        label: '已忽略提取',
+        label: I18n.t('chat.ignoredHint', lang: lang),
         kind: _ManageChipKind.muted,
         isDark: isDark,
         isMobile: isMobile,
@@ -112,7 +121,7 @@ class MessageHeader extends StatelessWidget {
     } else if (unextractedCount > 0) {
       // 未提取计数：text-amber-600 border-amber-200 bg-amber-50/80
       chips.add(_ManageChip(
-        label: '$unextractedCount 条待提取',
+        label: '$unextractedCount ${I18n.t('chat.unextracted', lang: lang)}',
         kind: _ManageChipKind.warn,
         isDark: isDark,
         isMobile: isMobile,
@@ -121,7 +130,7 @@ class MessageHeader extends StatelessWidget {
     } else {
       // 提取管理：opacity-50 hover:opacity-80
       chips.add(_ManageChip(
-        label: '提取管理',
+        label: I18n.t('chat.manageExtraction', lang: lang),
         kind: _ManageChipKind.faint,
         isDark: isDark,
         isMobile: isMobile,
@@ -136,15 +145,15 @@ class MessageHeader extends StatelessWidget {
       switch (memoryExtractStatus) {
         case 'extracting':
           kind = _ManageChipKind.extracting;
-          label = '提取中...';
+          label = I18n.t('chat.extracting', lang: lang);
           break;
         case 'done':
           kind = _ManageChipKind.done;
-          label = '提取完成';
+          label = I18n.t('chat.extractDone', lang: lang);
           break;
         case 'failed':
           kind = _ManageChipKind.failed;
-          label = '提取失败';
+          label = I18n.t('chat.extractFailed', lang: lang);
           break;
         default:
           kind = _ManageChipKind.faint;
@@ -159,13 +168,14 @@ class MessageHeader extends StatelessWidget {
       ));
     }
 
-    // ── chip 3：token 数 始终显示 ──
+    // ── chip 3：token 数 始终显示（点击弹出 token 占比拆分弹窗） ──
+    // 对照 ChatToolbar.tsx 第 79~86 行 `<button onClick={onOpenTokenBreakdown}>`。
     chips.add(_ManageChip(
-      label: '≈$tokenCount token',
+      label: '≈$tokenCount ${I18n.t('status.tokens', lang: lang)}',
       kind: _ManageChipKind.normal,
       isDark: isDark,
       isMobile: isMobile,
-      onTap: null,
+      onTap: onOpenTokenBreakdown,
     ));
 
     return chips;

@@ -183,8 +183,17 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   final Set<String> _updateInFlight = <String>{};
   final Set<String> _deleteInFlight = <String>{};
 
+  // ── 多选模式状态机（对照 src/components/memories/MemoryList.tsx 行 31-71）──
+  bool _selectMode = false;
+  final Set<String> _selectedIds = <String>{};
+  String? _batchDeleteError;
+  bool _batchDeleteInFlight = false;
+
   bool get _memoryBusy =>
-      _addInFlight || _updateInFlight.isNotEmpty || _deleteInFlight.isNotEmpty;
+      _addInFlight ||
+      _updateInFlight.isNotEmpty ||
+      _deleteInFlight.isNotEmpty ||
+      _batchDeleteInFlight;
 
   /// 添加记忆时记录新建条目的 ID，用于让 _MemoryCard 立即进入编辑态
   String? _editingMemoryId;
@@ -368,14 +377,15 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   }
 
   // ═════════════════════════════════════════════════════════════
-  // 过滤栏 panel — 搜索 + 分类 + 排序 + 添加按钮 + 计数 chip
+  // 过滤栏 panel — 搜索 + 分类 + 排序 + 添加按钮 + 多选切换 + 计数 chip
   // ═════════════════════════════════════════════════════════════
   Widget _buildFilterPanel(String lang) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final isBusy =
         _addInFlight ||
         _updateInFlight.isNotEmpty ||
-        _deleteInFlight.isNotEmpty;
+        _deleteInFlight.isNotEmpty ||
+        _batchDeleteInFlight;
     return Container(
       decoration: AppSurfaces.panel(isDark: isDark),
       padding: const EdgeInsets.symmetric(
@@ -391,10 +401,14 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
               final search = _SearchChip(
                 controller: _searchController,
                 hint: I18n.t('memory.search', lang: lang),
-                onChanged: (v) => setState(() {
-                  _keyword = v;
-                  _page = 0;
-                }),
+                onChanged: (v) {
+                  setState(() {
+                    _keyword = v;
+                    _page = 0;
+                  });
+                  // 切换搜索关键词时退出多选（对照 TSX 行 200-202）
+                  if (_selectMode) _exitSelectMode();
+                },
               );
               final category = IntrinsicWidth(
                 child: _RichSelect<String?>(
@@ -408,11 +422,14 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                       (c) => _RichSelectItem<String?>(value: c, label: c),
                     ),
                   ],
-                  onChanged: (v) => setState(() {
-                    _selectedCategory = v;
-                    _page = 0;
-                    _editingMemoryId = null;
-                  }),
+                  onChanged: (v) {
+                    setState(() {
+                      _selectedCategory = v;
+                      _page = 0;
+                      _editingMemoryId = null;
+                    });
+                    if (_selectMode) _exitSelectMode();
+                  },
                 ),
               );
               final sort = SizedBox(
@@ -429,11 +446,14 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                       label: I18n.t('memory.sortOldest', lang: lang),
                     ),
                   ],
-                  onChanged: (v) => setState(() {
-                    _oldestFirst = v;
-                    _page = 0;
-                    _editingMemoryId = null;
-                  }),
+                  onChanged: (v) {
+                    setState(() {
+                      _oldestFirst = v;
+                      _page = 0;
+                      _editingMemoryId = null;
+                    });
+                    if (_selectMode) _exitSelectMode();
+                  },
                 ),
               );
               final add = LumiSoftButton(
@@ -441,7 +461,21 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                 icon: Icons.add,
                 kind: LumiSoftButtonKind.primary,
                 loading: _addInFlight,
-                onTap: isBusy ? null : _handleAdd,
+                // 对照 TSX 行 236: disabled={!characterId || selectMode}
+                onTap: (isBusy || _selectMode) ? null : _handleAdd,
+              );
+              // 对照 TSX 行 241-252: 多选 / 退出多选切换按钮
+              final selectToggle = LumiSoftButton(
+                label: _selectMode
+                    ? I18n.t('memory.exitSelect', lang: lang)
+                    : I18n.t('memory.select', lang: lang),
+                icon: _selectMode
+                    ? Icons.close_rounded
+                    : Icons.check_box_outlined,
+                kind: _selectMode
+                    ? LumiSoftButtonKind.primary
+                    : LumiSoftButtonKind.secondary,
+                onTap: isBusy ? null : _toggleSelectMode,
               );
               if (wide) {
                 return Row(
@@ -454,6 +488,8 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                     sort,
                     const SizedBox(width: AppSpacing.md),
                     add,
+                    const SizedBox(width: AppSpacing.md),
+                    selectToggle,
                   ],
                 );
               }
@@ -466,7 +502,13 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                   const SizedBox(height: AppSpacing.md),
                   sort,
                   const SizedBox(height: AppSpacing.md),
-                  Align(alignment: Alignment.centerLeft, child: add),
+                  Row(
+                    children: [
+                      add,
+                      const SizedBox(width: AppSpacing.md),
+                      selectToggle,
+                    ],
+                  ),
                 ],
               );
             },
@@ -476,6 +518,49 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
             builder: (context, ref, _) {
               final result = ref.watch(memoryListProvider(_params));
               final total = result.valueOrNull?.total ?? 0;
+              final memories = result.valueOrNull?.memories ?? const <Memory>[];
+              if (_selectMode) {
+                // 派生：只统计当前页面中存在的选中 id（切角色/筛选后旧 id 自动失效）
+                final idsOnPage = memories.map((m) => m.id).toSet();
+                final validCount = _selectedIds
+                    .where(idsOnPage.contains)
+                    .length;
+                final allSelected =
+                    memories.isNotEmpty && validCount == memories.length;
+                return Wrap(
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.sm,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    LumiChip(
+                      active: true,
+                      label: allSelected
+                          ? I18n.t('memory.deselectAll', lang: lang)
+                          : I18n.t('memory.selectAll', lang: lang),
+                      onTap: memories.isEmpty
+                          ? null
+                          : (allSelected
+                                ? _deselectAll
+                                : () => _selectAllVisible(memories)),
+                    ),
+                    if (validCount > 0)
+                      LumiChip(
+                        active: false,
+                        label: I18n.tArgs(
+                          'memory.selectedCount',
+                          {'count': '$validCount'},
+                          lang: lang,
+                        ),
+                      ),
+                    if (_batchDeleteError != null)
+                      LumiChip(
+                        active: false,
+                        label: _batchDeleteError!,
+                        activeColor: Colors.red,
+                      ),
+                  ],
+                );
+              }
               return Align(
                 alignment: Alignment.centerLeft,
                 child: LumiChip(
@@ -517,6 +602,11 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
         data: (result) {
           final total = result.total;
           final memories = result.memories;
+          // 派生：当前页面中存在的有效选中 id（切角色/筛选后旧 id 自动失效）
+          final idsOnPage = memories.map((m) => m.id).toSet();
+          final validSelectedIds = _selectedIds
+              .where(idsOnPage.contains)
+              .toSet();
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -564,8 +654,20 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                     isBusy: _memoryBusy,
                     isSaving: _updateInFlight.contains(memories[i].id),
                     isDeleting: _deleteInFlight.contains(memories[i].id),
+                    selectMode: _selectMode,
+                    selected: validSelectedIds.contains(memories[i].id),
+                    onSelect: _toggleSelect,
                     onUpdate: _handleUpdate,
                     onDelete: _handleDelete,
+                  ),
+                // 多选模式下，列表底部 sticky 批量删除栏
+                // 对照 src/components/memories/MemoryList.tsx 行 304-314
+                if (_selectMode && validSelectedIds.isNotEmpty)
+                  _buildBatchDeleteBar(
+                    lang,
+                    isDark,
+                    validSelectedIds,
+                    total,
                   ),
                 _buildPagination(lang, isDark, result),
               ],
@@ -655,7 +757,13 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
             icon: null,
             kind: LumiSoftButtonKind.secondary,
             tiny: true,
-            onTap: _page > 0 ? () => setState(() => _page--) : null,
+            // 翻页前清空选中（对照 TSX 行 325: clearSelection() 再 setPage）
+            onTap: _page > 0
+                ? () {
+                    _clearSelection();
+                    setState(() => _page--);
+                  }
+                : null,
           ),
           const SizedBox(width: AppSpacing.sm),
           LumiSoftButton(
@@ -663,7 +771,69 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
             icon: null,
             kind: LumiSoftButtonKind.secondary,
             tiny: true,
-            onTap: result.hasMore ? () => setState(() => _page++) : null,
+            onTap: result.hasMore
+                ? () {
+                    _clearSelection();
+                    setState(() => _page++);
+                  }
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═════════════════════════════════════════════════════════════
+  // 底部 sticky 批量删除栏 — 对照 TSX 行 304-314
+  // ═════════════════════════════════════════════════════════════
+  Widget _buildBatchDeleteBar(
+    String lang,
+    bool isDark,
+    Set<String> validIds,
+    int totalCount,
+  ) {
+    final borderColor = isDark
+        ? AppTheme.darkBorderLight
+        : AppTheme.borderLight;
+    final muted = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
+    final bg = isDark
+        ? AppTheme.darkSurface.withValues(alpha: 0.95)
+        : Colors.white.withValues(alpha: 0.95);
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.md,
+      ),
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border(top: BorderSide(color: borderColor)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Text(
+              _batchDeleteError ??
+                  I18n.tArgs(
+                    'memory.selectedCount',
+                    {'count': '${validIds.length}'},
+                    lang: lang,
+                  ),
+              style: TextStyle(
+                fontSize: 12,
+                color: _batchDeleteError != null ? Colors.red : muted,
+              ),
+            ),
+          ),
+          LumiSoftButton(
+            label: I18n.t('memory.batchDelete', lang: lang),
+            icon: Icons.delete_outline,
+            kind: LumiSoftButtonKind.danger,
+            tiny: true,
+            loading: _batchDeleteInFlight,
+            onTap: _memoryBusy
+                ? null
+                : () => _handleBatchDelete(validIds, totalCount),
           ),
         ],
       ),
@@ -747,6 +917,113 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
       }
     }
   }
+
+  // ═════════════════════════════════════════════════════════════
+  // 多选模式 — 对照 src/components/memories/MemoryList.tsx 行 31-96
+  // ═════════════════════════════════════════════════════════════
+
+  /// 退出多选模式 — 清空选中、错误文案，并退出编辑态。
+  void _exitSelectMode() {
+    setState(() {
+      _selectMode = false;
+      _selectedIds.clear();
+      _batchDeleteError = null;
+      _editingMemoryId = null;
+    });
+  }
+
+  /// 仅清空选中（用于翻页前），不退出多选模式。
+  void _clearSelection() {
+    if (_selectedIds.isEmpty && _batchDeleteError == null) return;
+    setState(() {
+      _selectedIds.clear();
+      _batchDeleteError = null;
+    });
+  }
+
+  void _toggleSelect(String id) {
+    setState(() {
+      _batchDeleteError = null;
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _selectAllVisible(List<Memory> memories) {
+    setState(() {
+      _selectedIds
+        ..clear()
+        ..addAll(memories.map((m) => m.id));
+    });
+  }
+
+  void _deselectAll() {
+    setState(() => _selectedIds.clear());
+  }
+
+  /// 进入 / 退出多选模式切换。
+  void _toggleSelectMode() {
+    setState(() {
+      _selectMode = !_selectMode;
+      _selectedIds.clear();
+      _batchDeleteError = null;
+      _editingMemoryId = null;
+    });
+  }
+
+  /// 批量删除 — 二次确认后调用 [MemoryActions.batchDelete]。
+  Future<void> _handleBatchDelete(Set<String> validIds, int totalCount) async {
+    if (_memoryBusy) return;
+    if (validIds.isEmpty) return;
+    final lang = ref.read(localeProvider).languageCode;
+    final ok = await showDeleteConversationDialog(
+      context,
+      title: I18n.t('memory.batchDelete', lang: lang),
+      body: I18n.tArgs(
+        'memory.batchDeleteConfirm',
+        {'count': '${validIds.length}'},
+        lang: lang,
+      ),
+      confirmLabel: I18n.t('memory.delete', lang: lang),
+      cancelLabel: I18n.t('memory.cancel', lang: lang),
+    );
+    if (!mounted || ok != true) return;
+
+    setState(() {
+      _batchDeleteInFlight = true;
+      _batchDeleteError = null;
+    });
+    try {
+      final actions = ref.read(memoryActionsProvider);
+      final deleted = await actions.batchDelete(validIds.toList());
+      if (!mounted) return;
+      // 计算删除后剩余的页数；若当前页越界则退到最后一页。
+      final remaining = totalCount - deleted;
+      final maxPage = remaining <= 0
+          ? 0
+          : ((remaining - 1) ~/ _pageSize);
+      setState(() {
+        _selectMode = false;
+        _selectedIds.clear();
+        if (_page > maxPage) _page = maxPage;
+      });
+      ref.invalidate(memoryListProvider(_params));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _batchDeleteError = I18n.t('memory.batchDeleteFailed', lang: lang);
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _batchDeleteInFlight = false);
+      } else {
+        _batchDeleteInFlight = false;
+      }
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -773,6 +1050,9 @@ class _MemoryCard extends StatefulWidget {
   final bool isBusy;
   final bool isSaving;
   final bool isDeleting;
+  final bool selectMode;
+  final bool selected;
+  final ValueChanged<String> onSelect;
   final Future<void> Function(String id, _MemoryUpdate updates) onUpdate;
   final Future<void> Function(String id) onDelete;
 
@@ -784,6 +1064,9 @@ class _MemoryCard extends StatefulWidget {
     required this.isBusy,
     required this.isSaving,
     required this.isDeleting,
+    required this.selectMode,
+    required this.selected,
+    required this.onSelect,
     required this.onUpdate,
     required this.onDelete,
   });
@@ -832,11 +1115,19 @@ class _MemoryCardState extends State<_MemoryCard> {
   @override
   void didUpdateWidget(covariant _MemoryCard old) {
     super.didUpdateWidget(old);
+    // 进入多选模式时强制退出编辑态（对照 TSX MemoryCard 行 69-80）
+    if (!old.selectMode && widget.selectMode) {
+      _contentController.text = widget.memory.content;
+      _tagsController.text = _decodeTags(widget.memory.tags).join(' ');
+      _category = widget.memory.category;
+      _editing = false;
+      _expanded = false;
+    }
     if (old.memory.id != widget.memory.id) {
       _contentController.text = widget.memory.content;
       _tagsController.text = _decodeTags(widget.memory.tags).join(' ');
       _category = widget.memory.category;
-      _editing = widget.initialEditing;
+      _editing = widget.initialEditing && !widget.selectMode;
       _expanded = false;
     } else if (!_editing) {
       if (old.memory.content != widget.memory.content) {
@@ -918,52 +1209,107 @@ class _MemoryCardState extends State<_MemoryCard> {
         ? AppTheme.darkBorderLight
         : AppTheme.borderLight;
     final highlight = _editing || _hover;
-    final bg = highlight
-        ? (isDark ? AppTheme.darkWarm100 : AppTheme.warm100)
-        : (isDark
-              ? AppTheme.darkWarm50.withValues(alpha: 0.0)
-              : AppTheme.warm50.withValues(alpha: 0.0));
+    final accentBg = (isDark
+            ? AppTheme.darkAccentDark
+            : AppTheme.accent)
+        .withValues(alpha: isDark ? 0.15 : 0.06);
+    final Color bg;
+    if (widget.selectMode && widget.selected) {
+      // 选中态高亮（对照 TSX 行 86：bg-[rgba(155,124,240,0.06)] / 0.15）
+      bg = accentBg;
+    } else if (highlight) {
+      bg = isDark ? AppTheme.darkWarm100 : AppTheme.warm100;
+    } else {
+      bg = isDark
+          ? AppTheme.darkWarm50.withValues(alpha: 0.0)
+          : AppTheme.warm50.withValues(alpha: 0.0);
+    }
 
+    final content = AnimatedContainer(
+      duration: const Duration(milliseconds: 150),
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border(
+          bottom: widget.isLast
+              ? BorderSide.none
+              : BorderSide(color: borderColor),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.md,
+      ),
+      child: LayoutBuilder(
+        builder: (ctx, constraints) {
+          final wide = constraints.maxWidth >= 900;
+          final body = _buildBody(isDark, wide);
+          final desktopActions = wide && !widget.selectMode
+              ? _buildDesktopActions(isDark)
+              : const SizedBox.shrink();
+          final children = <Widget>[
+            if (widget.selectMode) ...[
+              _buildCheckbox(isDark),
+              const SizedBox(width: AppSpacing.md),
+            ],
+            Expanded(child: body),
+            if (wide && !widget.selectMode) ...[
+              const SizedBox(width: AppSpacing.md),
+              desktopActions,
+            ],
+          ];
+          if (wide || widget.selectMode) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: children,
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [body],
+          );
+        },
+      ),
+    );
+
+    // 多选模式下：整张卡片可点击触发 onSelect，不进入编辑、不展开
+    if (widget.selectMode) {
+      return MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => widget.onSelect(widget.memory.id),
+          child: content,
+        ),
+      );
+    }
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
+      child: content,
+    );
+  }
+
+  /// 多选模式下卡片左侧的勾选框（对照 TSX MemoryCard 行 90-99）
+  Widget _buildCheckbox(bool isDark) {
+    final selected = widget.selected;
+    final accent = isDark ? AppTheme.darkAccentDark : AppTheme.accentDark;
+    final border = isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Container(
+        width: 20,
+        height: 20,
         decoration: BoxDecoration(
-          color: bg,
-          border: Border(
-            bottom: widget.isLast
-                ? BorderSide.none
-                : BorderSide(color: borderColor),
+          color: selected ? accent : Colors.transparent,
+          border: Border.all(
+            color: selected ? accent : border,
+            width: 2,
           ),
+          borderRadius: BorderRadius.circular(4),
         ),
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
-          vertical: AppSpacing.md,
-        ),
-        child: LayoutBuilder(
-          builder: (ctx, constraints) {
-            final wide = constraints.maxWidth >= 900;
-            final body = _buildBody(isDark, wide);
-            final desktopActions = wide
-                ? _buildDesktopActions(isDark)
-                : const SizedBox.shrink();
-            if (wide) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: body),
-                  const SizedBox(width: AppSpacing.md),
-                  desktopActions,
-                ],
-              );
-            }
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [body],
-            );
-          },
-        ),
+        child: selected
+            ? const Icon(Icons.check, size: 14, color: Colors.white)
+            : null,
       ),
     );
   }
@@ -1124,7 +1470,8 @@ class _MemoryCardState extends State<_MemoryCard> {
           )
         else
           const Spacer(),
-        if (!wide) ...[
+        // 多选模式下隐藏行内 edit/delete 按钮（对照 TSX MemoryCard 行 180-199）
+        if (!wide && !widget.selectMode) ...[
           const SizedBox(width: AppSpacing.sm),
           LumiChip.icon(
             icon: Icons.edit_outlined,

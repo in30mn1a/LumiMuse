@@ -5,6 +5,8 @@ import '../../../core/database/database.dart';
 import '../../../core/models/message_metadata.dart';
 import '../../../core/providers/conversation_provider.dart';
 import '../../../core/providers/database_provider.dart';
+import '../../../core/providers/settings_provider.dart';
+import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/lumi_scrollbar.dart';
 import '../../../theme/surfaces.dart';
@@ -90,6 +92,7 @@ class _ResetExtractionDialogState
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final lang = ref.watch(localeProvider).languageCode;
     final borderLight =
         isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
     final muted = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
@@ -113,7 +116,7 @@ class _ResetExtractionDialogState
                   children: [
                     // ── 标题 ──
                     Text(
-                      '切换提取状态',
+                      I18n.t('chat.resetExtractionTitle', lang: lang),
                       style: TextStyle(
                         fontSize: 20,
                         height: 1.18,
@@ -126,7 +129,7 @@ class _ResetExtractionDialogState
                     const SizedBox(height: 8), // mt-2
                     // 副文案
                     Text(
-                      '勾选消息后可切换其提取状态。✓ 已提取  ○ 未提取',
+                      I18n.t('chat.resetExtractionDesc', lang: lang),
                       style: TextStyle(
                         fontSize: 15,
                         height: 1.65,
@@ -138,7 +141,7 @@ class _ResetExtractionDialogState
                     const SizedBox(height: 12), // mt-3
 
                     // ── 全选 / 已选计数行 ──
-                    _buildSelectionBar(muted, accentDark),
+                    _buildSelectionBar(muted, accentDark, lang),
                     const SizedBox(height: 8), // mt-2
 
                     // ── 消息列表 ──
@@ -149,12 +152,12 @@ class _ResetExtractionDialogState
                         borderRadius: BorderRadius.circular(12), // rounded-xl
                       ),
                       clipBehavior: Clip.antiAlias,
-                      child: _buildMessageList(isDark, borderLight),
+                      child: _buildMessageList(isDark, borderLight, lang),
                     ),
                     const SizedBox(height: 16), // mt-4
 
                     // ── 操作行 ──
-                    _buildActionsBar(isDark),
+                    _buildActionsBar(isDark, lang),
                   ],
                 ),
               ),
@@ -165,20 +168,24 @@ class _ResetExtractionDialogState
     );
   }
 
-  Widget _buildSelectionBar(Color muted, Color accentDark) {
+  Widget _buildSelectionBar(Color muted, Color accentDark, String lang) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(
           _selected.isEmpty
-              ? '点击消息多选'
-              : '已选 ${_selected.length} 条',
+              ? I18n.t('chat.resetClickHint', lang: lang)
+              : I18n.tArgs(
+                  'chat.resetSelectedHint',
+                  {'count': _selected.length},
+                  lang: lang,
+                ),
           style: TextStyle(fontSize: 14, color: muted),
         ),
         Row(
           children: [
             _LinkBtn(
-              label: '全选',
+              label: I18n.t('chat.resetSelectAll', lang: lang),
               color: accentDark,
               onTap: () {
                 final all = _allUserMessages ?? [];
@@ -191,7 +198,7 @@ class _ResetExtractionDialogState
             ),
             const SizedBox(width: 8),
             _LinkBtn(
-              label: '取消全选',
+              label: I18n.t('chat.resetDeselectAll', lang: lang),
               color: muted,
               onTap: () => setState(() => _selected.clear()),
             ),
@@ -201,23 +208,23 @@ class _ResetExtractionDialogState
     );
   }
 
-  Widget _buildMessageList(bool isDark, Color borderLight) {
+  Widget _buildMessageList(bool isDark, Color borderLight, String lang) {
     final list = _allUserMessages;
     if (list == null) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 32),
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
         child: Center(
-          child: Text('加载中...',
-              style: TextStyle(fontSize: 14, color: AppTheme.textMuted)),
+          child: Text(I18n.t('chat.resetLoading', lang: lang),
+              style: const TextStyle(fontSize: 14, color: AppTheme.textMuted)),
         ),
       );
     }
     if (list.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 32),
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
         child: Center(
-          child: Text('暂无用户消息',
-              style: TextStyle(fontSize: 14, color: AppTheme.textMuted)),
+          child: Text(I18n.t('chat.resetEmpty', lang: lang),
+              style: const TextStyle(fontSize: 14, color: AppTheme.textMuted)),
         ),
       );
     }
@@ -241,7 +248,11 @@ class _ResetExtractionDialogState
                 color: AppTheme.accent.withValues(alpha: 0.05),
                 child: Center(
                   child: Text(
-                    '加载更多（还有 $remaining 条）',
+                    I18n.tArgs(
+                      'chat.resetLoadMore',
+                      {'count': remaining},
+                      lang: lang,
+                    ),
                     style: TextStyle(
                       fontSize: 12,
                       color: isDark
@@ -276,19 +287,31 @@ class _ResetExtractionDialogState
     );
   }
 
-  Widget _buildActionsBar(bool isDark) {
+  Widget _buildActionsBar(bool isDark, String lang) {
     final canManualExtract =
         !widget.isExtracting && widget.unextractedCount > 0;
 
+    // FIX(ux)：按钮按"取消 → 普通操作 → 破坏性操作（隔开）"重新排序。
+    // 取消放最显眼的最左；标记已提取 / 重置选中 / 忽略提取 / 手动提取归一组；
+    // 「全部重置」属于破坏性，单独放在最右，与其他按钮以 SizedBox 隔开。
     return Wrap(
       spacing: 8,
       runSpacing: 8,
       crossAxisAlignment: WrapCrossAlignment.center,
       alignment: WrapAlignment.end,
       children: [
+        // 取消（最显眼，放最左）
+        _SmallBtn(
+          label: I18n.t('chat.resetCancel', lang: lang),
+          kind: _SmallBtnKind.secondary,
+          isDark: isDark,
+          onTap: () => Navigator.of(context).pop(),
+        ),
         // 忽略提取开关
         _SmallBtn(
-          label: _ignoreMemory ? '✓ 已忽略' : '忽略提取',
+          label: _ignoreMemory
+              ? I18n.t('chat.resetIgnoredOn', lang: lang)
+              : I18n.t('chat.resetIgnoredOff', lang: lang),
           kind: _ignoreMemory ? _SmallBtnKind.primary : _SmallBtnKind.secondary,
           isDark: isDark,
           onTap: () {
@@ -296,9 +319,37 @@ class _ResetExtractionDialogState
             widget.onToggleIgnore(_ignoreMemory);
           },
         ),
+        // 标记已提取（选中）
+        _SmallBtn(
+          label: I18n.tArgs(
+            'chat.resetMarkExtracted',
+            {'count': _selected.length},
+            lang: lang,
+          ),
+          kind: _SmallBtnKind.secondary,
+          isDark: isDark,
+          onTap: _selected.isEmpty
+              ? null
+              : () => _execute(action: ExtractionAction.mark, allTargets: false),
+        ),
+        // 重置选中
+        _SmallBtn(
+          label: I18n.tArgs(
+            'chat.resetSelected',
+            {'count': _selected.length},
+            lang: lang,
+          ),
+          kind: _SmallBtnKind.primary,
+          isDark: isDark,
+          onTap: _selected.isEmpty
+              ? null
+              : () => _execute(action: ExtractionAction.reset, allTargets: false),
+        ),
         // 手动提取
         _SmallBtn(
-          label: widget.isExtracting ? '提取中...' : '手动提取',
+          label: widget.isExtracting
+              ? I18n.t('chat.extracting', lang: lang)
+              : I18n.t('chat.manualExtract', lang: lang),
           kind: _SmallBtnKind.primary,
           isDark: isDark,
           onTap: canManualExtract
@@ -308,26 +359,20 @@ class _ResetExtractionDialogState
                 }
               : null,
         ),
-        // 取消
+        // ── 与破坏性操作之间留出额外间距 ──
+        const SizedBox(width: 12),
+        // 全部重置：破坏性操作单独放最右
         _SmallBtn(
-          label: '取消',
-          kind: _SmallBtnKind.secondary,
-          isDark: isDark,
-          onTap: () => Navigator.of(context).pop(),
-        ),
-        // 全部重置：清除该对话的所有 memory_extracted 标记
-        _SmallBtn(
-          label: '全部重置',
+          label: I18n.t('chat.resetAll', lang: lang),
           kind: _SmallBtnKind.secondary,
           isDark: isDark,
           onTap: () async {
-            // TODO(parity): i18n — 主项目暂无对应 key，硬编码兜底
             final confirmed = await showDeleteConversationDialog(
               context,
-              title: '全部重置？',
-              body: '将清除该对话所有消息的「已提取」标记，下次会重新对它们进行记忆提取。',
-              confirmLabel: '重置',
-              cancelLabel: '取消',
+              title: I18n.t('chat.resetAllConfirmTitle', lang: lang),
+              body: I18n.t('chat.resetAllConfirmBody', lang: lang),
+              confirmLabel: I18n.t('chat.resetAllConfirmAction', lang: lang),
+              cancelLabel: I18n.t('chat.resetCancel', lang: lang),
             );
             if (!mounted) return;
             if (confirmed != true) return;
@@ -337,24 +382,6 @@ class _ResetExtractionDialogState
             );
           },
         ),
-        // 标记已提取（选中）
-        _SmallBtn(
-          label: '标记已提取 (${_selected.length})',
-          kind: _SmallBtnKind.secondary,
-          isDark: isDark,
-          onTap: _selected.isEmpty
-              ? null
-              : () => _execute(action: ExtractionAction.mark, allTargets: false),
-        ),
-        // 重置选中
-        _SmallBtn(
-          label: '重置选中 (${_selected.length})',
-          kind: _SmallBtnKind.primary,
-          isDark: isDark,
-          onTap: _selected.isEmpty
-              ? null
-              : () => _execute(action: ExtractionAction.reset, allTargets: false),
-        ),
       ],
     );
   }
@@ -363,6 +390,7 @@ class _ResetExtractionDialogState
     required ExtractionAction action,
     required bool allTargets,
   }) async {
+    final lang = ref.read(localeProvider).languageCode;
     try {
       final actions = ref.read(conversationActionsProvider);
       final result = await actions.resetExtraction(
@@ -372,14 +400,23 @@ class _ResetExtractionDialogState
       );
       if (!mounted) return;
       Navigator.of(context).pop();
-      final actionText = action == ExtractionAction.mark ? '标记已提取' : '重置';
+      final actionText = action == ExtractionAction.mark
+          ? I18n.t('chat.resetActionMark', lang: lang)
+          : I18n.t('chat.resetActionReset', lang: lang);
       widget.onToast(
-        '已$actionText ${result.affectedCount} 条消息',
+        I18n.tArgs(
+          'chat.resetActionDone',
+          {'action': actionText, 'count': result.affectedCount},
+          lang: lang,
+        ),
         true,
       );
     } catch (e) {
       if (!mounted) return;
-      widget.onToast('操作失败: $e', false);
+      widget.onToast(
+        '${I18n.t('chat.resetExtractionFail', lang: lang)}: $e',
+        false,
+      );
     }
   }
 }

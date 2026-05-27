@@ -628,31 +628,31 @@ class _ImportExportSectionState extends ConsumerState<_ImportExportSection> {
   /// - null  → 用户取消
   /// - false → 不包含敏感凭据（默认，可安全分享）
   /// - true  → 包含 API Key 等敏感凭据（备份可还原所有 API 配置）
-  // TODO(parity): i18n — 暂用硬编码，后续若有 'export.includeSecrets*' key 再迁移。
   Future<bool?> _showExportDialog() async {
     bool includeSecrets = false;
+    final lang = ref.read(localeProvider).languageCode;
     return showDialog<bool>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setLocal) {
             return AlertDialog(
-              title: const Text('导出备份'),
+              title: Text(I18n.t('export.dialog.title', lang: lang)),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('即将导出完整的角色 / 对话 / 记忆数据。'),
+                  Text(I18n.t('export.dialog.body', lang: lang)),
                   const SizedBox(height: 12),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
                     value: includeSecrets,
                     onChanged: (v) => setLocal(() => includeSecrets = v ?? false),
-                    title: const Text('包含 API Key 等敏感凭据'),
-                    subtitle: const Text(
-                      '勾选后备份文件可还原所有 API 配置，请谨慎分享',
-                      style: TextStyle(
+                    title: Text(I18n.t('export.dialog.includeSecrets', lang: lang)),
+                    subtitle: Text(
+                      I18n.t('export.dialog.includeSecretsHint', lang: lang),
+                      style: const TextStyle(
                         color: Color(0xFFB91C1C),
                         fontSize: 12,
                       ),
@@ -663,11 +663,11 @@ class _ImportExportSectionState extends ConsumerState<_ImportExportSection> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, null),
-                  child: const Text('取消'),
+                  child: Text(I18n.t('export.dialog.cancel', lang: lang)),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, includeSecrets),
-                  child: const Text('导出'),
+                  child: Text(I18n.t('export.dialog.confirm', lang: lang)),
                 ),
               ],
             );

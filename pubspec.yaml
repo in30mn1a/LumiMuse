@@ -1,7 +1,7 @@
 name: lumimuse
 description: 温柔暖光 · 角色陪伴 · 长期记忆 — 多平台聊天陪伴工具
 publish_to: 'none'
-version: 1.0.3+1
+version: 1.0.4+1
 
 environment:
   sdk: ^3.8.0

@@ -71,7 +71,7 @@ class AppShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
-    final screenWidth = MediaQuery.of(context).size.width;
+    final screenWidth = MediaQuery.sizeOf(context).width;
     final isMobile = AppBreakpoints.isMobile(screenWidth);
 
     final targetColors = _ShellColors(
@@ -109,12 +109,19 @@ class AppShell extends StatelessWidget {
               ),
             ),
             // 第二层：72×72 紫色网格底纹（横竖向各一组等距细线）。
+            // 用 RepaintBoundary 把网格层隔离到独立 raster 层：父级
+            // TweenAnimationBuilder 在 500ms 内持续 lerp 颜色，每帧都会
+            // 触发 builder 重建；若不隔离，网格 CustomPaint 也会跟着每帧重绘，
+            // 拖窗时累积成卡顿。_GridPainter.shouldRepaint 已正确依赖
+            // color/spacing，颜色不变时这层就不会真的重画。
             Positioned.fill(
               child: IgnorePointer(
-                child: CustomPaint(
-                  painter: _GridPainter(
-                    color: colors.gridLine,
-                    spacing: kAppShellGridSpacing,
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: _GridPainter(
+                      color: colors.gridLine,
+                      spacing: kAppShellGridSpacing,
+                    ),
                   ),
                 ),
               ),

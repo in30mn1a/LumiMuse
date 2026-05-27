@@ -121,7 +121,9 @@ class _ChatInputState extends ConsumerState<ChatInput> {
 
     final isMobilePlatform = Theme.of(context).platform == TargetPlatform.iOS ||
         Theme.of(context).platform == TargetPlatform.android;
-    if (isMobilePlatform || AppBreakpoints.isMobile(MediaQuery.sizeOf(context).width)) {
+    // 仅在真实触摸平台 unfocus；桌面端窄窗口不应被当作"移动端"打断键入，
+    // 与 didUpdateWidget 的判定保持对称。
+    if (isMobilePlatform) {
       _focusNode.unfocus();
     }
 
@@ -131,12 +133,14 @@ class _ChatInputState extends ConsumerState<ChatInput> {
   @override
   void didUpdateWidget(covariant ChatInput oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
-    final isMobilePlatform = Theme.of(context).platform == TargetPlatform.iOS ||
-        Theme.of(context).platform == TargetPlatform.android;
-    final shouldUnfocus = isMobilePlatform || AppBreakpoints.isMobile(MediaQuery.sizeOf(context).width);
 
-    if (shouldUnfocus) {
+    // 仅在真实触摸平台（iOS/Android）上做 isGenerating 切换时的强制 unfocus；
+    // 桌面端不论窗口宽度都不强制 unfocus，避免缩窄窗口时键入被打断。
+    final isMobilePlatform =
+        Theme.of(context).platform == TargetPlatform.iOS ||
+        Theme.of(context).platform == TargetPlatform.android;
+
+    if (isMobilePlatform) {
       // 无论是从“不生成”变成“正在生成”（即输入框被禁用），还是从“正在生成”变成“结束生成”（即输入框恢复可用），
       // 在移动端/触摸平台都确保取消聚焦，关闭/防止键盘弹出。
       if ((oldWidget.isGenerating && !widget.isGenerating) ||
@@ -164,19 +168,19 @@ class _ChatInputState extends ConsumerState<ChatInput> {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final lang = ref.watch(localeProvider).languageCode;
-    final mediaQuery = MediaQuery.of(context);
-    final isMobile = AppBreakpoints.isMobile(mediaQuery.size.width);
+    // 细粒度订阅：避免整 MediaQueryData rebuild。
+    // 键盘弹起仅刷 viewInsetsOf；窗口宽度变化仅刷 sizeOf；安全区仅刷 paddingOf。
+    final isMobile = AppBreakpoints.isMobile(MediaQuery.sizeOf(context).width);
 
     final canSend =
         (_controller.text.trim().isNotEmpty || _attachments.isNotEmpty) &&
         !widget.disabled;
 
     // chat-input-safe：safe-area-inset-bottom + 1rem
-    final safeBottom = mediaQuery.padding.bottom;
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
     // 键盘弹起时优先用 viewInsets.bottom，否则用 safe-area
-    final bottomInset = mediaQuery.viewInsets.bottom > 0
-        ? mediaQuery.viewInsets.bottom
-        : safeBottom;
+    final viewInsetsBottom = MediaQuery.viewInsetsOf(context).bottom;
+    final bottomInset = viewInsetsBottom > 0 ? viewInsetsBottom : safeBottom;
 
     final borderLight = isDark
         ? AppTheme.darkBorderLight

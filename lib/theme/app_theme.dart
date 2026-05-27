@@ -417,6 +417,11 @@ class AppTheme {
         builders: {
           TargetPlatform.android: CupertinoPageTransitionsBuilder(),
           TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          // 桌面端（Windows/macOS/Linux）同样采用 Cupertino 横滑转场，
+          // 避免默认 ZoomPageTransitionsBuilder 与移动端风格割裂。
+          TargetPlatform.windows: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.linux: CupertinoPageTransitionsBuilder(),
         },
       ),
     );

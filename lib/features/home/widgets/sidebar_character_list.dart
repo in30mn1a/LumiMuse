@@ -6,6 +6,7 @@ import '../../../core/providers/character_provider.dart';
 import '../../../core/providers/selection_provider.dart';
 import '../../../core/providers/settings_provider.dart';
 import '../../../core/utils/i18n.dart';
+import '../../../theme/app_breakpoints.dart';
 import '../../../theme/app_spacing.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/app_widgets.dart';
@@ -106,6 +107,9 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
     final selectedId = ref.watch(selectionProvider).characterId;
     final charactersAsync = ref.watch(characterListProvider);
     final String lang = ref.watch(localeProvider).languageCode;
+    // 在父级读一次响应式断点，透传给每张卡片，避免 N 张卡片各自订阅 MediaQuery
+    // 导致拖动窗口时 N 张同时 rebuild（每张订阅 sizeOf 都会被通知）。
+    final isDesktop = AppBreakpoints.isDesktopOf(context);
 
     return charactersAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -142,7 +146,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                       child: _buildEmpty(context, isDark, lang),
                     )
-                  : _buildList(list, selectedId, isDark),
+                  : _buildList(list, selectedId, isDark, isDesktop),
             ),
           ],
         );
@@ -199,7 +203,12 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
     );
   }
 
-  Widget _buildList(List<Character> list, String? selectedId, bool isDark) {
+  Widget _buildList(
+    List<Character> list,
+    String? selectedId,
+    bool isDark,
+    bool isDesktop,
+  ) {
     return LumiScrollbar(
       controller: _scrollController,
       child: ReorderableListView.builder(
@@ -224,6 +233,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
             character: character,
             selected: character.id == selectedId,
             isDark: isDark,
+            isDesktop: isDesktop,
             onTap: () => widget.onSelectCharacter(character.id),
             onEdit: () => context.push('/characters/${character.id}/edit'),
           );
@@ -349,6 +359,7 @@ class _CharacterCard extends StatefulWidget {
   final Character character;
   final bool selected;
   final bool isDark;
+  final bool isDesktop;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final int index;
@@ -358,6 +369,7 @@ class _CharacterCard extends StatefulWidget {
     required this.character,
     required this.selected,
     required this.isDark,
+    required this.isDesktop,
     required this.onTap,
     required this.onEdit,
     required this.index,
@@ -370,6 +382,10 @@ class _CharacterCard extends StatefulWidget {
 class _CharacterCardState extends State<_CharacterCard> {
   bool _cardHover = false;
   bool _editHover = false;
+  // 移动端按下反馈：项目用 NoSplash 关闭了 Material ripple，触屏没有原生反馈，
+  // 通过 InkWell.onHighlightChanged 维护按下状态，配合 AnimatedScale 给出
+  // 轻微缩放感。桌面端 hover 优先级更高（scale 已锁在 1.02），_pressed 不影响。
+  bool _pressed = false;
 
   Widget _buildSelectedIndicator(bool selected) {
     final accentColor = widget.isDark ? AppTheme.darkAccent : AppTheme.accent;
@@ -414,7 +430,10 @@ class _CharacterCardState extends State<_CharacterCard> {
         onEnter: (_) => setState(() => _cardHover = true),
         onExit: (_) => setState(() => _cardHover = false),
         child: AnimatedScale(
-          scale: _cardHover ? 1.02 : 1.0,
+          // 桌面端：hover 1.02；移动端：按下 0.98；其余 1.0
+          scale: _cardHover
+              ? 1.02
+              : (_pressed ? 0.98 : 1.0),
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOutCubic,
           child: AnimatedContainer(
@@ -444,6 +463,13 @@ class _CharacterCardState extends State<_CharacterCard> {
               color: Colors.transparent,
               child: InkWell(
                 onTap: widget.onTap,
+                // 移动端 press 反馈：项目禁用了 Material ripple/highlight，
+                // 这里靠 onHighlightChanged 同步 _pressed，让 AnimatedScale 缩到 0.98。
+                // 桌面端 hover 已通过 MouseRegion 覆盖，press 状态对桌面也无副作用
+                // （hover 优先级更高，scale 已被锁在 1.02）。
+                onHighlightChanged: (v) {
+                  if (_pressed != v) setState(() => _pressed = v);
+                },
                 borderRadius: BorderRadius.circular(20),
                 child: Padding(
                   // px-3 py-3
@@ -569,8 +595,9 @@ class _CharacterCardState extends State<_CharacterCard> {
   Widget _buildEditButton() {
     // 桌面端断点 ≥ 768：opacity 取决于 _cardHover
     // 移动端 < 768：固定 0.6（按 globals.css 的 hover:none 媒体查询）
-    final width = MediaQuery.sizeOf(context).width;
-    final isDesktop = width >= 768;
+    // isDesktop 由父级 _SidebarCharacterListState.build 读一次 MediaQuery 后透传，
+    // 避免 N 张卡片各自订阅 sizeOf 导致拖窗口时 N 张同时 rebuild。
+    final isDesktop = widget.isDesktop;
     final visible = isDesktop ? _cardHover : true;
     final opacity = isDesktop ? (_cardHover ? 1.0 : 0.0) : 0.6;
     final isDark = widget.isDark;

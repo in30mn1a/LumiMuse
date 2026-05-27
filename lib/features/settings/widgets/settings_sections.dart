@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
@@ -16,16 +18,6 @@ import '../../../theme/app_spacing.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/app_widgets.dart';
 import 'settings_form_widgets.dart';
-
-double _parseDouble(String v) {
-  final n = double.tryParse(v);
-  return (n != null && n.isFinite) ? n : 0;
-}
-
-int _parseInt(String v) {
-  final n = int.tryParse(v);
-  return n ?? 0;
-}
 
 // TODO(parity): i18n —— 错误提示文案待接入 i18n
 /// 过滤 LLM/HTTP 异常的对外文案：
@@ -803,10 +795,20 @@ class _ModelSectionState extends ConsumerState<ModelSection> {
   final _maxTokensController = TextEditingController();
   final _contextWindowController = TextEditingController();
 
+  // 性能/正确性：onChanged 每个按键都写库会触发 N 次 DB I/O，且用户敲到一半
+  // （如 "1" → "15" → "150"）中间状态会被持久化；删空字段会落地 0。
+  // 用 300ms debounce 合并尾部一次写入，并对解析失败的值跳过写入（保持当前值）。
+  Timer? _debounceTemperature;
+  Timer? _debounceMaxTokens;
+  Timer? _debounceContextWindow;
+
   bool _loaded = false;
 
   @override
   void dispose() {
+    _debounceTemperature?.cancel();
+    _debounceMaxTokens?.cancel();
+    _debounceContextWindow?.cancel();
     _temperatureController.dispose();
     _maxTokensController.dispose();
     _contextWindowController.dispose();
@@ -823,6 +825,41 @@ class _ModelSectionState extends ConsumerState<ModelSection> {
 
   Future<void> _updateSetting(String key, dynamic value) async {
     await ref.read(settingsProvider.notifier).updateSetting(key, value);
+  }
+
+  /// 数值字段 debounce + clamp 写入辅助：
+  /// - [raw] 解析失败（如用户清空字段）则不写库，保留当前持久化值，避免误落 0；
+  /// - 解析成功后用 [clamp] 校正到合法范围（temperature 0–2，token 上限等）。
+  void _debouncedCommitDouble({
+    required Timer? Function() get,
+    required void Function(Timer?) set,
+    required String raw,
+    required String key,
+    required double Function(double) clamp,
+  }) {
+    get()?.cancel();
+    set(Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      final n = double.tryParse(raw);
+      if (n == null || !n.isFinite) return;
+      _updateSetting(key, clamp(n));
+    }));
+  }
+
+  void _debouncedCommitInt({
+    required Timer? Function() get,
+    required void Function(Timer?) set,
+    required String raw,
+    required String key,
+    required int Function(int) clamp,
+  }) {
+    get()?.cancel();
+    set(Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      final n = int.tryParse(raw);
+      if (n == null) return;
+      _updateSetting(key, clamp(n));
+    }));
   }
 
   @override
@@ -846,8 +883,13 @@ class _ModelSectionState extends ConsumerState<ModelSection> {
                 child: SettingsRichInput(
                   controller: _temperatureController,
                   numberMode: true,
-                  onChanged: (v) =>
-                      _updateSetting('temperature', _parseDouble(v)),
+                  onChanged: (v) => _debouncedCommitDouble(
+                    get: () => _debounceTemperature,
+                    set: (t) => _debounceTemperature = t,
+                    raw: v,
+                    key: 'temperature',
+                    clamp: (n) => n.clamp(0.0, 2.0),
+                  ),
                 ),
               ),
               SettingsLabeledField(
@@ -855,7 +897,13 @@ class _ModelSectionState extends ConsumerState<ModelSection> {
                 child: SettingsRichInput(
                   controller: _maxTokensController,
                   numberMode: true,
-                  onChanged: (v) => _updateSetting('max_tokens', _parseInt(v)),
+                  onChanged: (v) => _debouncedCommitInt(
+                    get: () => _debounceMaxTokens,
+                    set: (t) => _debounceMaxTokens = t,
+                    raw: v,
+                    key: 'max_tokens',
+                    clamp: (n) => n.clamp(1, 100000),
+                  ),
                 ),
               ),
               SettingsLabeledField(
@@ -863,8 +911,13 @@ class _ModelSectionState extends ConsumerState<ModelSection> {
                 child: SettingsRichInput(
                   controller: _contextWindowController,
                   numberMode: true,
-                  onChanged: (v) =>
-                      _updateSetting('context_window', _parseInt(v)),
+                  onChanged: (v) => _debouncedCommitInt(
+                    get: () => _debounceContextWindow,
+                    set: (t) => _debounceContextWindow = t,
+                    raw: v,
+                    key: 'context_window',
+                    clamp: (n) => n.clamp(1, 200000),
+                  ),
                 ),
               ),
             ],
@@ -930,10 +983,21 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
   final _memoryTriggerKeywordsController = TextEditingController();
   final _memoryMaxInjectController = TextEditingController();
 
+  // 见 _ModelSectionState 同名注释：debounce 300ms + 解析失败跳过 + 范围 clamp。
+  Timer? _debounceMemoryInterval;
+  Timer? _debounceMemoryTriggerTimeHours;
+  Timer? _debounceMemoryMaxInject;
+  // memory_trigger_keywords 是字符串，无需 clamp，但仍 debounce 以减少写库频次。
+  Timer? _debounceMemoryTriggerKeywords;
+
   bool _loaded = false;
 
   @override
   void dispose() {
+    _debounceMemoryInterval?.cancel();
+    _debounceMemoryTriggerTimeHours?.cancel();
+    _debounceMemoryMaxInject?.cancel();
+    _debounceMemoryTriggerKeywords?.cancel();
     _memoryIntervalController.dispose();
     _memoryTriggerTimeHoursController.dispose();
     _memoryTriggerKeywordsController.dispose();
@@ -953,6 +1017,37 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
 
   Future<void> _updateSetting(String key, dynamic value) async {
     await ref.read(settingsProvider.notifier).updateSetting(key, value);
+  }
+
+  /// 与 _ModelSectionState._debouncedCommitInt 同语义；为避免跨文件抽公共 helper
+  /// 而扩散改动，这里就近重复一份（两个 Section 都是私有 State）。
+  void _debouncedCommitInt({
+    required Timer? Function() get,
+    required void Function(Timer?) set,
+    required String raw,
+    required String key,
+    required int Function(int) clamp,
+  }) {
+    get()?.cancel();
+    set(Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      final n = int.tryParse(raw);
+      if (n == null) return;
+      _updateSetting(key, clamp(n));
+    }));
+  }
+
+  void _debouncedCommitString({
+    required Timer? Function() get,
+    required void Function(Timer?) set,
+    required String raw,
+    required String key,
+  }) {
+    get()?.cancel();
+    set(Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      _updateSetting(key, raw);
+    }));
   }
 
   @override
@@ -979,7 +1074,13 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
             SettingsConditionalNumberInput(
               label: I18n.t('settings.extractionInterval', lang: lang),
               controller: _memoryIntervalController,
-              onChanged: (v) => _updateSetting('memory_interval', _parseInt(v)),
+              onChanged: (v) => _debouncedCommitInt(
+                get: () => _debounceMemoryInterval,
+                set: (t) => _debounceMemoryInterval = t,
+                raw: v,
+                key: 'memory_interval',
+                clamp: (n) => n.clamp(1, 100),
+              ),
             ),
           ],
           const SizedBox(height: 12),
@@ -993,8 +1094,16 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
             SettingsConditionalNumberInput(
               label: I18n.t('settings.triggerTimeMinutes', lang: lang),
               controller: _memoryTriggerTimeHoursController,
-              onChanged: (v) =>
-                  _updateSetting('memory_trigger_time_hours', _parseInt(v)),
+              onChanged: (v) => _debouncedCommitInt(
+                get: () => _debounceMemoryTriggerTimeHours,
+                set: (t) => _debounceMemoryTriggerTimeHours = t,
+                raw: v,
+                key: 'memory_trigger_time_hours',
+                // TODO(naming): 字段名为 hours、i18n key 为 triggerTimeMinutes、
+                //   注释"看似分钟"，三者矛盾且 clamp 范围只能宽松兜底。
+                //   后续核查真实单位并统一字段名/key/数据库 schema 含义。
+                clamp: (n) => n.clamp(1, 10000),
+              ),
             ),
           ],
           const SizedBox(height: 12),
@@ -1011,7 +1120,12 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
               hint: I18n.t('settings.triggerKeywordsHint', lang: lang),
               controller: _memoryTriggerKeywordsController,
               placeholder: '晚安',
-              onChanged: (v) => _updateSetting('memory_trigger_keywords', v),
+              onChanged: (v) => _debouncedCommitString(
+                get: () => _debounceMemoryTriggerKeywords,
+                set: (t) => _debounceMemoryTriggerKeywords = t,
+                raw: v,
+                key: 'memory_trigger_keywords',
+              ),
             ),
           ],
           const SizedBox(height: 12),
@@ -1032,8 +1146,13 @@ class _MemorySectionState extends ConsumerState<MemorySection> {
               label: I18n.t('settings.maxMemoriesInject', lang: lang),
               hint: I18n.t('settings.limitInjectHint', lang: lang),
               controller: _memoryMaxInjectController,
-              onChanged: (v) =>
-                  _updateSetting('memory_max_inject', _parseInt(v)),
+              onChanged: (v) => _debouncedCommitInt(
+                get: () => _debounceMemoryMaxInject,
+                set: (t) => _debounceMemoryMaxInject = t,
+                raw: v,
+                key: 'memory_max_inject',
+                clamp: (n) => n.clamp(0, 50),
+              ),
             ),
           ],
         ],

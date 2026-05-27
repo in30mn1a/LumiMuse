@@ -167,7 +167,7 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final width = MediaQuery.of(context).size.width;
+    final width = MediaQuery.sizeOf(context).width;
     final isWide = width >= 768;
 
     // 监听角色被删除：当前选中的 ID 不在数据库里时清空选中
@@ -300,7 +300,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         width:
-            MediaQuery.of(context).size.width *
+            MediaQuery.sizeOf(context).width *
             AppBreakpoints.mobileDrawerWidthRatio,
         child: SafeArea(
           child: Padding(

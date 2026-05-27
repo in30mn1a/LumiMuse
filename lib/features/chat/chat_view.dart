@@ -397,6 +397,8 @@ class _ChatViewState extends ConsumerState<ChatView> {
         _scrollToBottomOnLoad = id != null;
         // 切换对话视为"重新打开"，重置流式跟随粘性
         _followingStream = true;
+        // 切换对话清空 GlobalKey 表，避免跨对话累积内存
+        _messageKeys.clear();
       }
     });
     _actions.conversationId = id;
@@ -1322,11 +1324,14 @@ class _ChatViewState extends ConsumerState<ChatView> {
               _scrollController.jumpTo(
                 _scrollController.position.maxScrollExtent,
               );
-              setState(() => _scrollToBottomOnLoad = false);
+              // 直接写实例字段、不调用 setState：该标志仅用于一次性触发滚动，
+              // 下一帧不再驱动 widget；流式 chunk 高频路径上少一次 rebuild。
+              _scrollToBottomOnLoad = false;
             } else if (_scrollToBottomOnLoad) {
               _scrollToBottom(animate: false);
               if (mounted) {
-                setState(() => _scrollToBottomOnLoad = false);
+                // 同上：避免 setState 触发整树 rebuild。
+                _scrollToBottomOnLoad = false;
               }
             } else if (_followingStream && _isNearBottom()) {
               // 仅当用户未上滑（仍处于"跟随"状态）时，新 chunk 才把视图拽到底部
@@ -1431,6 +1436,22 @@ class _ChatViewState extends ConsumerState<ChatView> {
         final isStreamingHere = chatState?.isGenerating ?? false;
         final showNewMessageStreamBubble =
             isStreamingHere && streamingTargetMessageId == null;
+
+        // 本帧 itemBuilder 实际访问过的消息 id 集合 — 用于回收 _messageKeys。
+        // ListView.builder 仅为视口（+ cacheExtent）内的 item 调用 builder，
+        // 故该集合天然约等于"可见消息"，可避免长会话累积 GlobalKey 内存。
+        final visitedMessageKeys = <String>{};
+
+        // 帧结束后回收 _messageKeys 中本帧未被访问的条目。
+        // 注：itemBuilder 在 layout 阶段（build 之后、paint 之前）被调用，
+        // post-frame 回调时 visitedMessageKeys 已收集完整。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (_messageKeys.length <= visitedMessageKeys.length) return;
+          _messageKeys.removeWhere(
+            (id, _) => !visitedMessageKeys.contains(id),
+          );
+        });
 
         return LumiScrollbar(
           controller: _scrollController,
@@ -1554,6 +1575,7 @@ class _ChatViewState extends ConsumerState<ChatView> {
                     msg.id,
                     () => GlobalKey(),
                   );
+                  visitedMessageKeys.add(msg.id);
                   final isHighlighted = _highlightedMessageId == msg.id;
                   final messageContent = MessageAnimationWrapper(
                     key: isStreamingTarget
@@ -2154,7 +2176,7 @@ class _StreamingBubble extends ConsumerWidget {
           Flexible(
             child: Container(
               constraints: BoxConstraints(
-                maxWidth: (MediaQuery.of(context).size.width * 0.65).clamp(
+                maxWidth: (MediaQuery.sizeOf(context).width * 0.65).clamp(
                   0.0,
                   680.0,
                 ),
@@ -2173,15 +2195,31 @@ class _StreamingBubble extends ConsumerWidget {
                 boxShadow: const [AppSurfaces.softCardShadow],
               ),
               child: hasText
-                  ? Text(
-                      '${chatState.currentStreamText}▍',
-                      style: TextStyle(
-                        fontSize: 15,
-                        height: 1.75,
-                        color: isDark
-                            ? AppTheme.darkTextPrimary
-                            : AppTheme.textPrimary,
-                      ),
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // 主文本独立子树：chunk 到达仅 rebuild 这一段 Text，
+                        // 避免末尾"▍"光标参与拼接导致长文本重排成本激增。
+                        Flexible(
+                          child: Text(
+                            chatState.currentStreamText,
+                            style: TextStyle(
+                              fontSize: 15,
+                              height: 1.75,
+                              color: isDark
+                                  ? AppTheme.darkTextPrimary
+                                  : AppTheme.textPrimary,
+                            ),
+                          ),
+                        ),
+                        // 光标独立 widget：自有 AnimationController，不随 chunk 重建。
+                        _BlinkingCursor(
+                          color: isDark
+                              ? AppTheme.darkTextPrimary
+                              : AppTheme.textPrimary,
+                        ),
+                      ],
                     )
                   : const _TypingDots(),
             ),
@@ -2308,6 +2346,50 @@ class _TypingDotsState extends State<_TypingDots>
             ),
           );
         }),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 流式末尾闪烁光标 — 独立 widget，自有 AnimationController，
+// 不参与流式文本拼接，避免每个 chunk 重排整段 Text。
+// ═══════════════════════════════════════════════════════════════
+
+class _BlinkingCursor extends StatefulWidget {
+  final Color color;
+  const _BlinkingCursor({required this.color});
+
+  @override
+  State<_BlinkingCursor> createState() => _BlinkingCursorState();
+}
+
+class _BlinkingCursorState extends State<_BlinkingCursor>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _controller,
+      child: Text(
+        '▍',
+        style: TextStyle(fontSize: 15, height: 1.75, color: widget.color),
       ),
     );
   }

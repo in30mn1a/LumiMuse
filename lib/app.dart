@@ -53,6 +53,10 @@ class LumiMuseApp extends ConsumerWidget {
         // - 启用时由闸门接管首屏，解锁后再渲染真实路由
         // 放在 AppShell 之内是为了让闸门画面也能享有暖光渐变背景（_LockScreen
         // 与 _GateLoading 都使用透明 Scaffold，依赖 AppShell 提供底色）。
+        // 字体缩放注入：原 `MediaQuery.of(context)` 已存在订阅整个 MediaQueryData
+        // 的事实（这是 copyWith 的前置依赖，无法回避）。这里保留 copyWith 语义
+        // 以维持下游 viewInsets/padding 完整，仅在子树中以细粒度 API（如
+        // MediaQuery.sizeOf）减少不必要的 rebuild。
         final media = MediaQuery.of(context);
         return MediaQuery(
           data: media.copyWith(

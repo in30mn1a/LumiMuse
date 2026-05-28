@@ -77,7 +77,6 @@ class ChatInput extends ConsumerStatefulWidget {
 class _ChatInputState extends ConsumerState<ChatInput> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
-  final _keyboardFocusNode = FocusNode(skipTraversal: true);
   final List<AttachmentItem> _attachments = [];
   String? _attachError;
   List<String> _fetchedModels = [];
@@ -86,6 +85,7 @@ class _ChatInputState extends ConsumerState<ChatInput> {
   @override
   void initState() {
     super.initState();
+    _focusNode.onKeyEvent = _handleKey;
     _controller.addListener(_onTextChanged);
   }
 
@@ -94,7 +94,6 @@ class _ChatInputState extends ConsumerState<ChatInput> {
     _controller.removeListener(_onTextChanged);
     _controller.dispose();
     _focusNode.dispose();
-    _keyboardFocusNode.dispose();
     super.dispose();
   }
 
@@ -119,7 +118,8 @@ class _ChatInputState extends ConsumerState<ChatInput> {
       _attachError = null;
     });
 
-    final isMobilePlatform = Theme.of(context).platform == TargetPlatform.iOS ||
+    final isMobilePlatform =
+        Theme.of(context).platform == TargetPlatform.iOS ||
         Theme.of(context).platform == TargetPlatform.android;
     // 仅在真实触摸平台 unfocus；桌面端窄窗口不应被当作"移动端"打断键入，
     // 与 didUpdateWidget 的判定保持对称。
@@ -151,17 +151,18 @@ class _ChatInputState extends ConsumerState<ChatInput> {
   }
 
   /// Enter 发送 / Shift+Enter 换行（与 TSX 一致）
-  void _handleKey(KeyEvent event) {
-    if (event is! KeyDownEvent) return;
+  KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final isEnter =
         event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter;
-    if (!isEnter) return;
+    if (!isEnter) return KeyEventResult.ignored;
     // 中文 / 日文等 IME 选词期间 Enter 不应触发发送，交给输入法处理选词确认
-    if (_controller.value.composing.isValid) return;
+    if (_controller.value.composing.isValid) return KeyEventResult.ignored;
     final isShift = HardwareKeyboard.instance.isShiftPressed;
-    if (isShift) return; // Shift+Enter 走默认换行
+    if (isShift) return KeyEventResult.ignored; // Shift+Enter 走默认换行
     _submit();
+    return KeyEventResult.handled;
   }
 
   @override
@@ -312,42 +313,36 @@ class _ChatInputState extends ConsumerState<ChatInput> {
           const SizedBox(width: AppSpacing.sm), // gap-2
           // ── 槽位 2：textarea（min-w-0 flex-1）──
           Expanded(
-            child: KeyboardListener(
-              focusNode: _keyboardFocusNode,
-              onKeyEvent: _handleKey,
-              child: TextField(
-                controller: _controller,
-                focusNode: _focusNode,
-                readOnly: widget.disabled,
-                maxLines: 6, // max-h-44 ≈ 176px ≈ 6 行 ≈ 11×16
-                minLines: 1,
-                textInputAction: TextInputAction.newline,
-                style: TextStyle(
-                  fontSize: 15, // 0.95rem
-                  height: 1.5,
-                  color: isDark
-                      ? AppTheme.darkTextPrimary
-                      : AppTheme.textPrimary,
+            child: TextField(
+              controller: _controller,
+              focusNode: _focusNode,
+              readOnly: widget.disabled,
+              maxLines: 6, // max-h-44 ≈ 176px ≈ 6 行 ≈ 11×16
+              minLines: 1,
+              textInputAction: TextInputAction.newline,
+              style: TextStyle(
+                fontSize: 15, // 0.95rem
+                height: 1.5,
+                color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+              ),
+              decoration: InputDecoration(
+                hintText: I18n.t('input.placeholder', lang: lang),
+                hintStyle: TextStyle(
+                  fontSize: 15,
+                  color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                 ),
-                decoration: InputDecoration(
-                  hintText: I18n.t('input.placeholder', lang: lang),
-                  hintStyle: TextStyle(
-                    fontSize: 15,
-                    color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
-                  ),
-                  // border-none focus:ring-0：完全无边框无聚焦框
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
-                  isDense: true,
-                  // px-1 py-1
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 4,
-                  ),
-                  // textarea-rich min-h-[3.1rem] ≈ 50px
-                  isCollapsed: false,
+                // border-none focus:ring-0：完全无边框无聚焦框
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                isDense: true,
+                // px-1 py-1
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 4,
+                  vertical: 4,
                 ),
+                // textarea-rich min-h-[3.1rem] ≈ 50px
+                isCollapsed: false,
               ),
             ),
           ),

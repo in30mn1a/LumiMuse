@@ -109,122 +109,133 @@ class _ChatHeaderState extends State<ChatHeader> {
   // ═════════════════════════════════════════════════════════════════
   Widget _buildDesktop(BuildContext context, bool isDark) {
     final character = widget.character;
+    final width = MediaQuery.sizeOf(context).width;
+    final isCompactDesktop = width < AppBreakpoints.lg;
+    final leftBlock = Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        _buildAvatar(character, size: 56, radius: 21.6, isDark: isDark),
+        const SizedBox(width: 12), // gap-3
+        Expanded(
+          child: Wrap(
+            spacing: 8, // gap-2
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                character.name,
+                style: TextStyle(
+                  fontSize: 20, // text-xl
+                  fontWeight: FontWeight.w600,
+                  color: isDark
+                      ? AppTheme.darkTextPrimary
+                      : AppTheme.textPrimary,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+              // FIX(i18n)：三个 chips 的硬编码文案改走 I18n.tArgs。
+              // 角色卡片为静态文案，{count} 占位符走 tArgs 注入。
+              LumiChip(
+                label: I18n.t('chat.header.cardChip', lang: widget.lang),
+                active: true,
+              ),
+              LumiChip(
+                label: I18n.tArgs(
+                  'chat.header.recentChip',
+                  {'count': widget.conversationCount},
+                  lang: widget.lang,
+                ),
+              ),
+              LumiChip(
+                label: I18n.tArgs(
+                  'chat.header.memoriesChip',
+                  {'count': widget.memoryCount},
+                  lang: widget.lang,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+    final actionButtons = Wrap(
+      spacing: 8, // gap-2
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        // FIX(i18n)：6 枚 PC 端按钮文案改走 I18n.t / 三态文案保留三元式。
+        LumiSoftButton(
+          icon: Icons.add,
+          label: I18n.t('chat.header.newChat', lang: widget.lang),
+          kind: LumiSoftButtonKind.primary,
+          onTap: widget.onNewChat,
+        ),
+        LumiSoftButton(
+          icon: Icons.edit_outlined,
+          label: I18n.t('chat.header.edit', lang: widget.lang),
+          kind: LumiSoftButtonKind.secondary,
+          onTap: widget.hasActiveConversation ? widget.onRename : null,
+        ),
+        LumiSoftButton(
+          icon: Icons.summarize_outlined,
+          label: widget.isSummarizing
+              ? I18n.t('chat.header.summarizing', lang: widget.lang)
+              : I18n.t('chat.header.summarize', lang: widget.lang),
+          kind: LumiSoftButtonKind.secondary,
+          onTap: (!widget.hasActiveConversation ||
+                  widget.isStreaming ||
+                  widget.isSummarizing)
+              ? null
+              : widget.onSummarize,
+        ),
+        LumiSoftButton(
+          icon: Icons.copy_all_outlined,
+          label: widget.isDuplicating
+              ? I18n.t('chat.header.duplicating', lang: widget.lang)
+              : I18n.t('chat.header.duplicate', lang: widget.lang),
+          kind: LumiSoftButtonKind.secondary,
+          onTap: (!widget.hasActiveConversation || widget.isDuplicating)
+              ? null
+              : widget.onDuplicate,
+        ),
+        LumiSoftButton(
+          icon: Icons.image_outlined,
+          label: I18n.t('chat.header.imageManager', lang: widget.lang),
+          kind: LumiSoftButtonKind.secondary,
+          onTap: widget.onImageManager,
+        ),
+        LumiSoftButton(
+          icon: Icons.delete_outline,
+          label: I18n.t('chat.header.delete', lang: widget.lang),
+          kind: LumiSoftButtonKind.danger,
+          onTap: widget.hasActiveConversation ? widget.onDelete : null,
+        ),
+      ],
+    );
 
     return AppSurfaces.heroBox(
       context: context,
       isDark: isDark,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          // ── 左半区：头像 + 名字 + chips ──
-          Expanded(
-            child: Row(
+      child: isCompactDesktop
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                leftBlock,
+                const SizedBox(height: 12),
+                actionButtons,
+              ],
+            )
+          : Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                _buildAvatar(character, size: 56, radius: 21.6, isDark: isDark),
-                const SizedBox(width: 12), // gap-3
-                Expanded(
-                  child: Wrap(
-                    spacing: 8, // gap-2
-                    runSpacing: 6,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        character.name,
-                        style: TextStyle(
-                          fontSize: 20, // text-xl
-                          fontWeight: FontWeight.w600,
-                          color: isDark
-                              ? AppTheme.darkTextPrimary
-                              : AppTheme.textPrimary,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      // FIX(i18n)：三个 chips 的硬编码文案改走 I18n.tArgs。
-                      // 角色卡片为静态文案，{count} 占位符走 tArgs 注入。
-                      LumiChip(
-                        label: I18n.t('chat.header.cardChip', lang: widget.lang),
-                        active: true,
-                      ),
-                      LumiChip(
-                        label: I18n.tArgs(
-                          'chat.header.recentChip',
-                          {'count': widget.conversationCount},
-                          lang: widget.lang,
-                        ),
-                      ),
-                      LumiChip(
-                        label: I18n.tArgs(
-                          'chat.header.memoriesChip',
-                          {'count': widget.memoryCount},
-                          lang: widget.lang,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                // ── 左半区：头像 + 名字 + chips ──
+                Expanded(child: leftBlock),
+                // ── 右半区：6 枚按钮 ──
+                const SizedBox(width: 12),
+                Flexible(child: actionButtons),
               ],
             ),
-          ),
-          // ── 右半区：6 枚按钮 ──
-          const SizedBox(width: 12),
-          Wrap(
-            spacing: 8, // gap-2
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              // FIX(i18n)：6 枚 PC 端按钮文案改走 I18n.t / 三态文案保留三元式。
-              LumiSoftButton(
-                icon: Icons.add,
-                label: I18n.t('chat.header.newChat', lang: widget.lang),
-                kind: LumiSoftButtonKind.primary,
-                onTap: widget.onNewChat,
-              ),
-              LumiSoftButton(
-                icon: Icons.edit_outlined,
-                label: I18n.t('chat.header.edit', lang: widget.lang),
-                kind: LumiSoftButtonKind.secondary,
-                onTap: widget.hasActiveConversation ? widget.onRename : null,
-              ),
-              LumiSoftButton(
-                icon: Icons.summarize_outlined,
-                label: widget.isSummarizing
-                    ? I18n.t('chat.header.summarizing', lang: widget.lang)
-                    : I18n.t('chat.header.summarize', lang: widget.lang),
-                kind: LumiSoftButtonKind.secondary,
-                onTap: (!widget.hasActiveConversation ||
-                        widget.isStreaming ||
-                        widget.isSummarizing)
-                    ? null
-                    : widget.onSummarize,
-              ),
-              LumiSoftButton(
-                icon: Icons.copy_all_outlined,
-                label: widget.isDuplicating
-                    ? I18n.t('chat.header.duplicating', lang: widget.lang)
-                    : I18n.t('chat.header.duplicate', lang: widget.lang),
-                kind: LumiSoftButtonKind.secondary,
-                onTap: (!widget.hasActiveConversation ||
-                        widget.isDuplicating)
-                    ? null
-                    : widget.onDuplicate,
-              ),
-              LumiSoftButton(
-                icon: Icons.image_outlined,
-                label: I18n.t('chat.header.imageManager', lang: widget.lang),
-                kind: LumiSoftButtonKind.secondary,
-                onTap: widget.onImageManager,
-              ),
-              LumiSoftButton(
-                icon: Icons.delete_outline,
-                label: I18n.t('chat.header.delete', lang: widget.lang),
-                kind: LumiSoftButtonKind.danger,
-                onTap: widget.hasActiveConversation ? widget.onDelete : null,
-              ),
-            ],
-          ),
-        ],
-      ),
     );
   }
 

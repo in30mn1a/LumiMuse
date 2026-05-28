@@ -201,6 +201,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 child: Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: SidebarCharacterList(
+                    onCloseDrawer: widget.onCloseDrawer,
                     onSelectCharacter: (id) {
                       ref.read(selectionProvider.notifier).selectCharacter(id);
                       widget.onCloseDrawer?.call();

@@ -33,14 +33,17 @@ class ResetExtractionResult {
 /// 某角色的对话列表 Provider
 final conversationListProvider =
     StreamProvider.family<List<Conversation>, String>((ref, characterId) {
-  final db = ref.watch(databaseProvider);
-  return (db.select(db.conversations)
-        ..where((t) => t.characterId.equals(characterId))
-        ..orderBy([
-          (t) => OrderingTerm(expression: t.updatedAt, mode: OrderingMode.desc),
-        ]))
-      .watch();
-});
+      final db = ref.watch(databaseProvider);
+      return (db.select(db.conversations)
+            ..where((t) => t.characterId.equals(characterId))
+            ..orderBy([
+              (t) => OrderingTerm(
+                expression: t.updatedAt,
+                mode: OrderingMode.desc,
+              ),
+            ]))
+          .watch();
+    });
 
 /// 当前活跃对话 ID
 final activeConversationIdProvider = StateProvider<String?>((ref) => null);
@@ -59,7 +62,7 @@ class ConversationActions {
   static const _uuid = Uuid();
 
   ConversationActions(this._db, [CharacterImagesActions? imagesActions])
-      : _imagesActions = imagesActions ?? CharacterImagesActions(_db);
+    : _imagesActions = imagesActions ?? CharacterImagesActions(_db);
 
   /// 创建对话
   Future<String> create({
@@ -69,13 +72,17 @@ class ConversationActions {
     final id = _uuid.v4();
     final now = DateTime.now();
 
-    await _db.into(_db.conversations).insert(ConversationsCompanion.insert(
-      id: id,
-      characterId: characterId,
-      title: Value(title),
-      createdAt: Value(now),
-      updatedAt: Value(now),
-    ));
+    await _db
+        .into(_db.conversations)
+        .insert(
+          ConversationsCompanion.insert(
+            id: id,
+            characterId: characterId,
+            title: Value(title),
+            createdAt: Value(now),
+            updatedAt: Value(now),
+          ),
+        );
 
     return id;
   }
@@ -111,9 +118,9 @@ class ConversationActions {
   Future<void> delete(String id) async {
     // 1. 事务前收集本对话所有消息中的本地资产路径
     final pendingDelete = <String>{};
-    final msgs = await (_db.select(_db.messages)
-          ..where((t) => t.conversationId.equals(id)))
-        .get();
+    final msgs = await (_db.select(
+      _db.messages,
+    )..where((t) => t.conversationId.equals(id))).get();
     for (final msg in msgs) {
       try {
         final meta = MessageMetadata.fromJsonString(msg.metadata);
@@ -128,12 +135,12 @@ class ConversationActions {
 
     // 2. 事务内级联删除数据库行
     await _db.transaction(() async {
-      await (_db.delete(_db.messages)
-            ..where((t) => t.conversationId.equals(id)))
-          .go();
-      await (_db.delete(_db.memoryTasks)
-            ..where((t) => t.conversationId.equals(id)))
-          .go();
+      await (_db.delete(
+        _db.messages,
+      )..where((t) => t.conversationId.equals(id))).go();
+      await (_db.delete(
+        _db.memoryTasks,
+      )..where((t) => t.conversationId.equals(id))).go();
       await (_db.delete(_db.conversations)..where((t) => t.id.equals(id))).go();
     });
 
@@ -164,15 +171,16 @@ class ConversationActions {
   /// 3. 失败回滚：复制阶段自身失败、事务抛错都清理 `pendingNewFiles`，
   ///            清理 IO 异常仅记录日志，不再次抛出。
   Future<String> duplicate(String id) async {
-    final original = await (_db.select(_db.conversations)
-          ..where((t) => t.id.equals(id)))
-        .getSingle();
+    final original = await (_db.select(
+      _db.conversations,
+    )..where((t) => t.id.equals(id))).getSingle();
 
     // 预读全部消息，pre-tx 阶段先扫描资产
-    final messages = await (_db.select(_db.messages)
-          ..where((t) => t.conversationId.equals(id))
-          ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
-        .get();
+    final messages =
+        await (_db.select(_db.messages)
+              ..where((t) => t.conversationId.equals(id))
+              ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
+            .get();
 
     // FIX(Major-2)：收集所有消息 metadata 中的本地资产路径（去重）
     final assetSet = <String>{};
@@ -209,13 +217,15 @@ class ConversationActions {
       await _db.transaction(() async {
         await _db
             .into(_db.conversations)
-            .insert(ConversationsCompanion.insert(
-              id: newId,
-              characterId: original.characterId,
-              title: Value('${original.title} (副本)'),
-              createdAt: Value(now),
-              updatedAt: Value(now),
-            ));
+            .insert(
+              ConversationsCompanion.insert(
+                id: newId,
+                characterId: original.characterId,
+                title: Value('${original.title} (副本)'),
+                createdAt: Value(now),
+                updatedAt: Value(now),
+              ),
+            );
 
         for (final msg in messages) {
           final msgId = _uuid.v4();
@@ -231,16 +241,20 @@ class ConversationActions {
             // 若解析就失败的 metadata 包含本地路径则属于历史脏数据，不在本次修复范围。
           }
 
-          await _db.into(_db.messages).insert(MessagesCompanion.insert(
-                id: msgId,
-                conversationId: newId,
-                role: msg.role,
-                content: Value(msg.content),
-                tokenCount: Value(msg.tokenCount),
-                seq: Value(msg.seq),
-                createdAt: Value(msg.createdAt),
-                metadata: Value(newMetadataJson),
-              ));
+          await _db
+              .into(_db.messages)
+              .insert(
+                MessagesCompanion.insert(
+                  id: msgId,
+                  conversationId: newId,
+                  role: msg.role,
+                  content: Value(msg.content),
+                  tokenCount: Value(msg.tokenCount),
+                  seq: Value(msg.seq),
+                  createdAt: Value(msg.createdAt),
+                  metadata: Value(newMetadataJson),
+                ),
+              );
         }
       });
     } catch (_) {
@@ -272,7 +286,7 @@ class ConversationActions {
   /// 记忆提取状态批量重置 / 标记
   ///
   /// - [conversationId]：目标对话
-  /// - [messageIds]：可选的目标消息 ID 列表；缺省时作用范围为该对话所有 assistant 消息
+  /// - [messageIds]：可选的目标消息 ID 列表；缺省时作用范围为该对话所有 user 消息
   /// - [action]：[ExtractionAction.reset] 清除 `memory_extracted`；
   ///   [ExtractionAction.mark] 写入 `memory_extracted = true`
   ///
@@ -283,14 +297,14 @@ class ConversationActions {
     List<String>? messageIds,
     required ExtractionAction action,
   }) async {
-    // 选择目标消息：传入 messageIds 时按 ID 过滤；缺省时取所有 assistant 消息
+    // 选择目标消息：传入 messageIds 时按 ID 过滤；缺省时与未提取计数保持一致，取所有 user 消息。
     final query = _db.select(_db.messages)
       ..where((t) {
         final scoped = t.conversationId.equals(conversationId);
         if (messageIds != null && messageIds.isNotEmpty) {
           return scoped & t.id.isIn(messageIds);
         }
-        return scoped & t.role.equals('assistant');
+        return scoped & t.role.equals('user');
       });
     final rows = await query.get();
 
@@ -303,13 +317,19 @@ class ConversationActions {
         if (action == ExtractionAction.mark) {
           if (cur) continue;
           final newMeta = meta.copyWith(memoryExtracted: true);
-          await (_db.update(_db.messages)..where((t) => t.id.equals(m.id)))
-              .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
+          await (_db.update(
+            _db.messages,
+          )..where((t) => t.id.equals(m.id))).write(
+            MessagesCompanion(metadata: Value(newMeta.toJsonString())),
+          );
         } else {
           if (!cur) continue;
           final newMeta = meta.copyWith(memoryExtracted: false);
-          await (_db.update(_db.messages)..where((t) => t.id.equals(m.id)))
-              .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
+          await (_db.update(
+            _db.messages,
+          )..where((t) => t.id.equals(m.id))).write(
+            MessagesCompanion(metadata: Value(newMeta.toJsonString())),
+          );
         }
 
         count++;

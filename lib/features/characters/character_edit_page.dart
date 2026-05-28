@@ -34,6 +34,7 @@ import '../../core/services/character_gen_service.dart';
 import '../../core/utils/character_card_parser.dart';
 import '../../core/utils/i18n.dart';
 import '../../theme/app_spacing.dart';
+import '../../theme/app_shell.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/app_widgets.dart';
 import '../../theme/page_region.dart';
@@ -55,211 +56,211 @@ class CharacterEditPage extends ConsumerStatefulWidget {
   /// 子 spec 修改 widget 内部时不得改变 order/anchor/id；仅允许调整 build 闭包
   /// 返回的子树细节。任何破坏不变量的改动都会被回归脚本 RC-11 立即扫出。
   static List<PageRegion> get baselineRegions => [
-        // §A3.3.1 头部左半区（返回 + 装饰方块 + 标题）
-        PageRegion(
-          name: 'headerLeft',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'back',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'decoration',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.start,
-              id: 'title',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+    // §A3.3.1 头部左半区（返回 + 装饰方块 + 标题）
+    PageRegion(
+      name: 'headerLeft',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'back',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.1 头部右半区操作按钮组（6 枚按钮顺序锁定）
-        PageRegion(
-          name: 'headerActions',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.end,
-              id: 'aiGenerate',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.end,
-              id: 'duplicate',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 3,
-              anchor: SlotAnchor.end,
-              id: 'deleteCharacter',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 4,
-              anchor: SlotAnchor.end,
-              id: 'import',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 5,
-              anchor: SlotAnchor.end,
-              id: 'export',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 6,
-              anchor: SlotAnchor.end,
-              id: 'save',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'decoration',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.2 AI 生成面板（条件渲染，showAiGenerator === true 时出现）
-        PageRegion(
-          name: 'aiGeneratorPanel',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'requirementInput',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.end,
-              id: 'applyButton',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.start,
+          id: 'title',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.3 分组 1：身份信息（头像 + 角色名）
-        PageRegion(
-          name: 'mainGroupIdentity',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'avatar',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'name',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+      ],
+    ),
+    // §A3.3.1 头部右半区操作按钮组（6 枚按钮顺序锁定）
+    PageRegion(
+      name: 'headerActions',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.end,
+          id: 'aiGenerate',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.3 分组 2：基本信息（单一 textarea）
-        PageRegion(
-          name: 'mainGroupBasicInfo',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'basicInfoTextarea',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.end,
+          id: 'duplicate',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.3 分组 3：性格（单一 textarea）
-        PageRegion(
-          name: 'mainGroupPersonality',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'personalityTextarea',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.end,
+          id: 'deleteCharacter',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.3 分组 4：场景 / 世界观（单一 textarea）
-        PageRegion(
-          name: 'mainGroupScenario',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'scenarioTextarea',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 4,
+          anchor: SlotAnchor.end,
+          id: 'import',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.3 分组 5：开场白（单一 textarea）
-        PageRegion(
-          name: 'mainGroupGreeting',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'greetingTextarea',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 5,
+          anchor: SlotAnchor.end,
+          id: 'export',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.3 分组 6：其他（other_info 单一 textarea）
-        PageRegion(
-          name: 'mainGroupOther',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'otherInfoTextarea',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 6,
+          anchor: SlotAnchor.end,
+          id: 'save',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.3 分组 7：示例对话（单一 textarea，等宽字体）
-        PageRegion(
-          name: 'mainGroupExampleDialogue',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'exampleDialogueTextarea',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+      ],
+    ),
+    // §A3.3.2 AI 生成面板（条件渲染，showAiGenerator === true 时出现）
+    PageRegion(
+      name: 'aiGeneratorPanel',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'requirementInput',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.4 高级设置折叠区（系统提示词 + 生图标签）
-        PageRegion(
-          name: 'advancedSettings',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'systemPrompt',
-              build: (_) => const SizedBox.shrink(),
-            ),
-            PageSlot(
-              order: 2,
-              anchor: SlotAnchor.start,
-              id: 'imageTags',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.end,
+          id: 'applyButton',
+          build: (_) => const SizedBox.shrink(),
         ),
-        // §A3.3.5 右侧预览栏（桌面端 sticky top-4，20rem 列）
-        PageRegion(
-          name: 'previewSidebar',
-          slots: [
-            PageSlot(
-              order: 1,
-              anchor: SlotAnchor.start,
-              id: 'stickyDesktop',
-              build: (_) => const SizedBox.shrink(),
-            ),
-          ],
+      ],
+    ),
+    // §A3.3.3 分组 1：身份信息（头像 + 角色名）
+    PageRegion(
+      name: 'mainGroupIdentity',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'avatar',
+          build: (_) => const SizedBox.shrink(),
         ),
-      ];
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'name',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.3 分组 2：基本信息（单一 textarea）
+    PageRegion(
+      name: 'mainGroupBasicInfo',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'basicInfoTextarea',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.3 分组 3：性格（单一 textarea）
+    PageRegion(
+      name: 'mainGroupPersonality',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'personalityTextarea',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.3 分组 4：场景 / 世界观（单一 textarea）
+    PageRegion(
+      name: 'mainGroupScenario',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'scenarioTextarea',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.3 分组 5：开场白（单一 textarea）
+    PageRegion(
+      name: 'mainGroupGreeting',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'greetingTextarea',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.3 分组 6：其他（other_info 单一 textarea）
+    PageRegion(
+      name: 'mainGroupOther',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'otherInfoTextarea',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.3 分组 7：示例对话（单一 textarea，等宽字体）
+    PageRegion(
+      name: 'mainGroupExampleDialogue',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'exampleDialogueTextarea',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.4 高级设置折叠区（系统提示词 + 生图标签）
+    PageRegion(
+      name: 'advancedSettings',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'systemPrompt',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 2,
+          anchor: SlotAnchor.start,
+          id: 'imageTags',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+    // §A3.3.5 右侧预览栏（桌面端 sticky top-4，20rem 列）
+    PageRegion(
+      name: 'previewSidebar',
+      slots: [
+        PageSlot(
+          order: 1,
+          anchor: SlotAnchor.start,
+          id: 'stickyDesktop',
+          build: (_) => const SizedBox.shrink(),
+        ),
+      ],
+    ),
+  ];
 
   @override
   ConsumerState<CharacterEditPage> createState() => _CharacterEditPageState();
@@ -331,6 +332,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
   bool get _busy => _saving || _isAiGenerating || _duplicating;
   String _aiError = '';
   _ImportMsg? _importMsg;
+
   /// P1-2：清除 _importMsg 的 Timer，新消息到来时取消旧 timer
   Timer? _importMsgTimer;
   final _aiRequirementController = TextEditingController();
@@ -373,100 +375,104 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
 
     ref.listen(characterProvider(widget.characterId), (prev, next) {
       final prevValue = prev?.valueOrNull;
-      if (prevValue != null && next is AsyncData && next.value == null && mounted) {
+      if (prevValue != null &&
+          next is AsyncData &&
+          next.value == null &&
+          mounted) {
         context.go('/');
       }
     });
 
-    return characterAsync.when(
-      loading: () => const Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Center(child: CircularProgressIndicator()),
-      ),
-      error: (e, _) => Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Center(
-          child: Text('加载失败: $e'),
-        ),
-      ),
-      data: (character) {
-        if (character == null) {
-          return Scaffold(
-            backgroundColor: Colors.transparent,
-            body: Center(
-              child: Text(I18n.t('editor.loading', lang: lang)),
-            ),
-          );
-        }
-
-        if (!_loaded) {
-          _nameController.text = character.name;
-          _basicInfoController.text = character.basicInfo;
-          _personalityController.text = character.personality;
-          _scenarioController.text = character.scenario;
-          _greetingController.text = character.greeting;
-          _exampleDialogueController.text = character.exampleDialogue;
-          _otherInfoController.text = character.otherInfo;
-          _systemPromptController.text = character.systemPrompt;
-          _imageTagsController.text = character.imageTags;
-          _avatarPath = character.avatarUrl;
-          // FIX(Q3)：记录加载时的全字段快照供 _dirty 比较使用。
-          _refreshSnapshot();
-          _loaded = true;
-        }
-
-        // FIX(Q3)：用 PopScope 拦截"按返回键 / 手势返回"路径，
-        // 只在表单 dirty 时阻止默认 pop，并弹出 i18n 二次确认对话框；
-        // 用户确认放弃才真正 Navigator.pop。
-        // 自定义返回入口（_returnToSidebar）已在内部直接调 Navigator.pop，
-        // 同样会被 PopScope 拦截到，因此只需在外层包一次即可覆盖所有返回路径。
-        return PopScope(
-          canPop: !_dirty,
-          onPopInvokedWithResult: (didPop, result) async {
-            if (didPop) return;
-            // FIX(Q3)：跨 await 复用 context 时，先抓本地 NavigatorState，
-            // 等 await 之后再用 context.mounted 守卫；这样既能跳过 lint
-            // use_build_context_synchronously，也能在页面被 dispose
-            // 的边界情况下提前返回。
-            final navigator = Navigator.of(context);
-            final router = GoRouter.of(context);
-            final confirmed = await _confirmDiscardChanges();
-            if (!context.mounted) return;
-            if (confirmed == true) {
-              // FIX(Q3)：用户放弃修改时，若头像被改成新的临时本地文件（仅未保存的
-              // avatar_<timestamp>.png 模式），清理它避免成为磁盘孤儿。
-              await _cleanupAbandonedAvatar();
-              // 用户选择放弃修改 — 回退到上一级或主页。
-              if (navigator.canPop()) {
-                navigator.pop();
-              } else {
-                router.go('/');
-              }
-            }
-          },
-          child: Scaffold(
+    return AppShell(
+      child: characterAsync.when(
+        loading: () => const Scaffold(
           backgroundColor: Colors.transparent,
-          body: SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.lg),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1280),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _buildHeader(lang),
-                      const SizedBox(height: AppSpacing.lg),
-                      _buildBody(lang),
-                    ],
+          body: Center(child: CircularProgressIndicator()),
+        ),
+        error: (e, _) => Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Center(child: Text('加载失败: $e')),
+        ),
+        data: (character) {
+          if (character == null) {
+            return Scaffold(
+              backgroundColor: Colors.transparent,
+              body: Center(child: Text(I18n.t('editor.loading', lang: lang))),
+            );
+          }
+
+          if (!_loaded) {
+            _nameController.text = character.name;
+            _basicInfoController.text = character.basicInfo;
+            _personalityController.text = character.personality;
+            _scenarioController.text = character.scenario;
+            _greetingController.text = character.greeting;
+            _exampleDialogueController.text = character.exampleDialogue;
+            _otherInfoController.text = character.otherInfo;
+            _systemPromptController.text = character.systemPrompt;
+            _imageTagsController.text = character.imageTags;
+            _avatarPath = character.avatarUrl;
+            // FIX(Q3)：记录加载时的全字段快照供 _dirty 比较使用。
+            _refreshSnapshot();
+            _loaded = true;
+          }
+
+          // FIX(Q3)：用 PopScope 拦截"按返回键 / 手势返回"路径，
+          // 只在表单 dirty 时阻止默认 pop，并弹出 i18n 二次确认对话框；
+          // 用户确认放弃才真正 Navigator.pop。
+          // 自定义返回入口（_returnToSidebar）已在内部直接调 Navigator.pop，
+          // 同样会被 PopScope 拦截到，因此只需在外层包一次即可覆盖所有返回路径。
+          return PopScope(
+            canPop: !_dirty,
+            onPopInvokedWithResult: (didPop, result) async {
+              if (didPop) return;
+              // FIX(Q3)：跨 await 复用 context 时，先抓本地 NavigatorState，
+              // 等 await 之后再用 context.mounted 守卫；这样既能跳过 lint
+              // use_build_context_synchronously，也能在页面被 dispose
+              // 的边界情况下提前返回。
+              final navigator = Navigator.of(context);
+              final router = GoRouter.of(context);
+              final confirmed = await _confirmDiscardChanges();
+              if (!context.mounted) return;
+              if (confirmed == true) {
+                // FIX(Q3)：用户放弃修改时，若头像被改成新的临时本地文件（仅未保存的
+                // avatar_<timestamp>.png 模式），清理它避免成为磁盘孤儿。
+                await _cleanupAbandonedAvatar();
+                // 用户选择放弃修改 — 回退到上一级或主页。
+                if (navigator.canPop()) {
+                  navigator.pop();
+                } else {
+                  router.go('/');
+                }
+              }
+            },
+            child: Scaffold(
+              backgroundColor: Colors.transparent,
+              body: SafeArea(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.lg,
+                    vertical: AppSpacing.lg,
+                  ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1280),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildHeader(lang),
+                          const SizedBox(height: AppSpacing.lg),
+                          _buildBody(lang),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -475,7 +481,10 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
 
     return Container(
       decoration: AppSurfaces.hero(isDark: isDark),
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl, vertical: AppSpacing.xl),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.xl,
+        vertical: AppSpacing.xl,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -636,20 +645,19 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
   Widget _buildImportBanner(bool isDark) {
     final isErr = _importMsg!.isError;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.md,
+      ),
       decoration: BoxDecoration(
-        color: isErr
-            ? const Color(0xFFFEF2F2)
-            : const Color(0xFFF0FDF4),
+        color: isErr ? const Color(0xFFFEF2F2) : const Color(0xFFF0FDF4),
         borderRadius: AppRadius.mdBorder,
       ),
       child: Text(
         _importMsg!.text,
         style: TextStyle(
           fontSize: 14,
-          color: isErr
-              ? const Color(0xFFB91C1C)
-              : const Color(0xFF15803D),
+          color: isErr ? const Color(0xFFB91C1C) : const Color(0xFF15803D),
         ),
       ),
     );
@@ -684,7 +692,9 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
                         : I18n.t('editor.aiApplyHint', lang: lang),
                     icon: null,
                     kind: LumiSoftButtonKind.primary,
-                    onTap: (_busy || _isAiGenerating ||
+                    onTap:
+                        (_busy ||
+                            _isAiGenerating ||
                             _aiRequirementController.text.trim().isEmpty)
                         ? null
                         : _aiGenerate,
@@ -727,10 +737,8 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
   }
 
   Widget _buildAiInput(String lang, bool isDark) {
-    final textColor =
-        isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary;
-    final mutedColor =
-        isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
+    final textColor = isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary;
+    final mutedColor = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
     return Container(
       decoration: BoxDecoration(
         color: isDark
@@ -851,15 +859,14 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
           systemPromptController: _systemPromptController,
           imageTagsController: _imageTagsController,
           isExpanded: _advancedExpanded,
-          onToggle: () => setState(() => _advancedExpanded = !_advancedExpanded),
+          onToggle: () =>
+              setState(() => _advancedExpanded = !_advancedExpanded),
           lang: lang,
           isDark: isDark,
         ),
       ],
     );
   }
-
-
 
   Widget _buildAside(String lang, bool isDark) {
     return CharacterPreviewSidebar(
@@ -902,8 +909,6 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       // swallow — 文件不在 / 锁定 / 权限不足都不视作失败
     }
   }
-
-
 
   Future<void> _aiGenerate() async {
     if (_busy) return;
@@ -961,10 +966,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       });
       // FIX(Q3)：AI 一键填入相当于"刚加载新值"，刷新 snapshot 让这次填入不计 dirty。
       _refreshSnapshot();
-      _showImportMsg(
-        text: 'AI 生成完成，请检查后保存',
-        isError: false,
-      );
+      _showImportMsg(text: 'AI 生成完成，请检查后保存', isError: false);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -1005,9 +1007,9 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       _refreshSnapshot();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
       return;
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -1094,14 +1096,15 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
           final now = DateTime.now();
           final dateStr =
               '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-          final safeName = _nameController.text
-              .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+          final safeName = _nameController.text.replaceAll(
+            RegExp(r'[\\/:*?"<>|]'),
+            '_',
+          );
           final defaultFileName = 'lumimuse-$safeName-$dateStr.json';
 
-          final isDesktop = !kIsWeb &&
-              (Platform.isWindows ||
-                  Platform.isLinux ||
-                  Platform.isMacOS);
+          final isDesktop =
+              !kIsWeb &&
+              (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
           if (isDesktop) {
             // 桌面端：让用户选保存位置
@@ -1282,14 +1285,10 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         ref.invalidate(conversationListProvider(widget.characterId));
 
         _showImportMsg(
-          text: I18n.tArgs(
-            'import.characterSuccess',
-            {
-              'memories': memoriesImported,
-              'conversations': conversationsImported,
-            },
-            lang: lang,
-          ),
+          text: I18n.tArgs('import.characterSuccess', {
+            'memories': memoriesImported,
+            'conversations': conversationsImported,
+          }, lang: lang),
           isError: false,
         );
       }
@@ -1354,14 +1353,15 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         _imageTagsController.text = fields['image_tags']!;
       }
       if (fields['avatar_url'] != null) {
-        _avatarPath = fields['avatar_url']!.isEmpty ? null : fields['avatar_url']!;
+        _avatarPath = fields['avatar_url']!.isEmpty
+            ? null
+            : fields['avatar_url']!;
       }
     });
     // FIX(Q3)：导入草稿相当于"刚加载新值"，刷新 snapshot 让这次填入不计 dirty。
     _refreshSnapshot();
   }
 }
-
 
 class _ImportMsg {
   final String text;

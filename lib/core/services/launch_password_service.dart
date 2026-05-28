@@ -87,10 +87,12 @@ class LaunchPasswordService {
     final iterations = _iterations;
     final hashBytes = await _derive(plain, salt, iterations);
 
-    // 三键一并写入；any 单键失败将抛出异常由调用方处理
-    await _writeSetting(_kSaltKey, base64Encode(salt));
-    await _writeSetting(_kHashKey, base64Encode(hashBytes));
-    await _writeSetting(_kIterationsKey, iterations.toString());
+    // 三键一并写入；任一单键失败时整个事务回滚。
+    await _db.transaction(() async {
+      await _writeSetting(_kSaltKey, base64Encode(salt));
+      await _writeSetting(_kHashKey, base64Encode(hashBytes));
+      await _writeSetting(_kIterationsKey, iterations.toString());
+    });
   }
 
   /// 校验密码 — 失败仅返回 false，不抛异常

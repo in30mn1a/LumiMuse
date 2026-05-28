@@ -40,8 +40,13 @@ import '../../../theme/surfaces.dart';
 ///     - 桌面端 opacity-0 group-hover:opacity-100；移动端 opacity-60 始终可见
 class SidebarCharacterList extends ConsumerStatefulWidget {
   final void Function(String id) onSelectCharacter;
+  final Future<void> Function()? onCloseDrawer;
 
-  const SidebarCharacterList({super.key, required this.onSelectCharacter});
+  const SidebarCharacterList({
+    super.key,
+    required this.onSelectCharacter,
+    this.onCloseDrawer,
+  });
 
   @override
   ConsumerState<SidebarCharacterList> createState() =>
@@ -72,10 +77,18 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
       final id = await actions.create();
       if (!context.mounted) return;
       ref.read(selectionProvider.notifier).selectCharacter(id);
+      await widget.onCloseDrawer?.call();
+      if (!context.mounted) return;
       context.push('/characters/$id/edit');
     } finally {
       if (mounted) setState(() => _creatingCharacter = false);
     }
+  }
+
+  Future<void> _editCharacter(BuildContext context, String id) async {
+    await widget.onCloseDrawer?.call();
+    if (!context.mounted) return;
+    context.push('/characters/$id/edit');
   }
 
   Future<void> _onReorder(
@@ -235,7 +248,7 @@ class _SidebarCharacterListState extends ConsumerState<SidebarCharacterList> {
             isDark: isDark,
             isDesktop: isDesktop,
             onTap: () => widget.onSelectCharacter(character.id),
-            onEdit: () => context.push('/characters/${character.id}/edit'),
+            onEdit: () => _editCharacter(context, character.id),
           );
         },
       ),

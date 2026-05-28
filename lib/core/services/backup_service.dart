@@ -509,8 +509,17 @@ class BackupService {
         });
       }
 
-      // 导入消息
-      final messages = data['messages'] as List? ?? [];
+      // 导入消息：兼容 v1 顶层 messages 与 v2 单角色 conversations[].messages。
+      final messages = <dynamic>[
+        ...data['messages'] as List? ?? const [],
+      ];
+      for (final c in conversations) {
+        final map = c as Map<String, dynamic>;
+        final nestedMessages = map['messages'];
+        if (nestedMessages is List) {
+          messages.addAll(nestedMessages);
+        }
+      }
       final messageCompanions = <MessagesCompanion>[];
       for (final m in messages) {
         final map = m as Map<String, dynamic>;

@@ -37,7 +37,9 @@ Future<void> _seedConversation(
   required String conversationId,
   required List<bool> preMarked,
 }) async {
-  await db.into(db.characters).insert(
+  await db
+      .into(db.characters)
+      .insert(
         CharactersCompanion.insert(
           id: characterId,
           name: const Value('测试角色'),
@@ -46,7 +48,9 @@ Future<void> _seedConversation(
         ),
       );
 
-  await db.into(db.conversations).insert(
+  await db
+      .into(db.conversations)
+      .insert(
         ConversationsCompanion.insert(
           id: conversationId,
           characterId: characterId,
@@ -58,9 +62,10 @@ Future<void> _seedConversation(
       );
 
   for (var i = 0; i < preMarked.length; i++) {
-    final meta =
-        preMarked[i] ? jsonEncode({'memory_extracted': true}) : '{}';
-    await db.into(db.messages).insert(
+    final meta = preMarked[i] ? jsonEncode({'memory_extracted': true}) : '{}';
+    await db
+        .into(db.messages)
+        .insert(
           MessagesCompanion.insert(
             id: 'msg-$i',
             conversationId: conversationId,
@@ -75,14 +80,70 @@ Future<void> _seedConversation(
   }
 }
 
+/// 预先创建 character + conversation + 混合 role 消息。
+///
+/// `roles[i]` 与 `preMarked[i]` 共同决定第 i 条消息的 role 和提取标记。
+Future<void> _seedMixedRoleConversation(
+  AppDatabase db, {
+  required String characterId,
+  required String conversationId,
+  required List<String> roles,
+  required List<bool> preMarked,
+}) async {
+  await db
+      .into(db.characters)
+      .insert(
+        CharactersCompanion.insert(
+          id: characterId,
+          name: const Value('测试角色'),
+          createdAt: Value(DateTime(2026, 1, 1)),
+          updatedAt: Value(DateTime(2026, 1, 1)),
+        ),
+      );
+
+  await db
+      .into(db.conversations)
+      .insert(
+        ConversationsCompanion.insert(
+          id: conversationId,
+          characterId: characterId,
+          title: const Value('测试对话'),
+          ignoreMemory: const Value(0),
+          createdAt: Value(DateTime(2026, 1, 2)),
+          updatedAt: Value(DateTime(2026, 1, 2)),
+        ),
+      );
+
+  for (var i = 0; i < roles.length; i++) {
+    final meta = preMarked[i] ? jsonEncode({'memory_extracted': true}) : '{}';
+    await db
+        .into(db.messages)
+        .insert(
+          MessagesCompanion.insert(
+            id: '${roles[i]}-$i',
+            conversationId: conversationId,
+            role: roles[i],
+            content: Value('消息 $i'),
+            tokenCount: const Value(10),
+            seq: Value(i),
+            createdAt: Value(DateTime(2026, 1, 2, 0, 0, i)),
+            metadata: Value(meta),
+          ),
+        );
+  }
+}
+
 /// 读取该对话所有 assistant 消息当前的 `memory_extracted` 标记
 Future<List<bool>> _readMarks(AppDatabase db, String conversationId) async {
-  final rows = await (db.select(db.messages)
-        ..where((t) =>
-            t.conversationId.equals(conversationId) &
-            t.role.equals('assistant'))
-        ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
-      .get();
+  final rows =
+      await (db.select(db.messages)
+            ..where(
+              (t) =>
+                  t.conversationId.equals(conversationId) &
+                  t.role.equals('assistant'),
+            )
+            ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
+          .get();
   return rows.map((m) {
     try {
       final parsed = jsonDecode(m.metadata);
@@ -95,13 +156,10 @@ Future<List<bool>> _readMarks(AppDatabase db, String conversationId) async {
 }
 
 /// 读取目标消息的 metadata Map（用于断言「不再包含 memory_extracted 字段」）
-Future<Map<String, dynamic>> _readMeta(
-  AppDatabase db,
-  String messageId,
-) async {
-  final row = await (db.select(db.messages)
-        ..where((t) => t.id.equals(messageId)))
-      .getSingle();
+Future<Map<String, dynamic>> _readMeta(AppDatabase db, String messageId) async {
+  final row = await (db.select(
+    db.messages,
+  )..where((t) => t.id.equals(messageId))).getSingle();
   final parsed = jsonDecode(row.metadata);
   return parsed is Map<String, dynamic> ? parsed : <String, dynamic>{};
 }
@@ -121,8 +179,11 @@ void main() {
         );
 
         final actions = ConversationActions(db);
-        final result =
-            await actions.resetExtraction('conv-1', action: ExtractionAction.reset);
+        final result = await actions.resetExtraction(
+          'conv-1',
+          messageIds: List.generate(preMarked.length, (i) => 'msg-$i'),
+          action: ExtractionAction.reset,
+        );
 
         // affectedCount == 预先标记为 true 的条数
         final expectedAffected = preMarked.where((b) => b).length;
@@ -136,8 +197,11 @@ void main() {
         // 进一步断言「不再包含该键」（reset 是 remove，不是置 false）
         for (var i = 0; i < preMarked.length; i++) {
           final meta = await _readMeta(db, 'msg-$i');
-          expect(meta.containsKey('memory_extracted'), isFalse,
-              reason: 'reset 后 memory_extracted 应被移除而非置 false');
+          expect(
+            meta.containsKey('memory_extracted'),
+            isFalse,
+            reason: 'reset 后 memory_extracted 应被移除而非置 false',
+          );
         }
       },
     );
@@ -155,7 +219,11 @@ void main() {
         );
 
         final actions = ConversationActions(db);
-        final result = await actions.resetExtraction('conv-1', action: ExtractionAction.mark);
+        final result = await actions.resetExtraction(
+          'conv-1',
+          messageIds: List.generate(preMarked.length, (i) => 'msg-$i'),
+          action: ExtractionAction.mark,
+        );
 
         // affectedCount == 预先未标记的条数
         final expectedAffected = preMarked.where((b) => !b).length;
@@ -182,9 +250,17 @@ void main() {
         );
 
         final actions = ConversationActions(db);
-        await actions.resetExtraction('conv-1', action: ExtractionAction.reset);
-        final second =
-            await actions.resetExtraction('conv-1', action: ExtractionAction.reset);
+        final messageIds = List.generate(preMarked.length, (i) => 'msg-$i');
+        await actions.resetExtraction(
+          'conv-1',
+          messageIds: messageIds,
+          action: ExtractionAction.reset,
+        );
+        final second = await actions.resetExtraction(
+          'conv-1',
+          messageIds: messageIds,
+          action: ExtractionAction.reset,
+        );
         expect(second.affectedCount, 0);
       },
     );
@@ -202,9 +278,17 @@ void main() {
         );
 
         final actions = ConversationActions(db);
-        await actions.resetExtraction('conv-1', action: ExtractionAction.mark);
-        final second =
-            await actions.resetExtraction('conv-1', action: ExtractionAction.mark);
+        final messageIds = List.generate(preMarked.length, (i) => 'msg-$i');
+        await actions.resetExtraction(
+          'conv-1',
+          messageIds: messageIds,
+          action: ExtractionAction.mark,
+        );
+        final second = await actions.resetExtraction(
+          'conv-1',
+          messageIds: messageIds,
+          action: ExtractionAction.mark,
+        );
         expect(second.affectedCount, 0);
       },
     );
@@ -221,10 +305,46 @@ void main() {
       );
 
       final actions = ConversationActions(db);
-      final r1 = await actions.resetExtraction('conv-empty', action: ExtractionAction.reset);
+      final r1 = await actions.resetExtraction(
+        'conv-empty',
+        action: ExtractionAction.reset,
+      );
       expect(r1.affectedCount, 0);
-      final r2 = await actions.resetExtraction('conv-empty', action: ExtractionAction.mark);
+      final r2 = await actions.resetExtraction(
+        'conv-empty',
+        action: ExtractionAction.mark,
+      );
       expect(r2.affectedCount, 0);
+    });
+
+    test('未传 messageIds 时默认只标记 user 消息', () async {
+      final db = _createTestDb();
+      addTearDown(() => db.close());
+      await _seedMixedRoleConversation(
+        db,
+        characterId: 'char-mixed',
+        conversationId: 'conv-mixed',
+        roles: const ['user', 'assistant', 'user', 'assistant'],
+        preMarked: const [false, false, true, false],
+      );
+
+      final actions = ConversationActions(db);
+      final result = await actions.resetExtraction(
+        'conv-mixed',
+        action: ExtractionAction.mark,
+      );
+
+      expect(result.affectedCount, 1);
+      expect((await _readMeta(db, 'user-0'))['memory_extracted'], isTrue);
+      expect((await _readMeta(db, 'user-2'))['memory_extracted'], isTrue);
+      expect(
+        (await _readMeta(db, 'assistant-1')).containsKey('memory_extracted'),
+        isFalse,
+      );
+      expect(
+        (await _readMeta(db, 'assistant-3')).containsKey('memory_extracted'),
+        isFalse,
+      );
     });
 
     // P1-2：action 参数已从 String 改为 ExtractionAction 枚举，

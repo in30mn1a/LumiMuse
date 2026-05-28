@@ -20,12 +20,14 @@ typedef OnErrorCallback = void Function(String error);
 
 /// LLM 服务 — 负责与 OpenAI 兼容 API 通信
 class LlmService {
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 30),
-    // LLM 流式响应可能较长（思考链 / 长文本输出），给到 5 分钟
-    receiveTimeout: const Duration(minutes: 5),
-    sendTimeout: const Duration(seconds: 60),
-  ));
+  final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 30),
+      // LLM 流式响应可能较长（思考链 / 长文本输出），给到 5 分钟
+      receiveTimeout: const Duration(minutes: 5),
+      sendTimeout: const Duration(seconds: 60),
+    ),
+  );
 
   LlmService();
 
@@ -39,15 +41,21 @@ class LlmService {
     CancelToken? cancelToken,
   }) async {
     try {
+      final body = <String, dynamic>{
+        'model': settings.model,
+        'messages': messages.map((m) => m.toJson()).toList(),
+        'max_tokens': settings.maxTokens,
+        'temperature': settings.temperature,
+        'stream': true,
+      };
+
+      if (settings.jsonMode) {
+        body['response_format'] = {'type': 'json_object'};
+      }
+
       final response = await _dio.post(
         '${settings.apiBase}/chat/completions',
-        data: {
-          'model': settings.model,
-          'messages': messages.map((m) => m.toJson()).toList(),
-          'max_tokens': settings.maxTokens,
-          'temperature': settings.temperature,
-          'stream': true,
-        },
+        data: body,
         options: Options(
           headers: {
             'Content-Type': 'application/json',
@@ -147,14 +155,18 @@ class LlmService {
         final reason = choice?['finish_reason'] as String?;
         final hasReasoning = choice?['message']?['reasoning_content'] != null;
         if (reason == 'length' && hasReasoning) {
-          throw Exception('推理模型思考消耗了全部 token，最终未生成内容。请增大 max_tokens（建议 ≥16384）');
+          throw Exception(
+            '推理模型思考消耗了全部 token，最终未生成内容。请增大 max_tokens（建议 ≥16384）',
+          );
         }
         throw Exception('LLM 返回了空内容，请检查模型是否支持当前请求格式');
       }
       return content;
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) return '';
-      throw Exception('API 错误: ${e.response?.statusCode ?? "网络失败"} - ${e.message}');
+      throw Exception(
+        'API 错误: ${e.response?.statusCode ?? "网络失败"} - ${e.message}',
+      );
     }
   }
 
@@ -166,9 +178,7 @@ class LlmService {
     try {
       final response = await _dio.get(
         '$apiBase/models',
-        options: Options(
-          headers: {'Authorization': 'Bearer $apiKey'},
-        ),
+        options: Options(headers: {'Authorization': 'Bearer $apiKey'}),
       );
 
       final data = response.data['data'] as List?;

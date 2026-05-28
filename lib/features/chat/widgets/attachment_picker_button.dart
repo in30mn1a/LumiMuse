@@ -48,10 +48,7 @@ class AttachmentPickerButton extends StatelessWidget {
 
   Future<void> _pickFile(BuildContext context) async {
     if (currentCount >= maxAttachments) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        // TODO(parity): 主项目缺失 'chat.attachmentMaxCount' 键，硬编码兜底
-        const SnackBar(content: Text('最多附带 5 个附件')),
-      );
+      _showMaxAttachmentsSnackBar(context);
       return;
     }
 
@@ -96,6 +93,13 @@ class AttachmentPickerButton extends StatelessWidget {
     onPicked(attachment);
   }
 
+  void _showMaxAttachmentsSnackBar(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      // TODO(parity): 主项目缺失 'chat.attachmentMaxCount' 键，硬编码兜底
+      const SnackBar(content: Text('最多附带 5 个附件')),
+    );
+  }
+
   String _getMimeType(String ext) {
     switch (ext) {
       case 'jpg':
@@ -122,15 +126,22 @@ class AttachmentPickerButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDisabled = disabled || currentCount >= maxAttachments;
+    final isAtMaxAttachments = currentCount >= maxAttachments;
+    final isDisabled = disabled || isAtMaxAttachments;
 
     return Tooltip(
       // TODO(parity): 主项目缺失 'chat.attachment' 键，硬编码兜底
-      message: '附件',
+      message: isAtMaxAttachments ? '最多附带 5 个附件' : '附件',
       child: MouseRegion(
-        cursor: isDisabled ? SystemMouseCursors.basic : SystemMouseCursors.click,
+        cursor: isDisabled
+            ? SystemMouseCursors.basic
+            : SystemMouseCursors.click,
         child: GestureDetector(
-          onTap: isDisabled ? null : () => _pickFile(context),
+          onTap: disabled
+              ? null
+              : isAtMaxAttachments
+              ? () => _showMaxAttachmentsSnackBar(context)
+              : () => _pickFile(context),
           child: Container(
             width: 36,
             height: 36,
@@ -148,7 +159,9 @@ class AttachmentPickerButton extends StatelessWidget {
               size: 18,
               color: isDisabled
                   ? (isDark ? AppTheme.darkTextMuted : AppTheme.textMuted)
-                  : (isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary),
+                  : (isDark
+                        ? AppTheme.darkTextSecondary
+                        : AppTheme.textSecondary),
             ),
           ),
         ),

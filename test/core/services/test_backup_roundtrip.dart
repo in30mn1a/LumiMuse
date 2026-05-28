@@ -17,6 +17,7 @@ import 'package:lumimuse/core/services/backup_service.dart';
 
 /// 创建内存数据库用于测试
 AppDatabase createTestDb() {
+  driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
   return AppDatabase.forTesting(NativeDatabase.memory());
 }
 
@@ -400,6 +401,65 @@ void main() {
           final targetMsgs =
               await targetDb.select(targetDb.messages).get();
           expect(targetMsgs.length, equals(0));
+        } finally {
+          await targetDb.close();
+        }
+      } finally {
+        await sourceDb.close();
+      }
+    });
+  });
+
+  group('importFromJson 兼容 v2 单角色格式', () {
+    test('importFromJson imports nested v2 character messages', () async {
+      final sourceDb = createTestDb();
+      try {
+        final charId = await insertTestCharacter(
+          sourceDb,
+          id: 'v2-char',
+          name: 'v2 单角色',
+        );
+        await insertTestConversation(
+          sourceDb,
+          id: 'v2-conv',
+          characterId: charId,
+          title: 'v2 对话',
+        );
+        await insertTestMessage(
+          sourceDb,
+          id: 'v2-msg-user',
+          conversationId: 'v2-conv',
+          role: 'user',
+          content: '嵌套用户消息',
+          seq: 0,
+        );
+        await insertTestMessage(
+          sourceDb,
+          id: 'v2-msg-assistant',
+          conversationId: 'v2-conv',
+          role: 'assistant',
+          content: '嵌套助手回复',
+          seq: 1,
+        );
+
+        final exported = await BackupService(sourceDb).exportCharacterToJson(
+          charId,
+          options: const ExportOptions(
+            includeCharacter: true,
+            includeMemories: true,
+            includeConversations: true,
+          ),
+        );
+
+        final targetDb = createTestDb();
+        try {
+          await BackupService(targetDb).importFromJson(jsonEncode(exported));
+
+          final messages = await targetDb.select(targetDb.messages).get();
+          expect(messages.length, equals(2));
+          final contents = messages.map((m) => m.content).toSet();
+          expect(contents, contains('嵌套用户消息'));
+          expect(contents, contains('嵌套助手回复'));
         } finally {
           await targetDb.close();
         }

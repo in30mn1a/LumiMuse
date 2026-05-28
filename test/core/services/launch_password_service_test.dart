@@ -18,7 +18,7 @@
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:glados/glados.dart' hide expect, group, test;
+import 'package:glados/glados.dart' hide expect, expectLater, group, test;
 import 'package:lumimuse/core/database/database.dart';
 import 'package:lumimuse/core/services/launch_password_service.dart';
 
@@ -144,6 +144,32 @@ void main() {
       expect(await service.isEnabled(), isFalse);
       // 未启用时 verifyPassword 也安全返回 false（不抛异常）
       expect(await service.verifyPassword('anything'), isFalse);
+    });
+
+    test('setPassword rolls back salt when hash write fails', () async {
+      final db = _createTestDb();
+      addTearDown(() => db.close());
+      await db.customStatement('''
+        CREATE TRIGGER fail_launch_password_hash_insert
+        BEFORE INSERT ON settings
+        WHEN NEW.key = 'launch_password_hash'
+        BEGIN
+          SELECT RAISE(FAIL, 'hash write failed');
+        END
+      ''');
+      final service =
+          LaunchPasswordService.forTesting(db, iterations: _kTestIterations);
+
+      await expectLater(
+        service.setPassword('pass1234'),
+        throwsA(isA<Exception>()),
+      );
+
+      final rows = await (db.select(db.settings)
+            ..where((t) => t.key.equals('launch_password_salt')))
+          .get();
+      expect(rows, isEmpty, reason: '三键写入失败时 salt 不应残留');
+      expect(await service.isEnabled(), isFalse);
     });
 
     test('disable 验证失败时抛 StateError 且密码仍生效', () async {

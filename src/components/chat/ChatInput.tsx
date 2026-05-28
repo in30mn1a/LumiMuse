@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
+import { parseJsonResponse } from '@/lib/http';
 import { SparkIcon, StopIcon } from '@/components/ui/icons';
 import type { AttachmentItem } from '@/lib/chat-engine';
 
@@ -63,6 +64,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState('');
   const modelPickerRef = useRef<HTMLDivElement>(null);
   // 选项 DOM 引用数组，用于方向键移动焦点
   const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -106,16 +108,16 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
       return;
     }
     setModelPickerOpen(true);
+    setModelError('');
     if (fetchedModels.length === 0 && !modelLoading && (!externalModelList || externalModelList.length === 0)) {
       setModelLoading(true);
       try {
-        const res = await fetch('/api/models');
-        const data = await res.json();
+        const data = await parseJsonResponse<{ models?: string[] }>(await fetch('/api/models'));
         if (data.models && data.models.length > 0) {
           setFetchedModels(data.models);
         }
       } catch {
-        // 静默失败
+        setModelError(t('input.modelLoadFail'));
       } finally {
         setModelLoading(false);
       }
@@ -344,7 +346,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 {modelLoading ? t('common.loading') : t('input.modelSelect')}
               </div>
               {modelList.length === 0 && !modelLoading && (
-                <div className="px-3 py-2 text-xs text-text-muted">{t('input.noModels')}</div>
+                <div className="px-3 py-2 text-xs text-text-muted">{modelError || t('input.noModels')}</div>
               )}
               {modelList.map((model, index) => {
                 const isSelected = model === currentModel;

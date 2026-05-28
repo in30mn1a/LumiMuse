@@ -182,7 +182,6 @@ export async function POST(request: NextRequest) {
             });
           },
           onError: (error) => {
-            // eslint-disable-next-line @arthurgeron/react-usememo/no-magic-numbers
             send('error', JSON.stringify({ message: error.message }));
             safeClose();
           },
@@ -190,7 +189,6 @@ export async function POST(request: NextRequest) {
 
         setTimeout(() => safeClose(), STREAM_CLOSE_DELAY_MS);
       } catch (err) {
-        // eslint-disable-next-line @arthurgeron/react-usememo/no-magic-numbers
         send('error', JSON.stringify({ message: err instanceof Error ? err.message : UNKNOWN_ERROR_LABEL }));
         safeClose();
       } finally {

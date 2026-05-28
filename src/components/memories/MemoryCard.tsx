@@ -7,8 +7,8 @@ import { PencilIcon, TrashIcon } from '@/components/ui/icons';
 
 interface Props {
   memory: Memory;
-  onUpdate: (id: string, updates: Partial<Memory>) => void;
-  onDelete: (id: string) => void;
+  onUpdate: (id: string, updates: Partial<Memory>) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
   initialEditing?: boolean;
   selectMode?: boolean;
   selected?: boolean;
@@ -44,12 +44,12 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
     return () => window.removeEventListener('resize', updateCanExpand);
   }, [memory.content, updateCanExpand]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const nextTags = editTags
       .split(/[\s,，#]+/)
       .map(tag => tag.trim())
       .filter(Boolean);
-    onUpdate(memory.id, { content: editContent, category: editCategory, tags: nextTags });
+    await onUpdate(memory.id, { content: editContent, category: editCategory, tags: nextTags });
     setEditing(false);
     setExpanded(false);
   };
@@ -169,7 +169,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                 )}
                 {editing && (
                   <div className="ml-auto flex shrink-0 items-center gap-1.5 lg:hidden">
-                    <button onClick={e => { e.stopPropagation(); handleSave(); }} className="soft-button soft-button-primary h-8 min-h-0 px-3 py-0 text-xs">
+                    <button onClick={e => { e.stopPropagation(); void handleSave(); }} className="soft-button soft-button-primary h-8 min-h-0 px-3 py-0 text-xs">
                       {t('memory.save')}
                     </button>
                     <button onClick={e => { e.stopPropagation(); handleCancel(); }} className="soft-button soft-button-secondary h-8 min-h-0 px-3 py-0 text-xs">
@@ -188,7 +188,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       <PencilIcon className="h-3.5 w-3.5" />
                     </button>
                     <button
-                      onClick={e => { e.stopPropagation(); onDelete(memory.id); }}
+                      onClick={e => { e.stopPropagation(); void onDelete(memory.id); }}
                       aria-label={t('memory.delete')}
                       title={t('memory.delete')}
                       className="soft-button soft-button-danger h-8 min-h-0 w-8 rounded-full px-0 py-0 text-xs"
@@ -204,7 +204,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
               <div className="hidden shrink-0 flex-wrap items-center gap-2 lg:flex lg:justify-end">
                 {editing ? (
                   <>
-                    <button onClick={e => { e.stopPropagation(); handleSave(); }} className="soft-button soft-button-primary px-3 py-2 text-xs">
+                    <button onClick={e => { e.stopPropagation(); void handleSave(); }} className="soft-button soft-button-primary px-3 py-2 text-xs">
                       {t('memory.save')}
                     </button>
                     <button onClick={e => { e.stopPropagation(); handleCancel(); }} className="soft-button soft-button-secondary px-3 py-2 text-xs">
@@ -217,7 +217,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       <PencilIcon className="h-3.5 w-3.5" />
                       {t('memory.edit')}
                     </button>
-                    <button onClick={e => { e.stopPropagation(); onDelete(memory.id); }} className="soft-button soft-button-danger px-3 py-2 text-xs">
+                    <button onClick={e => { e.stopPropagation(); void onDelete(memory.id); }} className="soft-button soft-button-danger px-3 py-2 text-xs">
                       <TrashIcon className="h-3.5 w-3.5" />
                       {t('memory.delete')}
                     </button>

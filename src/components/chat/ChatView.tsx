@@ -17,6 +17,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { estimateTokens } from '@/lib/token-counter';
 import { getVersionInfo } from '@/lib/chat-view-utils';
+import { expectOkResponse, parseJsonResponse } from '@/lib/http';
 import { MenuIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
 
@@ -66,9 +67,10 @@ function uniqueMessagesById(messages: Message[]): Message[] {
 
 async function fetchMessagesPage(conversationId: string, options?: { limit?: number; beforeSeq?: number | null; all?: boolean; signal?: AbortSignal }): Promise<MessagesResponse> {
   const response = await fetch(messagesUrl(conversationId, options), { signal: options?.signal });
-  const data = await response.json();
+  const data = await parseJsonResponse<MessagesResponse | Message[]>(response);
   if (Array.isArray(data)) {
-    return { messages: data, hasMore: false, oldestSeq: data[0]?.seq ?? null };
+    const oldestSeq = typeof data[0]?.seq === 'number' ? data[0].seq : null;
+    return { messages: data, hasMore: false, oldestSeq };
   }
   return data as MessagesResponse;
 }
@@ -848,21 +850,30 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     // 用 ref 取最新 activeConvId，避免被组件 re-render 之间的旧闭包污染
     const targetConvId = activeConvIdRef.current;
     if (!targetConvId) return;
+    const previousActiveConvId = activeConvIdRef.current;
+    const previousMessages = messagesRef.current;
     // 关闭弹窗 + 决定下一段对话（基于 targetConvId 而不是闭包变量）
     const next = conversations.find(conversation => conversation.id !== targetConvId) || null;
     // 先切换到下一个对话，避免删除时消息区闪白
     setActiveConvId(next?.id || null);
     if (!next) setMessages([]);
     setDeleteOpen(false);
-    // 关键点：DELETE 用上面快照下来的 targetConvId，
-    // 即便用户在 await 期间又切到别的对话也只会删自己最初确认的那一条
-    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
-    await fetch(`/api/conversations/${targetConvId}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
-    void refreshConversationState(next?.id || null);
+    try {
+      // 关键点：DELETE 用上面快照下来的 targetConvId，
+      // 即便用户在 await 期间又切到别的对话也只会删自己最初确认的那一条
+      // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
+      await expectOkResponse(await fetch(`/api/conversations/${targetConvId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
+      void refreshConversationState(next?.id || null);
+    } catch (err) {
+      setActiveConvId(previousActiveConvId);
+      setMessages(previousMessages);
+      setDeleteOpen(true);
+      showToast(err instanceof Error ? err.message : t('chat.deleteError'), 'error');
+    }
   };
 
   const handleEditMessage = useCallback(async (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => {
@@ -881,7 +892,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
     });
-    const data = await res.json() as { ok: boolean; deleted: 'message' | 'version'; message?: Message };
+    const data = await parseJsonResponse<{ ok: boolean; deleted: 'message' | 'version'; message?: Message }>(res);
+    if (!data.ok) throw new Error(t('message.deleteFailed'));
     if (data.deleted === 'version' && data.message) {
       // 只删了一个版本，用返回的更新后消息替换
       setMessages(prev => prev.map(m => m.id === id ? data.message! : m));
@@ -889,7 +901,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       // 整条消息被删除
       setMessages(prev => prev.filter(m => m.id !== id));
     }
-  }, []);
+  }, [t]);
 
   const handleStop = useCallback(() => {
     // 停止当前对话的流
@@ -1710,7 +1722,27 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             onSetPrimaryImage={handleSetPrimaryImage}
           />
 
-          <ChatInput onSend={handleSend} onStop={handleStop} disabled={isStreamingHere} isGenerating={isStreamingHere} currentModel={currentModel} onModelChange={async (model: string) => { setCurrentModel(model); await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) }); }} />
+          <ChatInput
+            onSend={handleSend}
+            onStop={handleStop}
+            disabled={isStreamingHere}
+            isGenerating={isStreamingHere}
+            currentModel={currentModel}
+            onModelChange={async (model: string) => {
+              const previousModel = currentModel;
+              setCurrentModel(model);
+              try {
+                await parseJsonResponse<void>(await fetch('/api/settings', {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ model }),
+                }));
+              } catch (err) {
+                setCurrentModel(previousModel);
+                showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
+              }
+            }}
+          />
         </section>
 
         <ConversationDesktopAside
@@ -1755,15 +1787,19 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           onToggleIgnore={async () => {
             if (!activeConvId) return;
             const isIgnored = Boolean(activeConversation?.ignore_memory);
-            await fetch(`/api/conversations/${activeConvId}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ ignore_memory: !isIgnored }),
-            });
-            setConversations(prev => prev.map(c =>
-              c.id === activeConvId ? { ...c, ignore_memory: isIgnored ? 0 : 1 } : c
-            ));
-            showToast(isIgnored ? t('chat.ignoreOff') : t('chat.ignoreOn'), 'info');
+            try {
+              await expectOkResponse(await fetch(`/api/conversations/${activeConvId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ignore_memory: !isIgnored }),
+              }));
+              setConversations(prev => prev.map(c =>
+                c.id === activeConvId ? { ...c, ignore_memory: isIgnored ? 0 : 1 } : c
+              ));
+              showToast(isIgnored ? t('chat.ignoreOff') : t('chat.ignoreOn'), 'info');
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : t('chat.ignoreToggleFail'), 'error');
+            }
           }}
           onManualExtract={handleManualExtract}
           loadAllMessages={async (cid) => {

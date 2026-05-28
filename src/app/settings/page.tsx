@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, Settings, ImageGenSettings, DEFAULT_IMAGE_GEN_SETTING
 import { applyFontStyle } from '@/lib/font-stacks';
 import { writeThemeStorage } from '@/lib/theme-provider';
 import { API_KEY_MASK } from '@/lib/constants';
+import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
@@ -25,23 +26,31 @@ export default function SettingsPage() {
   const { t, setLang } = useTranslation();
   const { showToast } = useToast();
 
-  const loadProviders = useCallback(() => {
-    fetch('/api/providers').then(r => r.json()).then(data => {
+  const loadProviders = useCallback(async () => {
+    try {
+      const data = await parseJsonResponse<{ providers?: ApiProvider[]; active_provider_id?: string }>(await fetch('/api/providers'));
       setProviders(data.providers || []);
       setActiveProviderId(data.active_provider_id || '');
-    });
-  }, []);
+    } catch (err) {
+      showToast(`${t('common.loadFailed')}: ${getErrorMessage(err)}`, 'error');
+    }
+  }, [showToast, t]);
 
   useEffect(() => {
-    fetch('/api/settings').then(r => r.json()).then(s => {
-      setSettings({ ...DEFAULT_SETTINGS, ...s });
-      document.documentElement.classList.toggle('dark', s.theme === 'dark');
-      writeThemeStorage(s.theme);
-      applyFontStyle((s.font_style || 'wenkai') as FontStyle);
-    });
+    fetch('/api/settings')
+      .then(r => parseJsonResponse<Settings>(r))
+      .then(s => {
+        setSettings({ ...DEFAULT_SETTINGS, ...s });
+        document.documentElement.classList.toggle('dark', s.theme === 'dark');
+        writeThemeStorage(s.theme);
+        applyFontStyle((s.font_style || 'wenkai') as FontStyle);
+      })
+      .catch(err => {
+        showToast(`${t('common.loadFailed')}: ${getErrorMessage(err)}`, 'error');
+      });
     fetch('/api/auth').then(r => r.json()).then(d => setAuthEnabled(d.authEnabled)).catch(() => {});
-    loadProviders();
-  }, [loadProviders]);
+    queueMicrotask(() => void loadProviders());
+  }, [loadProviders, showToast, t]);
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     if (typeof value === 'number' && !Number.isFinite(value)) return;
@@ -70,7 +79,7 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const data = await response.json();
+      const data = await parseJsonResponse<{ error?: string; models?: string[] }>(response);
       if (data.error) {
         setModelError(data.error);
       } else {
@@ -93,17 +102,14 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
-      }
+      await expectOkResponse(response);
       setLang(settings.language);
       document.documentElement.classList.toggle('dark', settings.theme === 'dark');
       writeThemeStorage(settings.theme);
       applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
       showToast(t('settings.saveSuccess'), 'success');
     } catch (err) {
-      showToast(`${t('settings.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
       setSaving('idle');
     }
@@ -111,53 +117,67 @@ export default function SettingsPage() {
 
   const handleLogout = async () => {
     if (!window.confirm(t('auth.logoutConfirm'))) return;
-    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头，
-    // 否则会被 415 拦截，登出表面上"点了没反应"
-    await fetch('/api/auth', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    router.replace('/login');
+    try {
+      // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头，
+      // 否则会被 415 拦截，登出表面上"点了没反应"
+      await expectOkResponse(await fetch('/api/auth', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      router.replace('/login');
+    } catch (err) {
+      showToast(`${t('auth.logoutFailed')}: ${getErrorMessage(err)}`, 'error');
+    }
   };
 
   const handleActivateProvider = async (id: string) => {
-    await fetch('/api/providers/activate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
-    const res = await fetch('/api/settings');
-    const s = await res.json();
-    setSettings({ ...DEFAULT_SETTINGS, ...s });
-    setActiveProviderId(id);
-    setModelList([]);
-    setModelError(null);
+    try {
+      await expectOkResponse(await fetch('/api/providers/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      }));
+      const s = await parseJsonResponse<Settings>(await fetch('/api/settings'));
+      setSettings({ ...DEFAULT_SETTINGS, ...s });
+      setActiveProviderId(id);
+      setModelList([]);
+      setModelError(null);
+    } catch (err) {
+      showToast(`${t('common.operationFailed')}: ${getErrorMessage(err)}`, 'error');
+    }
   };
 
   const handleDeleteProvider = async (id: string) => {
     if (!window.confirm(t('settings.providerDeleteConfirm'))) return;
-    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
-    await fetch(`/api/providers?id=${id}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    loadProviders();
+    try {
+      // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
+      await expectOkResponse(await fetch(`/api/providers?id=${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      void loadProviders();
+    } catch (err) {
+      showToast(`${t('common.operationFailed')}: ${getErrorMessage(err)}`, 'error');
+    }
   };
 
   const handleSaveProvider = async () => {
     if (!editingProvider) return;
     const isEdit = !!editingProvider.id;
     const method = isEdit ? 'PUT' : 'POST';
-    await fetch('/api/providers', {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...editingProvider, save_as_current: true }),
-    });
-    setEditingProvider(null);
-    loadProviders();
-    const res = await fetch('/api/settings');
-    const s = await res.json();
-    setSettings({ ...DEFAULT_SETTINGS, ...s });
+    try {
+      await expectOkResponse(await fetch('/api/providers', {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...editingProvider, save_as_current: true }),
+      }));
+      setEditingProvider(null);
+      void loadProviders();
+      const s = await parseJsonResponse<Settings>(await fetch('/api/settings'));
+      setSettings({ ...DEFAULT_SETTINGS, ...s });
+    } catch (err) {
+      showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
+    }
   };
 
   const handleSaveCurrentAsProvider = async () => {
@@ -179,14 +199,11 @@ export default function SettingsPage() {
           save_as_current: true,
         }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
-      }
-      loadProviders();
+      await expectOkResponse(res);
+      void loadProviders();
       showToast(t('settings.saveSuccess'), 'success');
     } catch (err) {
-      showToast(`${t('settings.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
     }
   };
 
@@ -208,14 +225,11 @@ export default function SettingsPage() {
           save_as_current: true,
         }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
-      }
-      loadProviders();
+      await expectOkResponse(res);
+      void loadProviders();
       showToast(t('settings.saveSuccess'), 'success');
     } catch (err) {
-      showToast(`${t('settings.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
     }
   };
 

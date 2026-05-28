@@ -32,6 +32,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.deleteTitle': '删除这段对话？',
     'chat.deleteConfirm': '删除后会清除这段对话的全部消息，无法恢复。',
     'chat.deleteAction': '删除对话',
+    'chat.deleteError': '删除对话失败',
     'chat.cancel': '取消',
     'chat.unextracted': '条待提取',
     'chat.resetExtraction': '切换提取状态',
@@ -61,6 +62,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.stop': '停止',
     'input.modelSelect': '选择模型',
     'input.noModels': '暂无可用模型，请先在设置中配置 API',
+    'input.modelLoadFail': '模型列表加载失败，请检查 API 设置',
 
     'status.tokens': 'token',
     'status.streaming': '正在生成',
@@ -253,11 +255,14 @@ const translations: Record<Lang, Record<string, string>> = {
     'common.close': '关闭',
     'common.save': '保存',
     'common.cancel': '取消',
+    'common.loadFailed': '加载失败',
+    'common.operationFailed': '操作失败',
 
     'message.copy': '复制',
     'message.copied': '已复制',
     'message.edit': '编辑消息',
     'message.delete': '删除消息',
+    'message.deleteFailed': '删除消息失败',
     'message.regenerate': '重新生成',
     'message.regenerateFromHere': '重新回答',
     'message.you': '你',
@@ -321,6 +326,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.manualExtractFail': '触发提取失败',
     'chat.ignoreOn': '已忽略本对话的记忆提取',
     'chat.ignoreOff': '已恢复记忆提取',
+    'chat.ignoreToggleFail': '切换记忆提取状态失败',
 
     'imageGen.title': '生成图片',
     'imageGen.aiHint': 'AI 提示（可选）',
@@ -399,6 +405,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'auth.logout': '退出登录',
     'auth.logoutConfirm': '确定要退出登录吗？',
+    'auth.logoutFailed': '退出登录失败',
 
     'export.title': '导出数据',
     'export.hint': '选择要包含在备份文件中的内容',
@@ -530,6 +537,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.deleteTitle': 'Delete this conversation?',
     'chat.deleteConfirm': 'This will remove every message in the conversation and cannot be undone.',
     'chat.deleteAction': 'Delete conversation',
+    'chat.deleteError': 'Failed to delete conversation',
     'chat.cancel': 'Cancel',
     'chat.unextracted': 'unextracted',
     'chat.resetExtraction': 'Reset extraction status',
@@ -559,6 +567,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.stop': 'Stop',
     'input.modelSelect': 'Select Model',
     'input.noModels': 'No models available. Please configure API in settings first.',
+    'input.modelLoadFail': 'Failed to load models. Please check API settings.',
 
     'status.tokens': 'tokens',
     'status.streaming': 'Generating',
@@ -752,11 +761,14 @@ const translations: Record<Lang, Record<string, string>> = {
     'common.close': 'Close',
     'common.save': 'Save',
     'common.cancel': 'Cancel',
+    'common.loadFailed': 'Load failed',
+    'common.operationFailed': 'Operation failed',
 
     'message.copy': 'Copy',
     'message.copied': 'Copied',
     'message.edit': 'Edit message',
     'message.delete': 'Delete message',
+    'message.deleteFailed': 'Failed to delete message',
     'message.regenerate': 'Regenerate',
     'message.regenerateFromHere': 'Regenerate from here',
     'message.you': 'You',
@@ -820,6 +832,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.manualExtractFail': 'Failed to trigger extraction',
     'chat.ignoreOn': 'Memory extraction disabled for this conversation',
     'chat.ignoreOff': 'Memory extraction restored',
+    'chat.ignoreToggleFail': 'Failed to update memory extraction setting',
 
     'imageGen.title': 'Generate Image',
     'imageGen.aiHint': 'AI hint (optional)',
@@ -898,6 +911,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'auth.logout': 'Log out',
     'auth.logoutConfirm': 'Are you sure you want to log out?',
+    'auth.logoutFailed': 'Failed to log out',
 
     'export.title': 'Export data',
     'export.hint': 'Choose what to include in the backup file',

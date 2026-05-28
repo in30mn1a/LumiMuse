@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Memory, MEMORY_CATEGORIES } from '@/types';
 import MemoryCard from './MemoryCard';
 import { useTranslation } from '@/lib/i18n-context';
+import { expectOkResponse, parseJsonResponse } from '@/lib/http';
 import { PlusIcon, SearchIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 
 interface Props {
@@ -31,6 +32,8 @@ export default function MemoryList({ characterId }: Props) {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchDeleteError, setBatchDeleteError] = useState('');
+  const [listError, setListError] = useState('');
+  const [mutationError, setMutationError] = useState('');
   const { t } = useTranslation();
 
   // 只保留当前页面中存在的选中 ID（切换角色/筛选后旧 ID 自动失效）
@@ -74,13 +77,14 @@ export default function MemoryList({ characterId }: Props) {
     if (ids.length === 0) return;
     if (!window.confirm(t('memory.batchDeleteConfirm').replace('{count}', String(ids.length)))) return;
     setBatchDeleteError('');
+    setMutationError('');
     try {
       const response = await fetch('/api/memories', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids, character_id: characterId || undefined }),
       });
-      if (!response.ok) throw new Error('Delete failed');
+      await expectOkResponse(response);
       setSelectMode(false);
       setSelectedIds(new Set());
       const remaining = totalMemories - ids.length;
@@ -88,7 +92,7 @@ export default function MemoryList({ characterId }: Props) {
       if (page > maxPage) {
         setPage(maxPage);
       } else {
-        fetchMemories(page);
+        await fetchMemories(page);
       }
     } catch {
       setBatchDeleteError(t('memory.batchDeleteFailed'));
@@ -96,6 +100,7 @@ export default function MemoryList({ characterId }: Props) {
   };
 
   const fetchMemories = useCallback(async (targetPage = page) => {
+    setListError('');
     const params = new URLSearchParams();
     if (characterId) params.set('character_id', characterId);
     if (categoryFilter) params.set('category', categoryFilter);
@@ -104,8 +109,7 @@ export default function MemoryList({ characterId }: Props) {
     params.set('limit', String(PAGE_SIZE));
     params.set('offset', String((targetPage - 1) * PAGE_SIZE));
 
-    const response = await fetch(`/api/memories?${params}`);
-    const data = await response.json() as MemoriesResponse;
+    const data = await parseJsonResponse<MemoriesResponse>(await fetch(`/api/memories?${params}`));
     setMemories(data.memories);
     setTotalMemories(data.total);
     setHasMore(data.hasMore);
@@ -121,14 +125,16 @@ export default function MemoryList({ characterId }: Props) {
     params.set('offset', String((page - 1) * PAGE_SIZE));
 
     fetch(`/api/memories?${params}`)
-      .then(response => response.json() as Promise<MemoriesResponse>)
+      .then(response => parseJsonResponse<MemoriesResponse>(response))
       .then(data => {
+        setListError('');
         setMemories(data.memories);
         setTotalMemories(data.total);
         setHasMore(data.hasMore);
         if (data.memories.length === 0 && page > 1) setPage(1);
-      });
-  }, [characterId, categoryFilter, keyword, page, sortOrder]);
+      })
+      .catch(() => setListError(t('common.loadFailed')));
+  }, [characterId, categoryFilter, keyword, page, sortOrder, t]);
 
   const summary = useMemo(() => {
     const total = totalMemories;
@@ -138,52 +144,67 @@ export default function MemoryList({ characterId }: Props) {
   const totalPages = Math.max(1, Math.ceil(totalMemories / PAGE_SIZE));
 
   const handleDelete = async (id: string) => {
-    // 注意：proxy.ts 的 CSRF 校验会要求所有写方法（含 DELETE）带 application/json
-    // Content-Type；缺这个头的 DELETE 会被拦截返回 415，UI 表现为"点击无反应"
-    await fetch(`/api/memories/${id}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    const nextPage = memories.length === 1 && page > 1 ? page - 1 : page;
-    if (nextPage !== page) {
-      setPage(nextPage);
-    } else {
-      fetchMemories(nextPage);
+    setMutationError('');
+    try {
+      // 注意：proxy.ts 的 CSRF 校验会要求所有写方法（含 DELETE）带 application/json
+      // Content-Type；缺这个头的 DELETE 会被拦截返回 415，UI 表现为"点击无反应"
+      await expectOkResponse(await fetch(`/api/memories/${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      const nextPage = memories.length === 1 && page > 1 ? page - 1 : page;
+      if (nextPage !== page) {
+        setPage(nextPage);
+      } else {
+        await fetchMemories(nextPage);
+      }
+    } catch {
+      setMutationError(t('common.operationFailed'));
     }
   };
 
   const handleUpdate = async (id: string, updates: Partial<Memory>) => {
-    await fetch(`/api/memories/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-    setMemories(prev => prev.map(memory => (memory.id === id ? { ...memory, ...updates } : memory)));
+    setMutationError('');
+    try {
+      const updatedMemory = await parseJsonResponse<Memory>(await fetch(`/api/memories/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...updates, character_id: characterId || undefined }),
+      }));
+      setMemories(prev => prev.map(memory => (memory.id === id ? updatedMemory : memory)));
+    } catch {
+      setMutationError(t('common.operationFailed'));
+      throw new Error(t('common.operationFailed'));
+    }
   };
 
   const handleAdd = async () => {
     if (!characterId) return;
-    const response = await fetch('/api/memories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        character_id: characterId,
-        category: MEMORY_CATEGORIES[1],
-        content: t('memory.newContent'),
-        confidence: 0.9,
-        tags: [],
-      }),
-    });
-    const newMemory = await response.json();
-    setSortOrder('newest');
-    if (page !== 1) {
-      setPage(1);
-    } else {
-      setMemories(prev => [newMemory, ...prev].slice(0, PAGE_SIZE));
-      setTotalMemories(prev => prev + 1);
-      setHasMore(totalMemories + 1 > PAGE_SIZE);
+    setMutationError('');
+    try {
+      const newMemory = await parseJsonResponse<Memory>(await fetch('/api/memories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          character_id: characterId,
+          category: MEMORY_CATEGORIES[1],
+          content: t('memory.newContent'),
+          confidence: 0.9,
+          tags: [],
+        }),
+      }));
+      setSortOrder('newest');
+      if (page !== 1) {
+        setPage(1);
+      } else {
+        setMemories(prev => [newMemory, ...prev].slice(0, PAGE_SIZE));
+        setTotalMemories(prev => prev + 1);
+        setHasMore(totalMemories + 1 > PAGE_SIZE);
+      }
+      setEditingMemoryId(newMemory.id);
+    } catch {
+      setMutationError(t('common.operationFailed'));
     }
-    setEditingMemoryId(newMemory.id);
   };
 
   return (
@@ -276,6 +297,10 @@ export default function MemoryList({ characterId }: Props) {
                 {t('memory.summary')} {summary.total}
               </span>
             </div>
+          )}
+
+          {(listError || mutationError) && (
+            <p className="text-xs text-red-500">{mutationError || listError}</p>
           )}
         </div>
       </div>

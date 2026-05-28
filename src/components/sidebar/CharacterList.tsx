@@ -23,6 +23,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { Character } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
+import { parseJsonResponse } from '@/lib/http';
 import { PencilIcon, PlusIcon, SparkIcon } from '@/components/ui/icons';
 
 interface Props {
@@ -133,6 +134,7 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
 export default function CharacterList({ selectedId, onSelect }: Props) {
   const router = useRouter();
   const [characters, setCharacters] = useState<Character[]>([]);
+  const [listError, setListError] = useState('');
   const { t } = useTranslation();
 
   // 桌面端鼠标按下后移动 5px 才进入拖拽，避免误触；
@@ -144,19 +146,29 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
   );
 
   useEffect(() => {
-    fetch('/api/characters').then(r => r.json()).then(setCharacters);
-  }, []);
+    fetch('/api/characters')
+      .then(r => parseJsonResponse<Character[]>(r))
+      .then(data => {
+        setListError('');
+        setCharacters(data);
+      })
+      .catch(() => setListError(t('common.loadFailed')));
+  }, [t]);
 
   const handleCreate = async () => {
-    const response = await fetch('/api/characters', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: t('char.newCharacterName') }),
-    });
-    const newCharacter = await response.json();
-    setCharacters(prev => [newCharacter, ...prev]);
-    onSelect(newCharacter.id, newCharacter);
-    router.push(`/characters/${newCharacter.id}`);
+    setListError('');
+    try {
+      const newCharacter = await parseJsonResponse<Character>(await fetch('/api/characters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: t('char.newCharacterName') }),
+      }));
+      setCharacters(prev => [newCharacter, ...prev]);
+      onSelect(newCharacter.id, newCharacter);
+      router.push(`/characters/${newCharacter.id}`);
+    } catch {
+      setListError(t('common.operationFailed'));
+    }
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -180,6 +192,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
       if (!res.ok) throw new Error('reorder failed');
     } catch (err) {
       console.warn('[character-reorder] 排序持久化失败，已回滚：', err);
+      setListError(t('common.operationFailed'));
       setCharacters(previous);
     }
   };
@@ -191,6 +204,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
           <PlusIcon className="h-4 w-4" />
           {t('sidebar.create')}
         </button>
+        {listError && <p className="mt-2 text-xs text-red-500">{listError}</p>}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">

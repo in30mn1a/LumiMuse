@@ -8,6 +8,10 @@ import { ChatTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages } from '@/lib/messages';
 import { chatBodySchema, formatZodFieldErrors } from '@/lib/schemas';
 
+const EXTRACTING_SIGNAL = JSON.stringify({ status: 'extracting' });
+const STREAM_CLOSE_DELAY_MS = 100;
+const UNKNOWN_ERROR_LABEL = 'Unknown error';
+
 export async function POST(request: NextRequest) {
   let parsedBody: unknown;
   try {
@@ -169,7 +173,7 @@ export async function POST(request: NextRequest) {
                 if (shouldExtract) {
                   enqueueExtraction(conversation.character_id, conversation_id, extractionMessages);
                   // send 内部已对 closed 做兜底，即便流已关闭也是 no-op
-                  send('memory', JSON.stringify({ status: 'extracting' }));
+                  send('memory', EXTRACTING_SIGNAL);
                 }
               } catch (err) {
                 // 异步任务必须自己捕获异常，避免 unhandled rejection 导致进程崩溃
@@ -178,14 +182,16 @@ export async function POST(request: NextRequest) {
             });
           },
           onError: (error) => {
+            // eslint-disable-next-line @arthurgeron/react-usememo/no-magic-numbers
             send('error', JSON.stringify({ message: error.message }));
             safeClose();
           },
         }, { ...options, timeContext });
 
-        setTimeout(() => safeClose(), 100);
+        setTimeout(() => safeClose(), STREAM_CLOSE_DELAY_MS);
       } catch (err) {
-        send('error', JSON.stringify({ message: err instanceof Error ? err.message : 'Unknown error' }));
+        // eslint-disable-next-line @arthurgeron/react-usememo/no-magic-numbers
+        send('error', JSON.stringify({ message: err instanceof Error ? err.message : UNKNOWN_ERROR_LABEL }));
         safeClose();
       } finally {
         request.signal.removeEventListener('abort', onAbort);

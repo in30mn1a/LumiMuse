@@ -475,6 +475,7 @@ export async function runChat(
     const fullText = stripTimestampPrefix(rawText);
     const tokenCount = estimateTokens(fullText);
     const asstNow = new Date().toISOString();
+    const wasStopped = options?.signal?.aborted === true;
 
     if (options?.regenerateAssistantId) {
       const existing = db.prepare('SELECT content, token_count, metadata FROM messages WHERE id = ?').get(options.regenerateAssistantId) as { content: string; token_count: number; metadata: string } | undefined;
@@ -489,6 +490,13 @@ export async function runChat(
       versions.push({ content: fullText, token_count: tokenCount });
       meta.versions = versions;
       meta.activeVersion = versions.length - 1;
+      if (wasStopped) {
+        meta.generation_stopped = true;
+        meta.generation_stop_reason = 'abort';
+      } else {
+        delete meta.generation_stopped;
+        delete meta.generation_stop_reason;
+      }
 
       // 用事务包裹两条 UPDATE，保持与新建分支对称、避免半成功状态
       db.transaction(() => {
@@ -499,7 +507,11 @@ export async function runChat(
       await callbacks.onDone(fullText, tokenCount);
     } else {
       const asstId = uuidv4().slice(0, 12);
-      const meta = { versions: [{ content: fullText, token_count: tokenCount }], activeVersion: 0 };
+      const meta: Record<string, unknown> = { versions: [{ content: fullText, token_count: tokenCount }], activeVersion: 0 };
+      if (wasStopped) {
+        meta.generation_stopped = true;
+        meta.generation_stop_reason = 'abort';
+      }
       // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
       db.transaction(() => {
         const asstSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;

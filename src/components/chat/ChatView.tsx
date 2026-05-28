@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Character, Conversation, Message, Memory } from '@/types';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
@@ -214,6 +214,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   // 直接读取闭包内 activeConvId 会导致删错对象。Ref 保证 handleDeleteConv 拿到的是"最新"值，
   // 而本地变量 targetConvId 用于"快照确认时刻"，避免删除中途又被切换覆盖。
   const activeConvIdRef = useRef<string | null>(activeConvId);
+  const selectActiveConvId = useCallback((nextConvId: string | null) => {
+    activeConvIdRef.current = nextConvId;
+    setActiveConvId(nextConvId);
+  }, []);
   useEffect(() => {
     activeConvIdRef.current = activeConvId;
   }, [activeConvId]);
@@ -229,9 +233,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     activeStreamsRef.current = activeStreams;
   }, [activeStreams]);
   const characterRef = useRef<Character | null>(character);
-  useEffect(() => {
+  useLayoutEffect(() => {
     characterRef.current = character;
   }, [character]);
+  const loadCharacterStateSeqRef = useRef(0);
+  const refreshConversationStateSeqRef = useRef(0);
 
   // 竞态保护：用户切换对话时立即清空 streamingText / streamingConvId，
   // 避免上一段流尚未结束就把旧文字带到新对话。
@@ -372,7 +378,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   // 未提取记忆的用户消息数（使用服务端返回的真实数量，不受前端分页限制）
   const unextractedCount = serverUnextractedCount;
-  const loadCharacterState = async (characterId: string, preferredConversationId: string | null) => {
+  const loadCharacterState = useCallback(async (characterId: string, preferredConversationId: string | null) => {
+    const requestSeq = ++loadCharacterStateSeqRef.current;
     setLoadingThread(true);
     try {
       const [conversationResponse, memoryResponse] = await Promise.all([
@@ -382,35 +389,41 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
       const conversationList = await conversationResponse.json();
       const memoryList = await memoryResponse.json();
+      if (loadCharacterStateSeqRef.current !== requestSeq || characterRef.current?.id !== characterId) return;
       setConversations(conversationList);
       setMemories(memoryList);
 
       const nextActive = preferredConversationId && conversationList.some((item: Conversation) => item.id === preferredConversationId)
         ? preferredConversationId
         : conversationList[0]?.id || null;
-      setActiveConvId(nextActive);
+      selectActiveConvId(nextActive);
 
       if (!nextActive) {
         setMessages([]);
         setStreamingText('');
       }
     } finally {
-      setLoadingThread(false);
+      if (loadCharacterStateSeqRef.current === requestSeq) {
+        setLoadingThread(false);
+      }
     }
-  };
+  }, [selectActiveConvId]);
 
   useEffect(() => {
-    queueMicrotask(() => setActiveConvId(conversationId));
-  }, [conversationId]);
+    queueMicrotask(() => selectActiveConvId(conversationId));
+  }, [conversationId, selectActiveConvId]);
 
   useEffect(() => {
     if (!character) {
+      loadCharacterStateSeqRef.current += 1;
+      refreshConversationStateSeqRef.current += 1;
       queueMicrotask(() => {
         setConversations([]);
         setMemories([]);
         setMessages([]);
         setStreamingText('');
-        setActiveConvId(null);
+        selectActiveConvId(null);
+        setLoadingThread(false);
       });
       previousCharacterIdRef.current = null;
       return;
@@ -431,7 +444,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     }, 0);
 
     return () => clearTimeout(timer);
-  }, [character, conversationId]);
+  }, [character, conversationId, loadCharacterState, selectActiveConvId]);
 
   // 待滚动的目标消息 id，等 DOM 渲染完后执行
   const pendingScrollRef = useRef<string | null>(null);
@@ -445,6 +458,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     const loadingConvId = activeConvId;
     fetchMessagesPage(loadingConvId, { limit: PAGE_SIZE, all: needsTarget, signal: ctl.signal })
       .then(({ messages: msgs, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt }) => {
+        if (activeConvIdRef.current !== loadingConvId) return;
         setMessages(uniqueMessagesById(msgs));
         setHasOlderMessages(hasMore);
         setOldestLoadedSeq(oldestSeq);
@@ -474,6 +488,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         const cid = activeConvId;
         fetchMessagesPage(cid, { limit: Math.max(PAGE_SIZE, messages.length) })
           .then(({ unextractedCount: uc, totalTokens: tt }) => {
+            if (activeConvIdRef.current !== cid) return;
             if (uc !== undefined) setServerUnextractedCount(uc);
             if (tt !== undefined) setServerTotalTokens({ convId: cid, value: tt });
           })
@@ -627,6 +642,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       const cid = activeConvId;
       fetchMessagesPage(cid, { limit: Math.max(PAGE_SIZE, messages.length) })
         .then(({ messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt }) => {
+          if (activeConvIdRef.current !== cid) return;
           setMessages(uniqueMessagesById(freshMessages));
           setHasOlderMessages(hasMore);
           setOldestLoadedSeq(oldestSeq);
@@ -659,6 +675,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     if (!convId) return;
     // 用 ref 读取最新 messages 长度，避免 callback 引用因 messages 变化而频繁重建
     const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt } = await fetchMessagesPage(convId, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
+    if (activeConvIdRef.current !== convId) return;
     setMessages(uniqueMessagesById(freshMessages));
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
@@ -668,6 +685,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   const refreshMessagesForConversation = useCallback(async (conversationIdToRefresh: string) => {
     const { messages: freshMessages, hasMore, oldestSeq, unextractedCount: uc, totalTokens: tt } = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(PAGE_SIZE, messagesRef.current.length) });
+    if (activeConvIdRef.current !== conversationIdToRefresh) return;
     setMessages(uniqueMessagesById(freshMessages));
     setHasOlderMessages(hasMore);
     setOldestLoadedSeq(oldestSeq);
@@ -677,12 +695,14 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   const loadOlderMessages = useCallback(async () => {
     if (!activeConvId || !hasOlderMessages || oldestLoadedSeq === null || loadingOlderMessages) return;
+    const loadingConvId = activeConvId;
     setLoadingOlderMessages(true);
     try {
-      const { messages: olderMessages, hasMore, oldestSeq } = await fetchMessagesPage(activeConvId, {
+      const { messages: olderMessages, hasMore, oldestSeq } = await fetchMessagesPage(loadingConvId, {
         limit: PAGE_SIZE,
         beforeSeq: oldestLoadedSeq,
       });
+      if (activeConvIdRef.current !== loadingConvId) return;
       setMessages(prev => uniqueMessagesById([...olderMessages, ...prev]));
       setHasOlderMessages(hasMore);
       setOldestLoadedSeq(oldestSeq);
@@ -777,18 +797,22 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   }, [showToast, messages.length, t]);
 
   const refreshConversationState = async (nextActiveId?: string | null) => {
-    if (!character) return;
+    const currentCharacter = characterRef.current;
+    if (!currentCharacter) return;
+    const requestSeq = ++refreshConversationStateSeqRef.current;
+    const requestedCharacterId = currentCharacter.id;
     const [conversationResponse, memoryResponse] = await Promise.all([
-      fetch(`/api/conversations?character_id=${character.id}`),
-      fetch(`/api/memories?character_id=${character.id}`),
+      fetch(`/api/conversations?character_id=${requestedCharacterId}`),
+      fetch(`/api/memories?character_id=${requestedCharacterId}`),
     ]);
     const conversationList = await conversationResponse.json();
     const memoryList = await memoryResponse.json();
+    if (refreshConversationStateSeqRef.current !== requestSeq || characterRef.current?.id !== requestedCharacterId) return;
     setConversations(conversationList);
     setMemories(memoryList);
     // nextActiveId 为 undefined 表示"不改变当前 active"；传 null 或具体 id 才切换
     if (nextActiveId !== undefined) {
-      setActiveConvId(nextActiveId && conversationList.some((item: Conversation) => item.id === nextActiveId)
+      selectActiveConvId(nextActiveId && conversationList.some((item: Conversation) => item.id === nextActiveId)
         ? nextActiveId
         : conversationList[0]?.id || null);
     }
@@ -805,7 +829,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
       const conversation = await response.json();
       setConversations(prev => [conversation, ...prev]);
-      setActiveConvId(conversation.id);
+      selectActiveConvId(conversation.id);
 
       if (character.greeting) {
         const greetingResponse = await fetch('/api/messages', {
@@ -855,7 +879,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     // 关闭弹窗 + 决定下一段对话（基于 targetConvId 而不是闭包变量）
     const next = conversations.find(conversation => conversation.id !== targetConvId) || null;
     // 先切换到下一个对话，避免删除时消息区闪白
-    setActiveConvId(next?.id || null);
+    selectActiveConvId(next?.id || null);
     if (!next) setMessages([]);
     setDeleteOpen(false);
     try {
@@ -869,7 +893,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
       void refreshConversationState(next?.id || null);
     } catch (err) {
-      setActiveConvId(previousActiveConvId);
+      selectActiveConvId(previousActiveConvId);
       setMessages(previousMessages);
       setDeleteOpen(true);
       showToast(err instanceof Error ? err.message : t('chat.deleteError'), 'error');
@@ -1150,23 +1174,16 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     const persistImages = async (updater: (images: ImageEntry[]) => ImageEntry[]) => {
       const currentImages = (workingMeta.generatedImages as ImageEntry[]) || [];
       const nextMeta = { ...workingMeta, generatedImages: updater(currentImages) };
-      workingMeta = nextMeta;
 
-      // 先更新本地 state，确保即使后端 PUT 失败（断网/超时），prompt 也不会从 UI 上丢失，
-      // 用户点击重试时仍能拿到上一阶段已生成的 prompt。
+      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata: nextMeta }),
+      }));
+
+      workingMeta = nextMeta;
       skipScrollRef.current = true;
       setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: nextMeta } : m));
-
-      try {
-        await fetch(`/api/messages/${messageId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ metadata: nextMeta }),
-        });
-      } catch (err) {
-        // 持久化失败仅记录，不抛出 —— 让生图流程继续，本地 state 已是最新的
-        console.warn('[image-gen] 元数据持久化失败，已保留本地状态：', err);
-      }
       return nextMeta;
     };
 
@@ -1197,7 +1214,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ conversation_id: targetConversationId, message_id: messageId }),
         });
-        const promptData = await promptRes.json();
+        const promptData = await parseJsonResponse<{ prompt?: string; error?: string }>(promptRes);
         if (promptData.error) throw new Error(promptData.error);
         generatedPrompt = promptData.prompt || '';
         if (!generatedPrompt) throw new Error(t('chat.imageGenPromptFail'));
@@ -1214,7 +1231,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: generatedPrompt }),
       });
-      const imgData = await imgRes.json();
+      const imgData = await parseJsonResponse<{ url?: string; error?: string }>(imgRes);
       if (imgData.error) throw new Error(imgData.error);
       if (!imgData.url) throw new Error(t('chat.imageGenNoUrl'));
 
@@ -1240,28 +1257,36 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : t('chat.imageGenGeneric');
-      await upsertPlaceholder({
-        prompt: generatedPrompt,
-        status: 'failed',
-        error: message,
-      });
+      try {
+        await upsertPlaceholder({
+          prompt: generatedPrompt,
+          status: 'failed',
+          error: message,
+        });
+      } catch (persistErr) {
+        console.warn('[image-gen] 写入失败状态失败：', persistErr);
+      }
       showToast(message);
 
       if (replaceImageId) {
         setTimeout(async () => {
-          const currentMsg = messagesRef.current.find(m => m.id === messageId);
-          if (!currentMsg) return;
-          const currentMeta = { ...(currentMsg.metadata as Record<string, unknown> || {}) };
-          const currentImages = (currentMeta.generatedImages as ImageEntry[]) || [];
-          const targetImg = currentImages.find((img: ImageEntry) => img.id === replaceImageId);
-          if (targetImg && targetImg.status === 'failed') {
-            await persistImages(images =>
-              images.map(img =>
-                img.id === replaceImageId
-                  ? { ...img, status: 'ready' as const, error: undefined }
-                  : img
-              )
-            );
+          try {
+            const currentMsg = messagesRef.current.find(m => m.id === messageId);
+            if (!currentMsg) return;
+            const currentMeta = { ...(currentMsg.metadata as Record<string, unknown> || {}) };
+            const currentImages = (currentMeta.generatedImages as ImageEntry[]) || [];
+            const targetImg = currentImages.find((img: ImageEntry) => img.id === replaceImageId);
+            if (targetImg && targetImg.status === 'failed') {
+              await persistImages(images =>
+                images.map(img =>
+                  img.id === replaceImageId
+                    ? { ...img, status: 'ready' as const, error: undefined }
+                    : img
+                )
+              );
+            }
+          } catch (restoreErr) {
+            console.warn('[image-gen] 恢复旧图片状态失败：', restoreErr);
           }
         }, 5000);
       }
@@ -1269,122 +1294,136 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   }, [showToast, t]);
   // 删除消息中的某张生成图片
   const handleDeleteImage = useCallback(async (messageId: string, imgId: string, versionId?: string) => {
-    const targetMsg = messagesRef.current.find(m => m.id === messageId);
-    if (!targetMsg) return;
-    const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-    const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
-    let toDeleteUrl: string | undefined;
+    try {
+      const targetMsg = messagesRef.current.find(m => m.id === messageId);
+      if (!targetMsg) return;
+      const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
+      const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
+      let toDeleteUrl: string | undefined;
 
-    meta.generatedImages = existingImages.flatMap(img => {
-      if (img.id !== imgId) return [img];
+      meta.generatedImages = existingImages.flatMap(img => {
+        if (img.id !== imgId) return [img];
 
-      const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
-      const activeVersion = versionId
-        ? versions.findIndex(version => version.id === versionId)
-        : typeof img.activeVersion === 'number' && img.activeVersion >= 0 && img.activeVersion < versions.length
-        ? img.activeVersion
-        : Math.max(versions.findIndex(version => version.url === img.url && version.prompt === img.prompt), 0);
-      if (activeVersion < 0) return [img];
+        const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
+        const activeVersion = versionId
+          ? versions.findIndex(version => version.id === versionId)
+          : typeof img.activeVersion === 'number' && img.activeVersion >= 0 && img.activeVersion < versions.length
+          ? img.activeVersion
+          : Math.max(versions.findIndex(version => version.url === img.url && version.prompt === img.prompt), 0);
+        if (activeVersion < 0) return [img];
 
-      toDeleteUrl = versions[activeVersion]?.url;
-      const remainingVersions = versions.filter((_, index) => index !== activeVersion);
-      if (remainingVersions.length === 0) return [];
+        toDeleteUrl = versions[activeVersion]?.url;
+        const remainingVersions = versions.filter((_, index) => index !== activeVersion);
+        if (remainingVersions.length === 0) return [];
 
-      const nextActiveVersion = Math.min(activeVersion, remainingVersions.length - 1);
-      const nextVersion = remainingVersions[nextActiveVersion];
+        const nextActiveVersion = Math.min(activeVersion, remainingVersions.length - 1);
+        const nextVersion = remainingVersions[nextActiveVersion];
 
-      return [{
-        ...img,
-        url: nextVersion.url,
-        prompt: nextVersion.prompt,
-        versions: remainingVersions,
-        activeVersion: nextActiveVersion,
-      }];
-    });
+        return [{
+          ...img,
+          url: nextVersion.url,
+          prompt: nextVersion.prompt,
+          versions: remainingVersions,
+          activeVersion: nextActiveVersion,
+        }];
+      });
 
-    await fetch(`/api/messages/${messageId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ metadata: meta }),
-    });
-
-    // 同步删除磁盘文件
-    if (toDeleteUrl) {
-      fetch('/api/image-gen/delete', {
-        method: 'POST',
+      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: toDeleteUrl }),
-      }).catch(() => {/* 删除失败不影响 UI */});
-    }
+        body: JSON.stringify({ metadata: meta }),
+      }));
 
-    skipScrollRef.current = true;
-    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
-  }, []);
+      // 同步删除磁盘文件
+      if (toDeleteUrl) {
+        fetch('/api/image-gen/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: toDeleteUrl }),
+        })
+          .then(expectOkResponse)
+          .catch((err) => console.warn('[image-gen] 删除图片文件失败：', err));
+      }
+
+      skipScrollRef.current = true;
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('message.deleteFailed'), 'error');
+    }
+  }, [showToast, t]);
 
   // 编辑图片的 prompt（保存到 metadata）
   const handleEditImagePrompt = useCallback(async (messageId: string, imgId: string, newPrompt: string) => {
-    const targetMsg = messagesRef.current.find(m => m.id === messageId);
-    if (!targetMsg) return;
-    const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-    const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
-    meta.generatedImages = existingImages.map(img => {
-      if (img.id !== imgId) return img;
+    try {
+      const targetMsg = messagesRef.current.find(m => m.id === messageId);
+      if (!targetMsg) return;
+      const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
+      const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
+      meta.generatedImages = existingImages.map(img => {
+        if (img.id !== imgId) return img;
 
-      const versions = img.versions && img.versions.length > 0 ? [...img.versions] : [{ id: img.id, url: img.url, prompt: img.prompt }];
-      const activeVersion = typeof img.activeVersion === 'number' && img.activeVersion >= 0 && img.activeVersion < versions.length
-        ? img.activeVersion
-        : Math.max(versions.findIndex(version => version.url === img.url && version.prompt === img.prompt), 0);
-      versions[activeVersion] = { ...versions[activeVersion], prompt: newPrompt };
+        const versions = img.versions && img.versions.length > 0 ? [...img.versions] : [{ id: img.id, url: img.url, prompt: img.prompt }];
+        const activeVersion = typeof img.activeVersion === 'number' && img.activeVersion >= 0 && img.activeVersion < versions.length
+          ? img.activeVersion
+          : Math.max(versions.findIndex(version => version.url === img.url && version.prompt === img.prompt), 0);
+        versions[activeVersion] = { ...versions[activeVersion], prompt: newPrompt };
 
-      return {
-        ...img,
-        prompt: newPrompt,
-        versions,
-        activeVersion,
-      };
-    });
+        return {
+          ...img,
+          prompt: newPrompt,
+          versions,
+          activeVersion,
+        };
+      });
 
-    await fetch(`/api/messages/${messageId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ metadata: meta }),
-    });
-    skipScrollRef.current = true;
-    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
-  }, []);
+      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata: meta }),
+      }));
+      skipScrollRef.current = true;
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
+    }
+  }, [showToast, t]);
 
   // 确认使用某张图：把它移到首位，作为该消息的主图展示
   const handleSetPrimaryImage = useCallback(async (messageId: string, imgId: string, versionId: string) => {
-    const targetMsg = messagesRef.current.find(m => m.id === messageId);
-    if (!targetMsg) return;
-    const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-    const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
-    meta.generatedImages = existingImages.map(img => {
-      if (img.id !== imgId) return img;
+    try {
+      const targetMsg = messagesRef.current.find(m => m.id === messageId);
+      if (!targetMsg) return;
+      const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
+      const existingImages = (meta.generatedImages as Array<{ url?: string; prompt: string; id: string; status?: string; error?: string; versions?: Array<{ url: string; prompt: string; id: string }>; activeVersion?: number }>) || [];
+      meta.generatedImages = existingImages.map(img => {
+        if (img.id !== imgId) return img;
 
-      const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
-      const versionIndex = versions.findIndex(version => version.id === versionId);
-      if (versionIndex < 0) return img;
-      const selected = versions[versionIndex];
+        const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
+        const versionIndex = versions.findIndex(version => version.id === versionId);
+        if (versionIndex < 0) return img;
+        const selected = versions[versionIndex];
 
-      return {
-        ...img,
-        url: selected.url,
-        prompt: selected.prompt,
-        versions,
-        activeVersion: versionIndex,
-      };
-    });
+        return {
+          ...img,
+          url: selected.url,
+          prompt: selected.prompt,
+          versions,
+          activeVersion: versionIndex,
+        };
+      });
 
-    await fetch(`/api/messages/${messageId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ metadata: meta }),
-    });
+      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata: meta }),
+      }));
 
-    skipScrollRef.current = true;
-    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
-  }, []);
+      skipScrollRef.current = true;
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, metadata: meta } : m));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
+    }
+  }, [showToast, t]);
 
   // 图片管理弹窗的加载、选中、批量删除等已下沉到 ImageManagerModal 内部。
   // 这里只保留打开/关闭开关与「删除完成后刷新主消息列表」的桥接。
@@ -1464,7 +1503,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
       const conversation = await response.json();
       setConversations(prev => [conversation, ...prev]);
-      setActiveConvId(conversation.id);
+      selectActiveConvId(conversation.id);
       convId = conversation.id;
     }
 
@@ -1748,7 +1787,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         <ConversationDesktopAside
           conversations={conversations}
           activeConvId={activeConvId}
-          onSelect={setActiveConvId}
+          onSelect={selectActiveConvId}
         />
       </div>
 
@@ -1814,7 +1853,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         open={convDrawerOpen}
         conversations={conversations}
         activeConvId={activeConvId}
-        onSelect={setActiveConvId}
+        onSelect={selectActiveConvId}
         onClose={() => setConvDrawerOpen(false)}
       />
 

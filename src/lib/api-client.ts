@@ -85,9 +85,12 @@ export async function chatCompletionStream(
       }
     }, { signal: callbacks.signal });
   } catch (err) {
-    // reader.read() 被 abort 时抛出 AbortError，直接返回不保存
+    // reader.read() 被 abort 时抛出 AbortError；若已有部分内容，先保存，避免用户可见回复丢失
     if (err instanceof Error && (err.name === 'AbortError' || callbacks.signal?.aborted)) {
       try { await reader.cancel(); } catch { /* ignore */ }
+      if (fullText) {
+        await callbacks.onDone(fullText);
+      }
       return;
     }
     // 非 abort 错误：若已累积部分内容，先保存再向上抛出，避免用户已看到的回复丢失
@@ -101,8 +104,8 @@ export async function chatCompletionStream(
     throw err;
   }
 
-  // parseSseStream 在 abort 时静默返回，这里再次确认避免误调用 onDone
-  if (callbacks.signal?.aborted) return;
+  // parseSseStream 在 abort 时静默返回；已有部分内容时仍保存，空内容则不写入空回复
+  if (callbacks.signal?.aborted && !fullText) return;
 
   await callbacks.onDone(fullText);
 }

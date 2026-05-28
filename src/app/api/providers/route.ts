@@ -8,8 +8,8 @@ import { API_KEY_MASK } from '@/lib/constants';
 
 async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
   if (!process.env.ACCESS_PASSWORD) return null;
-  const token = request.cookies.get('lumimuse_auth')?.value;
-  const { verifyAuthToken } = await import('@/lib/auth-token');
+  const { AUTH_COOKIE_NAME, verifyAuthToken } = await import('@/lib/auth-token');
+  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
   const valid = await verifyAuthToken(token);
   if (!valid) {
     return NextResponse.json({ error: '未授权' }, { status: 401 });

@@ -152,7 +152,7 @@ const providerCommonFields = {
   temperature: z.number().min(0).max(10).optional(),
   max_tokens: z.number().int().min(1).max(10_000_000).optional(),
   context_window: z.number().int().min(1).max(100_000_000).optional(),
-  json_mode: z.boolean().optional(),
+  json_mode: z.union([z.boolean(), z.number().int().min(0).max(1)]).transform(v => !!v).optional(),
   save_as_current: z.boolean().optional(),
 };
 

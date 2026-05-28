@@ -163,42 +163,60 @@ export default function SettingsPage() {
   const handleSaveCurrentAsProvider = async () => {
     const name = window.prompt(t('settings.providerNamePrompt'));
     if (!name) return;
-    await fetch('/api/providers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        api_base: settings.api_base,
-        api_key: settings.api_key,
-        model: settings.model,
-        temperature: settings.temperature,
-        max_tokens: settings.max_tokens,
-        context_window: settings.context_window,
-        json_mode: settings.json_mode,
-        save_as_current: true,
-      }),
-    });
-    loadProviders();
+    try {
+      const res = await fetch('/api/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          api_base: settings.api_base,
+          api_key: settings.api_key,
+          model: settings.model,
+          temperature: settings.temperature,
+          max_tokens: settings.max_tokens,
+          context_window: settings.context_window,
+          json_mode: settings.json_mode,
+          save_as_current: true,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      loadProviders();
+      showToast(t('settings.saveSuccess'), 'success');
+    } catch (err) {
+      showToast(`${t('settings.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
   };
 
   const handleUpdateCurrentProvider = async () => {
     if (!activeProviderId) return;
-    await fetch('/api/providers', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: activeProviderId,
-        api_base: settings.api_base,
-        api_key: settings.api_key,
-        model: settings.model,
-        temperature: settings.temperature,
-        max_tokens: settings.max_tokens,
-        context_window: settings.context_window,
-        json_mode: settings.json_mode,
-        save_as_current: true,
-      }),
-    });
-    loadProviders();
+    try {
+      const res = await fetch('/api/providers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: activeProviderId,
+          api_base: settings.api_base,
+          api_key: settings.api_key,
+          model: settings.model,
+          temperature: settings.temperature,
+          max_tokens: settings.max_tokens,
+          context_window: settings.context_window,
+          json_mode: settings.json_mode,
+          save_as_current: true,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      loadProviders();
+      showToast(t('settings.saveSuccess'), 'success');
+    } catch (err) {
+      showToast(`${t('settings.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
   };
 
   return (

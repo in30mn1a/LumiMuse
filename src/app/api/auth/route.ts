@@ -6,6 +6,8 @@ import { bumpAuthMinIat } from '@/lib/settings';
 // 同一 IP 在 RATE_LIMIT_WINDOW_MS 时间窗内最多允许 RATE_LIMIT_MAX 次失败
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 分钟
 const RATE_LIMIT_MAX = 10;
+// 跟踪的 IP 上限，防止大量不同 IP 的失败尝试导致 Map 无界增长而 OOM
+const MAX_TRACKED_IPS = 10000;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
 function getClientIp(request: NextRequest): string {
@@ -33,6 +35,19 @@ function recordFailure(ip: string): void {
   const now = Date.now();
   const entry = loginAttempts.get(ip);
   if (!entry || entry.resetAt <= now) {
+    // 写入新条目前顺手清扫所有已过期条目（resetAt <= now），物理释放内存
+    for (const [key, value] of loginAttempts) {
+      if (value.resetAt <= now) {
+        loginAttempts.delete(key);
+      }
+    }
+    // 清扫后仍达到容量上限，说明同时存在大量未过期的活跃失败 IP。
+    // 权衡：直接清空整个 Map 是最简单稳妥的兜底，可避免无界增长；
+    // 代价是极端情况下会重置所有 IP 的失败计数（限流短暂放宽），
+    // 但这种规模的并发攻击场景本应由上游反代/WAF 处理，此处仅作内存兜底。
+    if (loginAttempts.size >= MAX_TRACKED_IPS) {
+      loginAttempts.clear();
+    }
     loginAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
   } else {
     entry.count += 1;

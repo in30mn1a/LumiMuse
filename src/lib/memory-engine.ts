@@ -363,40 +363,45 @@ export async function extractMemories(
   let mergeCount = 0;
   let insertCount = 0;
 
-  for (const entry of merged) {
-    const existing = existingMap.get(entry.id);
-    if (existing) {
-      // 检查是否真的发生了修改以避免多余的更新和错误的计数
-      const isChanged =
-        existing.content !== entry.content ||
-        existing.confidence !== entry.confidence ||
-        JSON.stringify(existing.tags) !== JSON.stringify(entry.tags);
+  // 用事务包裹整个写入循环，保证多条 UPDATE/INSERT 原子提交，
+  // 避免中途崩溃导致记忆部分写入、状态不一致。
+  // 注意：chatCompletion 等异步调用已在事务外完成，事务函数内只放同步的写入与计数累加。
+  db.transaction(() => {
+    for (const entry of merged) {
+      const existing = existingMap.get(entry.id);
+      if (existing) {
+        // 检查是否真的发生了修改以避免多余的更新和错误的计数
+        const isChanged =
+          existing.content !== entry.content ||
+          existing.confidence !== entry.confidence ||
+          JSON.stringify(existing.tags) !== JSON.stringify(entry.tags);
 
-      if (isChanged) {
-        mergeCount++;
+        if (isChanged) {
+          mergeCount++;
+          db.prepare(`
+            UPDATE memories
+            SET content = ?, confidence = ?, tags = ?, updated_at = ?
+            WHERE id = ?
+          `).run(entry.content, entry.confidence, JSON.stringify(entry.tags), entry.updated_at, entry.id);
+        }
+      } else {
+        insertCount++;
         db.prepare(`
-          UPDATE memories
-          SET content = ?, confidence = ?, tags = ?, updated_at = ?
-          WHERE id = ?
-        `).run(entry.content, entry.confidence, JSON.stringify(entry.tags), entry.updated_at, entry.id);
+          INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
+        `).run(
+          entry.id,
+          entry.character_id,
+          entry.category,
+          entry.content,
+          entry.confidence,
+          JSON.stringify(entry.tags),
+          entry.created_at,
+          entry.updated_at,
+        );
       }
-    } else {
-      insertCount++;
-      db.prepare(`
-        INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
-      `).run(
-        entry.id,
-        entry.character_id,
-        entry.category,
-        entry.content,
-        entry.confidence,
-        JSON.stringify(entry.tags),
-        entry.created_at,
-        entry.updated_at,
-      );
     }
-  }
+  })();
 
   return { insertCount, mergeCount };
 }

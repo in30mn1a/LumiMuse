@@ -5,9 +5,10 @@ import { DEFAULT_SETTINGS, Settings } from '@/types';
 import { API_KEY_MASK } from '@/lib/constants';
 
 
-export async function GET() {
-  const settings = loadSettings();
-  const safe = {
+// 对设置中的敏感密钥做脱敏，返回可安全回传给前端的结构。
+// GET 与 PUT 共用此函数，避免两处脱敏逻辑漂移导致明文密钥泄漏。
+function maskSettings(settings: Settings): Settings {
+  return {
     ...settings,
     api_key: settings.api_key ? API_KEY_MASK : '',
     image_gen: settings.image_gen ? {
@@ -16,7 +17,10 @@ export async function GET() {
       custom_api_key: settings.image_gen.custom_api_key ? API_KEY_MASK : '',
     } : settings.image_gen,
   };
-  return NextResponse.json(safe);
+}
+
+export async function GET() {
+  return NextResponse.json(maskSettings(loadSettings()));
 }
 
 export async function PUT(request: NextRequest) {
@@ -66,5 +70,6 @@ export async function PUT(request: NextRequest) {
   });
 
   transaction();
-  return NextResponse.json(loadSettings());
+  // 与 GET 保持一致的脱敏结构，避免明文密钥随写入响应回流到前端
+  return NextResponse.json(maskSettings(loadSettings()));
 }

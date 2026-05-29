@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
+import Modal from '@/components/ui/Modal';
 
 interface Props {
   open: boolean;
@@ -12,7 +13,7 @@ interface Props {
 
 /**
  * 重命名对话弹窗
- * 从 ChatView 抽出：保持原有视觉/交互不变。
+ * 视觉外壳统一使用通用 <Modal> 组件，复用焦点陷阱 / ESC / Portal / aria-modal / 焦点恢复。
  * 外层根据 open 决定挂载内部组件，内部组件用 initialValue 直接初始化输入值。
  */
 export default function RenameConvModal({ open, initialValue, onClose, onConfirm }: Props) {
@@ -36,24 +37,28 @@ function RenameConvModalInner({ initialValue, onClose, onConfirm }: InnerProps) 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-      <div className="surface-panel w-full max-w-md p-5">
-        <h3 className="section-title text-xl">{t('chat.renameTitle')}</h3>
-        <input
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          placeholder={t('chat.renamePlaceholder')}
-          className="input-rich mt-4"
-        />
-        <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onClose} className="soft-button soft-button-secondary">
-            {t('chat.cancel')}
-          </button>
-          <button onClick={handleConfirm} className="soft-button soft-button-primary">
-            {t('chat.renameConfirm')}
-          </button>
-        </div>
+    <Modal
+      open
+      onClose={onClose}
+      padded={false}
+      closeOnBackdrop={false}
+      dialogClassName="surface-panel w-full max-w-md p-5"
+    >
+      <h3 className="section-title text-xl">{t('chat.renameTitle')}</h3>
+      <input
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        placeholder={t('chat.renamePlaceholder')}
+        className="input-rich mt-4"
+      />
+      <div className="mt-5 flex justify-end gap-2">
+        <button onClick={onClose} className="soft-button soft-button-secondary">
+          {t('chat.cancel')}
+        </button>
+        <button onClick={handleConfirm} className="soft-button soft-button-primary">
+          {t('chat.renameConfirm')}
+        </button>
       </div>
-    </div>
+    </Modal>
   );
 }

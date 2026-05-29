@@ -92,7 +92,11 @@ async function processQueue(): Promise<void> {
 
   const db = getDb();
 
-  while (true) {
+  // 顶层 try/finally：保证无论循环体内任何位置（包括 try/catch 之外的 SELECT、
+  // inFlightConversations.add 等）抛出异常，processing 都会被复位为 false，
+  // 避免标志永久卡在 true 导致整个记忆提取队列瘫痪。
+  try {
+    while (true) {
     // 取一条 pending 任务，并在 SQL 层直接排除 inFlightConversations 中的对话。
     // 之前的做法是先 SELECT 再判断，若命中内存去重就把任务标记为 'done' 以避免无限循环；
     // 但这会丢消息——较新任务的 message_ids 可能包含尚未被前一任务覆盖的新消息，
@@ -174,9 +178,10 @@ async function processQueue(): Promise<void> {
     } finally {
       inFlightConversations.delete(task.conversation_id);
     }
+    }
+  } finally {
+    processing = false;
   }
-
-  processing = false;
 }
 
 /** 手动触发队列处理（用于外部调用） */

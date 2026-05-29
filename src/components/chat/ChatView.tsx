@@ -206,6 +206,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   // Token 拆分弹窗
   const [tokenBreakdownOpen, setTokenBreakdownOpen] = useState(false);
   const seenMemoryTaskRef = useRef<Record<string, string>>({});
+  // 记忆任务轮询的可中止控制器：切换对话或组件卸载时中止上一轮轮询，避免无谓 fetch 与卸载后 setState
+  const pollAbortRef = useRef<AbortController | null>(null);
   const previousCharacterIdRef = useRef<string | null>(character?.id ?? null);
   const streamingFrameRef = useRef<number | null>(null);
   const pendingStreamingTextRef = useRef('');
@@ -274,6 +276,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       cancelAnimationFrame(streamingFrameRef.current);
     }
   }, []);
+
+  // 组件卸载时中止仍在进行的记忆任务轮询，防止卸载后继续 fetch 与 setState
+  useEffect(() => () => pollAbortRef.current?.abort(), []);
 
   const activeConversation = useMemo(
     () => conversations.find(conversation => conversation.id === activeConvId) || null,
@@ -729,6 +734,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   }, [loadOlderMessages, messages.length]); // messages 变化时重新绑定（对话切换后哨兵位置变了）
 
   const pollMemoryTask = useCallback(async (convId: string) => {
+    // 进入轮询前先中止上一轮仍在进行的轮询（切换对话/重复触发时），再创建本轮控制器
+    pollAbortRef.current?.abort();
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+
     // 只有当当前活跃的对话确实是本任务对话时，才显示“提取中”状态喵
     if (activeConvIdRef.current === convId) {
       setMemoryExtractStatus('extracting');
@@ -736,7 +746,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     if (extractStatusTimerRef.current) { clearTimeout(extractStatusTimerRef.current); extractStatusTimerRef.current = null; }
 
     const pollOnce = async (): Promise<{ finished: boolean; status: string }> => {
-      const response = await fetch(`/api/memory-tasks?conversation_id=${encodeURIComponent(convId)}`);
+      const response = await fetch(`/api/memory-tasks?conversation_id=${encodeURIComponent(convId)}`, { signal: controller.signal });
       if (!response.ok) return { finished: false, status: 'error' };
 
       const parsed = await response.json() as { status: string; mergeCount: number; updatedAt: string | null };
@@ -755,7 +765,18 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
     // 增加轮询次数至 60 次（约 90 秒，每次 1.5 秒），给大模型（LLM）记忆提取留出充足的处理时间喵
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      const { finished, status } = await pollOnce();
+      // 每轮开头检查是否已被中止（切换对话/组件卸载），是则静默退出
+      if (controller.signal.aborted) return;
+
+      let result: { finished: boolean; status: string };
+      try {
+        result = await pollOnce();
+      } catch (error) {
+        // fetch 因 abort 抛出的 AbortError 属预期行为，静默返回，不污染错误处理；其余错误维持原有传播行为
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        throw error;
+      }
+      const { finished, status } = result;
       if (finished) {
         // 竞态保护：只有当用户当前仍然看着本对话时，才更新 UI 状态和计数，避免数据错乱覆盖喵
         if (activeConvIdRef.current === convId) {
@@ -780,6 +801,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         return;
       }
       await new Promise(resolve => setTimeout(resolve, 1500));
+      // 等待结束后再次检查中止状态，及时退出，避免继续轮询与卸载后 setState
+      if (controller.signal.aborted) return;
     }
 
     // 超时处理：同样需要用 activeConvIdRef 保护

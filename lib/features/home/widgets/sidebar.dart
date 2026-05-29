@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 import '../../../core/providers/character_provider.dart';
 import '../../../theme/font_config.dart';
 import '../../../core/providers/search_provider.dart';
@@ -176,8 +175,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
 
     final width = AppBreakpoints.isMobileOf(context)
         ? MediaQuery.sizeOf(context).width *
-                AppBreakpoints.mobileDrawerWidthRatio -
-            12
+                  AppBreakpoints.mobileDrawerWidthRatio -
+              12
         : 336.0; // 21rem
 
     return AppSurfaces.panelBox(
@@ -276,10 +275,10 @@ class _SidebarState extends ConsumerState<Sidebar> {
             Text(
               'LumiMuse',
               style: FontConfig.withDisplayFontStack(
-                GoogleFonts.quicksand(
+                TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.w600,
-                  letterSpacing: -0.6,
+                  letterSpacing: 0,
                   color: isDark
                       ? AppTheme.darkTextPrimary
                       : AppTheme.textPrimary,

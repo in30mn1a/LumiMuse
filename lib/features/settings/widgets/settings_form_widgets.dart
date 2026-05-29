@@ -194,18 +194,20 @@ class SettingsRichSelect<T> extends StatelessWidget {
           isExpanded: true,
           value: items.any((it) => it.value == value) ? value : null,
           items: items
-              .map((it) => DropdownMenuItem<T>(
-                    value: it.value,
-                    child: Text(
-                      it.label,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: isDark
-                            ? AppTheme.darkTextPrimary
-                            : AppTheme.textPrimary,
-                      ),
+              .map(
+                (it) => DropdownMenuItem<T>(
+                  value: it.value,
+                  child: Text(
+                    it.label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: isDark
+                          ? AppTheme.darkTextPrimary
+                          : AppTheme.textPrimary,
                     ),
-                  ))
+                  ),
+                ),
+              )
               .toList(),
           onChanged: (v) {
             if (v != null) onChanged(v);
@@ -429,7 +431,7 @@ class SettingsFontPickerRow extends StatelessWidget {
           child: SettingsFontPickerButton(
             kind: 'wenkai',
             label: '霞鹜文楷',
-            previewFamily: 'LXGW WenKai Screen',
+            previewFamily: 'LXGWWenKaiScreen',
             hint: I18n.t('settings.fontWenkai', lang: lang),
             current: current,
             onPick: onPick,
@@ -503,17 +505,13 @@ class _SettingsFontPickerButtonState extends State<SettingsFontPickerButton> {
     } else if (_hover) {
       borderColor = AppTheme.accent.withValues(alpha: 0.40);
       bg = AppTheme.accent.withValues(alpha: 0.05);
-      labelColor = isDark
-          ? AppTheme.darkTextSecondary
-          : AppTheme.textSecondary;
+      labelColor = isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary;
     } else {
-      borderColor =
-          isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
-      bg = (isDark ? AppTheme.darkSurface : Colors.white)
-          .withValues(alpha: 0.5);
-      labelColor = isDark
-          ? AppTheme.darkTextSecondary
-          : AppTheme.textSecondary;
+      borderColor = isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+      bg = (isDark ? AppTheme.darkSurface : Colors.white).withValues(
+        alpha: 0.5,
+      );
+      labelColor = isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary;
     }
 
     return MouseRegion(
@@ -525,8 +523,7 @@ class _SettingsFontPickerButtonState extends State<SettingsFontPickerButton> {
         onTap: () => widget.onPick(widget.kind),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
-          padding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: bg,
             border: Border.all(color: borderColor),
@@ -552,9 +549,7 @@ class _SettingsFontPickerButtonState extends State<SettingsFontPickerButton> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 12,
-                  color: isDark
-                      ? AppTheme.darkTextMuted
-                      : AppTheme.textMuted,
+                  color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
                 ),
               ),
             ],
@@ -612,8 +607,7 @@ class SettingsStatTile extends StatelessWidget {
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w600,
-              color:
-                  isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+              color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
             ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -623,8 +617,7 @@ class SettingsStatTile extends StatelessWidget {
             hint,
             style: TextStyle(
               fontSize: 12,
-              color:
-                  isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
+              color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
             ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -672,7 +665,12 @@ class SettingsGrid extends StatelessWidget {
         }
       }
       if (rows.isNotEmpty) rows.add(SizedBox(height: spacing));
-      rows.add(Row(crossAxisAlignment: CrossAxisAlignment.start, children: rowChildren));
+      rows.add(
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: rowChildren,
+        ),
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

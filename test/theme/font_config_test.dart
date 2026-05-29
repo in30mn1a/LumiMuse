@@ -2,10 +2,12 @@
 // Feature: flutter-visual-polish, Property 1: Font fallback chain integrity
 // Validates: Requirements 3.4
 
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:glados/glados.dart' hide expect, group, test;
+import 'package:lumimuse/features/settings/widgets/settings_form_widgets.dart';
+import 'package:lumimuse/theme/app_theme.dart';
 import 'package:lumimuse/theme/font_config.dart';
 
 /// 为 TextStyle 提供自定义生成器
@@ -29,23 +31,28 @@ extension TextStyleGenerators on Any {
 
   /// 生成随机 TextTheme，包含 5 个随机 TextStyle
   Generator<TextTheme> get textTheme {
-    return combine5<TextStyle, TextStyle, TextStyle, TextStyle, TextStyle,
-        TextTheme>(
-      textStyle,
-      textStyle,
-      textStyle,
-      textStyle,
-      textStyle,
-      (s1, s2, s3, s4, s5) {
-        return TextTheme(
-          displayLarge: s1,
-          displayMedium: s2,
-          displaySmall: s3,
-          headlineLarge: s4,
-          headlineMedium: s5,
-        );
-      },
-    );
+    return combine5<
+      TextStyle,
+      TextStyle,
+      TextStyle,
+      TextStyle,
+      TextStyle,
+      TextTheme
+    >(textStyle, textStyle, textStyle, textStyle, textStyle, (
+      s1,
+      s2,
+      s3,
+      s4,
+      s5,
+    ) {
+      return TextTheme(
+        displayLarge: s1,
+        displayMedium: s2,
+        displaySmall: s3,
+        headlineLarge: s4,
+        headlineMedium: s5,
+      );
+    });
   }
 }
 
@@ -134,13 +141,73 @@ void main() {
         final result = FontConfig.withDisplayFontStack(textStyle);
 
         // 验证原始属性被保留
-        expect(result.fontSize, equals(textStyle.fontSize),
-            reason: 'fontSize 应被保留');
-        expect(result.fontWeight, equals(textStyle.fontWeight),
-            reason: 'fontWeight 应被保留');
-        expect(result.letterSpacing, equals(textStyle.letterSpacing),
-            reason: 'letterSpacing 应被保留');
+        expect(
+          result.fontSize,
+          equals(textStyle.fontSize),
+          reason: 'fontSize 应被保留',
+        );
+        expect(
+          result.fontWeight,
+          equals(textStyle.fontWeight),
+          reason: 'fontWeight 应被保留',
+        );
+        expect(
+          result.letterSpacing,
+          equals(textStyle.letterSpacing),
+          reason: 'letterSpacing 应被保留',
+        );
       },
     );
+  });
+
+  group('字体资源回归', () {
+    testWidgets('Quicksand 展示字体使用的权重已随应用打包', (tester) async {
+      for (final asset in <String>[
+        'assets/fonts/Quicksand-Regular.ttf',
+        'assets/fonts/Quicksand-Medium.ttf',
+        'assets/fonts/Quicksand-SemiBold.ttf',
+        'assets/fonts/Quicksand-Bold.ttf',
+      ]) {
+        final data = await rootBundle.load(asset);
+        expect(
+          data.lengthInBytes,
+          greaterThan(0),
+          reason: '$asset 应存在且不为空，避免 LumiMuse 标题退回文楷或系统字体',
+        );
+      }
+    });
+
+    testWidgets('设置页霞鹜文楷预览使用实际注册的字体族名', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: Scaffold(
+            body: SettingsFontPickerRow(
+              current: 'wenkai',
+              onPick: (_) {},
+              lang: 'zh',
+            ),
+          ),
+        ),
+      );
+
+      final label = tester.widget<Text>(find.text('霞鹜文楷'));
+      expect(label.style?.fontFamily, equals(FontStack.bodyPrimary));
+    });
+
+    test('AlertDialog 标题和内容默认走霞鹜文楷', () {
+      final theme = AppTheme.light();
+
+      expect(
+        theme.dialogTheme.titleTextStyle?.fontFamily,
+        equals(FontStack.bodyPrimary),
+        reason: '供应商命名弹窗的中文标题必须走霞鹜文楷，而不是 Material 默认字体',
+      );
+      expect(
+        theme.dialogTheme.contentTextStyle?.fontFamily,
+        equals(FontStack.bodyPrimary),
+        reason: 'AlertDialog 内容文本也应继承正文中文字体契约',
+      );
+    });
   });
 }

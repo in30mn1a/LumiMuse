@@ -94,6 +94,7 @@ class _TokenBreakdownDialog extends StatelessWidget {
         isDark ? AppTheme.darkTextSecondary : AppTheme.textSecondary;
     final textMuted = isDark ? AppTheme.darkTextMuted : AppTheme.textMuted;
     final tokensLabel = I18n.t('status.tokens', lang: lang);
+    final bodyTextStyle = Theme.of(context).textTheme.bodyMedium;
 
     return SafeArea(
       child: Center(
@@ -104,7 +105,7 @@ class _TokenBreakdownDialog extends StatelessWidget {
             child: Material(
               color: Colors.transparent,
               child: Container(
-                decoration: AppSurfaces.panel(isDark: isDark),
+                decoration: AppSurfaces.dialogPanel(isDark: isDark),
                 padding: const EdgeInsets.all(20), // p-5
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -146,6 +147,7 @@ class _TokenBreakdownDialog extends StatelessWidget {
                                 total: total,
                                 isDark: isDark,
                                 lang: lang,
+                                bodyTextStyle: bodyTextStyle,
                                 textPrimary: textPrimary,
                                 textSecondary: textSecondary,
                                 textMuted: textMuted,
@@ -182,7 +184,7 @@ class _TokenBreakdownDialog extends StatelessWidget {
                           ),
                           RichText(
                             text: TextSpan(
-                              style: TextStyle(
+                              style: bodyTextStyle?.copyWith(
                                 fontSize: 14,
                                 color: textPrimary,
                                 fontFeatures: const [
@@ -221,6 +223,7 @@ class _BreakdownRow extends StatelessWidget {
   final int total;
   final bool isDark;
   final String lang;
+  final TextStyle? bodyTextStyle;
   final Color textPrimary;
   final Color textSecondary;
   final Color textMuted;
@@ -231,6 +234,7 @@ class _BreakdownRow extends StatelessWidget {
     required this.total,
     required this.isDark,
     required this.lang,
+    required this.bodyTextStyle,
     required this.textPrimary,
     required this.textSecondary,
     required this.textMuted,
@@ -254,7 +258,7 @@ class _BreakdownRow extends StatelessWidget {
             Expanded(
               child: RichText(
                 text: TextSpan(
-                  style: TextStyle(
+                  style: bodyTextStyle?.copyWith(
                     fontSize: 14, // text-sm
                     color: textPrimary,
                   ),
@@ -275,7 +279,7 @@ class _BreakdownRow extends StatelessWidget {
             const SizedBox(width: 8),
             RichText(
               text: TextSpan(
-                style: TextStyle(
+                style: bodyTextStyle?.copyWith(
                   fontSize: 14,
                   color: textSecondary,
                   fontFeatures: const [FontFeature.tabularFigures()],

@@ -16,6 +16,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lumimuse/theme/app_theme.dart';
 import 'package:lumimuse/theme/surfaces.dart';
 
 /// 把 BoxDecoration 的 borderRadius 提取为 `Radius` 字面量，
@@ -198,6 +199,26 @@ void main() {
       expect(shadow.color, AppSurfaces.heroShadow.color);
       expect(shadow.blurRadius, AppSurfaces.heroShadow.blurRadius);
       expect(shadow.offset, AppSurfaces.heroShadow.offset);
+    });
+  });
+
+  group('AppSurfaces · 弹窗专用面板', () {
+    test('浅色 dialogPanel 使用不透明白底，并保留 panel 圆角与阴影', () {
+      final base = AppSurfaces.panel();
+      final dialog = AppSurfaces.dialogPanel();
+
+      expect(dialog.color, AppTheme.surface, reason: '弹窗面板不能透出底层文字');
+      expect(_topLeftRadius(dialog), _topLeftRadius(base));
+      expect(dialog.boxShadow, base.boxShadow);
+    });
+
+    test('暗色 dialogPanel 使用不透明暗色表面，并保留 panel 圆角与阴影', () {
+      final base = AppSurfaces.panel(mode: Brightness.dark);
+      final dialog = AppSurfaces.dialogPanel(mode: Brightness.dark);
+
+      expect(dialog.color, AppTheme.darkSurface, reason: '暗色弹窗面板不能透出底层文字');
+      expect(_topLeftRadius(dialog), _topLeftRadius(base));
+      expect(dialog.boxShadow, base.boxShadow);
     });
   });
 }

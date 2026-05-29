@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 // ╔══════════════════════════════════════════════════════════════════════╗
 // ║ 字体契约                                                             ║
 // ║ • 中文正文：霞鹜文楷（LXGWWenKaiScreen，bundled）                     ║
-// ║ • 英文标题 / 展示字：Quicksand（google_fonts 加载）                   ║
+// ║ • 英文标题 / 展示字：Quicksand（bundled）                             ║
 // ║ 切换须通过 MaterialApp 顶层 ThemeData 重建（INV-9 / RC-8）           ║
 // ╚══════════════════════════════════════════════════════════════════════╝
 
@@ -29,12 +29,12 @@ class FontStack {
 
   /// 展示字回退：英文 Quicksand 缺字时落回文楷与系统中文字体
   List<String> get displayFallback => [
-        bodyPrimary,
-        'PingFang SC',
-        'Hiragino Sans GB',
-        'Microsoft YaHei',
-        'Noto Sans SC',
-      ];
+    bodyPrimary,
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Noto Sans SC',
+  ];
 
   /// 正文回退：中文文楷缺字时落回 Quicksand（英文）与系统字体
   List<String> get bodyFallback {

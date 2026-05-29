@@ -19,7 +19,7 @@ import '../chat/widgets/image_version_viewer.dart';
 /// 视觉与温柔暖光体系一致：
 /// - 整页用 `AppPageScaffold` 提供 hero 头 + 主面板（已包含 `AppSurfaces.panel`）
 /// - 网格用 `LumiScrollbar` 包裹 `GridView.builder`，三列等宽
-/// - 多选态在网格上方挂一条蓝紫色提示条，提供「全选 / 反选 / 取消选择」按钮
+/// - 多选态在网格上方挂一条蓝紫色提示条，提供「全选 / 取消选择」按钮
 ///
 /// 功能：
 /// - 进入页面后调用 [CharacterImagesActions.listImages] 加载该角色全部生图条目
@@ -177,20 +177,6 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
       _selectedKeys
         ..clear()
         ..addAll(_items.map(_keyOf));
-    });
-  }
-
-  /// 反选：选中态条目变未选，未选条目变选中
-  void _invertSelection() {
-    setState(() {
-      final allKeys = _items.map(_keyOf).toSet();
-      final next = allKeys.difference(_selectedKeys);
-      _selectedKeys
-        ..clear()
-        ..addAll(next);
-      if (_selectedKeys.isEmpty) {
-        _selectionMode = false;
-      }
     });
   }
 
@@ -364,19 +350,13 @@ class _CharacterImagesPageState extends ConsumerState<CharacterImagesPage> {
               ),
             ),
             const Spacer(),
-            // 全选 / 反选 / 取消 — 沿用 AppSecondaryButton 的温柔暖光样式
+            // 全选 / 取消 — 沿用 AppSecondaryButton 的温柔暖光样式
             AppSecondaryButton(
               label: '全选',
               icon: Icons.select_all_rounded,
               onPressed: allCount == 0 || _selectedKeys.length == allCount
                   ? null
                   : _selectAll,
-            ),
-            const SizedBox(width: 8),
-            AppSecondaryButton(
-              label: '反选',
-              icon: Icons.swap_horiz_rounded,
-              onPressed: allCount == 0 ? null : _invertSelection,
             ),
             const SizedBox(width: 8),
             AppSecondaryButton(

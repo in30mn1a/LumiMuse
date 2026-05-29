@@ -114,6 +114,22 @@ class AppSurfaces {
     );
   }
 
+  /// 弹窗面板：沿用 surface-panel 的圆角 / 边框 / 阴影，但使用不透明底色。
+  ///
+  /// 常规页面面板保留主项目的磨砂透明度；模态弹窗已经有 barrier 负责遮罩，
+  /// 面板自身再半透明会让底层正文穿透，影响可读性。
+  static BoxDecoration dialogPanel({
+    bool isDark = false,
+    Brightness? mode,
+    BuildContext? context,
+  }) {
+    final dark = _resolveDark(mode: mode, isDark: isDark);
+    return panel(
+      isDark: dark,
+      context: context,
+    ).copyWith(color: dark ? AppTheme.darkSurface : AppTheme.surface);
+  }
+
   // ─── surface-panel-quiet ────────────────────────────────────────
   /// 次级面板：淡紫底色、22 圆角、无阴影
   ///

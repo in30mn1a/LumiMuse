@@ -68,8 +68,8 @@ final appRouter = GoRouter(
         if (!_isValidId(id)) return '/';
         return null;
       },
-      builder: (context, state) => CharacterImagesPage(
-        characterId: state.pathParameters['id']!,
+      pageBuilder: (context, state) => NoTransitionPage(
+        child: CharacterImagesPage(characterId: state.pathParameters['id']!),
       ),
     ),
     // 记忆管理

@@ -4,9 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lumimuse/features/chat/widgets/chat_input.dart';
 
-Widget _buildTestApp({required Future<void> Function(String text) onSend}) {
+Widget _buildTestApp({
+  required Future<void> Function(String text) onSend,
+  TargetPlatform platform = TargetPlatform.windows,
+}) {
   return ProviderScope(
     child: MaterialApp(
+      theme: ThemeData(platform: platform),
       home: Scaffold(
         body: ChatInput(
           disabled: false,
@@ -43,6 +47,24 @@ void main() {
       await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+
+      expect(sent, isEmpty);
+    });
+  });
+
+  group('ChatInput 移动端键盘换行', () {
+    testWidgets('Android 平台按 Enter 不发送消息', (tester) async {
+      final sent = <String>[];
+      await tester.pumpWidget(
+        _buildTestApp(
+          platform: TargetPlatform.android,
+          onSend: (text) async => sent.add(text),
+        ),
+      );
+
+      await tester.enterText(find.byType(TextField), '你好');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
 
       expect(sent, isEmpty);

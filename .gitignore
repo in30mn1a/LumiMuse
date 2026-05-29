@@ -22,7 +22,6 @@ linux/flutter/ephemeral/
 .flutter-plugins-dependencies
 
 # 大文件 / 非源码
-assets/fonts/*.ttf
 AUDIT-REPORT.md
 dart_test.yaml
 devtools_options.yaml

@@ -553,24 +553,38 @@ class _ProviderManageSectionState extends ConsumerState<ProviderManageSection> {
     try {
       return await showDialog<String>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text(title),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: 'OpenAI'),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('取消'),
+        builder: (ctx) {
+          final isDark = Theme.of(ctx).brightness == Brightness.dark;
+          final fieldStyle = Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+            fontSize: 14,
+            color: isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+          );
+          return AlertDialog(
+            title: Text(title),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              style: fieldStyle,
+              decoration: InputDecoration(
+                hintText: 'OpenAI',
+                hintStyle: fieldStyle?.copyWith(
+                  color: (isDark ? AppTheme.darkTextMuted : AppTheme.textMuted)
+                      .withValues(alpha: 0.7),
+                ),
+              ),
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, controller.text),
-              child: const Text('确定'),
-            ),
-          ],
-        ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, controller.text),
+                child: const Text('确定'),
+              ),
+            ],
+          );
+        },
       );
     } finally {
       controller.dispose();

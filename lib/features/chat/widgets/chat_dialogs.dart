@@ -284,7 +284,7 @@ class _DialogScaffold extends StatelessWidget {
             child: Material(
               color: Colors.transparent,
               child: Container(
-                decoration: AppSurfaces.panel(isDark: isDark),
+                decoration: AppSurfaces.dialogPanel(isDark: isDark),
                 padding: const EdgeInsets.all(20), // p-5
                 child: child,
               ),

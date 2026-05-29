@@ -141,6 +141,28 @@ int _countTiles() {
   return find.byIcon(Icons.broken_image_outlined).evaluate().length;
 }
 
+Future<void> _pumpUntilTileCount(WidgetTester tester, int expected) async {
+  await tester.runAsync(() async {
+    for (var i = 0; i < 60; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      await tester.pump();
+      if (_countTiles() == expected) return;
+    }
+  });
+  expect(_countTiles(), expected);
+}
+
+Future<void> _pumpUntilImageCount(WidgetTester tester, int expected) async {
+  await tester.runAsync(() async {
+    for (var i = 0; i < 60; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      await tester.pump();
+      if (find.byType(Image).evaluate().length == expected) return;
+    }
+  });
+  expect(find.byType(Image), findsNWidgets(expected));
+}
+
 FileImage _currentPreviewImage(WidgetTester tester) {
   final images = tester
       .widgetList<Image>(
@@ -161,8 +183,8 @@ void main() {
       await _seedDatabase(db);
 
       await tester.pumpWidget(_buildPageApp(db));
-      // listImages 是异步的，需要 settle 一次让 _loadImages 完成回填
-      await tester.pumpAndSettle();
+      // listImages / File.exists 都是异步的，等网格条目实际回填再断言。
+      await _pumpUntilTileCount(tester, 3);
 
       // ── 1. 默认渲染：3 个版本各成一条网格条目 ───────────────────
       expect(_countTiles(), 3, reason: '初始渲染应包含三个图片版本对应的三个占位条目');
@@ -182,6 +204,7 @@ void main() {
         findsOneWidget,
         reason: '长按后应进入多选态并显示「已选 1 / 3」',
       );
+      expect(find.text('反选'), findsNothing, reason: '多选条不再提供用途不明确的「反选」按钮');
 
       // ── 3. 多选态下点击第二个条目 → 切换为「已选 2 / 3」 ──────
       await tester.tap(find.byIcon(Icons.broken_image_outlined).at(1));
@@ -197,16 +220,15 @@ void main() {
       await tester.tap(find.byTooltip('批量删除'));
       await tester.pumpAndSettle();
 
-      // 「确认删除」会同时出现在对话框标题与确认按钮文案上，两处都要存在
       expect(
-        find.text('确认删除'),
-        findsNWidgets(2),
-        reason: '点击批量删除后应弹出确认对话框，标题与按钮文案都使用「确认删除」',
+        find.text('删除 2 张图片？'),
+        findsOneWidget,
+        reason: '点击批量删除后应弹出确认对话框，标题应反映待删数量',
       );
       expect(
-        find.textContaining('将删除选中的 2 个图片版本'),
+        find.text('选中的图片将被永久删除，无法恢复。'),
         findsOneWidget,
-        reason: '对话框内容应反映待删条数',
+        reason: '对话框内容应说明删除不可恢复',
       );
 
       // ── 5. 点击「确认删除」→ 触发 deleteImages ───────────────
@@ -225,7 +247,7 @@ void main() {
       // 注意：不使用 pumpAndSettle，避免推进虚拟时钟把 SnackBar 的自动消失
       // 计时一并结算掉。
       await tester.runAsync(() async {
-        await tester.tap(find.text('确认删除').last);
+        await tester.tap(find.text('删除').last);
         for (var i = 0; i < 60; i++) {
           await Future<void>.delayed(const Duration(milliseconds: 16));
           await tester.pump();
@@ -265,7 +287,7 @@ void main() {
       await _seedDatabase(db, imagePaths: [v0.path, v1.path, v2.path]);
 
       await tester.pumpWidget(_buildPageApp(db));
-      await tester.pumpAndSettle();
+      await _pumpUntilImageCount(tester, 3);
 
       // listImages 的同图版本顺序是 v2, v1, v0；点击中间格应打开 v1。
       await tester.tap(find.byType(Image).at(1));

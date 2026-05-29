@@ -1309,10 +1309,10 @@ class _ChatViewState extends ConsumerState<ChatView> {
                 Text(
                   'LumiMuse',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontSize: 15,
                     fontWeight: FontWeight.w500,
-                    letterSpacing: 1.2,
+                    letterSpacing: 0,
                     color: isDark
                         ? AppTheme.darkAccentDark
                         : AppTheme.accentDark,

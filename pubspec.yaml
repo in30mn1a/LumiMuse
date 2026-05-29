@@ -1,7 +1,7 @@
 name: lumimuse
 description: 温柔暖光 · 角色陪伴 · 长期记忆 — 多平台聊天陪伴工具
 publish_to: 'none'
-version: 1.0.5+1
+version: 1.0.6+1
 
 environment:
   sdk: ^3.8.0
@@ -74,6 +74,18 @@ flutter:
     - assets/fonts/
 
   fonts:
+    - family: Quicksand
+      fonts:
+        - asset: assets/fonts/Quicksand-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Quicksand-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Quicksand-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Quicksand-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Quicksand-Bold.ttf
+          weight: 700
     - family: LXGWWenKaiScreen
       fonts:
         - asset: assets/fonts/LXGWWenKaiScreen-Regular.ttf

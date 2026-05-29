@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import 'font_config.dart';
 
@@ -123,144 +122,178 @@ class AppTheme {
       outlineVariant: borderLight,
     );
 
-    return _polishInteraction(ThemeData(
-      useMaterial3: true,
-      colorScheme: colorScheme,
-      scaffoldBackgroundColor: const Color(0xFFF6F1FF), // 原版 html background
-      cardColor: surface,
-      dividerColor: borderLight,
-      textTheme: _buildTextTheme(textPrimary, textSecondary, fontStack),
-      appBarTheme: AppBarTheme(
-        backgroundColor: Colors.transparent,
-        foregroundColor: textPrimary,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        centerTitle: false,
-        titleTextStyle: _body(
-          fontStack,
-          fontSize: 18,
-          fontWeight: FontWeight.w600,
-          color: textPrimary,
-        ),
-      ),
-      cardTheme: CardThemeData(
-        color: surface.withValues(alpha: 0.9),
-        elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: const BorderSide(color: borderLight),
-        ),
-        shadowColor: const Color(0x0F5C4A8B),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: surface.withValues(alpha: 0.86),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: borderLight),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: borderLight),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: accent.withValues(alpha: 0.46), width: 1.5),
-        ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        hintStyle: _body(
-          fontStack,
-          fontSize: 14,
-          color: textMuted.withValues(alpha: 0.7),
-        ),
-      ),
-      elevatedButtonTheme: ElevatedButtonThemeData(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: accent,
-          foregroundColor: Colors.white,
+    return _polishInteraction(
+      ThemeData(
+        useMaterial3: true,
+        colorScheme: colorScheme,
+        scaffoldBackgroundColor: const Color(0xFFF6F1FF), // 原版 html background
+        cardColor: surface,
+        dividerColor: borderLight,
+        textTheme: _buildTextTheme(textPrimary, textSecondary, fontStack),
+        appBarTheme: AppBarTheme(
+          backgroundColor: Colors.transparent,
+          foregroundColor: textPrimary,
           elevation: 0,
-          shadowColor: const Color(0x386F52C5),
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          textStyle: _body(
+          scrolledUnderElevation: 0,
+          centerTitle: false,
+          titleTextStyle: _body(
             fontStack,
-            fontSize: 14,
+            fontSize: 18,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: textPrimary,
           ),
         ),
-      ),
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: textPrimary,
-          side: const BorderSide(color: borderLight),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          backgroundColor: surface.withValues(alpha: 0.72),
+        cardTheme: CardThemeData(
+          color: surface.withValues(alpha: 0.9),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: borderLight),
+          ),
+          shadowColor: const Color(0x0F5C4A8B),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: surface.withValues(alpha: 0.86),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: const BorderSide(color: borderLight),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: const BorderSide(color: borderLight),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide(
+              color: accent.withValues(alpha: 0.46),
+              width: 1.5,
+            ),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 14,
+          ),
+          hintStyle: _body(
+            fontStack,
+            fontSize: 14,
+            color: textMuted.withValues(alpha: 0.7),
+          ),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: accent,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shadowColor: const Color(0x386F52C5),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            textStyle: _body(
+              fontStack,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: textPrimary,
+            side: const BorderSide(color: borderLight),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            backgroundColor: surface.withValues(alpha: 0.72),
+          ),
+        ),
+        floatingActionButtonTheme: FloatingActionButtonThemeData(
+          backgroundColor: accent,
+          foregroundColor: Colors.white,
+          elevation: 8,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: surface.withValues(alpha: 0.92),
+          indicatorColor: accent.withValues(alpha: 0.12),
+          labelTextStyle: WidgetStatePropertyAll(
+            _body(
+              fontStack,
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: textPrimary,
+            ),
+          ),
+        ),
+        popupMenuTheme: PopupMenuThemeData(
+          color: surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: borderLight),
+          ),
+          elevation: 8,
+          shadowColor: const Color(0x145C4A8B),
+        ),
+        dialogTheme: DialogThemeData(
+          backgroundColor: surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          titleTextStyle: _body(
+            fontStack,
+            fontSize: 20,
+            fontWeight: FontWeight.w500,
+            color: textPrimary,
+            height: 1.35,
+          ),
+          contentTextStyle: _body(
+            fontStack,
+            fontSize: 14,
+            color: textPrimary,
+            height: 1.65,
+          ),
+          elevation: 16,
+          shadowColor: const Color(0x1A5C4A8B),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: surface,
+          contentTextStyle: _body(fontStack, fontSize: 13, color: textPrimary),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          behavior: SnackBarBehavior.floating,
+          elevation: 4,
+        ),
+        bottomSheetTheme: const BottomSheetThemeData(
+          backgroundColor: surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+        ),
+        switchTheme: SwitchThemeData(
+          thumbColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) return accent;
+            return textMuted.withValues(alpha: 0.4);
+          }),
+          trackColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return accent.withValues(alpha: 0.3);
+            }
+            return textMuted.withValues(alpha: 0.12);
+          }),
+        ),
+        sliderTheme: SliderThemeData(
+          activeTrackColor: accent,
+          inactiveTrackColor: accent.withValues(alpha: 0.15),
+          thumbColor: accent,
+          overlayColor: accent.withValues(alpha: 0.12),
         ),
       ),
-      floatingActionButtonTheme: FloatingActionButtonThemeData(
-        backgroundColor: accent,
-        foregroundColor: Colors.white,
-        elevation: 8,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      ),
-      navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: surface.withValues(alpha: 0.92),
-        indicatorColor: accent.withValues(alpha: 0.12),
-        labelTextStyle: WidgetStatePropertyAll(
-          _body(fontStack, fontSize: 11, fontWeight: FontWeight.w500, color: textPrimary),
-        ),
-      ),
-      popupMenuTheme: PopupMenuThemeData(
-        color: surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: borderLight),
-        ),
-        elevation: 8,
-        shadowColor: const Color(0x145C4A8B),
-      ),
-      dialogTheme: DialogThemeData(
-        backgroundColor: surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        elevation: 16,
-        shadowColor: const Color(0x1A5C4A8B),
-      ),
-      snackBarTheme: SnackBarThemeData(
-        backgroundColor: surface,
-        contentTextStyle: _body(
-          fontStack,
-          fontSize: 13,
-          color: textPrimary,
-        ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        behavior: SnackBarBehavior.floating,
-        elevation: 4,
-      ),
-      bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-      ),
-      switchTheme: SwitchThemeData(
-        thumbColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) return accent;
-          return textMuted.withValues(alpha: 0.4);
-        }),
-        trackColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) return accent.withValues(alpha: 0.3);
-          return textMuted.withValues(alpha: 0.12);
-        }),
-      ),
-      sliderTheme: SliderThemeData(
-        activeTrackColor: accent,
-        inactiveTrackColor: accent.withValues(alpha: 0.15),
-        thumbColor: accent,
-        overlayColor: accent.withValues(alpha: 0.12),
-      ),
-    ));
+    );
   }
 
   /// 暗色主题
@@ -279,131 +312,169 @@ class AppTheme {
       outlineVariant: darkBorderLight,
     );
 
-    return _polishInteraction(ThemeData(
-      useMaterial3: true,
-      colorScheme: colorScheme,
-      scaffoldBackgroundColor: darkWarm50,
-      cardColor: darkSurface,
-      dividerColor: darkBorderLight,
-      textTheme: _buildTextTheme(darkTextPrimary, darkTextSecondary, fontStack),
-      appBarTheme: AppBarTheme(
-        backgroundColor: Colors.transparent,
-        foregroundColor: darkTextPrimary,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        centerTitle: false,
-        titleTextStyle: _body(
+    return _polishInteraction(
+      ThemeData(
+        useMaterial3: true,
+        colorScheme: colorScheme,
+        scaffoldBackgroundColor: darkWarm50,
+        cardColor: darkSurface,
+        dividerColor: darkBorderLight,
+        textTheme: _buildTextTheme(
+          darkTextPrimary,
+          darkTextSecondary,
           fontStack,
-          fontSize: 18,
-          fontWeight: FontWeight.w600,
-          color: darkTextPrimary,
         ),
-      ),
-      cardTheme: CardThemeData(
-        color: darkSurface,
-        elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: darkBorder.withValues(alpha: 0.5)),
+        appBarTheme: AppBarTheme(
+          backgroundColor: Colors.transparent,
+          foregroundColor: darkTextPrimary,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: false,
+          titleTextStyle: _body(
+            fontStack,
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+            color: darkTextPrimary,
+          ),
         ),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: darkSurfaceRaised,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: darkBorder),
+        cardTheme: CardThemeData(
+          color: darkSurface,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(color: darkBorder.withValues(alpha: 0.5)),
+          ),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: darkBorder),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: darkSurfaceRaised,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: const BorderSide(color: darkBorder),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: const BorderSide(color: darkBorder),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide(
+              color: darkAccent.withValues(alpha: 0.5),
+              width: 1.5,
+            ),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 14,
+          ),
+          hintStyle: _body(
+            fontStack,
+            fontSize: 14,
+            color: darkTextMuted.withValues(alpha: 0.7),
+          ),
         ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: darkAccent.withValues(alpha: 0.5), width: 1.5),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: darkAccentDark,
+            foregroundColor: Colors.white,
+            // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
+            elevation: 0,
+            shadowColor: Colors.transparent,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            textStyle: _body(
+              fontStack,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        hintStyle: _body(
-          fontStack,
-          fontSize: 14,
-          color: darkTextMuted.withValues(alpha: 0.7),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: darkSurface.withValues(alpha: 0.92),
+          indicatorColor: darkAccent.withValues(alpha: 0.15),
+          labelTextStyle: WidgetStatePropertyAll(
+            _body(
+              fontStack,
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: darkTextPrimary,
+            ),
+          ),
         ),
-      ),
-      elevatedButtonTheme: ElevatedButtonThemeData(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: darkAccentDark,
-          foregroundColor: Colors.white,
+        popupMenuTheme: PopupMenuThemeData(
+          color: darkSurfaceRaised,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: darkBorder),
+          ),
           // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
           elevation: 0,
           shadowColor: Colors.transparent,
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          textStyle: _body(
+        ),
+        dialogTheme: DialogThemeData(
+          backgroundColor: darkSurfaceRaised,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          titleTextStyle: _body(
+            fontStack,
+            fontSize: 20,
+            fontWeight: FontWeight.w500,
+            color: darkTextPrimary,
+            height: 1.35,
+          ),
+          contentTextStyle: _body(
             fontStack,
             fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: darkTextPrimary,
+            height: 1.65,
+          ),
+          // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
+          elevation: 16,
+          shadowColor: const Color(0x33000000),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: darkSurfaceRaised,
+          contentTextStyle: _body(
+            fontStack,
+            fontSize: 13,
+            color: darkTextPrimary,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          behavior: SnackBarBehavior.floating,
+          // FIX: 暗色模式显式声明 elevation，避免依赖 ThemeData 默认值
+          elevation: 0,
+        ),
+        bottomSheetTheme: const BottomSheetThemeData(
+          backgroundColor: darkSurfaceRaised,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
           ),
         ),
-      ),
-      navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: darkSurface.withValues(alpha: 0.92),
-        indicatorColor: darkAccent.withValues(alpha: 0.15),
-        labelTextStyle: WidgetStatePropertyAll(
-          _body(fontStack, fontSize: 11, fontWeight: FontWeight.w500, color: darkTextPrimary),
+        switchTheme: SwitchThemeData(
+          thumbColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) return darkAccent;
+            return darkTextMuted.withValues(alpha: 0.4);
+          }),
+          trackColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return darkAccent.withValues(alpha: 0.3);
+            }
+            return darkTextMuted.withValues(alpha: 0.12);
+          }),
+        ),
+        sliderTheme: SliderThemeData(
+          activeTrackColor: darkAccent,
+          inactiveTrackColor: darkAccent.withValues(alpha: 0.15),
+          thumbColor: darkAccent,
         ),
       ),
-      popupMenuTheme: PopupMenuThemeData(
-        color: darkSurfaceRaised,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: darkBorder),
-        ),
-        // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
-        elevation: 0,
-        shadowColor: Colors.transparent,
-      ),
-      dialogTheme: DialogThemeData(
-        backgroundColor: darkSurfaceRaised,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        // FIX: 暗色模式显式声明 elevation/shadowColor，避免依赖 ThemeData 默认值
-        elevation: 16,
-        shadowColor: const Color(0x33000000),
-      ),
-      snackBarTheme: SnackBarThemeData(
-        backgroundColor: darkSurfaceRaised,
-        contentTextStyle: _body(
-          fontStack,
-          fontSize: 13,
-          color: darkTextPrimary,
-        ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        behavior: SnackBarBehavior.floating,
-        // FIX: 暗色模式显式声明 elevation，避免依赖 ThemeData 默认值
-        elevation: 0,
-      ),
-      bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: darkSurfaceRaised,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-      ),
-      switchTheme: SwitchThemeData(
-        thumbColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) return darkAccent;
-          return darkTextMuted.withValues(alpha: 0.4);
-        }),
-        trackColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) return darkAccent.withValues(alpha: 0.3);
-          return darkTextMuted.withValues(alpha: 0.12);
-        }),
-      ),
-      sliderTheme: SliderThemeData(
-        activeTrackColor: darkAccent,
-        inactiveTrackColor: darkAccent.withValues(alpha: 0.15),
-        thumbColor: darkAccent,
-      ),
-    ));
+    );
   }
 
   /// 弱化 Material 水波纹，贴近主项目 soft-button 手感
@@ -434,32 +505,53 @@ class AppTheme {
     FontStack fontStack = FontConfig.defaultStack,
   ]) {
     final baseTheme = TextTheme(
-      displayLarge: GoogleFonts.quicksand(
-        fontSize: 32, fontWeight: FontWeight.w600, color: primary,
+      displayLarge: TextStyle(
+        fontSize: 32,
+        fontWeight: FontWeight.w600,
+        color: primary,
       ),
-      headlineMedium: GoogleFonts.quicksand(
-        fontSize: 24, fontWeight: FontWeight.w600, color: primary,
+      headlineMedium: TextStyle(
+        fontSize: 24,
+        fontWeight: FontWeight.w600,
+        color: primary,
       ),
-      titleLarge: GoogleFonts.quicksand(
-        fontSize: 20, fontWeight: FontWeight.w500, color: primary,
+      titleLarge: TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.w500,
+        color: primary,
       ),
-      titleMedium: GoogleFonts.quicksand(
-        fontSize: 16, fontWeight: FontWeight.w600, color: primary,
+      titleMedium: TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        color: primary,
       ),
       bodyLarge: TextStyle(
-        fontSize: 15, fontWeight: FontWeight.w400, color: primary, height: 1.65,
+        fontSize: 15,
+        fontWeight: FontWeight.w400,
+        color: primary,
+        height: 1.65,
       ),
       bodyMedium: TextStyle(
-        fontSize: 14, fontWeight: FontWeight.w400, color: primary, height: 1.65,
+        fontSize: 14,
+        fontWeight: FontWeight.w400,
+        color: primary,
+        height: 1.65,
       ),
       bodySmall: TextStyle(
-        fontSize: 12, fontWeight: FontWeight.w400, color: secondary, height: 1.5,
+        fontSize: 12,
+        fontWeight: FontWeight.w400,
+        color: secondary,
+        height: 1.5,
       ),
       labelLarge: TextStyle(
-        fontSize: 14, fontWeight: FontWeight.w600, color: primary,
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: primary,
       ),
       labelSmall: TextStyle(
-        fontSize: 11, fontWeight: FontWeight.w500, color: secondary,
+        fontSize: 11,
+        fontWeight: FontWeight.w500,
+        color: secondary,
         letterSpacing: 0.5,
       ),
     );

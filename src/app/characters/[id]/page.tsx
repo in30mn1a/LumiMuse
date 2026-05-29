@@ -584,6 +584,17 @@ export default function CharacterEditor({ params }: Props) {
                     className="textarea-rich font-mono text-sm"
                   />
                 </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.userImageTags')}</label>
+                  <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.userImageTagsHint')}</p>
+                  <textarea
+                    value={character.user_image_tags || ''}
+                    onChange={e => update('user_image_tags', e.target.value)}
+                    rows={3}
+                    placeholder="1boy, black hair, brown eyes, glasses..."
+                    className="textarea-rich font-mono text-sm"
+                  />
+                </div>
               </div>
             </details>
           </main>

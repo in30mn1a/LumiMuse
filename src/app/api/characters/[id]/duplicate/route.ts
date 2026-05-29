@@ -122,8 +122,8 @@ export async function POST(
 
   const copyAll = db.transaction(() => {
     db.prepare(`
-      INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       newCharacterId,
       newName,
@@ -136,6 +136,7 @@ export async function POST(
       original.system_prompt,
       original.other_info || '',
       original.image_tags || '',
+      original.user_image_tags || '',
       now,
       now,
     );

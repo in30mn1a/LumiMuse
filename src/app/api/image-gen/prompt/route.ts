@@ -76,13 +76,20 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 
 # 视觉一致性
 - 如果提供了角色固定外貌标签（image_tags），必须完整包含，不得省略或修改
+- 如果提供了用户外貌标签（user_image_tags），在用户出场时必须完整包含，保持发色/瞳色等特征一致
 - 每次生成同一角色时，发色/瞳色/核心特征保持一致
+
+# 用户外貌标签（user_image_tags）
+- 描述用户本人的外貌特征（发色、瞳色、性别、体型等），不是风格偏好
+- **仅当用户出现在画面中时才包含这些标签**——根据对话内容判断用户是否在场
+- 用户出场时：完整包含所有用户外貌标签
+- 用户未出场（仅角色独白/旁白/单人场景）：不包含用户外貌标签
 
 # 生成限制
 - 默认第三人称视角，禁止 POV 视角，不要输出 pov 或任何第一人称视角相关 tag
 - 禁止矛盾 tag（如 facing viewer + buttocks visible）
 - 每张图为单一静态瞬间，不描述连续动作
-- SFW场景不要出现男性角色 tag，除非是男女之间的亲密互动如kiss,hugging；对话明确要求 NSFW 互动时允许男性角色 tag
+- SFW场景不要出现男性角色 tag，除非用户外貌标签中明确标注了用户为男性（如 1boy），或男女之间的亲密互动如kiss,hugging；对话明确要求 NSFW 互动时允许男性角色 tag
 - NSFW场景必须出现详细描写表情、性爱姿势等tag，禁止回避NSFW场景的tag生成
 
 # 输出格式（严格遵守，不输出任何解释文字）
@@ -119,6 +126,7 @@ export async function POST(request: NextRequest) {
       personality: string;
       scenario: string;
       image_tags?: string;
+      user_image_tags?: string;
     } | undefined;
 
     // 获取消息上下文：基于触发生图的消息，取该消息及之前共 10 条
@@ -166,6 +174,9 @@ export async function POST(request: NextRequest) {
         } else {
           context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${character.image_tags}\n`;
         }
+      }
+      if (character.user_image_tags) {
+        context += `\n【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时才包含在 POSITIVE 中；用户未出场则忽略这些标签）】\n${character.user_image_tags}\n`;
       }
     }
 

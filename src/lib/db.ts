@@ -214,6 +214,9 @@ function migrate(db: Database.Database): void {
   if (!charCols.some(c => c.name === 'image_tags')) {
     db.exec(`ALTER TABLE characters ADD COLUMN image_tags TEXT NOT NULL DEFAULT ''`);
   }
+  if (!charCols.some(c => c.name === 'user_image_tags')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN user_image_tags TEXT NOT NULL DEFAULT ''`);
+  }
 
   // 增量迁移：characters 表补 sort_order 列（侧边栏拖拽排序，越小越靠前）
   if (!charCols.some(c => c.name === 'sort_order')) {

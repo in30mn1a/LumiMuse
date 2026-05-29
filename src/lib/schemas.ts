@@ -82,6 +82,7 @@ export const characterCreateSchema = z.object({
   system_prompt: z.string().max(MAX_LARGE_TEXT).optional(),
   other_info: z.string().max(MAX_MEDIUM_TEXT).optional(),
   image_tags: z.string().max(MAX_MEDIUM_TEXT).optional(),
+  user_image_tags: z.string().max(MAX_MEDIUM_TEXT).optional(),
 });
 export type CharacterCreate = z.infer<typeof characterCreateSchema>;
 

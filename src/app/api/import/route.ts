@@ -234,8 +234,8 @@ function importPayload({
       if (charId) idMap.set(charId, newId);
 
       db.prepare(`
-        INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         newId,
         finalName,
@@ -248,6 +248,7 @@ function importPayload({
         asString(char.system_prompt),
         asString(char.other_info),
         asString(char.image_tags),
+        asString(char.user_image_tags),
         asString(char.created_at) || now,
         now,
       );

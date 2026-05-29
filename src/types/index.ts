@@ -10,6 +10,7 @@ export interface Character {
   system_prompt: string;
   other_info: string;
   image_tags: string;
+  user_image_tags: string;
   created_at: string;
   updated_at: string;
 }

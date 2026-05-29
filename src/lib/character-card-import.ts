@@ -10,7 +10,8 @@ export type CharacterDraft = Pick<Character,
   'example_dialogue' |
   'system_prompt' |
   'other_info' |
-  'image_tags'
+  'image_tags' |
+  'user_image_tags'
 >;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -57,6 +58,7 @@ export function normalizeCharacterCard(payload: unknown): CharacterDraft | null 
       system_prompt: text(lumimuseCharacter.system_prompt),
       other_info: text(lumimuseCharacter.other_info),
       image_tags: text(lumimuseCharacter.image_tags),
+      user_image_tags: text(lumimuseCharacter.user_image_tags),
     };
   }
 
@@ -81,5 +83,6 @@ export function normalizeCharacterCard(payload: unknown): CharacterDraft | null 
       ['作者备注', text(data.creator_notes)],
     ]),
     image_tags: tagsToText(data.tags),
+    user_image_tags: '',
   };
 }

@@ -43,7 +43,7 @@ export async function PUT(
   db.prepare(`
     UPDATE characters SET
       name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
-      greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, updated_at = ?
+      greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?, updated_at = ?
     WHERE id = ?
   `).run(
     body.name ?? existing.name,
@@ -56,6 +56,7 @@ export async function PUT(
     body.system_prompt ?? existing.system_prompt,
     body.other_info ?? existing.other_info ?? '',
     body.image_tags ?? existing.image_tags ?? '',
+    body.user_image_tags ?? existing.user_image_tags ?? '',
     now,
     id,
   );

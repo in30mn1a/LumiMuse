@@ -14,8 +14,8 @@ const isDev = process.env.NODE_ENV !== "production";
  *   （远程头像 / AI 生图回链 / 用户填入的图片 URL）
  * - connect-src：用户可配置任意 LLM / SD WebUI 供应商，允许 https:；
  *   wss: 允许 Next.js dev WebSocket（HMR）以及未来流式 WS 拓展
- * - font-src：允许同源 + data: + Google Fonts + cdnjs（霞鹜文楷网络字体）
- * - style-src：除同源外允许 Google Fonts 与 cdnjs（layout.tsx 通过 <link> 引入）
+ * - font-src：允许同源（自托管霞鹜文楷 /fonts/lxgw）+ data: + Google Fonts（Quicksand）
+ * - style-src：除同源外允许 Google Fonts（Quicksand，layout.tsx 通过 <link> 引入）
  * - frame-ancestors 'none'：禁止被 iframe 嵌入
  */
 const cspDirectives: Array<[string, string]> = [
@@ -26,9 +26,9 @@ const cspDirectives: Array<[string, string]> = [
       ? "'self' 'unsafe-inline' 'unsafe-eval'"
       : "'self' 'unsafe-inline'",
   ],
-  ["style-src", "'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com"],
+  ["style-src", "'self' 'unsafe-inline' https://fonts.googleapis.com"],
   ["img-src", "'self' data: blob: https:"],
-  ["font-src", "'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com"],
+  ["font-src", "'self' data: https://fonts.gstatic.com"],
   ["connect-src", "'self' https: wss: ws:"],
   ["frame-ancestors", "'none'"],
   ["base-uri", "'self'"],

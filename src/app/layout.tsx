@@ -51,13 +51,31 @@ export default function RootLayout({
     <html lang="zh" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        {/*
+          霞鹜文楷屏幕版（简体 GB）— 自托管（方案C）。
+          1) 不再跨境请求 cdnjs，改用本地 /fonts/lxgw 下的样式表与 woff2 子集；
+          2) 本地 CSS 已将 font-display 改为 optional：字体未在极短阻塞期内就绪则
+             本次沿用系统字体且不再中途替换，彻底消除「系统字体→文楷」的 FOUT 跳变，
+             字体随后进缓存，二次访问命中缓存即可首屏直接以文楷渲染；
+          3) preload 高频子集（116-119，覆盖最常用简体汉字与中文标点），
+             让首屏常用文字尽量赶上 optional 的就绪窗口、直接以文楷呈现。
+          注意：preload 必须带 type 与 crossOrigin，否则浏览器会重复下载字体。
+        */}
+        {[116, 117, 118, 119].map(n => (
+          <link
+            key={n}
+            rel="preload"
+            as="font"
+            type="font/woff2"
+            href={`/fonts/lxgw/files/lxgwwenkaigbscreen-subset-${n}.woff2`}
+            crossOrigin="anonymous"
+          />
+        ))}
+        <link href="/fonts/lxgw/lxgwwenkaigbscreen.css" rel="stylesheet" />
+        {/* Quicksand 英文标题字体（仅标题用，量小，保留 Google Fonts swap） */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        {/* Quicksand 英文字体 */}
         <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet" />
-        {/* 霞鹜文楷屏幕版（简体 GB），来自 cdnjs，支持完整简体汉字 */}
-        <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/lxgw-wenkai-screen-webfont/1.7.0/lxgwwenkaigbscreen.css" rel="stylesheet" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180x180.png" />
         <link rel="apple-touch-icon" sizes="152x152" href="/apple-touch-icon-152x152.png" />

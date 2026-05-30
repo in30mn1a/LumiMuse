@@ -144,6 +144,44 @@ class BackupService {
 
   BackupService(this._db);
 
+  /// 把备份 JSON 字符串解析为 `Map<String, dynamic>`。
+  ///
+  /// FIX：之前直接 `Isolate.run(() => jsonDecode(jsonStr) as Map<String, dynamic>)`
+  /// 并用一个泛型 `catch (e)` 兜底，把"isolate 基础设施抛错 / spawn 失败"这类
+  /// 与备份内容无关的瞬时错误，统统报成"备份文件格式无效：无法解析备份文件"，
+  /// 导致明明合法的角色卡也提示导入失败（且复现具有偶发性）。
+  ///
+  /// 现在分两层：
+  /// 1. 真正的 JSON 语法错误（[FormatException]）才视为"内容无效"，原样抛出由
+  ///    上层翻译成用户文案；
+  /// 2. 其余异常（多为 [Isolate.run] 的运行时问题）先在主线程同步重试一次，
+  ///    主线程也失败才认定为真正的格式问题。
+  ///
+  /// 解析放到后台 isolate 仅为避免大文件阻塞 UI，本身不应改变成败语义。
+  static Future<Map<String, dynamic>> _decodeBackupJson(String jsonStr) async {
+    Map<String, dynamic> decodeSync() {
+      final decoded = jsonDecode(jsonStr);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('备份文件格式无效：根节点不是对象');
+      }
+      return decoded;
+    }
+
+    if (kIsWeb) {
+      return decodeSync();
+    }
+
+    try {
+      return await Isolate.run(decodeSync);
+    } on FormatException {
+      // 内容本身就是坏 JSON——直接上抛，语义明确。
+      rethrow;
+    } catch (_) {
+      // isolate 基础设施类错误：退回主线程再试一次，避免误报"无法解析"。
+      return decodeSync();
+    }
+  }
+
   /// 敏感配置 key 匹配片段（全部小写比较）。命中任一片段的 settings.key 视为敏感凭据，
   /// 在 [exportToJson] 中默认（includeSecrets = false）会被剔除。
   /// 这些片段覆盖 OpenAI 兼容 api key / NovelAI / 自定义 API / token / 密码 等典型场景。
@@ -405,10 +443,8 @@ class BackupService {
       throw FormatException(validation.errorMessage ?? '数据格式无效');
     }
 
-    // TODO(parity): 大批量数据时改为 Isolate.run 避免主线程阻塞
-    final data = kIsWeb
-        ? (jsonDecode(jsonStr) as Map<String, dynamic>)
-        : await Isolate.run(() => jsonDecode(jsonStr) as Map<String, dynamic>);
+    // 解析数据（与 importWithOptions 共用健壮解码：isolate 故障不误报为格式错误）
+    final data = await _decodeBackupJson(jsonStr);
     int addedCount = 0;
     int skippedCount = 0;
 
@@ -802,12 +838,9 @@ class BackupService {
   }) async {
     final Map<String, dynamic> data;
     try {
-      // TODO(parity): 大批量数据时改为 Isolate.run 避免主线程阻塞
-      data = kIsWeb
-          ? (jsonDecode(jsonStr) as Map<String, dynamic>)
-          : await Isolate.run(() => jsonDecode(jsonStr) as Map<String, dynamic>);
-    } catch (e) {
-      // TODO(parity): 主项目缺失 'backup.invalidFormat' 键，硬编码兜底
+      data = await _decodeBackupJson(jsonStr);
+    } on FormatException {
+      // 真正的 JSON 语法错误才报"无法解析"。
       throw const FormatException('备份文件格式无效：无法解析备份文件');
     }
     const uuid = Uuid();

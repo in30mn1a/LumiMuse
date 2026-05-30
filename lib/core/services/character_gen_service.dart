@@ -33,20 +33,20 @@ class CharacterGenService {
       ChatMessage(role: 'user', content: requirement),
     ];
 
-    // 使用 jsonMode 设置来请求 JSON 输出
-    final jsonSettings = AppSettings(
-      apiBase: settings.apiBase,
-      apiKey: settings.apiKey,
-      model: settings.model,
-      jsonMode: true,
+    // FIX：不强制 jsonMode。之前固定 `jsonMode: true` 会让 LlmService 在请求体
+    // 里塞入 `response_format: {"type": "json_object"}`，而很多 OpenAI 兼容
+    // 服务 / 模型并不支持该参数，会直接返回 HTTP 500（普通聊天不带这个参数所以
+    // 正常）。与 ImagePromptService 一致：系统提示词已要求"只输出 JSON"，
+    // 这里关掉 response_format，靠下方的健壮解析（含从文本中提取 JSON 的兜底）
+    // 来拿到结构化结果，最大化跨服务商兼容性。
+    final genSettings = settings.copyWith(
+      jsonMode: false,
       temperature: 0.8,
-      maxTokens: settings.maxTokens,
-      contextWindow: settings.contextWindow,
       streaming: false,
     );
 
     final result = await _llm.chatCompletion(
-      settings: jsonSettings,
+      settings: genSettings,
       messages: messages,
     );
 

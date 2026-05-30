@@ -39,6 +39,43 @@ class MemoryExtractionService {
 
   MemoryExtractionService(this._db, this._llm, this._memoryEngine);
 
+  /// 启动时清理上一次运行残留的 memory_tasks。
+  ///
+  /// 修复用户反馈："记忆提取卡住了…重开软件也不行"。
+  ///
+  /// 触发场景：用户手动选了几十条消息触发提取，单次 LLM 请求耗时极长，
+  /// 期间 App 被切到后台被系统杀掉 / 用户手动结束进程 / 网络层异常未冒泡到
+  /// `_processTask` 的 try 内。结果 `memory_tasks` 行卡在 `processing`，重启
+  /// 后内存队列状态全丢，[enqueueExtraction] 的 DB 去重 guard 会因为存在
+  /// `pending`/`processing` 行而把后续的所有手动触发静默吞掉，UI 上的
+  /// 「提取中」按钮永久无法解除。
+  ///
+  /// 修复策略：App 启动时（`databaseProvider` 一次性调用）把所有未完成的
+  /// `memory_tasks` 行强制翻成 `failed`。这些行此时一定是孤儿——内存里的
+  /// `_inFlightConversations` / `_processing` 还是初始空状态，没有任何
+  /// service 实例真在驱动它们。翻成 `failed` 后：
+  /// - UI 状态指示器自然回到 idle / failed 短暂提示；
+  /// - 下次手动触发能正常入队、正常推进。
+  ///
+  /// 静态方法，只读 DB，不需要 LlmService / MemoryEngine 即可调用。
+  static Future<int> recoverStaleTasksOnStartup(AppDatabase db) async {
+    final now = DateTime.now();
+    return (db.update(db.memoryTasks)
+          ..where((t) =>
+              t.status.equals('pending') | t.status.equals('processing')))
+        .write(MemoryTasksCompanion(
+      status: const Value('failed'),
+      updatedAt: Value(now),
+    ));
+  }
+
+  /// 自上次状态推进以来超过该阈值的 `pending`/`processing` 行视为孤儿。
+  ///
+  /// `LlmService` 的 dio receiveTimeout 是 5 分钟，给 1 倍冗余取 10 分钟，
+  /// 既保证正常长请求不会被误杀，也避免真有卡死的行永远占着去重 guard。
+  static const Duration _stalenessThreshold = Duration(minutes: 10);
+
+
   /// 按主项目规则选择需要送入记忆提取的消息片段：
   /// 未提取的用户消息 + 紧随其后的 assistant 回复，跳过 summary。
   static List<String> selectExtractionMessageIds(List<Message> allMessages) {
@@ -209,6 +246,21 @@ class MemoryExtractionService {
   }) async {
     // 内存层去重
     if (_inFlightConversations.contains(conversationId)) return;
+
+    // 防御性恢复：把同一对话上 updated_at 已经过期的 pending/processing 行
+    // 翻成 failed，避免上次运行卡住的孤儿行永远霸占下面的去重 guard。
+    // 与 [recoverStaleTasksOnStartup] 是两层互补：那一处覆盖"App 重启"，
+    // 这里覆盖"运行中崩溃但 App 没重启"或"启动恢复来得太晚"的场景。
+    final staleCutoff = DateTime.now().subtract(_stalenessThreshold);
+    await (_db.update(_db.memoryTasks)
+          ..where((t) =>
+              t.conversationId.equals(conversationId) &
+              (t.status.equals('pending') | t.status.equals('processing')) &
+              t.updatedAt.isSmallerThanValue(staleCutoff)))
+        .write(MemoryTasksCompanion(
+      status: const Value('failed'),
+      updatedAt: Value(DateTime.now()),
+    ));
 
     // 数据库层去重
     final existing = await (_db.select(_db.memoryTasks)

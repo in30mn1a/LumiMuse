@@ -1,0 +1,38 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+*.g.dart
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 平台构建产物
+android/.gradle/
+android/app/build/
+ios/Pods/
+ios/.symlinks/
+macos/Pods/
+windows/flutter/ephemeral/
+linux/flutter/ephemeral/
+
+# 自动生成
+.flutter-plugins-dependencies
+
+# 大文件 / 非源码
+AUDIT-REPORT.md
+dart_test.yaml
+devtools_options.yaml
+
+# Kiro 设计文档
+.kiro/
+
+# 杂项
+*.log
+.DS_Store
+pubspec.lock
+CLAUDE.md
+AGENTS.md
+.claude/

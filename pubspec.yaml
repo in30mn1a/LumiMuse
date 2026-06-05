@@ -1,0 +1,91 @@
+name: lumimuse
+description: 温柔暖光 · 角色陪伴 · 长期记忆 — 多平台聊天陪伴工具
+publish_to: 'none'
+version: 1.0.7+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # 状态管理
+  flutter_riverpod: ^2.6.1
+  # FIX: M5 删除未用依赖 riverpod_annotation（项目 Provider 全部手写，未使用代码生成）
+
+  # 数据库
+  drift: ^2.22.1
+  sqlite3_flutter_libs: ^0.5.28
+
+  # 路由
+  go_router: ^14.8.1
+
+  # 网络
+  dio: ^5.7.0
+
+  # 工具
+  uuid: ^4.5.1
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  intl: ^0.20.2
+  characters: ^1.3.0
+  shared_preferences: ^2.3.4
+  image_picker: ^1.1.2
+  file_picker: ^8.1.6
+  share_plus: ^10.1.4
+  url_launcher: ^6.3.1
+  flutter_markdown: ^0.7.6
+  cached_network_image: ^3.4.1
+  # FIX: M5 删除未用依赖 json_annotation（模型全部手写 fromJson/toJson）
+
+  # UI 组件
+  google_fonts: ^6.2.1
+  flutter_animate: ^4.5.2
+  reorderable_grid_view: ^2.2.8
+  image_cropper: ^8.0.2
+
+  # NAI ZIP raw inflate 解压
+  archive: ^3.6.1
+  # 启动密码 PBKDF2 哈希
+  cryptography: ^2.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.14
+  drift_dev: ^2.22.1
+  # FIX: M5 删除未用 dev 依赖 json_serializable / riverpod_generator（无对应代码生成）
+  glados: ^1.1.7
+
+# FIX: M5 删除 dependency_overrides 整段 —— 该 override 仅为 riverpod_generator
+# 与 glados 之间的 analyzer 版本冲突存在；删除 riverpod_generator 后不再需要。
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/
+    - assets/fonts/
+
+  fonts:
+    - family: Quicksand
+      fonts:
+        - asset: assets/fonts/Quicksand-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Quicksand-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Quicksand-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Quicksand-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Quicksand-Bold.ttf
+          weight: 700
+    - family: LXGWWenKaiScreen
+      fonts:
+        - asset: assets/fonts/LXGWWenKaiScreen-Regular.ttf

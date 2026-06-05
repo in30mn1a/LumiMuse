@@ -1,0 +1,47 @@
+{
+  "name": "lumimuse",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "test": "node --test tests/*.test.cjs tests/*-smoke.cjs",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@tanstack/react-virtual": "^3.13.26",
+    "better-sqlite3": "^12.9.0",
+    "js-tiktoken": "^1.0.21",
+    "jszip": "^3.10.1",
+    "next": "^16.2.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "9.1.0",
+    "remark-gfm": "4.0.1",
+    "undici": "^7.26.0",
+    "uuid": "^11.1.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/uuid": "^10.0.0",
+    "eslint": "^9",
+    "eslint-config-next": "^16.2.6",
+    "lxgw-wenkai-screen-webfont": "^1.7.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.15"
+    }
+  }
+}

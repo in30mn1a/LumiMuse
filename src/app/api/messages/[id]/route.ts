@@ -1,0 +1,206 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getDb } from '@/lib/db';
+import { parseMessageMetadata, serializeMessage } from '@/lib/messages';
+import {
+  collectLocalAssetUrlsFromContent,
+  collectLocalAssetUrlsFromMetadata,
+  deleteLocalAssetUrls,
+  filterUnreferencedLocalAssetUrls,
+} from '@/lib/character-file-utils';
+import { invalidateMemoriesForSourceMessage } from '@/lib/memory-source-tracking';
+import { messageUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
+
+type MessageRecord = Record<string, unknown>;
+
+/**
+ * 收集单条消息所有版本（含当前 content 和 metadata）涉及的本地资源 URL。
+ * 包含来源：
+ *  - 当前 content 内嵌 URL
+ *  - metadata.attachments / metadata.generatedImages
+ *  - metadata.versions[i].content 内嵌 URL（非激活版本独占的 URL）
+ *  - metadata.versions[i].attachments（兼容历史/扩展数据，类型层未声明但运行时可能存在）
+ */
+function collectMessageLocalAssetUrls(message: MessageRecord): Set<string> {
+  const urls = collectLocalAssetUrlsFromMetadata(message.metadata);
+  const contentUrls = collectLocalAssetUrlsFromContent(
+    typeof message.content === 'string' ? message.content : null,
+  );
+
+  for (const url of contentUrls) {
+    urls.add(url);
+  }
+
+  // 历史版本内嵌的 URL 也要算进来，否则多版本场景下会漏判
+  const meta = parseMessageMetadata(message.metadata);
+  const versions = meta.versions as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(versions)) {
+    for (const version of versions) {
+      if (!version || typeof version !== 'object') continue;
+      const versionContent = typeof version.content === 'string' ? version.content : null;
+      for (const url of collectLocalAssetUrlsFromContent(versionContent)) {
+        urls.add(url);
+      }
+      // 兼容历史/扩展数据：版本内自带 attachments
+      for (const url of collectLocalAssetUrlsFromMetadata({ attachments: version.attachments })) {
+        urls.add(url);
+      }
+    }
+  }
+
+  return urls;
+}
+
+async function deleteUnreferencedLocalAssets(
+  db: ReturnType<typeof getDb>,
+  previousFileUrls: Set<string>,
+): Promise<void> {
+  if (previousFileUrls.size === 0) return;
+
+  // 只对修改前出现过的 URL 做"是否仍被引用"检查，避免全表扫描所有资源。
+  const orphanUrls = filterUnreferencedLocalAssetUrls(db, previousFileUrls);
+  await deleteLocalAssetUrls(orphanUrls);
+}
+
+function mergeMessageMetadata(
+  current: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...current, ...incoming };
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const parsed = messageUpdateSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
+  const db = getDb();
+
+  const existing = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  const previousFileUrls = collectMessageLocalAssetUrls(existing);
+
+  // 在事务外完成 async import，避免事务函数变成异步
+  const estimateTokens = body.activeVersion === undefined && body.content !== undefined
+    ? (await import('@/lib/token-counter')).estimateTokens
+    : null;
+
+  // 用事务包裹多个 UPDATE，避免中途失败留下不一致状态
+  db.transaction(() => {
+    if (body.activeVersion !== undefined) {
+      let meta: Record<string, unknown> = {};
+      meta = parseMessageMetadata(existing.metadata);
+      const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
+      if (versions && body.activeVersion >= 0 && body.activeVersion < versions.length) {
+        meta.activeVersion = body.activeVersion;
+        const target = versions[body.activeVersion];
+        db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
+          .run(target.content, target.token_count, JSON.stringify(meta), id);
+      }
+    } else if (body.content !== undefined) {
+      const tokenCount = estimateTokens!(body.content);
+
+      // 同步更新 metadata.versions 里当前激活版本的内容，防止切换版本时覆盖编辑
+      let meta: Record<string, unknown> = {};
+      meta = parseMessageMetadata(existing.metadata);
+      const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
+
+      // 如果传了 attachments，更新 metadata 里的附件
+      if (body.attachments !== undefined) {
+        if (body.attachments && (body.attachments as unknown[]).length > 0) {
+          meta.attachments = body.attachments;
+        } else {
+          delete meta.attachments;
+        }
+      }
+
+      if (versions && versions.length > 0) {
+        const activeIdx = typeof meta.activeVersion === 'number' ? meta.activeVersion : 0;
+        if (activeIdx >= 0 && activeIdx < versions.length) {
+          versions[activeIdx] = { content: body.content, token_count: tokenCount };
+          meta.versions = versions;
+        }
+        db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
+          .run(body.content, tokenCount, JSON.stringify(meta), id);
+      } else {
+        db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
+          .run(body.content, tokenCount, JSON.stringify(meta), id);
+      }
+
+      invalidateMemoriesForSourceMessage({ db, messageId: id, reason: 'edited' });
+    }
+
+    const shouldMergeIncomingMetadata = body.metadata !== undefined && body.activeVersion === undefined;
+    if (shouldMergeIncomingMetadata) {
+      const latest = db.prepare('SELECT metadata FROM messages WHERE id = ?').get(id) as { metadata: unknown } | undefined;
+      const currentMeta = parseMessageMetadata(latest?.metadata ?? existing.metadata);
+      const incomingMeta = body.metadata ?? {};
+      // body.content !== undefined && body.metadata !== undefined 时，
+      // currentMeta 已是上方刚写入的最新 versions/attachments。
+      const mergedMeta = mergeMessageMetadata(currentMeta, incomingMeta);
+      db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(mergedMeta), id);
+    }
+  })();
+
+  // deleteUnreferencedLocalAssets 涉及文件 IO，必须在事务外执行
+  await deleteUnreferencedLocalAssets(db, previousFileUrls);
+  const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
+  return NextResponse.json(serializeMessage(updated));
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const db = getDb();
+
+  const existing = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  const previousFileUrls = collectMessageLocalAssetUrls(existing);
+
+  // 如果消息有多个版本，只删除当前激活版本，保留其他版本
+  let meta: Record<string, unknown> = {};
+  meta = parseMessageMetadata(existing.metadata);
+  const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
+
+  if (versions && versions.length > 1) {
+    const activeIdx = typeof meta.activeVersion === 'number' ? meta.activeVersion : versions.length - 1;
+    // 删除当前版本
+    const newVersions = versions.filter((_, i) => i !== activeIdx);
+    const newActiveIdx = Math.min(activeIdx, newVersions.length - 1);
+    meta.versions = newVersions;
+    meta.activeVersion = newActiveIdx;
+    const target = newVersions[newActiveIdx];
+    const updated = db.transaction(() => {
+      db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
+        .run(target.content, target.token_count, JSON.stringify(meta), id);
+      invalidateMemoriesForSourceMessage({ db, messageId: id, reason: 'deleted' });
+      return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
+    })();
+    await deleteUnreferencedLocalAssets(db, previousFileUrls);
+    return NextResponse.json({ ok: true, deleted: 'version', message: serializeMessage(updated) });
+  }
+
+  // 只有一个版本（或无版本信息）：删整条消息
+  const result = db.transaction(() => {
+    invalidateMemoriesForSourceMessage({ db, messageId: id, reason: 'deleted' });
+    return db.prepare('DELETE FROM messages WHERE id = ?').run(id);
+  })();
+  if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  await deleteUnreferencedLocalAssets(db, previousFileUrls);
+  return NextResponse.json({ ok: true, deleted: 'message' });
+}

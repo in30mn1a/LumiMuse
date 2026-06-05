@@ -722,6 +722,7 @@ function resolveProfileText(
   return trimProfileText(
     renderMemoryProfile(loadProfile(characterId) || {
       character_id: characterId,
+      profile_name: '',
       relationship_state: '',
       recent_story_state: '',
       emotional_baseline: '',

@@ -68,6 +68,7 @@ export function ensureMemoryProfileTables(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS character_memory_profiles (
       character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+      profile_name TEXT NOT NULL DEFAULT '',
       relationship_state TEXT NOT NULL DEFAULT '',
       recent_story_state TEXT NOT NULL DEFAULT '',
       emotional_baseline TEXT NOT NULL DEFAULT '',
@@ -106,6 +107,11 @@ export function ensureMemoryProfileTables(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_memory_profile_versions_character
       ON character_memory_profile_versions(character_id, version_number DESC);
   `);
+
+  const profileCols = db.prepare("PRAGMA table_info(character_memory_profiles)").all() as { name: string }[];
+  if (profileCols.length > 0 && !profileCols.some(c => c.name === 'profile_name')) {
+    db.exec(`ALTER TABLE character_memory_profiles ADD COLUMN profile_name TEXT NOT NULL DEFAULT ''`);
+  }
 
   const taskCols = db.prepare("PRAGMA table_info(character_memory_profile_update_tasks)").all() as { name: string }[];
   if (taskCols.length > 0 && !taskCols.some(c => c.name === 'claim_token')) {

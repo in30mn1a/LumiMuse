@@ -6,6 +6,7 @@ import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } f
 
 export interface CharacterMemoryProfile {
   character_id: string;
+  profile_name: string;
   relationship_state: string;
   recent_story_state: string;
   emotional_baseline: string;
@@ -17,6 +18,7 @@ export interface CharacterMemoryProfile {
 
 export type MemoryProfilePatch = Partial<Pick<
   CharacterMemoryProfile,
+  | 'profile_name'
   | 'relationship_state'
   | 'recent_story_state'
   | 'emotional_baseline'
@@ -39,6 +41,18 @@ export interface MemoryProfileUpdateTask {
   created_at: string;
   updated_at: string;
 }
+
+export type MemoryProfileTaskSummary = Pick<
+  MemoryProfileUpdateTask,
+  | 'id'
+  | 'character_id'
+  | 'reason'
+  | 'status'
+  | 'retry_count'
+  | 'error_message'
+  | 'created_at'
+  | 'updated_at'
+>;
 
 export interface MemoryProfileVersion {
   id: number;
@@ -64,6 +78,7 @@ export interface ProcessMemoryProfileUpdateResult {
 
 interface MemoryProfileRow {
   character_id: string;
+  profile_name: string;
   relationship_state: string;
   recent_story_state: string;
   emotional_baseline: string;
@@ -87,6 +102,8 @@ interface MemoryProfileUpdateTaskRow {
   updated_at: string;
 }
 
+type MemoryProfileTaskSummaryRow = Omit<MemoryProfileUpdateTaskRow, 'patch_json' | 'claim_token' | 'lease_expires_at'>;
+
 interface MemoryProfileVersionRow {
   id: number;
   character_id: string;
@@ -97,7 +114,7 @@ interface MemoryProfileVersionRow {
   created_at: string;
 }
 
-const PATCH_FIELDS = [
+const PROFILE_CONTENT_FIELDS = [
   'relationship_state',
   'recent_story_state',
   'emotional_baseline',
@@ -105,6 +122,11 @@ const PATCH_FIELDS = [
   'user_profile_summary',
   'pinned_summary',
 ] as const;
+const PATCH_FIELDS = [
+  'profile_name',
+  ...PROFILE_CONTENT_FIELDS,
+] as const;
+type MemoryProfilePatchField = typeof PATCH_FIELDS[number];
 const MAX_MEMORY_PROFILE_VERSIONS = 100;
 
 function boundedLimit(value: unknown, fallback: number, max: number): number {
@@ -169,9 +191,23 @@ function normalizeTaskRow(row: MemoryProfileUpdateTaskRow): MemoryProfileUpdateT
   };
 }
 
+function normalizeTaskSummaryRow(row: MemoryProfileTaskSummaryRow): MemoryProfileTaskSummary {
+  return {
+    id: row.id,
+    character_id: row.character_id,
+    reason: row.reason,
+    status: row.status,
+    retry_count: row.retry_count,
+    error_message: row.error_message,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 function normalizeRow(row: MemoryProfileRow): CharacterMemoryProfile {
   return {
     ...row,
+    profile_name: row.profile_name || '',
     relationship_state: row.relationship_state || '',
     recent_story_state: row.recent_story_state || '',
     emotional_baseline: row.emotional_baseline || '',
@@ -188,13 +224,17 @@ function normalizeVersionRow(row: MemoryProfileVersionRow): MemoryProfileVersion
   };
 }
 
-function normalizePatchPayload(value: unknown, options: { preserveEmpty: boolean }): MemoryProfilePatch {
+function normalizePatchPayload(
+  value: unknown,
+  options: { preserveEmpty: boolean; fields?: readonly MemoryProfilePatchField[] },
+): MemoryProfilePatch {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
 
   const record = value as Record<string, unknown>;
   const patch: MemoryProfilePatch = {};
 
-  for (const field of PATCH_FIELDS) {
+  const fields = options.fields ?? PATCH_FIELDS;
+  for (const field of fields) {
     if (!Object.prototype.hasOwnProperty.call(record, field)) continue;
     const raw = record[field];
 
@@ -221,7 +261,7 @@ function normalizeStoredPatch(value: unknown): MemoryProfilePatch {
 }
 
 function normalizeGeneratedPatch(value: unknown): MemoryProfilePatch {
-  return normalizePatchPayload(value, { preserveEmpty: false });
+  return normalizePatchPayload(value, { preserveEmpty: false, fields: PROFILE_CONTENT_FIELDS });
 }
 
 function hasPatchChanges(patch: MemoryProfilePatch): boolean {
@@ -229,7 +269,7 @@ function hasPatchChanges(patch: MemoryProfilePatch): boolean {
 }
 
 function hasProfileContent(profile: CharacterMemoryProfile): boolean {
-  return PATCH_FIELDS.some(field => {
+  return PROFILE_CONTENT_FIELDS.some(field => {
     const value = profile[field];
     if (Array.isArray(value)) return value.length > 0;
     return typeof value === 'string' && value.trim().length > 0;
@@ -568,6 +608,19 @@ export function getMemoryProfileUpdateTasks(
   `).all(characterId) as MemoryProfileUpdateTaskRow[]).map(normalizeTaskRow);
 }
 
+export function getMemoryProfileTaskSummaries(
+  characterId: string,
+  db: Database.Database = getDb(),
+): MemoryProfileTaskSummary[] {
+  ensureMemoryProfileTables(db);
+  return (db.prepare(`
+    SELECT id, character_id, reason, status, retry_count, error_message, created_at, updated_at
+    FROM character_memory_profile_update_tasks
+    WHERE character_id = ?
+    ORDER BY id ASC
+  `).all(characterId) as MemoryProfileTaskSummaryRow[]).map(normalizeTaskSummaryRow);
+}
+
 function claimMemoryProfileUpdateTasks(
   db: Database.Database,
   limit: number,
@@ -822,6 +875,7 @@ export function rollbackMemoryProfile(
       return getOrCreateMemoryProfile(characterId, db);
     }
     return patchMemoryProfile(characterId, {
+      profile_name: version.snapshot.profile_name,
       relationship_state: version.snapshot.relationship_state,
       recent_story_state: version.snapshot.recent_story_state,
       emotional_baseline: version.snapshot.emotional_baseline,

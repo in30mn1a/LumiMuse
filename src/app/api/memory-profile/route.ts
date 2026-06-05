@@ -3,6 +3,7 @@ import {
   deleteMemoryProfileVersion,
   enqueueMemoryProfileUpdate,
   enqueueMemoryProfilePatchExtraction,
+  getMemoryProfileTaskSummaries,
   getMemoryProfileUpdateTasks,
   getMemoryProfileVersions,
   getOrCreateMemoryProfile,
@@ -74,7 +75,7 @@ export async function GET(request: NextRequest) {
         limit: versionsLimit,
         offset: versionsOffset,
       }),
-      tasks: getMemoryProfileUpdateTasks(characterId),
+      tasks: getMemoryProfileTaskSummaries(characterId),
     });
   } catch (error) {
     return NextResponse.json(

@@ -73,6 +73,7 @@ interface MemoryDiagnostics {
 interface MemoryProfileResponse {
   profile: {
     character_id: string;
+    profile_name: string;
     relationship_state: string;
     recent_story_state: string;
     emotional_baseline: string;
@@ -81,7 +82,13 @@ interface MemoryProfileResponse {
     pinned_summary: string;
     updated_at: string;
   } | null;
-  versions: Array<{ id: number; version_number: number; reason: string; created_at: string }>;
+  versions: Array<{
+    id: number;
+    version_number: number;
+    snapshot: { profile_name?: string };
+    reason: string;
+    created_at: string;
+  }>;
   tasks: Array<{ id: number; reason: string; status: string; retry_count: number; error_message: string | null }>;
 }
 
@@ -925,6 +932,7 @@ export default function SettingsPage() {
     if (!memoryProfile?.profile) return;
     const p = memoryProfile.profile;
     setEditingProfileDraft({
+      profile_name: p.profile_name ?? '',
       relationship_state: p.relationship_state ?? '',
       recent_story_state: p.recent_story_state ?? '',
       emotional_baseline: p.emotional_baseline ?? '',
@@ -951,6 +959,7 @@ export default function SettingsPage() {
     try {
       const patch: Record<string, unknown> = {};
       for (const key of [
+        'profile_name',
         'relationship_state',
         'recent_story_state',
         'emotional_baseline',
@@ -2303,7 +2312,9 @@ export default function SettingsPage() {
                         <div className="flex items-center justify-between">
                           <div>
                             <span className="font-medium text-text-primary">{t('settings.memoryProfileCurrent')}</span>
-                            <span className="ml-2 text-text-muted">{memoryProfile.profile?.character_id ?? t('common.empty')}</span>
+                            <span className="ml-2 text-text-muted">
+                              {memoryProfile.profile?.profile_name?.trim() || memoryProfile.profile?.character_id || t('common.empty')}
+                            </span>
                           </div>
                           <button
                             type="button"
@@ -2327,32 +2338,38 @@ export default function SettingsPage() {
                       </div>
                       <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2 text-xs text-text-secondary">
                         <div className="space-y-1">
-                          {memoryProfile.versions.map(version => (
-                            <div
-                              key={version.id}
-                              className="flex items-stretch gap-1 rounded-lg border border-border-light bg-white/70"
-                            >
-                              <button
-                                type="button"
-                                onClick={() => void handleMemoryProfileRollback(version.id)}
-                                disabled={memoryProfileActionLoading}
-                                className="min-w-0 flex-1 px-2 py-1 text-left text-xs text-text-secondary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                          {memoryProfile.versions.map(version => {
+                            const versionName = version.snapshot?.profile_name?.trim();
+                            const versionLabel = versionName || `v${version.version_number}`;
+                            return (
+                              <div
+                                key={version.id}
+                                className="flex items-stretch gap-1 rounded-lg border border-border-light bg-white/70"
                               >
-                                <span className="block truncate">{t('settings.memoryProfileRollback')} v{version.version_number}</span>
-                                <span className="block truncate text-[11px] text-text-muted">{version.reason}</span>
-                              </button>
-                              <button
-                                type="button"
-                                title={t('settings.memoryProfileDeleteVersion')}
-                                aria-label={t('settings.memoryProfileDeleteVersion')}
-                                onClick={() => void handleMemoryProfileDeleteVersion(version.id)}
-                                disabled={memoryProfileActionLoading}
-                                className="flex w-8 shrink-0 items-center justify-center border-l border-border-light text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                <TrashIcon className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          ))}
+                                <button
+                                  type="button"
+                                  onClick={() => void handleMemoryProfileRollback(version.id)}
+                                  disabled={memoryProfileActionLoading}
+                                  className="min-w-0 flex-1 px-2 py-1 text-left text-xs text-text-secondary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <span className="block truncate">{t('settings.memoryProfileRollback')} {versionLabel}</span>
+                                  <span className="block truncate text-[11px] text-text-muted">
+                                    {versionName ? `v${version.version_number} · ${version.reason}` : version.reason}
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  title={t('settings.memoryProfileDeleteVersion')}
+                                  aria-label={t('settings.memoryProfileDeleteVersion')}
+                                  onClick={() => void handleMemoryProfileDeleteVersion(version.id)}
+                                  disabled={memoryProfileActionLoading}
+                                  className="flex w-8 shrink-0 items-center justify-center border-l border-border-light text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <TrashIcon className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     </div>
@@ -2382,21 +2399,30 @@ export default function SettingsPage() {
                       </div>
                       <div className="grid gap-3 md:grid-cols-2">
                         {[
+                          { key: 'profile_name', label: t('settings.memoryProfileFieldName'), singleLine: true },
                           { key: 'relationship_state', label: t('settings.memoryProfileFieldRelationship') },
                           { key: 'recent_story_state', label: t('settings.memoryProfileFieldStory') },
                           { key: 'emotional_baseline', label: t('settings.memoryProfileFieldEmotion') },
                           { key: 'user_profile_summary', label: t('settings.memoryProfileFieldUser') },
                           { key: 'pinned_summary', label: t('settings.memoryProfileFieldPinned') },
                           { key: 'open_threads', label: t('settings.memoryProfileFieldThreads'), rows: 3 },
-                        ].map(({ key, label, rows }) => (
+                        ].map(({ key, label, rows, singleLine }) => (
                           <div key={key} className={key === 'open_threads' || key === 'pinned_summary' ? 'md:col-span-2' : ''}>
                             <label className="mb-1 block font-medium text-text-primary">{label}</label>
-                            <textarea
-                              value={editingProfileDraft[key] ?? ''}
-                              onChange={e => setEditingProfileDraft(prev => ({ ...prev, [key]: e.target.value }))}
-                              rows={rows ?? 2}
-                              className="textarea-rich w-full resize-none rounded-lg border border-border-light bg-white/80 px-2 py-1.5 text-xs"
-                            />
+                            {singleLine ? (
+                              <input
+                                value={editingProfileDraft[key] ?? ''}
+                                onChange={e => setEditingProfileDraft(prev => ({ ...prev, [key]: e.target.value }))}
+                                className="input-rich w-full rounded-lg border border-border-light bg-white/80 px-2 py-1.5 text-xs"
+                              />
+                            ) : (
+                              <textarea
+                                value={editingProfileDraft[key] ?? ''}
+                                onChange={e => setEditingProfileDraft(prev => ({ ...prev, [key]: e.target.value }))}
+                                rows={rows ?? 2}
+                                className="textarea-rich w-full resize-none rounded-lg border border-border-light bg-white/80 px-2 py-1.5 text-xs"
+                              />
+                            )}
                           </div>
                         ))}
                       </div>

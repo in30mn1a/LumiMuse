@@ -215,7 +215,7 @@ test('settings memory tab exposes unindexed index action, AI archive stop, and p
   }
 
   assert.doesNotMatch(settingsPage, /memoryProfile\.versions\.slice\(0,\s*3\)/);
-  assert.ok(settingsPage.includes('memoryProfile.versions.map(version => ('));
+  assert.ok(settingsPage.includes('memoryProfile.versions.map(version => {'));
 
   for (const key of [
     'settings.memoryIndexIndexUnindexed',
@@ -409,7 +409,7 @@ test('settings memory profile panel omits task and history count headings', () =
 
   for (const snippet of [
     "t('settings.memoryProfileCurrent')",
-    'memoryProfile.versions.map(version => (',
+    'memoryProfile.versions.map(version => {',
   ]) {
     assert.ok(settingsPage.includes(snippet), `missing snippet: ${snippet}`);
   }
@@ -434,6 +434,8 @@ test('settings memory profile edit submits changed empty fields instead of dropp
 
   for (const snippet of [
     'const currentProfile = memoryProfile.profile;',
+    "profile_name: p.profile_name ?? ''",
+    "'profile_name'",
     "if (trimmedValue !== (currentProfile[key] ?? '').trim()) {",
     'patch[key] = trimmedValue;',
     'const currentThreads = Array.isArray(currentProfile.open_threads) ? currentProfile.open_threads : [];',
@@ -445,6 +447,7 @@ test('settings memory profile edit submits changed empty fields instead of dropp
   }
 
   assert.match(i18n, /'settings\.memoryProfileEditNoChanges'/);
+  assert.match(i18n, /'settings\.memoryProfileFieldName'/);
 });
 
 test('settings memory profile display and model fetch errors use i18n keys', () => {
@@ -461,6 +464,7 @@ test('settings memory profile display and model fetch errors use i18n keys', () 
     "formatTemplate(t('settings.memoryProfileDisplayThreads')",
     "formatTemplate(t('settings.memoryProfileDisplayUser')",
     "formatTemplate(t('settings.memoryProfileDisplayPinned')",
+    "version.snapshot?.profile_name?.trim()",
   ]) {
     assert.ok(settingsPage.includes(snippet), `missing localized settings snippet: ${snippet}`);
   }
@@ -489,6 +493,7 @@ test('settings memory profile display and model fetch errors use i18n keys', () 
     'settings.memoryProfileDisplayThreads',
     'settings.memoryProfileDisplayUser',
     'settings.memoryProfileDisplayPinned',
+    'settings.memoryProfileFieldName',
   ]) {
     assert.match(i18n, new RegExp(`'${key}'`));
   }

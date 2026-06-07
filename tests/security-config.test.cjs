@@ -191,7 +191,12 @@ test('production CSP connect-src does not allow unconditional cleartext ws:', as
 
 test('release docs structure contract describes proxy trust, env file override, CI Node matrix, and production password requirements', () => {
   const envExample = fs.readFileSync(path.join(root, '.env.local.example'), 'utf8');
-  const claude = fs.readFileSync(path.join(root, 'CLAUDE.md'), 'utf8');
+  let claude = '';
+  try {
+    claude = fs.readFileSync(path.join(root, 'CLAUDE.md'), 'utf8');
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
   const readmeZh = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
   const readmeEn = fs.readFileSync(path.join(root, 'README.en.md'), 'utf8');
   const compose = fs.readFileSync(path.join(root, 'docker-compose.yml'), 'utf8');

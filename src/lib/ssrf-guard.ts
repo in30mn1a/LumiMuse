@@ -193,10 +193,15 @@ export async function assertSafeUrl(rawUrl: string): Promise<URL> {
 
   // 主机名可能是 IP 或域名
   const hostname = url.hostname;
-  // IPv6 字面量在 URL 里是 [::1]，URL.hostname 已剥掉方括号
-  if (net.isIP(hostname)) {
-    const reason = classifyIp(hostname, allowLocal);
-    if (reason) throw new Error(`SSRF 防护拒绝: ${reason} (${hostname})`);
+  // IPv6 字面量在 URL 里是 [::1]，剥去方括号后再判定是否为 IP
+  let ipCandidate = hostname;
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    ipCandidate = hostname.slice(1, -1);
+  }
+
+  if (net.isIP(ipCandidate)) {
+    const reason = classifyIp(ipCandidate, allowLocal);
+    if (reason) throw new Error(`SSRF 防护拒绝: ${reason} (${ipCandidate})`);
     return url;
   }
 

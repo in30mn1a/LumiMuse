@@ -3,6 +3,11 @@ import type Database from 'better-sqlite3';
 import { getDb } from '@/lib/db';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { Memory } from '@/types';
+import {
+  ensureMemoryEmbeddingForeignKeys,
+  MEMORY_EMBEDDING_INDEX_DDL,
+  MEMORY_EMBEDDING_TABLE_DDL,
+} from '@/lib/memory-embedding-schema';
 
 export interface EmbeddingAdapterConfig {
   api_base?: string;
@@ -11,6 +16,7 @@ export interface EmbeddingAdapterConfig {
   dimension?: number;
   timeout_ms?: number;
   provider?: string;
+  signal?: AbortSignal;
 }
 
 export interface MemoryEmbeddingRow {
@@ -58,6 +64,10 @@ export interface MemoryEmbeddingTarget {
 
 const MAX_RECOVERABLE_EMBEDDING_ATTEMPTS = 3;
 const RECOVERABLE_EMBEDDING_RETRY_DELAY_MS = 30_000;
+// From the audit remediation performance spec: keep vector retrieval's synchronous
+// SQLite read and JS ranking bounded as memory history grows.
+const VECTOR_RETRIEVAL_CANDIDATE_LIMIT = 500;
+const VECTOR_RETRIEVAL_SCAN_LIMIT = 5_000;
 
 function getEmbeddingErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -247,6 +257,13 @@ async function requestEmbeddings(input: string | string[], config: EmbeddingAdap
   const controller = new AbortController();
   const timeoutMs = Math.max(1, config.timeout_ms || 1500);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = config.signal;
+  const abortFromExternalSignal = () => controller.abort();
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true });
+  }
 
   try {
     const body: Record<string, unknown> = { model, input, encoding_format: 'float' };
@@ -273,11 +290,15 @@ async function requestEmbeddings(input: string | string[], config: EmbeddingAdap
     return response.json();
   } catch (error) {
     if (controller.signal.aborted) {
+      if (externalSignal?.aborted) {
+        throw new Error('embedding request aborted');
+      }
       throw new Error(`embedding request timed out after ${timeoutMs}ms`);
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromExternalSignal);
   }
 }
 
@@ -318,46 +339,9 @@ export function fakeEmbeddingForText(text: string, dimension: number = 16): Floa
 }
 
 export function ensureMemoryEmbeddingTables(db: Database.Database = getDb()): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS memory_embeddings (
-      memory_id TEXT NOT NULL,
-      character_id TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      model TEXT NOT NULL,
-      dimension INTEGER NOT NULL,
-      embedding_blob BLOB NOT NULL,
-      normalized INTEGER NOT NULL DEFAULT 1,
-      embedding_text_hash TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'ready',
-      error_message TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (memory_id, provider, model, dimension)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_memory_embeddings_character
-      ON memory_embeddings(character_id, status, provider, model);
-
-    CREATE TABLE IF NOT EXISTS memory_embedding_tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      memory_id TEXT NOT NULL,
-      character_id TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      claim_token TEXT,
-      retry_count INTEGER NOT NULL DEFAULT 0,
-      error_message TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_status
-      ON memory_embedding_tasks(status, id);
-    CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_memory
-      ON memory_embedding_tasks(memory_id, status);
-    CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_character
-      ON memory_embedding_tasks(character_id);
-  `);
+  db.exec(MEMORY_EMBEDDING_TABLE_DDL);
+  ensureMemoryEmbeddingForeignKeys(db);
+  db.exec(MEMORY_EMBEDDING_INDEX_DDL);
 
   const taskCols = db.prepare('PRAGMA table_info(memory_embedding_tasks)').all() as { name: string }[];
   if (taskCols.length > 0 && !taskCols.some(c => c.name === 'claim_token')) {
@@ -417,27 +401,54 @@ export function upsertMemoryEmbedding(params: {
 
 export function loadReadyMemoryEmbeddings(
   characterId: string,
-  options: { provider?: string; model?: string; dimension?: number; db?: Database.Database } = {},
+  options: { provider?: string; model?: string; dimension?: number; limit?: number; db?: Database.Database } = {},
 ): MemoryEmbeddingRow[] {
   const db = options.db || getDb();
   ensureMemoryEmbeddingTables(db);
 
-  let sql = "SELECT * FROM memory_embeddings WHERE character_id = ? AND status = 'ready'";
+  const scanLimit = Number.isFinite(options.limit) && Number(options.limit) > 0
+    ? Math.floor(Number(options.limit))
+    : VECTOR_RETRIEVAL_SCAN_LIMIT;
+  let sql = `
+    SELECT e.*
+    FROM memory_embeddings e
+    JOIN memories m ON m.id = e.memory_id
+    WHERE e.character_id = ?
+      AND e.status = 'ready'
+      AND m.status = 'active'
+  `;
   const params: unknown[] = [characterId];
   if (options.provider) {
-    sql += ' AND provider = ?';
+    sql += ' AND e.provider = ?';
     params.push(options.provider);
   }
   if (options.model) {
-    sql += ' AND model = ?';
+    sql += ' AND e.model = ?';
     params.push(options.model);
   }
   if (options.dimension && options.dimension > 0) {
-    sql += ' AND dimension = ?';
+    sql += ' AND e.dimension = ?';
     params.push(options.dimension);
   }
+  sql += `
+    ORDER BY
+      COALESCE(m.pinned, 0) DESC,
+      COALESCE(m.importance, 0) DESC,
+      e.updated_at DESC,
+      e.memory_id ASC
+    LIMIT ? OFFSET ?
+  `;
+  const stmt = db.prepare(sql);
+  const rows: MemoryEmbeddingRow[] = [];
 
-  return db.prepare(sql).all(...params) as MemoryEmbeddingRow[];
+  for (let offset = 0; offset < scanLimit; offset += VECTOR_RETRIEVAL_CANDIDATE_LIMIT) {
+    const batchLimit = Math.min(VECTOR_RETRIEVAL_CANDIDATE_LIMIT, scanLimit - offset);
+    const batch = stmt.all(...params, batchLimit, offset) as MemoryEmbeddingRow[];
+    rows.push(...batch);
+    if (batch.length < batchLimit) break;
+  }
+
+  return rows;
 }
 
 export function enqueueMemoryEmbeddingTask(

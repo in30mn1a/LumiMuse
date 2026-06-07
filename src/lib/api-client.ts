@@ -11,7 +11,7 @@ export const REASONING_SAFE_MAX_TOKENS = 16384;
  * 清理上游响应中可能回显的敏感字段（Authorization 头、API key 片段等），
  * 防止错误消息被透传到客户端日志/前端时泄漏凭据。最终长度限制 200。
  */
-function sanitizeUpstreamError(text: string): string {
+export function sanitizeUpstreamError(text: string): string {
   let sanitized = text;
   // Authorization: Bearer xxx（含 Bearer 后整段 token）
   sanitized = sanitized.replace(/Authorization\s*[:=]\s*Bearer\s+[\w.\-+/=]+/gi, 'Authorization: Bearer [REDACTED]');

@@ -1,34 +1,34 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { Message, Character } from '@/types';
 import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
-import { REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
+import { REASONING_SAFE_MAX_TOKENS, sanitizeUpstreamError } from '@/lib/api-client';
 import { estimateTokens } from '@/lib/token-counter';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { parseSseStream } from '@/lib/sse-parser';
 import { serializeTypedMessages } from '@/lib/messages';
 import { formatZodFieldErrors, summarizeBodySchema } from '@/lib/schemas';
-import { v4 as uuidv4 } from 'uuid';
 
 export async function POST(request: NextRequest) {
   let rawBody: unknown;
   try {
     rawBody = await request.json();
   } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400 });
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
   const parsed = summarizeBodySchema.safeParse(rawBody);
   if (!parsed.success) {
-    return new Response(
-      JSON.stringify({ error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) }),
+    return NextResponse.json(
+      { error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) },
       { status: 400 }
     );
   }
 
   const { conversation_id } = parsed.data;
   if (!conversation_id) {
-    return new Response(JSON.stringify({ error: 'Missing conversation_id' }), { status: 400 });
+    return NextResponse.json({ error: 'Missing conversation_id' }, { status: 400 });
   }
 
   const db = getDb();
@@ -39,12 +39,12 @@ export async function POST(request: NextRequest) {
   // 获取对话和角色信息
   const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation_id) as { character_id: string; title: string } | undefined;
   if (!conversation) {
-    return new Response(JSON.stringify({ error: 'Conversation not found' }), { status: 404 });
+    return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
   }
 
   const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(conversation.character_id) as Character | undefined;
   if (!character) {
-    return new Response(JSON.stringify({ error: 'Character not found' }), { status: 404 });
+    return NextResponse.json({ error: 'Character not found' }, { status: 404 });
   }
 
   // 获取所有消息
@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
     : allMessages;
 
   if (messagesToSummarize.length < 2) {
-    return new Response(JSON.stringify({ error: '消息太少，暂时不需要总结' }), { status: 400 });
+    return NextResponse.json({ error: '消息太少，暂时不需要总结' }, { status: 400 });
   }
 
   // 构建总结提示词
@@ -112,7 +112,7 @@ ${convText}`;
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`LLM API error ${response.status}: ${text.slice(0, 200)}`);
+      throw new Error(`LLM API error ${response.status}: ${sanitizeUpstreamError(text)}`);
     }
 
     if (!response.body) {
@@ -134,7 +134,7 @@ ${convText}`;
 
     // 客户端主动取消时，parseSseStream 内部已静默返回；这里映射成 499
     if (request.signal.aborted) {
-      return new Response(JSON.stringify({ error: '请求已取消' }), { status: 499 });
+      return NextResponse.json({ error: '请求已取消' }, { status: 499 });
     }
 
     if (!summaryContent.trim()) {
@@ -142,7 +142,7 @@ ${convText}`;
     }
 
     // 将总结作为特殊消息存入数据库（role = 'summary'）
-    const summaryId = uuidv4().slice(0, 12);
+    const summaryId = crypto.randomUUID().slice(0, 12);
     const now = new Date().toISOString();
     const tokenCount = estimateTokens(summaryContent);
     const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
@@ -167,10 +167,8 @@ ${convText}`;
       metadata: meta,
     };
 
-    return new Response(JSON.stringify({ ok: true, message: summaryMessage, summarizedCount: messagesToSummarize.length }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return NextResponse.json({ ok: true, message: summaryMessage, summarizedCount: messagesToSummarize.length });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err instanceof Error ? err.message : '总结失败' }), { status: 500 });
+    return NextResponse.json({ error: err instanceof Error ? err.message : '总结失败' }, { status: 500 });
   }
 }

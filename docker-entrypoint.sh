@@ -13,6 +13,15 @@
 # 这里仍保留 mkdir 是为了应对 named volume 首次挂载为空的情况。
 set -e
 
+if [ "${NODE_ENV:-}" = "production" ]; then
+  case "${ACCESS_PASSWORD:-}" in
+    ""|"your_password_here"|"changeme"|"change_me"|"password")
+      echo "LumiMuse startup refused: production Docker requires a real ACCESS_PASSWORD (not empty or a placeholder)." >&2
+      exit 1
+      ;;
+  esac
+fi
+
 mkdir -p /app/data /app/public/generated /app/public/avatars /app/public/attachments
 
 exec "$@"

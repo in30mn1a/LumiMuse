@@ -1,11 +1,73 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { inferMemoryDefaults } from '@/lib/memory-category';
+import {
+  ensureMemoryEmbeddingForeignKeys,
+  MEMORY_EMBEDDING_DEDUPLICATION_DML,
+  MEMORY_EMBEDDING_INDEX_DDL,
+  MEMORY_EMBEDDING_TABLE_DDL,
+} from '@/lib/memory-embedding-schema';
 
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'lumimuse.db');
 
 let _db: Database.Database | null = null;
+
+function backfillMemoryDefaults(
+  db: Database.Database,
+  needsMemoryKindBackfill: boolean,
+  needsImportanceBackfill: boolean,
+  needsEmotionalWeightBackfill: boolean,
+): void {
+  const rows = db.prepare(`
+    SELECT id, category, memory_kind, importance, emotional_weight
+    FROM memories
+    WHERE memory_kind IS NULL
+       OR memory_kind = ''
+       OR importance IS NULL
+       OR emotional_weight IS NULL
+       OR (? AND memory_kind = 'general')
+       OR (? AND importance = 0.5)
+       OR (? AND emotional_weight = 0.0)
+  `).all(
+    needsMemoryKindBackfill ? 1 : 0,
+    needsImportanceBackfill ? 1 : 0,
+    needsEmotionalWeightBackfill ? 1 : 0,
+  ) as Array<{
+    id: string;
+    category: string;
+    memory_kind: string | null;
+    importance: number | null;
+    emotional_weight: number | null;
+  }>;
+
+  const update = db.prepare(`
+    UPDATE memories
+    SET memory_kind = ?,
+        importance = ?,
+        emotional_weight = ?
+    WHERE id = ?
+  `);
+
+  const writeDefaults = db.transaction(() => {
+    for (const row of rows) {
+      const defaults = inferMemoryDefaults(row.category);
+      update.run(
+        (!row.memory_kind || needsMemoryKindBackfill) ? defaults.memory_kind : row.memory_kind,
+        row.importance === null || needsImportanceBackfill ? defaults.importance : row.importance,
+        row.emotional_weight === null || needsEmotionalWeightBackfill ? defaults.emotional_weight : row.emotional_weight,
+        row.id,
+      );
+    }
+  });
+
+  writeDefaults();
+}
+
+export function __migrateForTests(db: Database.Database): void {
+  migrate(db);
+}
 
 export function getDb(): Database.Database {
   if (_db) return _db;
@@ -225,78 +287,12 @@ function migrate(db: Database.Database): void {
     db.exec(`ALTER TABLE memories ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`);
   }
 
-  if (needsMemoryKindBackfill) {
-    db.exec(`
-      UPDATE memories
-      SET memory_kind = CASE category
-        WHEN '偏好习惯' THEN 'user_preference'
-        WHEN '基础信息' THEN 'user_fact'
-        WHEN '人格特质' THEN 'user_fact'
-        WHEN '关系动态' THEN 'relationship_event'
-        WHEN '重要事件' THEN 'relationship_event'
-        ELSE 'general'
-      END
-      WHERE memory_kind = 'general'
-    `);
-  }
-  if (needsImportanceBackfill) {
-    db.exec(`
-      UPDATE memories
-      SET importance = CASE category
-        WHEN '基础信息' THEN 0.85
-        WHEN '人格特质' THEN 0.8
-        WHEN '重要事件' THEN 0.75
-        WHEN '偏好习惯' THEN 0.65
-        WHEN '关系动态' THEN 0.6
-        WHEN '话题历史' THEN 0.45
-        WHEN '四季日常' THEN 0.4
-        ELSE 0.5
-      END
-      WHERE importance = 0.5
-    `);
-  }
-  if (needsEmotionalWeightBackfill) {
-    db.exec(`
-      UPDATE memories
-      SET emotional_weight = CASE category
-        WHEN '关系动态' THEN 0.6
-        WHEN '重要事件' THEN 0.65
-        ELSE 0.0
-      END
-      WHERE emotional_weight = 0.0
-    `);
-  }
+  backfillMemoryDefaults(db, needsMemoryKindBackfill, needsImportanceBackfill, needsEmotionalWeightBackfill);
 
   // 旁路表：为后续 embedding、角色级覆盖配置和无效候选隔离提供数据基础
+  db.exec(MEMORY_EMBEDDING_TABLE_DDL);
+  ensureMemoryEmbeddingForeignKeys(db);
   db.exec(`
-    CREATE TABLE IF NOT EXISTS memory_embeddings (
-      memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      provider TEXT NOT NULL,
-      model TEXT NOT NULL,
-      dimension INTEGER NOT NULL,
-      embedding_blob BLOB NOT NULL,
-      normalized INTEGER NOT NULL DEFAULT 1,
-      embedding_text_hash TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'ready',
-      error_message TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS memory_embedding_tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-      reason TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      claim_token TEXT,
-      retry_count INTEGER NOT NULL DEFAULT 0,
-      error_message TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS character_memory_configs (
       character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
       enabled INTEGER,
@@ -327,49 +323,14 @@ function migrate(db: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-
-    DELETE FROM memory_embeddings
-    WHERE rowid NOT IN (
-      SELECT rowid FROM (
-        SELECT
-          rowid,
-          ROW_NUMBER() OVER (
-            PARTITION BY memory_id, provider, model, dimension
-            ORDER BY updated_at DESC, created_at DESC, rowid DESC
-          ) AS rn
-        FROM memory_embeddings
-      )
-      WHERE rn = 1
-    );
-
-    DELETE FROM memory_embedding_tasks
-    WHERE status IN ('pending', 'processing')
-      AND id NOT IN (
-        SELECT id FROM (
-          SELECT
-            id,
-            ROW_NUMBER() OVER (
-              PARTITION BY memory_id
-              ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, id ASC
-            ) AS rn
-          FROM memory_embedding_tasks
-          WHERE status IN ('pending', 'processing')
-        )
-        WHERE rn = 1
-      );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_embeddings_unique_model
-      ON memory_embeddings(memory_id, provider, model, dimension);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_embedding_tasks_active_memory
-      ON memory_embedding_tasks(memory_id)
-      WHERE status IN ('pending', 'processing');
-    CREATE INDEX IF NOT EXISTS idx_memory_embeddings_character_status ON memory_embeddings(character_id, status);
-    CREATE INDEX IF NOT EXISTS idx_memory_embeddings_memory ON memory_embeddings(memory_id);
-    CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_status ON memory_embedding_tasks(status);
-    CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_memory ON memory_embedding_tasks(memory_id);
     CREATE INDEX IF NOT EXISTS idx_character_memory_configs_character ON character_memory_configs(character_id);
     CREATE INDEX IF NOT EXISTS idx_memory_extraction_candidates_character_status ON memory_extraction_candidates(character_id, status);
   `);
+
+  db.transaction(() => {
+    db.exec(MEMORY_EMBEDDING_DEDUPLICATION_DML);
+    db.exec(MEMORY_EMBEDDING_INDEX_DDL);
+  })();
 
   const embeddingTaskCols = db.prepare("PRAGMA table_info(memory_embedding_tasks)").all() as { name: string }[];
   if (embeddingTaskCols.length > 0 && !embeddingTaskCols.some(c => c.name === 'claim_token')) {
@@ -445,6 +406,7 @@ function migrate(db: Database.Database): void {
       merge_count INTEGER NOT NULL DEFAULT 0,
       retry_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
+      started_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -462,6 +424,14 @@ function migrate(db: Database.Database): void {
   }
   if (taskCols.length > 0 && !taskCols.some(c => c.name === 'error_message')) {
     db.exec(`ALTER TABLE memory_tasks ADD COLUMN error_message TEXT`);
+  }
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'started_at')) {
+    db.exec(`ALTER TABLE memory_tasks ADD COLUMN started_at TEXT`);
+    db.exec(`
+      UPDATE memory_tasks
+      SET started_at = updated_at
+      WHERE status = 'processing' AND started_at IS NULL
+    `);
   }
 
   // 增量迁移：模型列表缓存表

@@ -11,6 +11,7 @@ export type CachedMessages = {
 type CachedMessageMetadata = Partial<Omit<CachedMessages, 'messages'>>;
 type MessageUpdater = (messages: Message[]) => Message[];
 
+const MAX_CACHED_CONVERSATIONS = 55;
 const messageCache = new Map<string, CachedMessages>();
 
 function copyMessage(message: Message): Message {
@@ -33,11 +34,24 @@ function copySnapshot(snapshot: CachedMessages): CachedMessages {
 
 export function readCachedMessages(conversationId: string): CachedMessages | null {
   const cached = messageCache.get(conversationId);
+  if (cached) {
+    messageCache.delete(conversationId);
+    messageCache.set(conversationId, cached);
+  }
   return cached ? copySnapshot(cached) : null;
+}
+
+function trimMessageCache(): void {
+  while (messageCache.size > MAX_CACHED_CONVERSATIONS) {
+    const oldestConversationId = messageCache.keys().next().value;
+    if (!oldestConversationId) return;
+    messageCache.delete(oldestConversationId);
+  }
 }
 
 export function writeCachedMessages(conversationId: string, snapshot: CachedMessages): void {
   const previous = messageCache.get(conversationId);
+  messageCache.delete(conversationId);
   messageCache.set(conversationId, {
     messages: copyMessages(snapshot.messages),
     hasMore: snapshot.hasMore,
@@ -45,6 +59,7 @@ export function writeCachedMessages(conversationId: string, snapshot: CachedMess
     unextractedCount: snapshot.unextractedCount ?? previous?.unextractedCount,
     totalTokens: snapshot.totalTokens ?? previous?.totalTokens,
   });
+  trimMessageCache();
 }
 
 export function uniqueMessagesById(messages: Message[]): Message[] {
@@ -106,7 +121,9 @@ export function updateCachedMessages(
     ...metadata,
     messages: copyMessages(updater(copyMessages(previous.messages))),
   };
+  messageCache.delete(conversationId);
   messageCache.set(conversationId, nextSnapshot);
+  trimMessageCache();
   return copySnapshot(nextSnapshot);
 }
 

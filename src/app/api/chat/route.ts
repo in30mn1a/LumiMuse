@@ -6,11 +6,18 @@ import { loadSettings } from '@/lib/settings';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages } from '@/lib/messages';
-import { chatBodySchema, formatZodFieldErrors } from '@/lib/schemas';
+import { chatBodySchema, formatZodFieldErrors, validateChatAttachmentTotals } from '@/lib/schemas';
 
 const EXTRACTING_SIGNAL = JSON.stringify({ status: 'extracting' });
 const STREAM_CLOSE_DELAY_MS = 100;
 const UNKNOWN_ERROR_LABEL = 'Unknown error';
+
+function isMemoryProcessed(message: Message): boolean {
+  return Boolean(
+    message.metadata.memory_extracted ||
+    typeof message.metadata.memory_noop_extracted_at === 'string'
+  );
+}
 
 export async function POST(request: NextRequest) {
   let parsedBody: unknown;
@@ -41,6 +48,14 @@ export async function POST(request: NextRequest) {
 
   if (!regenerate_assistant_id && !content && (!attachments || attachments.length === 0)) {
     return new Response(JSON.stringify({ error: 'Missing conversation_id or content' }), { status: 400 });
+  }
+
+  const attachmentLimitError = validateChatAttachmentTotals(attachments);
+  if (attachmentLimitError) {
+    return new Response(
+      JSON.stringify({ error: attachmentLimitError.error }),
+      { status: attachmentLimitError.status, headers: { 'Content-Type': 'application/json' } },
+    );
   }
 
   const db = getDb();
@@ -115,7 +130,7 @@ export async function POST(request: NextRequest) {
 
                 // 未提取的用户消息（排除 summary 类型）
                 const unextracted = allMessages.filter(
-                  message => message.role === 'user' && !message.metadata.memory_extracted
+                  message => message.role === 'user' && !isMemoryProcessed(message)
                 );
 
                 if (unextracted.length === 0) return;
@@ -131,7 +146,7 @@ export async function POST(request: NextRequest) {
                     extractionMessages.push(msg);
                     includeNext = true; // 下一条 assistant 消息也要带上
                   } else if (includeNext && msg.role === 'assistant') {
-                    if (!msg.metadata.memory_extracted) {
+                    if (!isMemoryProcessed(msg)) {
                       extractionMessages.push(msg);
                     }
                     includeNext = false;
@@ -161,7 +176,7 @@ export async function POST(request: NextRequest) {
                 if (!shouldExtract && settings.memory_trigger_time_enabled && unextracted.length > 0) {
                   const hours = settings.memory_trigger_time_hours || 24;
                   const lastExtractedMsg = allMessages
-                    .filter(m => m.role === 'user' && m.metadata.memory_extracted)
+                    .filter(m => m.role === 'user' && isMemoryProcessed(m))
                     .pop();
                   const lastExtractedTime = lastExtractedMsg ? new Date(lastExtractedMsg.created_at).getTime() : 0;
                   const now = Date.now();

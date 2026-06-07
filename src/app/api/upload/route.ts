@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as crypto from 'crypto';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
-import { v4 as uuid } from 'uuid';
 
 // 只允许安全的光栅图片格式，明确拒绝 svg（可含脚本）
 const ALLOWED_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
 const ALLOWED_MIME_PREFIXES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 /**
  * 通过文件头部魔术字节识别真实图片格式。
@@ -53,6 +55,11 @@ function detectImageType(buffer: Buffer): 'png' | 'jpeg' | 'gif' | 'webp' | null
 }
 
 export async function POST(req: NextRequest) {
+  const contentLength = Number(req.headers.get('content-length') || '0');
+  if (contentLength > MAX_UPLOAD_BYTES) {
+    return NextResponse.json({ error: '文件过大（最大 10MB）' }, { status: 413 });
+  }
+
   const formData = await req.formData();
   const file = formData.get('avatar') as File | null;
   const purpose = formData.get('purpose') === 'attachment' ? 'attachment' : 'avatar';
@@ -72,7 +79,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '不支持的文件扩展名' }, { status: 400 });
   }
 
-  const maxSize = purpose === 'attachment' ? 10 * 1024 * 1024 : 2 * 1024 * 1024;
+  const maxSize = purpose === 'attachment' ? MAX_UPLOAD_BYTES : MAX_AVATAR_UPLOAD_BYTES;
   if (file.size > maxSize) {
     return NextResponse.json({ error: `文件过大（最大 ${purpose === 'attachment' ? '10MB' : '2MB'}）` }, { status: 400 });
   }
@@ -91,7 +98,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid file type' }, { status: 400 });
   }
 
-  const filename = `${uuid()}.${rawExt}`;
+  const filename = `${crypto.randomUUID()}.${rawExt}`;
   const targetDir = purpose === 'attachment' ? 'attachments' : 'avatars';
   const avatarsDir = path.join(process.cwd(), 'public', targetDir);
   const attachmentsDir = avatarsDir;

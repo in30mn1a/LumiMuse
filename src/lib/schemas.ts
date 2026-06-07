@@ -19,6 +19,8 @@ const MAX_LARGE_TEXT = 32 * 1024;       // personality / system_prompt
 const MAX_MEDIUM_TEXT = 16 * 1024;      // 描述类字段
 const MAX_MEMORY_CONTENT = 8 * 1024;
 const MAX_MESSAGE_CONTENT = 100 * 1024;
+export const MAX_TOTAL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_TOTAL_TEXT_ATTACHMENT_CHARS = MAX_MESSAGE_CONTENT;
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 50;
 const MAX_URL = 4 * 1024;
@@ -26,15 +28,120 @@ const MAX_TITLE = 200;
 const MAX_API_BASE = 1024;
 const MAX_API_KEY = 4096;
 const MAX_MODEL_NAME = 200;
+const MAX_COMFYUI_WORKFLOW = 64 * 1024;
+const MAX_SHORT_SETTING = 512;
 
 // --------- 基础 schema ---------
 const unknownRecordSchema = z.record(z.string(), z.unknown());
 
 // --------- /api/settings PUT ---------
-// 设置项很多且会继续演进：这里只校验入口必须是对象，以及路由会按对象访问的嵌套字段。
+const settingMediumTextSchema = z.string().max(MAX_MEDIUM_TEXT);
+const settingUrlSchema = z.string().max(MAX_URL);
+const settingApiBaseSchema = z.string().max(MAX_API_BASE);
+const settingApiKeySchema = z.string().max(MAX_API_KEY);
+const settingModelSchema = z.string().max(MAX_MODEL_NAME);
+const settingFiniteNumberSchema = z.number().finite();
+const settingNonNegativeNumberSchema = settingFiniteNumberSchema.nonnegative();
+const settingNonNegativeIntegerSchema = z.number().int().nonnegative();
+const settingPositiveIntegerSchema = z.number().int().min(1);
+
+const imageGenSettingsSchema = z.looseObject({
+  enabled: z.boolean().optional(),
+  engine: z.enum(['sd', 'nai', 'comfyui', 'custom']).optional(),
+  sd_url: settingUrlSchema.optional(),
+  sd_model: settingModelSchema.optional(),
+  sd_sampler: z.string().max(MAX_SHORT_SETTING).optional(),
+  sd_steps: settingNonNegativeIntegerSchema.optional(),
+  sd_cfg_scale: settingNonNegativeNumberSchema.optional(),
+  sd_width: settingNonNegativeIntegerSchema.optional(),
+  sd_height: settingNonNegativeIntegerSchema.optional(),
+  sd_negative_prompt: settingMediumTextSchema.optional(),
+  nai_api_key: settingApiKeySchema.optional(),
+  nai_model: settingModelSchema.optional(),
+  nai_sampler: z.string().max(MAX_SHORT_SETTING).optional(),
+  nai_noise_schedule: z.string().max(MAX_SHORT_SETTING).optional(),
+  nai_steps: settingNonNegativeIntegerSchema.optional(),
+  nai_scale: settingNonNegativeNumberSchema.optional(),
+  nai_cfg_rescale: settingNonNegativeNumberSchema.min(0).max(1).optional(),
+  nai_width: settingNonNegativeIntegerSchema.optional(),
+  nai_height: settingNonNegativeIntegerSchema.optional(),
+  nai_negative_prompt: settingMediumTextSchema.optional(),
+  nai_artist_tags: settingMediumTextSchema.optional(),
+  comfyui_url: settingUrlSchema.optional(),
+  comfyui_workflow: z.string().max(MAX_COMFYUI_WORKFLOW).optional(),
+  custom_url: settingUrlSchema.optional(),
+  custom_api_key: settingApiKeySchema.optional(),
+  custom_model: settingModelSchema.optional(),
+  custom_size: z.string().max(MAX_SHORT_SETTING).optional(),
+  quality_tags: settingMediumTextSchema.optional(),
+  auto_generate: z.boolean().optional(),
+  auto_generate_keywords: settingMediumTextSchema.optional(),
+  inline_prompt: z.boolean().optional(),
+});
+
+const memoryEngineSettingsSchema = z.looseObject({
+  enabled: z.boolean().optional(),
+  allow_memory_context_in_chat: z.boolean().optional(),
+  allow_external_memory_payloads: z.boolean().optional(),
+  retrieval_mode: z.enum(['local', 'hybrid', 'vector']).optional(),
+  embedding_enabled: z.boolean().optional(),
+  embedding_api_base: settingApiBaseSchema.optional(),
+  embedding_api_key: settingApiKeySchema.optional(),
+  embedding_model: settingModelSchema.optional(),
+  embedding_dimension: z.union([settingNonNegativeNumberSchema, z.nan()]).optional(),
+  reranker_enabled: z.boolean().optional(),
+  reranker_api_base: settingApiBaseSchema.optional(),
+  reranker_api_key: settingApiKeySchema.optional(),
+  reranker_model: settingModelSchema.optional(),
+  fallback_local_enabled: z.boolean().optional(),
+  memory_package_token_budget: settingPositiveIntegerSchema.max(32_000).optional(),
+  retrieval_token_budget: settingPositiveIntegerSchema.optional(),
+  vector_top_k: settingPositiveIntegerSchema.optional(),
+  keyword_top_k: settingPositiveIntegerSchema.optional(),
+  reranker_top_k: settingPositiveIntegerSchema.optional(),
+  final_top_k: settingPositiveIntegerSchema.optional(),
+  embedding_timeout_ms: settingNonNegativeNumberSchema.optional(),
+  reranker_timeout_ms: settingNonNegativeNumberSchema.optional(),
+  total_retrieval_timeout_ms: settingNonNegativeNumberSchema.optional(),
+});
+
+const artistStringSettingsSchema = z.looseObject({
+  id: z.string().max(64),
+  name: z.string().max(MAX_NAME),
+  tags: settingMediumTextSchema,
+});
+
+// 设置项会继续演进：已知字段强类型校验，未知字段仍允许通过以保持前后端兼容。
 export const settingsUpdateSchema = z.looseObject({
-  image_gen: unknownRecordSchema.optional(),
-  memory_engine: unknownRecordSchema.optional(),
+  api_base: settingApiBaseSchema.optional(),
+  api_key: settingApiKeySchema.optional(),
+  model: settingModelSchema.optional(),
+  json_mode: z.boolean().optional(),
+  temperature: settingFiniteNumberSchema.min(0).max(10).optional(),
+  max_tokens: settingPositiveIntegerSchema.max(10_000_000).optional(),
+  context_window: settingPositiveIntegerSchema.max(100_000_000).optional(),
+  streaming: z.boolean().optional(),
+  example_dialogue: z.boolean().optional(),
+  memory_inject: z.boolean().optional(),
+  memory_trigger_interval_enabled: z.boolean().optional(),
+  memory_interval: settingNonNegativeNumberSchema.optional(),
+  memory_trigger_time_enabled: z.boolean().optional(),
+  memory_trigger_time_hours: settingNonNegativeNumberSchema.optional(),
+  memory_trigger_keyword_enabled: z.boolean().optional(),
+  memory_trigger_keywords: settingMediumTextSchema.optional(),
+  memory_max_inject: settingNonNegativeNumberSchema.optional(),
+  memory_background_model: settingModelSchema.optional(),
+  memory_background_provider_id: z.string().max(64).optional(),
+  disable_deepseek_thinking_for_background: z.boolean().optional(),
+  theme: z.enum(['light', 'dark']).optional(),
+  show_timestamps: z.boolean().optional(),
+  limit_inject: z.boolean().optional(),
+  language: z.enum(['zh', 'en']).optional(),
+  font_style: z.enum(['wenkai', 'system', 'serif']).optional(),
+  active_provider_id: z.string().max(64).optional(),
+  image_gen: imageGenSettingsSchema.optional(),
+  memory_engine: memoryEngineSettingsSchema.optional(),
+  artist_strings: z.array(artistStringSettingsSchema).optional(),
 });
 export type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
 
@@ -45,16 +152,36 @@ export const summarizeBodySchema = z.object({
 export type SummarizeBody = z.infer<typeof summarizeBodySchema>;
 
 // --------- /api/image-gen ---------
+const imageGenOverrideSchema = z.object({
+  sd_sampler: z.string().max(MAX_SHORT_SETTING).optional(),
+  sd_steps: settingNonNegativeIntegerSchema.optional(),
+  sd_cfg_scale: settingNonNegativeNumberSchema.optional(),
+  sd_width: settingNonNegativeIntegerSchema.optional(),
+  sd_height: settingNonNegativeIntegerSchema.optional(),
+  sd_negative_prompt: settingMediumTextSchema.optional(),
+  nai_sampler: z.string().max(MAX_SHORT_SETTING).optional(),
+  nai_noise_schedule: z.string().max(MAX_SHORT_SETTING).optional(),
+  nai_steps: settingNonNegativeIntegerSchema.optional(),
+  nai_scale: settingNonNegativeNumberSchema.optional(),
+  nai_cfg_rescale: settingNonNegativeNumberSchema.min(0).max(1).optional(),
+  nai_width: settingNonNegativeIntegerSchema.optional(),
+  nai_height: settingNonNegativeIntegerSchema.optional(),
+  nai_negative_prompt: settingMediumTextSchema.optional(),
+  nai_artist_tags: settingMediumTextSchema.optional(),
+  custom_size: z.string().max(MAX_SHORT_SETTING).optional(),
+  quality_tags: settingMediumTextSchema.optional(),
+}).strict();
+
 export const imageGenBodySchema = z.object({
   prompt: z.string().optional(),
   negative_prompt: z.string().optional(),
-  override: unknownRecordSchema.optional(),
+  override: imageGenOverrideSchema.optional(),
 });
 export type ImageGenBody = z.infer<typeof imageGenBodySchema>;
 
 // --------- /api/image-gen/prompt ---------
 export const imagePromptBodySchema = z.object({
-  conversation_id: z.string().optional(),
+  conversation_id: z.string().min(1).max(64),
   message_id: z.string().optional(),
   user_hint: z.string().optional(),
 });
@@ -69,10 +196,73 @@ export const attachmentSchema = z.object({
   mimeType: z.string().max(255),
 });
 
+function estimateAttachmentPayloadBytes(value: string): number {
+  const commaIndex = value.indexOf(',');
+  if (commaIndex >= 0) {
+    const meta = value.slice(0, commaIndex).toLowerCase();
+    const payload = value.slice(commaIndex + 1);
+    if (meta.startsWith('data:') && meta.includes(';base64')) {
+      const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+      return Math.max(0, Math.floor(payload.length * 3 / 4) - padding);
+    }
+    if (meta.startsWith('data:')) {
+      try {
+        return Buffer.byteLength(decodeURIComponent(payload), 'utf8');
+      } catch {
+        return Buffer.byteLength(payload, 'utf8');
+      }
+    }
+  }
+
+  return Buffer.byteLength(value, 'utf8');
+}
+
+export function validateChatAttachmentTotals(attachments: ChatBody['attachments']): { error: string; status: 413 } | null {
+  if (!attachments || attachments.length === 0) return null;
+
+  let totalAttachmentBytes = 0;
+  let totalTextAttachmentChars = 0;
+  for (const attachment of attachments) {
+    if (attachment.data) {
+      totalAttachmentBytes += estimateAttachmentPayloadBytes(attachment.data);
+      if (attachment.type === 'text') {
+        totalTextAttachmentChars += attachment.data.length;
+      }
+    }
+    if (attachment.url) {
+      totalAttachmentBytes += Buffer.byteLength(attachment.url, 'utf8');
+    }
+  }
+
+  if (totalAttachmentBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+    return { error: 'Attachments too large', status: 413 };
+  }
+  if (totalTextAttachmentChars > MAX_TOTAL_TEXT_ATTACHMENT_CHARS) {
+    return { error: 'Text attachments too large', status: 413 };
+  }
+  return null;
+}
+
 /** 消息历史版本（metadata.versions 内的单条） */
 export const messageVersionSchema = z.object({
   content: z.string().max(MAX_MESSAGE_CONTENT),
   token_count: z.number().int().nonnegative(),
+});
+
+export const generatedImageVersionSchema = z.object({
+  id: z.string().max(64),
+  url: z.string().max(MAX_URL),
+  prompt: z.string().max(MAX_MESSAGE_CONTENT),
+});
+
+export const generatedImageSchema = z.object({
+  id: z.string().max(64),
+  url: z.string().max(MAX_URL).optional(),
+  prompt: z.string().max(MAX_MESSAGE_CONTENT),
+  status: z.enum(['pending_prompt', 'pending_image', 'failed', 'ready']).optional(),
+  error: z.string().max(MAX_MESSAGE_CONTENT).optional(),
+  versions: z.array(generatedImageVersionSchema).max(100).optional(),
+  activeVersion: z.number().int().nonnegative().optional(),
 });
 
 /**
@@ -86,6 +276,7 @@ export const messageMetadataSchema: z.ZodType<Record<string, unknown>> = z.loose
   attachments: z.array(attachmentSchema).max(50).optional(),
   versions: z.array(messageVersionSchema).max(100).optional(),
   activeVersion: z.number().int().nonnegative().optional(),
+  generatedImages: z.array(generatedImageSchema).max(100).optional(),
 });
 
 // --------- /api/chat ---------

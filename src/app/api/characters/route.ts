@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
-import { v4 as uuidv4 } from 'uuid';
 import { characterCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET() {
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     );
   }
   const body = parsed.data;
-  const id = uuidv4().slice(0, 12);
+  const id = crypto.randomUUID().slice(0, 12);
   const now = new Date().toISOString();
 
   const db = getDb();

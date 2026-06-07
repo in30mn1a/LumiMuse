@@ -97,10 +97,22 @@ export async function GET(request: NextRequest) {
 function serializeMemory(m: Record<string, unknown>) {
   return {
     ...m,
-    tags: typeof m.tags === 'string' ? JSON.parse(m.tags as string) : m.tags,
-    source_msg_ids: typeof m.source_msg_ids === 'string' ? JSON.parse(m.source_msg_ids as string) : m.source_msg_ids,
+    tags: parseJsonArray(m.tags),
+    source_msg_ids: parseJsonArray(m.source_msg_ids),
     category: normalizeMemoryCategory(String(m.category || '话题历史')),
   };
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function buildConversationsForCharacter(db: ReturnType<typeof import('@/lib/db').getDb>, characterId: string) {

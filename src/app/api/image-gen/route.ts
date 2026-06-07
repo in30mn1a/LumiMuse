@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as crypto from 'crypto';
 import { loadSettings } from '@/lib/settings';
 import { ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS } from '@/types';
 import { safeFetch } from '@/lib/ssrf-guard';
@@ -6,7 +7,6 @@ import { formatZodFieldErrors, imageGenBodySchema } from '@/lib/schemas';
 import { writeFile, mkdir } from 'fs/promises';
 import JSZip from 'jszip';
 import path from 'path';
-import { v4 as uuid } from 'uuid';
 
 /**
  * 生图 API — 支持 SD WebUI / NovelAI / ComfyUI / 自定义（DALL-E 兼容）
@@ -51,6 +51,28 @@ function extForFormat(fmt: ImageFormat): string {
   return fmt === 'jpeg' ? 'jpg' : fmt;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function replaceWorkflowPromptPlaceholders(value: unknown, replacements: Record<string, string>): unknown {
+  if (typeof value === 'string') {
+    return Object.entries(replacements).reduce(
+      (text, [placeholder, replacement]) => text.split(placeholder).join(replacement),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => replaceWorkflowPromptPlaceholders(item, replacements));
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, replaceWorkflowPromptPlaceholders(nested, replacements)]),
+    );
+  }
+  return value;
+}
+
 // 确保生图输出目录存在
 async function ensureOutputDir(): Promise<string> {
   const dir = path.join(process.cwd(), 'public', 'generated');
@@ -59,9 +81,52 @@ async function ensureOutputDir(): Promise<string> {
 }
 
 /**
- * 抓取远端图片，统一执行：
+ * 分块读取响应体，统一执行：
  *   1. Content-Length 预检（若上游返回该头，>maxSize 直接拒绝，避免下载大体积响应）
- *   2. 读 arrayBuffer 后再校验实际字节数（防止上游不返回 Content-Length 或伪报）
+ *   2. 无 Content-Length 或伪报时，reader 分块累计，超过上限立即 abort/cancel
+ */
+async function readBoundedResponseBuffer(
+  response: Response,
+  maxSize: number,
+  errorPrefix = '响应体',
+  controller?: AbortController,
+): Promise<Buffer> {
+  const contentLengthHeader = response.headers.get('content-length');
+  if (contentLengthHeader) {
+    const declared = Number.parseInt(contentLengthHeader, 10);
+    if (Number.isFinite(declared) && declared > maxSize) {
+      throw new Error(`${errorPrefix}过大: ${declared} 字节超过上限 ${maxSize}`);
+    }
+  }
+
+  if (!response.body) {
+    throw new Error(`${errorPrefix}为空`);
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxSize) {
+        controller?.abort();
+        await reader.cancel();
+        throw new Error(`${errorPrefix}过大: ${total} 字节超过上限 ${maxSize}`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks, total);
+}
+
+/**
+ * 抓取远端图片，统一执行大小上限。
  *
  * 不做 magic bytes 校验——交给调用方决定是否需要（部分场景可能是 zip 等非图片二进制）。
  */
@@ -70,23 +135,13 @@ async function safeFetchImage(
   maxSize: number,
   init?: Parameters<typeof safeFetch>[1],
 ): Promise<{ buffer: Buffer; contentType: string; response: Response }> {
-  const response = await safeFetch(url, init);
+  const controller = new AbortController();
+  const response = await safeFetch(url, { ...init, signal: controller.signal });
   if (!response.ok) {
     throw new Error(`下载图片失败: ${response.status}`);
   }
-  const contentLengthHeader = response.headers.get('content-length');
-  if (contentLengthHeader) {
-    const declared = Number.parseInt(contentLengthHeader, 10);
-    if (Number.isFinite(declared) && declared > maxSize) {
-      throw new Error(`响应体过大: ${declared} 字节超过上限 ${maxSize}`);
-    }
-  }
-  const arrayBuffer = await response.arrayBuffer();
-  if (arrayBuffer.byteLength > maxSize) {
-    throw new Error(`响应体过大: ${arrayBuffer.byteLength} 字节超过上限 ${maxSize}`);
-  }
   return {
-    buffer: Buffer.from(arrayBuffer),
+    buffer: await readBoundedResponseBuffer(response, maxSize, '响应体', controller),
     contentType: response.headers.get('content-type') || '',
     response,
   };
@@ -108,7 +163,7 @@ async function persistImageBuffer(buffer: Buffer | Uint8Array): Promise<string> 
     throw new Error('未识别的图片格式（仅支持 PNG / JPEG / WEBP）');
   }
   const dir = await ensureOutputDir();
-  const filename = `${uuid()}.${extForFormat(fmt)}`;
+  const filename = `${crypto.randomUUID()}.${extForFormat(fmt)}`;
   const filepath = path.join(dir, filename);
   await writeFile(filepath, buffer);
   return `/api/files/generated/${filename}`;
@@ -253,34 +308,24 @@ async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGen
 
   // 大小预检：NAI 可能返回 zip（多张图）或单张 png，zip 体积通常 < 10MB，
   // 这里仍然按 MAX_IMAGE_SIZE 限制响应体本身，避免恶意/异常上游打爆内存
-  const contentLengthHeader = response.headers.get('content-length');
-  if (contentLengthHeader) {
-    const declared = Number.parseInt(contentLengthHeader, 10);
-    if (Number.isFinite(declared) && declared > MAX_IMAGE_SIZE) {
-      throw new Error(`NovelAI 响应过大: ${declared} 字节超过上限 ${MAX_IMAGE_SIZE}`);
-    }
-  }
-  const arrayBuffer = await response.arrayBuffer();
-  if (arrayBuffer.byteLength > MAX_IMAGE_SIZE) {
-    throw new Error(`NovelAI 响应过大: ${arrayBuffer.byteLength} 字节超过上限 ${MAX_IMAGE_SIZE}`);
-  }
+  const buffer = await readBoundedResponseBuffer(response, MAX_IMAGE_SIZE, 'NovelAI 响应');
   const contentType = response.headers.get('content-type') || '';
 
   if (contentType.includes('application/json')) {
-    const data = JSON.parse(new TextDecoder().decode(arrayBuffer));
+    const data = JSON.parse(buffer.toString('utf8'));
     if (data.output?.[0]) {
       return saveBase64Image(data.output[0]);
     }
   }
 
-  const uint8 = new Uint8Array(arrayBuffer);
+  const uint8 = new Uint8Array(buffer);
 
   // 检查是否是 zip 格式（PK 签名: 50 4B 03 04）
   const isZip = uint8[0] === 0x50 && uint8[1] === 0x4B && uint8[2] === 0x03 && uint8[3] === 0x04;
 
   if (isZip) {
     // 用 jszip 解析（替代手写 Local File Header 解析）：自动处理多文件、ZIP64、不同压缩方式等边界情况
-    const zip = await JSZip.loadAsync(arrayBuffer);
+    const zip = await JSZip.loadAsync(buffer);
     // NAI 返回的 zip 通常只含一张 png；取第一个非目录条目
     const firstEntry = Object.values(zip.files).find(f => !f.dir);
     if (!firstEntry) {
@@ -294,7 +339,7 @@ async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGen
 
   // 非 zip：直接当作图片二进制处理，由 persistImageBuffer 识别 PNG / JPEG / WEBP
   // 无法识别时抛出明确错误，不再静默兜底写入未知二进制（防止把错误页/HTML 当图片落地）
-  return persistImageBuffer(Buffer.from(arrayBuffer));
+  return persistImageBuffer(buffer);
 }
 
 // ========== ComfyUI ==========
@@ -311,11 +356,10 @@ async function generateComfyUI(
   if (cfg.comfyui_workflow) {
     try {
       workflow = JSON.parse(cfg.comfyui_workflow);
-      // 替换 prompt 占位符
-      const workflowStr = JSON.stringify(workflow)
-        .replace(/\{\{positive_prompt\}\}/g, fullPrompt.replace(/"/g, '\\"'))
-        .replace(/\{\{negative_prompt\}\}/g, (negativePrompt || cfg.sd_negative_prompt).replace(/"/g, '\\"'));
-      workflow = JSON.parse(workflowStr);
+      workflow = replaceWorkflowPromptPlaceholders(workflow, {
+        '{{positive_prompt}}': fullPrompt,
+        '{{negative_prompt}}': negativePrompt || cfg.sd_negative_prompt,
+      }) as Record<string, unknown>;
     } catch {
       throw new Error('ComfyUI 工作流 JSON 格式错误');
     }
@@ -468,6 +512,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
+  if (!isPlainObject(rawBody)) {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+  if (rawBody.override !== undefined && !isPlainObject(rawBody.override)) {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const settings = loadSettings();
+  if (!settings.image_gen.enabled) {
+    return NextResponse.json({ error: '生图功能未启用，请先在设置中开启' }, { status: 400 });
+  }
+
   const parsed = imageGenBodySchema.safeParse(rawBody);
   if (!parsed.success) {
     return NextResponse.json(
@@ -476,18 +532,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { prompt = '', negative_prompt, override } = parsed.data as {
-    prompt?: string;
-    negative_prompt?: string;
-    override?: Partial<ImageGenSettings>;
-  };
+  const { prompt = '', negative_prompt, override } = parsed.data;
 
   try {
     if (!prompt) {
       return NextResponse.json({ error: '缺少 prompt' }, { status: 400 });
     }
 
-    const settings = loadSettings();
     const imgCfg: ImageGenSettings = { ...DEFAULT_IMAGE_GEN_SETTINGS, ...settings.image_gen, ...override };
 
     if (!imgCfg.enabled) {

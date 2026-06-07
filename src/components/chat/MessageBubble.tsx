@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 import { Message } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
+import { sanitizeGeneratedImages, type GeneratedImage, type GeneratedImageVersion } from '@/lib/generated-image-assets';
 import { CheckIcon, ClockIcon, CopyIcon, PencilIcon, RefreshIcon, TrashIcon, ReplyIcon, SummaryIcon, ImageIcon } from '@/components/ui/icons';
 
 interface VersionInfo {
@@ -33,22 +34,6 @@ interface Props {
   onEditImagePrompt?: (messageId: string, imgId: string, newPrompt: string) => void;
   onSetPrimaryImage?: (messageId: string, imgId: string, versionId: string) => void;
 }
-
-type GeneratedImageVersion = {
-  id: string;
-  url: string;
-  prompt: string;
-};
-
-type GeneratedImage = {
-  id: string;
-  url?: string;
-  prompt: string;
-  status?: 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
-  error?: string;
-  versions?: Array<GeneratedImageVersion>;
-  activeVersion?: number;
-};
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -294,7 +279,7 @@ function MessageBubbleInner({
   };
 
   /* 操作按钮样式 */
-  const btnBase = 'rounded-lg p-1.5 transition-all duration-150';
+  const btnBase = 'rounded-lg p-1.5 transition-all duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2';
   const btnUser = `${btnBase} text-white/60 hover:bg-white/20 hover:text-white`;
   const btnAssistant = `${btnBase} text-text-muted/50 hover:bg-black/5 hover:text-text-secondary dark:hover:bg-white/10`;
 
@@ -347,7 +332,7 @@ function MessageBubbleInner({
 
           {/* 操作按钮：PC hover 淡入，移动端点击切换 */}
           {!isStreaming && !isLoading && !editing && (
-            <div className={`ml-auto flex items-center gap-0.5 transition-opacity duration-150 ${isUser ? 'flex-row-reverse' : ''} ${showActions ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+            <div className={`ml-auto flex items-center gap-0.5 transition-opacity duration-150 ${isUser ? 'flex-row-reverse' : ''} ${showActions ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'}`}>
               {/* 复制：已复制时显示 ✓ */}
               <button
                 onClick={handleCopy}
@@ -554,8 +539,8 @@ function MessageBubbleInner({
       {/* ── 生成的图片（气泡正下方，缩进对齐气泡） ── */}
       {!isUser && (() => {
         const meta = (message.metadata || {}) as Record<string, unknown>;
-        const images = meta.generatedImages as Array<GeneratedImage> | undefined;
-        if (!images || images.length === 0) return null;
+        const images = sanitizeGeneratedImages(meta.generatedImages);
+        if (images.length === 0) return null;
         return (
           <div className="generated-image-list ml-13 mt-2 flex flex-col items-start gap-2">
             {images.map((img) => (
@@ -867,24 +852,24 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
           }}
         />
         {/* 操作按钮：PC hover 显示，移动端点击切换 */}
-        <div className={`absolute right-2 top-2 flex gap-1 transition-opacity ${showImgActions ? 'opacity-100' : 'opacity-0 group-hover/img:opacity-100'}`}>
+        <div className={`absolute right-2 top-2 flex gap-1 transition-opacity ${showImgActions ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0 group-hover/img:pointer-events-auto group-hover/img:opacity-100 group-focus-within/img:pointer-events-auto group-focus-within/img:opacity-100'}`}>
           <button
             onClick={() => { setPromptValue(img.prompt); setEditingPrompt(true); setShowImgActions(false); }}
-            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white"
+            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
             title={t('message.editPromptTitle')}
           >
             <PencilIcon className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={() => { onRegenerate?.(messageId, img.prompt, img.id); setShowImgActions(false); }}
-            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white"
+            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
             title={t('message.regenerateTitle')}
           >
             <RefreshIcon className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={() => { onDelete?.(messageId, img.id); setShowImgActions(false); }}
-            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-red-600/80 hover:text-white"
+            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-red-600/80 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
             title={t('message.imageDeleteTitle')}
           >
             <TrashIcon className="h-3.5 w-3.5" />
@@ -906,4 +891,3 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
 
 const MessageBubble = memo(MessageBubbleInner);
 export default MessageBubble;
-

@@ -13,7 +13,7 @@ const isDev = process.env.NODE_ENV !== "production";
  * - img-src：允许 data:/blob:（消息附件 base64、客户端预览）以及 https:
  *   （远程头像 / AI 生图回链 / 用户填入的图片 URL）
  * - connect-src：用户可配置任意 LLM / SD WebUI 供应商，允许 https:；
- *   wss: 允许 Next.js dev WebSocket（HMR）以及未来流式 WS 拓展
+ *   仅开发模式允许 ws: 供 Next.js HMR 使用，生产不允许明文 websocket
  * - font-src：允许同源（自托管霞鹜文楷 /fonts/lxgw）+ data: + Google Fonts（Quicksand）
  * - style-src：除同源外允许 Google Fonts（Quicksand，layout.tsx 通过 <link> 引入）
  * - frame-ancestors 'none'：禁止被 iframe 嵌入
@@ -29,7 +29,7 @@ const cspDirectives: Array<[string, string]> = [
   ["style-src", "'self' 'unsafe-inline' https://fonts.googleapis.com"],
   ["img-src", "'self' data: blob: https:"],
   ["font-src", "'self' data: https://fonts.gstatic.com"],
-  ["connect-src", "'self' https: wss: ws:"],
+  ["connect-src", isDev ? "'self' https: wss: ws:" : "'self' https: wss:"],
   ["frame-ancestors", "'none'"],
   ["base-uri", "'self'"],
   ["form-action", "'self'"],

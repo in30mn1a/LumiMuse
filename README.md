@@ -146,6 +146,7 @@
 - 部署到公网时建议一定设置访问密码
 - 登录后下发 HMAC-SHA256 签名 token（不再把密码原文写入 cookie），可选配 `AUTH_SECRET` 让 token 在多副本部署时通用
 - 密码校验使用常量时间比较，避免通过响应耗时差推测密码
+- 默认不信任 `X-Forwarded-For`；只有部署在可信反向代理后面时才设置 `TRUST_PROXY=1`
 - 出站请求（生图、模型列表、总结、对话补全）经过 SSRF 防护，会做 DNS 解析与重定向逐跳校验，避免被外部地址引导到内网
 - 自部署本地 LLM / SD WebUI 时可设置 `ALLOW_LOCAL_NETWORK=1` 显式放开内网地址
 
@@ -170,10 +171,12 @@
 
 ### 环境要求
 
-- Node.js **18.18** 或更高版本
+- Node.js **>=20.18.1**
 - npm（Node.js 自带的包管理器）
 - 一个兼容 OpenAI Chat Completions API 格式的模型服务
 - 如需 Docker 部署，需要 Docker 和 Docker Compose
+
+CI 会在 Node **20.18** 和 **Node 24** 上运行验证；本地建议使用 Node 20.18.1 或更新版本。
 
 ### 本地使用
 
@@ -187,6 +190,17 @@ npm run dev
 打开 [http://localhost:3000](http://localhost:3000)，进入设置页填写模型接口信息即可开始使用。
 
 数据库会自动创建在 `data/lumimuse.db`。
+
+### 本地生产启动
+
+```bash
+npm run build
+npm run start:local
+```
+
+`npm run start:local` 使用 Next.js 的 `next start`（Next.js 生产服务器），适合在源码工作区本地检查生产构建。
+
+`npm start` 等同于 `npm run start:standalone`，会运行 `.next/standalone/server.js`，用于检查 Next.js standalone（独立运行包）输出。Docker 镜像会把 `.next/standalone` 复制到容器工作目录，并在容器内直接执行 `node server.js`。
 
 ### Windows 快速启动
 
@@ -260,11 +274,16 @@ ACCESS_PASSWORD=your_password_here
 # 多副本部署或希望 cookie 跨重启不失效时建议显式设置
 # AUTH_SECRET=use_a_long_random_string_here
 
+# 可选：仅在可信反向代理覆盖 X-Forwarded-For 时启用
+# TRUST_PROXY=1
+
 # 可选：自部署本地 LLM / SD WebUI 时显式允许内网地址
 # ALLOW_LOCAL_NETWORK=1
 ```
 
-如果不设置 `ACCESS_PASSWORD`，应用不会要求登录。这个模式只建议在自己电脑或可信局域网内使用。
+如果不设置 `ACCESS_PASSWORD`，应用不会要求登录。这个模式只建议在自己电脑或可信局域网内使用；生产 Docker 启动会 fail-fast 拒绝空密码或 `your_password_here` 这类占位值。
+
+`docker-compose.yml` 会通过 `env_file` 默认读取 `.env.local`，所以上面的 `ACCESS_PASSWORD` / `AUTH_SECRET` 会注入容器环境；不需要额外执行 `docker compose --env-file ...`。如需使用其他文件，可设置 `LUMIMUSE_ENV_FILE=.env.production docker compose up -d --build`。
 
 ### 2. 启动服务
 
@@ -285,7 +304,7 @@ docker compose up -d --build
 | `./public/avatars` | `/app/public/avatars` | 保存角色头像 |
 | `./public/attachments` | `/app/public/attachments` | 保存对话附件（图片 / 文本） |
 
-只要这些目录还在，容器重建后数据也不会丢。容器以非 root 用户（UID 1001:1001）启动以减少攻击面，绑定挂载的目录在 Linux 上需要由对应 UID 拥有：使用 named volume 时 Docker 会自动对齐属主；使用 `./data` 这类 bind mount 时，可在 `docker-compose.yml` 用 `user: "1001:1001"`，或先执行 `sudo chown -R 1001:1001 data public/generated public/avatars public/attachments` 一次。
+只要这些目录还在，容器重建后数据也不会丢。容器以非 root 用户（UID 1001:1001）启动以减少攻击面，entrypoint 不再自动执行 `chown`。Linux 上使用 `./data` 这类 bind mount 时，请在首次启动前执行一次 `sudo chown -R 1001:1001 data public/generated public/avatars public/attachments`；如果改用 Docker named volume，Docker 会按镜像内目录属主初始化卷，通常不需要手动修权限。
 
 Windows / macOS 下 Docker Desktop 会自动处理权限，直接 `docker compose up -d --build` 即可。
 
@@ -373,7 +392,9 @@ LumiMuse 的核心数据保存在你自己的本机或服务器中：
 如果你部署到公网，请务必：
 
 - 设置 `ACCESS_PASSWORD`
+- 确认 `ACCESS_PASSWORD` 不是空值或示例占位值；Docker 生产启动会直接拒绝这类配置
 - 使用 HTTPS（加密访问协议），建议放在反向代理后面
+- 只有可信反向代理会覆盖客户端转发头时，才设置 `TRUST_PROXY=1`
 - 定期备份 `data/`、`public/generated/`、`public/avatars/` 和 `public/attachments/`
 - 不要把 `.env.local`、数据库文件或个人备份提交到公开仓库
 

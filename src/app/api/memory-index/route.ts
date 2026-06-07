@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getDb } from '@/lib/db';
 import {
   clearMemoryIndex,
@@ -15,8 +16,17 @@ import {
   triggerMemoryIndexProcessing,
   type MemoryIndexProcessingBlockedReason,
 } from '@/lib/memory-index-trigger';
+import { readJsonObject } from '@/lib/request-json';
 import { loadSettings } from '@/lib/settings';
 import type { MemoryEmbeddingTarget, MemoryIndexStatus } from '@/lib/memory-embeddings';
+
+const memoryIndexActionSchema = z.enum([
+  'rebuild',
+  'retry_failed',
+  'clear_index',
+  'stop_current',
+  'index_unindexed',
+]);
 
 type IndexStatusResponse = MemoryIndexStatus & {
   ok: boolean;
@@ -124,22 +134,21 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const rawQueryCharacterId = request.nextUrl.searchParams.get('character_id');
   const queryCharacterId = rawQueryCharacterId?.trim();
-  const rawBody = await request.json().catch(() => ({}));
-  const body = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
-    ? rawBody as { action?: unknown; character_id?: unknown }
-    : {};
+  const parsedBody = await readJsonObject(request);
+  if (!parsedBody.ok) return parsedBody.response;
+  const body = parsedBody.data;
   const rawAction = body.action === undefined ? 'rebuild' : body.action;
   const rawBodyCharacterId = typeof body.character_id === 'string' ? body.character_id : undefined;
   const bodyCharacterId = rawBodyCharacterId?.trim();
   const characterId = bodyCharacterId || queryCharacterId || undefined;
 
-  if (typeof rawAction !== 'string') {
-    return NextResponse.json({ error: 'action must be a string' }, { status: 400 });
-  }
-  const action = rawAction.trim() || 'rebuild';
-  if (!['rebuild', 'retry_failed', 'clear_index', 'stop_current', 'index_unindexed'].includes(action)) {
+  const actionResult = memoryIndexActionSchema.safeParse(
+    typeof rawAction === 'string' ? rawAction.trim() : rawAction,
+  );
+  if (!actionResult.success) {
     return NextResponse.json({ error: 'unsupported memory index action' }, { status: 400 });
   }
+  const action = actionResult.data;
   if (body.character_id !== undefined && typeof body.character_id !== 'string') {
     return NextResponse.json({ error: 'character_id must be a string' }, { status: 400 });
   }

@@ -236,3 +236,43 @@ test('/api/memories GET 支持按多个 tag 精确同时筛选', async () => {
   assert.deepEqual(payload.memories.map(memory => memory.id), ['matched']);
   assert.equal(payload.hasMore, false);
 });
+
+test('/api/memories GET keyword search treats percent and underscore as literal characters', async () => {
+  const db = createMemoryDb();
+
+  insertMemory(db, {
+    id: 'literal-percent',
+    content: '用户喜欢 100% 黑巧克力',
+  });
+  insertMemory(db, {
+    id: 'expanded-percent',
+    content: '用户提到 100X 不是百分号',
+  });
+  insertMemory(db, {
+    id: 'literal-underscore',
+    content: '标签 A_B 是字面下划线',
+  });
+  insertMemory(db, {
+    id: 'expanded-underscore',
+    content: '标签 AXB 不应被下划线通配符命中',
+  });
+
+  const route = requireFreshWithMocks('../src/app/api/memories/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+  });
+
+  const percentResponse = await route.GET(requestFor(
+    'http://test.local/api/memories?character_id=char-a&keyword=100%25&limit=20&offset=0',
+  ));
+  const percentPayload = await percentResponse.json();
+  const underscoreResponse = await route.GET(requestFor(
+    'http://test.local/api/memories?character_id=char-a&keyword=A_B&limit=20&offset=0',
+  ));
+  const underscorePayload = await underscoreResponse.json();
+
+  assert.equal(percentResponse.status, 200);
+  assert.deepEqual(percentPayload.memories.map(memory => memory.id), ['literal-percent']);
+  assert.equal(underscoreResponse.status, 200);
+  assert.deepEqual(underscorePayload.memories.map(memory => memory.id), ['literal-underscore']);
+});

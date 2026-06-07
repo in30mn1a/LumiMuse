@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
-import { normalizeMemoryCategory } from '@/lib/memory-category';
+import { inferMemoryDefaults, normalizeMemoryCategory } from '@/lib/memory-category';
 import { normalizeCharacterCard, type CharacterDraft } from '@/lib/character-card-import';
+import { remapJsonStringIds } from '@/lib/character-file-utils';
 import { EXPORT_VERSION } from '@/lib/export-version';
-import { v4 as uuidv4 } from 'uuid';
 
 interface ImportPayload {
   version?: number;
@@ -21,6 +22,7 @@ interface ConversationWithMessages {
   title: string;
   created_at: string;
   updated_at: string;
+  ignore_memory?: unknown;
   messages?: Record<string, unknown>[];
 }
 
@@ -43,6 +45,53 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === 'object' && !Array.isArray(v)
     ? v as Record<string, unknown>
     : undefined;
+}
+
+function asNumber(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+function asFlag(v: unknown): number {
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  const n = asNumber(v);
+  return n && n !== 0 ? 1 : 0;
+}
+
+function jsonArrayString(value: unknown): string {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? JSON.stringify(parsed) : '[]';
+    } catch {
+      return '[]';
+    }
+  }
+  return JSON.stringify(asArray<unknown>(value));
+}
+
+function jsonRecordString(value: unknown): string {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      const record = asRecord(parsed);
+      return record ? JSON.stringify(record) : '{}';
+    } catch {
+      return '{}';
+    }
+  }
+  return JSON.stringify(asRecord(value) || {});
+}
+
+function remapSourceMessageIds(value: unknown, messageIdMap: Map<string, string>): string {
+  const remapped = remapJsonStringIds(jsonArrayString(value), messageIdMap);
+  try {
+    const parsed = JSON.parse(remapped) as unknown;
+    if (!Array.isArray(parsed)) return '[]';
+    const importedMessageIds = new Set(messageIdMap.values());
+    return JSON.stringify(parsed.filter(item => typeof item === 'string' && importedMessageIds.has(item)));
+  } catch {
+    return '[]';
+  }
 }
 
 function includeParam(value: string | null): boolean {
@@ -110,7 +159,7 @@ export async function POST(request: NextRequest) {
   }
 
   // 二次校验：即使缺失 Content-Length，也要在解析 JSON 前拦截超大 body。
-  if (raw.length > MAX_IMPORT_BYTES) {
+  if (Buffer.byteLength(raw, 'utf8') > MAX_IMPORT_BYTES) {
     return NextResponse.json({ error: '导入文件过大' }, { status: 413 });
   }
 
@@ -202,6 +251,7 @@ function importPayload({
   const now = new Date().toISOString();
   const results = createEmptyResults();
   const idMap = new Map<string, string>(); // 原 id → 新 id
+  const messageIdMap = new Map<string, string>(); // 原消息 id → 新消息 id
 
   const importAll = db.transaction(() => {
     // ── 导入角色 ────────────────────────────────────────────────
@@ -230,7 +280,7 @@ function importPayload({
         });
       }
 
-      const newId = uuidv4().slice(0, 12);
+      const newId = crypto.randomUUID().slice(0, 12);
       if (charId) idMap.set(charId, newId);
 
       db.prepare(`
@@ -255,31 +305,6 @@ function importPayload({
       results.imported++;
     }
 
-    // ── 导入记忆 ────────────────────────────────────────────────
-    for (const mem of memoriesToImport) {
-      const originalCharId = asString(mem.character_id);
-      const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
-
-      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
-      if (!charExists) continue;
-
-      const newMemId = uuidv4().slice(0, 12);
-      db.prepare(`
-        INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
-      `).run(
-        newMemId,
-        newCharId,
-        normalizeMemoryCategory(asString(mem.category) || '话题历史'),
-        asString(mem.content),
-        typeof mem.confidence === 'number' ? mem.confidence : 0.8,
-        JSON.stringify(asArray<unknown>(mem.tags)),
-        asString(mem.created_at) || now,
-        now,
-      );
-      results.memoriesImported++;
-    }
-
     // ── 导入对话和消息 ──────────────────────────────────────────
     for (const conv of conversationsToImport) {
       // 解析 character_id：优先用 idMap 映射后的新 id
@@ -293,15 +318,16 @@ function importPayload({
         continue;
       }
 
-      const newConvId = uuidv4().slice(0, 12);
+      const newConvId = crypto.randomUUID().slice(0, 12);
 
       db.prepare(`
-        INSERT INTO conversations (id, character_id, title, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
       `).run(
         newConvId,
         newCharId,
         asString(conv.title) || '导入的对话',
+        asFlag(conv.ignore_memory),
         asString(conv.created_at) || now,
         asString(conv.updated_at) || now,
       );
@@ -309,9 +335,11 @@ function importPayload({
 
       // 导入该对话的消息
       const messages = asArray<Record<string, unknown>>(conv.messages);
-      let seq = 1;
+      let fallbackSeq = 1;
       for (const msg of messages) {
-        const newMsgId = uuidv4().slice(0, 12);
+        const newMsgId = crypto.randomUUID().slice(0, 12);
+        const originalMsgId = asString(msg.id);
+        if (originalMsgId) messageIdMap.set(originalMsgId, newMsgId);
 
         // metadata 可能是对象或字符串，统一序列化为字符串存储
         const metaStr = typeof msg.metadata === 'string'
@@ -326,13 +354,53 @@ function importPayload({
           newConvId,
           asString(msg.role),
           asString(msg.content),
-          typeof msg.token_count === 'number' ? msg.token_count : 0,
+          asNumber(msg.token_count) ?? 0,
           asString(msg.created_at) || now,
           metaStr,
-          seq++,
+          asNumber(msg.seq) ?? fallbackSeq++,
         );
         results.messagesImported++;
       }
+    }
+
+    // ── 导入记忆 ────────────────────────────────────────────────
+    for (const mem of memoriesToImport) {
+      const originalCharId = asString(mem.character_id);
+      const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
+
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
+      if (!charExists) continue;
+
+      const newMemId = crypto.randomUUID().slice(0, 12);
+      const category = normalizeMemoryCategory(asString(mem.category) || '话题历史');
+      const defaults = inferMemoryDefaults(category);
+      db.prepare(`
+        INSERT INTO memories (
+          id, character_id, category, content, confidence, tags, source_msg_ids,
+          memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+          usage_count, metadata, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        newMemId,
+        newCharId,
+        category,
+        asString(mem.content),
+        asNumber(mem.confidence) ?? 0.8,
+        jsonArrayString(mem.tags),
+        remapSourceMessageIds(mem.source_msg_ids, messageIdMap),
+        asString(mem.memory_kind) || defaults.memory_kind,
+        asNumber(mem.importance) ?? defaults.importance,
+        asNumber(mem.emotional_weight) ?? defaults.emotional_weight,
+        asString(mem.status) || 'active',
+        asFlag(mem.pinned),
+        asString(mem.last_used_at) || null,
+        asNumber(mem.usage_count) ?? 0,
+        jsonRecordString(mem.metadata),
+        asString(mem.created_at) || now,
+        now,
+      );
+      results.memoriesImported++;
     }
   });
 

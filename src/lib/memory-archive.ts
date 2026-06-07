@@ -1,4 +1,4 @@
-import type { MemoryCategory, MemoryKind, MemoryStatus } from '@/types';
+import { MEMORY_STATUSES, type MemoryCategory, type MemoryKind, type MemoryStatus } from '@/types';
 import type Database from 'better-sqlite3';
 
 export interface MemoryArchiveSourceMemory {
@@ -112,6 +112,10 @@ type MemoryRow = {
   created_at: string;
   updated_at: string;
 };
+
+function isMemoryStatus(value: unknown): value is MemoryStatus {
+  return typeof value === 'string' && (MEMORY_STATUSES as readonly string[]).includes(value);
+}
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
@@ -316,9 +320,10 @@ export function undoMemorySummaryArchiveBatch(
     const restoredMemoryIds: string[] = [];
     for (const row of rows) {
       const metadata = parseJsonObject(row.metadata);
-      const previousStatus = typeof metadata.previousStatus === 'string'
-        ? metadata.previousStatus as MemoryStatus
-        : 'active';
+      const previousStatus = metadata.previousStatus ?? 'active';
+      if (!isMemoryStatus(previousStatus)) {
+        throw new Error(`Invalid archive previousStatus for memory ${row.id}`);
+      }
       delete metadata.archiveBatchId;
       delete metadata.summarizedBy;
       delete metadata.previousStatus;

@@ -42,6 +42,47 @@ function buildExtractionText(
   return { text: lines.join('\n'), includedCompleteUserIds };
 }
 
+function hasColumn(db: ReturnType<typeof getDb>, tableName: string, columnName: string): boolean {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
+  return columns.some(column => column.name === columnName);
+}
+
+function hasTable(db: ReturnType<typeof getDb>, tableName: string): boolean {
+  const row = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+  ).get(tableName);
+  return Boolean(row);
+}
+
+function markIncludedUserMessagesProcessed(
+  db: ReturnType<typeof getDb>,
+  messages: Array<{ id: string; role: string; metadata: string }>,
+  includedCompleteUserIds: Set<string>,
+  noopExtractedAt?: string,
+): void {
+  for (const msg of messages) {
+    if (msg.role !== 'user' || !includedCompleteUserIds.has(msg.id)) continue;
+    let meta: Record<string, unknown> = {};
+    try { meta = JSON.parse(msg.metadata); } catch { meta = {}; }
+    meta.memory_extracted = true;
+    if (noopExtractedAt) {
+      meta.memory_noop_extracted_at = noopExtractedAt;
+    }
+    db.prepare('UPDATE messages SET metadata = ? WHERE id = ?')
+      .run(JSON.stringify(meta), msg.id);
+  }
+}
+
+function hasRepairableExtractionCandidate(db: ReturnType<typeof getDb>, taskId: number): boolean {
+  if (!hasTable(db, 'memory_extraction_candidates')) return false;
+  const row = db.prepare(`
+    SELECT id FROM memory_extraction_candidates
+    WHERE task_id = ? AND status = 'repairable'
+    LIMIT 1
+  `).get(taskId);
+  return Boolean(row);
+}
+
 /** 把任务写入数据库，如果该对话已有 pending/processing 任务则跳过 */
 export function enqueueExtraction(
   characterId: string,
@@ -82,9 +123,15 @@ export function enqueueExtraction(
 export function recoverStaleTasks(): void {
   const db = getDb();
   const now = new Date().toISOString();
-  db.prepare(
-    "UPDATE memory_tasks SET status = 'pending', updated_at = ? WHERE status = 'processing'"
-  ).run(now);
+  if (hasColumn(db, 'memory_tasks', 'started_at')) {
+    db.prepare(
+      "UPDATE memory_tasks SET status = 'pending', started_at = NULL, updated_at = ? WHERE status = 'processing'"
+    ).run(now);
+  } else {
+    db.prepare(
+      "UPDATE memory_tasks SET status = 'pending', updated_at = ? WHERE status = 'processing'"
+    ).run(now);
+  }
 }
 
 async function processQueue(): Promise<void> {
@@ -116,9 +163,20 @@ async function processQueue(): Promise<void> {
 
     inFlightConversations.add(task.conversation_id);
 
-    // 标记为 processing
-    db.prepare("UPDATE memory_tasks SET status = 'processing', updated_at = ? WHERE id = ?")
-      .run(new Date().toISOString(), task.id);
+    // 标记为 processing，并记录后台任务开始时间供 stuck 诊断使用
+    try {
+      const processingStartedAt = new Date().toISOString();
+      if (hasColumn(db, 'memory_tasks', 'started_at')) {
+        db.prepare("UPDATE memory_tasks SET status = 'processing', started_at = ?, updated_at = ? WHERE id = ?")
+          .run(processingStartedAt, processingStartedAt, task.id);
+      } else {
+        db.prepare("UPDATE memory_tasks SET status = 'processing', updated_at = ? WHERE id = ?")
+          .run(processingStartedAt, task.id);
+      }
+    } catch (err) {
+      inFlightConversations.delete(task.conversation_id);
+      throw err;
+    }
 
     try {
       const settings = loadSettings();
@@ -147,20 +205,16 @@ async function processQueue(): Promise<void> {
           conversationId: task.conversation_id,
         });
 
+        if (insertCount === 0 && mergeCount === 0 && hasRepairableExtractionCandidate(db, task.id)) {
+          throw new Error('repairable memory extraction candidate created; task remains retryable');
+        }
+
         // 只有实际产生了提取结果（新条目或合并）才标记消息为已提取
-        // 如果 AI 返回空结果（认为没有值得记忆的内容），不标记，下次仍可重新提取。
         // 这里的判断使用真实的 insertCount（实际写入 DB 的新记忆数）和
         // mergeCount（实际更新的已有记忆数），而不是 LLM 解析出的原始条目数；
         // 后者会在 LLM 反复返回与已有记忆完全等同内容时虚报"提取成功"。
         if (insertCount > 0 || mergeCount > 0) {
-          for (const msg of messages) {
-            if (msg.role !== 'user' || !includedCompleteUserIds.has(msg.id)) continue;
-            let meta: Record<string, unknown> = {};
-            try { meta = JSON.parse(msg.metadata); } catch { meta = {}; }
-            meta.memory_extracted = true;
-            db.prepare('UPDATE messages SET metadata = ? WHERE id = ?')
-              .run(JSON.stringify(meta), msg.id);
-          }
+          markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds);
 
           // 提取产生了新记忆 → 入队角色画像更新（用本轮对话文本作为信号）并异步触发处理。
           // 画像 patch 是较慢的后台 LLM 调用，trigger 为 fire-and-forget；失败不得影响提取主流程。
@@ -170,6 +224,8 @@ async function processQueue(): Promise<void> {
           } catch (profileErr) {
             console.error('[memory-queue] enqueue memory profile update failed:', profileErr);
           }
+        } else {
+          markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds, new Date().toISOString());
         }
 
         // 把合并数量写回任务，供外部轮询
@@ -228,4 +284,8 @@ export function getQueueLength(): number {
 
 export function isProcessing(): boolean {
   return processing;
+}
+
+export function __processQueueForTest(): Promise<void> {
+  return processQueue();
 }

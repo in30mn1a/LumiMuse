@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getDb } from '@/lib/db';
+import { readJsonObject } from '@/lib/request-json';
+
+const resetExtractionBodySchema = z.object({
+  messageIds: z.array(z.string()).optional(),
+  action: z.enum(['reset', 'mark']).optional(),
+});
 
 /**
  * POST /api/conversations/[id]/reset-extraction
@@ -15,8 +22,14 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: conversationId } = await params;
-  const body = await request.json().catch(() => ({}));
-  const { messageIds, action = 'reset' } = body as { messageIds?: string[]; action?: 'reset' | 'mark' };
+  const body = await readJsonObject(request);
+  if (!body.ok) return body.response;
+
+  const parsedBody = resetExtractionBodySchema.safeParse(body.data);
+  if (!parsedBody.success) {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+  const { messageIds, action = 'reset' } = parsedBody.data;
 
   const db = getDb();
 
@@ -32,33 +45,41 @@ export async function POST(
     ? new Set(messageIds)
     : null; // null 表示全部操作
 
-  let count = 0;
   const updateStmt = db.prepare('UPDATE messages SET metadata = ? WHERE id = ?');
 
-  for (const msg of allMessages) {
-    // 只操作用户消息
-    if (msg.role !== 'user') continue;
-    if (targetSet && !targetSet.has(msg.id)) continue;
+  try {
+    const count = db.transaction(() => {
+      let updated = 0;
 
-    let meta: Record<string, unknown> = {};
-    try { meta = JSON.parse(msg.metadata || '{}'); } catch { meta = {}; }
+      for (const msg of allMessages) {
+        // 只操作用户消息
+        if (msg.role !== 'user') continue;
+        if (targetSet && !targetSet.has(msg.id)) continue;
 
-    if (action === 'mark') {
-      // 标记为已提取
-      if (!meta.memory_extracted) {
-        meta.memory_extracted = true;
-        updateStmt.run(JSON.stringify(meta), msg.id);
-        count++;
+        let meta: Record<string, unknown> = {};
+        try { meta = JSON.parse(msg.metadata || '{}'); } catch { meta = {}; }
+
+        if (action === 'mark') {
+          // 标记为已提取
+          if (!meta.memory_extracted) {
+            meta.memory_extracted = true;
+            updateStmt.run(JSON.stringify(meta), msg.id);
+            updated++;
+          }
+        } else if (meta.memory_extracted) {
+          // 重置（清除已提取标记）
+          delete meta.memory_extracted;
+          updateStmt.run(JSON.stringify(meta), msg.id);
+          updated++;
+        }
       }
-    } else {
-      // 重置（清除已提取标记）
-      if (meta.memory_extracted) {
-        delete meta.memory_extracted;
-        updateStmt.run(JSON.stringify(meta), msg.id);
-        count++;
-      }
-    }
+
+      return updated;
+    })();
+
+    return NextResponse.json({ resetCount: count, action });
+  } catch (error) {
+    console.error('[reset-extraction] Failed to update message metadata:', error);
+    return NextResponse.json({ error: 'Failed to reset extraction state' }, { status: 500 });
   }
-
-  return NextResponse.json({ resetCount: count, action });
 }

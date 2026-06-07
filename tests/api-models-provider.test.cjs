@@ -66,10 +66,23 @@ function jsonResponseMock() {
 }
 
 function jsonRequest(body) {
+  const raw = JSON.stringify(body);
   return {
     nextUrl: new URL('http://test.local/api/models'),
+    async text() {
+      return raw;
+    },
     async json() {
       return body;
+    },
+  };
+}
+
+function textRequest(raw) {
+  return {
+    nextUrl: new URL('http://test.local/api/models'),
+    async text() {
+      return raw;
     },
   };
 }
@@ -139,4 +152,87 @@ test('/api/models POST resolves api_base and api_key from provider_id', async ()
   assert.deepEqual(seenRequests, [
     { url: 'https://provider.example/v1/models', auth: 'Bearer provider-secret' },
   ]);
+});
+
+test('/api/models POST with empty body falls back to saved settings', async () => {
+  const seenRequests = [];
+  const db = {
+    prepare(sql) {
+      if (sql.includes('SELECT models, cached_at FROM model_cache')) {
+        return { get: () => undefined };
+      }
+      if (sql.includes('INSERT INTO model_cache')) {
+        return { run: () => {} };
+      }
+      throw new Error(`unexpected sql: ${sql}`);
+    },
+  };
+
+  const route = requireFreshWithMocks('../src/app/api/models/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://chat.example/v1',
+        api_key: 'chat-secret',
+        memory_engine: {
+          embedding_api_base: '',
+          embedding_api_key: '',
+          reranker_api_base: '',
+          reranker_api_key: '',
+        },
+      }),
+    },
+    '@/lib/ssrf-guard': {
+      safeFetch: async (url, init) => {
+        seenRequests.push({ url, auth: init.headers.Authorization });
+        return {
+          ok: true,
+          async json() {
+            return { models: ['saved-model'] };
+          },
+        };
+      },
+    },
+  });
+
+  const response = await route.POST(textRequest(''));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { models: ['saved-model'], error: null, cached: false });
+  assert.deepEqual(seenRequests, [
+    { url: 'https://chat.example/v1/models', auth: 'Bearer chat-secret' },
+  ]);
+});
+
+test('/api/models POST rejects malformed JSON without fetching upstream models', async () => {
+  let safeFetchCalled = false;
+
+  const route = requireFreshWithMocks('../src/app/api/models/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': {
+      getDb: () => {
+        throw new Error('getDb should not be called');
+      },
+    },
+    '@/lib/settings': {
+      loadSettings: () => {
+        throw new Error('loadSettings should not be called');
+      },
+    },
+    '@/lib/ssrf-guard': {
+      safeFetch: async () => {
+        safeFetchCalled = true;
+        throw new Error('safeFetch should not be called');
+      },
+    },
+  });
+
+  const response = await route.POST(textRequest('{'));
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { models: [], error: '请求体不是有效 JSON' });
+  assert.equal(safeFetchCalled, false);
 });

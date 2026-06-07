@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, char => `\\${char}`);
+}
+
 /**
  * 尝试把用户输入解析为日期范围
  * 支持格式：2026/3/30、2026-03-30、3月30日、3/30 等
@@ -122,6 +126,7 @@ export async function GET(request: NextRequest) {
     const normalized = q.replace(/"/g, '""');
     const ftsQuery = normalized.includes(' ') ? `"${normalized}"` : normalized;
     const shouldUseLikeFirst = /[\u4e00-\u9fff]/.test(q);
+    const escapedKeyword = escapeLikePattern(q);
     const searchLike = (): typeof rows => db.prepare(`
       SELECT
         m.id        AS message_id,
@@ -136,10 +141,10 @@ export async function GET(request: NextRequest) {
       FROM messages m
       JOIN conversations c  ON m.conversation_id = c.id
       JOIN characters   ch ON c.character_id     = ch.id
-      WHERE m.content LIKE ? AND m.role IN ('user', 'assistant')
+      WHERE m.content LIKE ? ESCAPE '\\' AND m.role IN ('user', 'assistant')
       ORDER BY m.created_at DESC
       LIMIT ? OFFSET ?
-    `).all(`%${q}%`, pageSize, offset) as typeof rows;
+    `).all(`%${escapedKeyword}%`, pageSize, offset) as typeof rows;
 
     if (shouldUseLikeFirst) {
       rows = searchLike();

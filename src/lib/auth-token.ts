@@ -182,10 +182,9 @@ export async function verifyAuthToken(
     const age = Date.now() - payload.iat;
     if (age < 0 || age > TOKEN_TTL_MS) return false;
 
-    // 服务端撤销检查：token 签发时间不能早于 min_iat
-    // 注意：使用 `<` 而非 `<=`，这样登出时设置的 min_iat 仅作废"严格早于此刻"的 token，
-    // 与 bumpAuthMinIat 取 max(now, current+1) 的单调递增策略配合，
-    // 共同保证"登出后立即作废"且不误伤"登出时刻同毫秒签发"的合法 token。
+    // 服务端撤销检查：token 签发时间必须不早于 min_iat。
+    // bumpAuthMinIat 写入 Date.now() + 1，因此与撤销操作同毫秒签发的旧 token
+    // 也会被 `< min_iat` 拒绝；保留 `<` 可让显式 min_iat 本身作为允许边界。
     const minIat = options.minIat ?? 0;
     if (minIat > 0 && payload.iat < minIat) return false;
 

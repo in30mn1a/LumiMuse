@@ -11,6 +11,7 @@ const MEMORY_REVIEW_BATCH_CONCURRENCY = 3;
 const MEMORY_REVIEW_BATCH_TEXT_CHAR_LIMIT = 8000;
 const MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT = 4000;
 const MEMORY_REVIEW_TAG_OVERVIEW_CHAR_LIMIT = 1200;
+const MEMORY_REVIEW_ACTIVE_MEMORY_LIMIT = 500;
 
 type MemoryReviewRow = {
   id: string;
@@ -173,26 +174,46 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Body must be a JSON object' }, { status: 400 });
   }
 
-  const body = rawBody as { character_id?: string };
+  const body = rawBody as { character_id?: string; offset?: unknown };
   const characterId = (body.character_id || '').trim();
   if (!characterId) {
     return NextResponse.json({ error: 'character_id is required' }, { status: 400 });
   }
+  const reviewOffset = body.offset === undefined ? 0 : Number(body.offset);
+  if (!Number.isInteger(reviewOffset) || reviewOffset < 0) {
+    return NextResponse.json({ error: 'offset must be a non-negative integer' }, { status: 400 });
+  }
 
   const db = getDb();
+  const totalActive = (db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM memories
+    WHERE character_id = ? AND status = 'active'
+  `).get(characterId) as { count: number }).count;
 
-  // 读取所有 active 记忆
+  // 读取有界 active 候选，避免超大记忆库一次性拉全量进入审核路径。
   const memories = db.prepare(`
     SELECT id, category, content, tags, importance, emotional_weight, memory_kind
     FROM memories
     WHERE character_id = ? AND status = 'active'
-    ORDER BY updated_at DESC
-  `).all(characterId) as MemoryReviewRow[];
+    ORDER BY COALESCE(importance, 0) DESC, updated_at DESC
+    LIMIT ?
+    OFFSET ?
+  `).all(characterId, MEMORY_REVIEW_ACTIVE_MEMORY_LIMIT, reviewOffset) as MemoryReviewRow[];
+  const reviewedEndOffset = reviewOffset + memories.length;
+  const skippedDueToLimit = Math.max(0, totalActive - reviewedEndOffset);
+  const hasMore = reviewedEndOffset < totalActive;
+  const nextOffset = hasMore ? reviewedEndOffset : null;
 
   if (memories.length === 0) {
     return NextResponse.json({
       ok: true,
       reviewed: 0,
+      total_active: totalActive,
+      skipped_due_to_limit: skippedDueToLimit,
+      reviewed_offset: reviewOffset,
+      next_offset: nextOffset,
+      has_more: hasMore,
       corrected: 0,
       indexing_queued: 0,
       indexing_started: false,
@@ -200,7 +221,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // AI 整理仍覆盖全部 active 记忆，但按有界批次请求，避免单次 prompt / 输出过大导致上游超时。
+  // AI 整理只覆盖本次有界候选集，避免单次 prompt / 输出过大导致上游超时。
   const validCategories = MEMORY_CATEGORIES.join('、');
   const tagOverview = buildTagOverview(memories);
   const reviewBatches = buildMemoryReviewBatches(memories.map(buildMemoryReviewEntry));
@@ -340,6 +361,11 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     ok: true,
     reviewed: memories.length,
+    total_active: totalActive,
+    skipped_due_to_limit: skippedDueToLimit,
+    reviewed_offset: reviewOffset,
+    next_offset: nextOffset,
+    has_more: hasMore,
     corrected: changes.length,
     indexing_queued: indexingQueued,
     indexing_started: indexingStarted,

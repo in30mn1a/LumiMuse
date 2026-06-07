@@ -4,6 +4,7 @@ import { loadSettings } from '@/lib/settings';
 import { DEFAULT_SETTINGS, Settings } from '@/types';
 import { API_KEY_MASK } from '@/lib/constants';
 import { formatZodFieldErrors, settingsUpdateSchema } from '@/lib/schemas';
+import { requireAuth } from '@/lib/route-auth';
 
 
 // 对设置中的敏感密钥做脱敏，返回可安全回传给前端的结构。
@@ -25,11 +26,17 @@ function maskSettings(settings: Settings): Settings {
   };
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   return NextResponse.json(maskSettings(loadSettings()));
 }
 
 export async function PUT(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   let rawBody: unknown;
   try {
     rawBody = await request.json();

@@ -5,17 +5,7 @@ import { ApiProvider } from '@/types';
 import { randomUUID } from 'crypto';
 import { providerCreateSchema, providerUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import { API_KEY_MASK } from '@/lib/constants';
-
-async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
-  if (!process.env.ACCESS_PASSWORD) return null;
-  const { AUTH_COOKIE_NAME, verifyAuthToken } = await import('@/lib/auth-token');
-  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const valid = await verifyAuthToken(token);
-  if (!valid) {
-    return NextResponse.json({ error: '未授权' }, { status: 401 });
-  }
-  return null;
-}
+import { requireAuth } from '@/lib/route-auth';
 
 function isUuid(value: unknown): value is string {
   return typeof value === 'string'
@@ -37,7 +27,25 @@ function rowToProvider(row: Record<string, unknown>): ApiProvider {
   };
 }
 
-export async function GET() {
+function resolveProviderKey({
+  incoming,
+  fallback,
+  baseChanged,
+}: {
+  incoming?: string;
+  fallback: string;
+  baseChanged: boolean;
+}): string {
+  if (incoming === API_KEY_MASK) {
+    return baseChanged ? '' : fallback;
+  }
+  return incoming ?? fallback;
+}
+
+export async function GET(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const db = getDb();
   const rows = db.prepare('SELECT * FROM api_providers ORDER BY created_at ASC').all() as Record<string, unknown>[];
   const providers = rows.map(rowToProvider);
@@ -67,7 +75,12 @@ export async function POST(request: NextRequest) {
 
   const id = randomUUID();
   const currentSettings = loadSettings();
-  const apiKey = body.api_key === API_KEY_MASK ? currentSettings.api_key : (body.api_key || '');
+  const apiBase = body.api_base || '';
+  const apiKey = resolveProviderKey({
+    incoming: body.api_key ?? '',
+    fallback: currentSettings.api_key,
+    baseChanged: apiBase !== currentSettings.api_base,
+  });
 
   db.prepare(`
     INSERT INTO api_providers (id, name, api_base, api_key, model, temperature, max_tokens, context_window, json_mode)
@@ -75,7 +88,7 @@ export async function POST(request: NextRequest) {
   `).run(
     id,
     body.name || 'New Provider',
-    body.api_base || '',
+    apiBase,
     apiKey,
     body.model || '',
     body.temperature ?? 1,
@@ -90,7 +103,7 @@ export async function POST(request: NextRequest) {
     );
     const transaction = db.transaction(() => {
       upsert.run('active_provider_id', JSON.stringify(id));
-      upsert.run('api_base', JSON.stringify(body.api_base || ''));
+      upsert.run('api_base', JSON.stringify(apiBase));
       // 跨 provider 密钥保护：无论新 provider 是否带 key，都必须把 settings.api_key
       // 同步成新 provider 的值（包括空字符串）。否则旧 provider 的 key 会残留并被
       // 发往新的 api_base，造成跨账号密钥泄漏。
@@ -136,14 +149,19 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: '供应商不存在' }, { status: 404 });
   }
 
-  const apiKey = body.api_key === API_KEY_MASK ? existing.api_key as string : (body.api_key ?? existing.api_key as string);
+  const existingApiBase = existing.api_base as string;
+  const apiKey = resolveProviderKey({
+    incoming: body.api_key,
+    fallback: existing.api_key as string,
+    baseChanged: body.api_base !== undefined && body.api_base !== existingApiBase,
+  });
 
   db.prepare(`
     UPDATE api_providers SET name = ?, api_base = ?, api_key = ?, model = ?, temperature = ?, max_tokens = ?, context_window = ?, json_mode = ?
     WHERE id = ?
   `).run(
     body.name ?? existing.name as string,
-    body.api_base ?? existing.api_base as string,
+    body.api_base ?? existingApiBase,
     apiKey,
     body.model ?? existing.model as string,
     body.temperature ?? existing.temperature as number,

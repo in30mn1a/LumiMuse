@@ -20,6 +20,11 @@ test('/memories page places AI review beside character selector and exposes late
     'memoryAiReviewRunning',
     'lastMemoryAiReviewResult',
     'showMemoryAiReviewChanges',
+    'let nextOffset: number | null = 0;',
+    'while (nextOffset !== null)',
+    'offset: nextOffset',
+    'aggregateResult.reviewed += result.reviewed ?? 0;',
+    'aggregateResult.changes.push(...(result.changes ?? []));',
     "t('memory.aiReview')",
     "t('memory.viewLatestAiReviewChanges')",
     "t('memory.hideLatestAiReviewChanges')",
@@ -59,11 +64,50 @@ test('/memories page binds AI review results to the initiating character', () =>
   for (const snippet of [
     'const selectedCharIdRef = useRef<string | null>(null);',
     'const requestedCharacterId = selectedCharId;',
-    'body: JSON.stringify({ character_id: requestedCharacterId })',
+    'body: JSON.stringify({ character_id: requestedCharacterId, offset: nextOffset })',
     'if (selectedCharIdRef.current !== requestedCharacterId) return;',
   ]) {
     assert.ok(memoriesPage.includes(snippet), `missing snippet: ${snippet}`);
   }
+});
+
+test('/memories page keeps AI review loading scoped to the initiating character', () => {
+  const memoriesPage = readProjectFile('src/app/memories/page.tsx');
+  const handlerStart = memoriesPage.indexOf('const handleMemoryAiReview = async () => {');
+  assert.notEqual(handlerStart, -1, 'missing handleMemoryAiReview');
+  const handlerEnd = memoriesPage.indexOf('return (', handlerStart);
+  assert.notEqual(handlerEnd, -1, 'missing handleMemoryAiReview end marker');
+  const handlerBlock = memoriesPage.slice(handlerStart, handlerEnd);
+
+  assert.match(
+    handlerBlock,
+    /finally \{\s*if \(selectedCharIdRef\.current === requestedCharacterId\) \{\s*setMemoryAiReviewRunning\(false\);\s*\}\s*\}/,
+    'an old AI review request must not clear the loading state for a newly selected character',
+  );
+});
+
+test('/memories page clears AI review running and old result state when changing characters', () => {
+  const memoriesPage = readProjectFile('src/app/memories/page.tsx');
+  const selectStart = memoriesPage.indexOf('<select');
+  assert.notEqual(selectStart, -1, 'missing character select');
+  const selectEnd = memoriesPage.indexOf('className="select-rich min-w-56"', selectStart);
+  assert.notEqual(selectEnd, -1, 'missing character select end marker');
+  const selectBlock = memoriesPage.slice(selectStart, selectEnd);
+
+  for (const snippet of [
+    'selectedCharIdRef.current = nextCharacterId;',
+    'setSelectedCharId(nextCharacterId);',
+    'setMemoryAiReviewRunning(false);',
+    'setLastMemoryAiReviewResult(null);',
+    'setShowMemoryAiReviewChanges(false);',
+  ]) {
+    assert.ok(selectBlock.includes(snippet), `character change does not clear AI review state: ${snippet}`);
+  }
+
+  assert.ok(
+    selectBlock.indexOf('setMemoryAiReviewRunning(false);') < selectBlock.indexOf('setLastMemoryAiReviewResult(null);'),
+    'character change should clear running before resetting old review result state',
+  );
 });
 
 test('memory list accumulates clicked tag filters and shows removable tag chips without label text', () => {

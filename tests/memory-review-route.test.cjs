@@ -169,6 +169,26 @@ function createLargeReviewDb() {
   return db;
 }
 
+function createBoundedReviewDb() {
+  const db = createEmptyReviewDb();
+  const insert = db.prepare(`
+    INSERT INTO memories (
+      id, character_id, category, content, tags, importance, emotional_weight, memory_kind, status, updated_at
+    ) VALUES (?, 'char-a', '四季日常', ?, '[]', ?, 0, 'general', 'active', ?)
+  `);
+  for (let i = 0; i < 650; i += 1) {
+    insert.run(
+      `mem-${String(i).padStart(3, '0')}`,
+      i < 500 ? `候选上限内记忆 ${i}` : `不应进入审核 prompt 的尾部记忆 ${i}`,
+      i < 500 ? 0.9 : 0.1,
+      i < 500
+        ? `2026-06-04T00:${String(i % 60).padStart(2, '0')}:00.000Z`
+        : `2026-06-01T00:${String(i % 60).padStart(2, '0')}:00.000Z`,
+    );
+  }
+  return db;
+}
+
 test('/api/memory-review requeues and starts indexing after changing embedding-relevant memory fields', async () => {
   const db = createReviewDb();
   const enqueueCalls = [];
@@ -542,6 +562,88 @@ test('/api/memory-review runs large AI review batches with concurrency of three'
   assert.equal(maxActiveCalls, 3);
 });
 
+test('/api/memory-review reads a bounded active-memory candidate set from the DB', async () => {
+  const capturedPrompts = [];
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createBoundedReviewDb() },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 16384,
+      chatCompletion: async (_settings, messages) => {
+        capturedPrompts.push(messages[0].content);
+        return JSON.stringify({ corrections: [] });
+      },
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+  const combinedPrompt = capturedPrompts.join('\n');
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.reviewed, 500);
+  assert.equal(payload.total_active, 650);
+  assert.equal(payload.skipped_due_to_limit, 150);
+  assert.equal(payload.has_more, true);
+  assert.equal(payload.reviewed_offset, 0);
+  assert.equal(payload.next_offset, 500);
+  assert.match(combinedPrompt, /候选上限内记忆/);
+  assert.doesNotMatch(combinedPrompt, /不应进入审核 prompt 的尾部记忆/);
+});
+
+test('/api/memory-review can continue after the first bounded candidate page', async () => {
+  const capturedPrompts = [];
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createBoundedReviewDb() },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 16384,
+      chatCompletion: async (_settings, messages) => {
+        capturedPrompts.push(messages[0].content);
+        return JSON.stringify({ corrections: [] });
+      },
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a', offset: 500 }));
+  const payload = await response.json();
+  const combinedPrompt = capturedPrompts.join('\n');
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.reviewed, 150);
+  assert.equal(payload.total_active, 650);
+  assert.equal(payload.skipped_due_to_limit, 0);
+  assert.equal(payload.has_more, false);
+  assert.equal(payload.reviewed_offset, 500);
+  assert.equal(payload.next_offset, null);
+  assert.doesNotMatch(combinedPrompt, /候选上限内记忆/);
+  assert.match(combinedPrompt, /不应进入审核 prompt 的尾部记忆/);
+});
+
 test('/api/memory-review passes DeepSeek background thinking override to AI calls', async () => {
   const seenExtraBodies = [];
 
@@ -675,6 +777,11 @@ test('/api/memory-review returns zero correction counts when there are no active
   assert.deepEqual(payload, {
     ok: true,
     reviewed: 0,
+    total_active: 0,
+    skipped_due_to_limit: 0,
+    reviewed_offset: 0,
+    next_offset: null,
+    has_more: false,
     corrected: 0,
     indexing_queued: 0,
     indexing_started: false,

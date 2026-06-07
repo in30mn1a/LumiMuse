@@ -1,7 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
 const ts = require('typescript');
+
+const root = path.resolve(__dirname, '..');
+const originalResolveFilename = Module._resolveFilename;
+
+Module._resolveFilename = function resolveFilename(request, parent, isMain, options) {
+  if (request.startsWith('@/')) {
+    const mapped = path.join(root, 'src', request.slice(2));
+    for (const candidate of [mapped, `${mapped}.ts`, `${mapped}.tsx`, path.join(mapped, 'index.ts')]) {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+  }
+  return originalResolveFilename.call(this, request, parent, isMain, options);
+};
 
 require.extensions['.ts'] = function loadTs(module, filename) {
   const source = fs.readFileSync(filename, 'utf8');
@@ -303,6 +318,39 @@ test('undoes an archive batch by restoring covered memories and retiring the sum
   const summary = getMemory(db, 'summary-mem-1');
   // 撤销时 summary 被直接删除，不再保留为 archived
   assert.equal(summary, null);
+});
+
+test('undo rejects invalid previousStatus without writing corrupted status to DB', () => {
+  const db = createArchiveTestDb();
+  insertMemory(db, { id: 'mem-normal', status: 'active' });
+  executeMemorySummaryArchive(db, {
+    batchId: 'archive-batch-2026-06-02',
+    characterId: 'char-1',
+    summaryMemoryId: 'summary-mem-1',
+    summaryContent: '主人正在推进记忆系统升级。',
+    coveredMemoryIds: ['mem-normal'],
+    now: '2026-06-02T10:00:00.000Z',
+  });
+
+  const corruptedMetadata = getMemory(db, 'mem-normal').metadata;
+  corruptedMetadata.previousStatus = 'deleted';
+  db.prepare('UPDATE memories SET metadata = ? WHERE id = ?')
+    .run(JSON.stringify(corruptedMetadata), 'mem-normal');
+
+  assert.throws(
+    () => undoMemorySummaryArchiveBatch(db, {
+      batchId: 'archive-batch-2026-06-02',
+      characterId: 'char-1',
+      now: '2026-06-02T10:30:00.000Z',
+    }),
+    /Invalid archive previousStatus/,
+  );
+
+  const memory = getMemory(db, 'mem-normal');
+  assert.equal(memory.status, 'archived');
+  assert.equal(memory.metadata.previousStatus, 'deleted');
+  assert.equal(memory.metadata.archiveBatchId, 'archive-batch-2026-06-02');
+  assert.equal(getMemory(db, 'summary-mem-1').status, 'active');
 });
 
 test('lists undoable archive batches by character and hides batches after undo', () => {

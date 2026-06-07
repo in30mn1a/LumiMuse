@@ -14,6 +14,8 @@ import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { AI_ARCHIVE_PROMPT } from '@/lib/prompt-templates';
 import type { MemoryCategory, MemoryKind, MemoryStatus } from '@/types';
 
+const MAX_SUMMARY_CONTENT_LENGTH = 8 * 1024;
+
 type MemoryRow = {
   id: string;
   category: MemoryCategory;
@@ -370,6 +372,9 @@ export async function POST(request: NextRequest) {
   const summaryContent = readNonEmptyString(rawBody, 'summary_content');
   if (!summaryContent) {
     return NextResponse.json({ error: 'summary_content is required' }, { status: 400 });
+  }
+  if (summaryContent.length > MAX_SUMMARY_CONTENT_LENGTH) {
+    return NextResponse.json({ error: 'summary_content is too long' }, { status: 400 });
   }
 
   const sourceMemories = loadCoveredMemories(characterId, coveredMemoryIds);

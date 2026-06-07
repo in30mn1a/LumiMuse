@@ -12,6 +12,10 @@ interface ModelsRequestParams {
   forceRefresh: boolean;
 }
 
+type PostParamsResult =
+  | { params: ModelsRequestParams }
+  | { response: NextResponse };
+
 type CredentialSource = 'chat' | 'embedding' | 'reranker';
 
 /**
@@ -28,7 +32,7 @@ function readGetParams(request: NextRequest): ModelsRequestParams {
   };
 }
 
-async function readPostParams(request: NextRequest): Promise<ModelsRequestParams> {
+async function readPostParams(request: NextRequest): Promise<PostParamsResult> {
   let body: {
     api_base?: string;
     api_key?: string;
@@ -36,19 +40,24 @@ async function readPostParams(request: NextRequest): Promise<ModelsRequestParams
     credential_source?: CredentialSource;
     provider_id?: string;
   } = {};
-  try {
-    body = await request.json();
-  } catch {
-    // 允许空 body，回退到 settings
+  const rawBody = await request.text();
+  if (rawBody.trim()) {
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return { response: NextResponse.json({ models: [], error: '请求体不是有效 JSON' }, { status: 400 }) };
+    }
   }
   const forceRefresh = body.refresh === true;
   const providerId = body.provider_id?.trim();
   if (providerId) {
     const provider = readProviderParams(providerId);
     return {
-      apiBase: provider?.api_base || '',
-      apiKey: provider?.api_key || '',
-      forceRefresh,
+      params: {
+        apiBase: provider?.api_base || '',
+        apiKey: provider?.api_key || '',
+        forceRefresh,
+      },
     };
   }
 
@@ -56,9 +65,11 @@ async function readPostParams(request: NextRequest): Promise<ModelsRequestParams
   const apiBase = body.api_base || settings.api_base || '';
   const apiKey = resolvePostApiKey(settings, apiBase, body);
   return {
-    apiBase,
-    apiKey,
-    forceRefresh,
+    params: {
+      apiBase,
+      apiKey,
+      forceRefresh,
+    },
   };
 }
 
@@ -162,5 +173,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return handle(await readPostParams(request));
+  const result = await readPostParams(request);
+  if ('response' in result) return result.response;
+  return handle(result.params);
 }

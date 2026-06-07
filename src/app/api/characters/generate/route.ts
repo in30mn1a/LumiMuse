@@ -3,6 +3,7 @@ import { chatCompletion } from '@/lib/api-client';
 import { getDb } from '@/lib/db';
 import { Character } from '@/types';
 import { loadSettings } from '@/lib/settings';
+import { readJsonObject } from '@/lib/request-json';
 
 const CHARACTER_GENERATION_SYSTEM = `你是 LumiMuse 的角色卡创作助手。
 请根据用户要求生成一个适合聊天陪伴工具使用的原创角色。
@@ -50,35 +51,35 @@ function parseGeneratedCharacter(text: string): Partial<Character> {
 }
 
 export async function POST(request: NextRequest) {
+  const body = await readJsonObject(request);
+  if (!body.ok) return body.response;
+
+  const requirement = body.data.requirement;
+  if (typeof requirement !== 'string' || !requirement.trim()) {
+    return NextResponse.json({ error: '请输入角色要求' }, { status: 400 });
+  }
+
   try {
-    const { requirement, current_character } = await request.json() as {
-      requirement?: string;
-      current_character?: Partial<Character>;
-    };
-
-    if (!requirement?.trim()) {
-      return NextResponse.json({ error: '请输入角色要求' }, { status: 400 });
-    }
-
     const settings = loadSettings();
     if (!settings.api_base || !settings.api_key || !settings.model) {
       return NextResponse.json({ error: '请先在设置中配置 API 地址、密钥和模型' }, { status: 400 });
     }
 
-    const currentContext = current_character
-      ? `\n\n当前表单内容（可参考，也可以按用户要求重写）：\n${JSON.stringify(current_character, null, 2)}`
+    const currentCharacter = body.data.current_character;
+    const currentContext = currentCharacter
+      ? `\n\n当前表单内容（可参考，也可以按用户要求重写）：\n${JSON.stringify(currentCharacter, null, 2)}`
       : '';
 
     const result = await chatCompletion(settings, [
       { role: 'system', content: CHARACTER_GENERATION_SYSTEM },
       { role: 'user', content: `用户要求：${requirement.trim()}${currentContext}` },
-    ]);
+    ], request.signal);
 
     return NextResponse.json(parseGeneratedCharacter(result));
   } catch (err) {
     console.error('[characters/generate] 生成角色失败:', err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : '生成角色失败' },
+      { error: '生成角色失败' },
       { status: 500 },
     );
   }

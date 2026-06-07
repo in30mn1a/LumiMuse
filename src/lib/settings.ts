@@ -1,6 +1,64 @@
 import { getDb } from '@/lib/db';
 import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, Settings } from '@/types';
 
+const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
+  'json_mode',
+  'streaming',
+  'example_dialogue',
+  'memory_inject',
+  'memory_trigger_interval_enabled',
+  'memory_trigger_time_enabled',
+  'memory_trigger_keyword_enabled',
+  'disable_deepseek_thinking_for_background',
+  'show_timestamps',
+  'limit_inject',
+];
+
+const IMAGE_GEN_BOOLEAN_KEYS: (keyof ImageGenSettings)[] = [
+  'enabled',
+  'auto_generate',
+  'inline_prompt',
+];
+
+const MEMORY_ENGINE_BOOLEAN_KEYS: (keyof MemoryEngineSettings)[] = [
+  'enabled',
+  'allow_memory_context_in_chat',
+  'allow_external_memory_payloads',
+  'embedding_enabled',
+  'reranker_enabled',
+  'fallback_local_enabled',
+];
+
+const LEGACY_MEMORY_RETRIEVAL_MODE_MAP: Record<string, MemoryEngineSettings['retrieval_mode']> = {
+  balanced: 'hybrid',
+  continuity: 'hybrid',
+};
+
+function normalizeLegacyBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 0) return false;
+  if (value === 1) return true;
+  return undefined;
+}
+
+function normalizeBooleanSettings(target: Record<string, unknown>, keys: readonly string[]): void {
+  for (const key of keys) {
+    const normalized = normalizeLegacyBoolean(target[key]);
+    if (normalized !== undefined) {
+      target[key] = normalized;
+    }
+  }
+}
+
+function normalizeMemoryRetrievalMode(settings: MemoryEngineSettings): void {
+  const retrievalMode = (settings as { retrieval_mode?: unknown }).retrieval_mode;
+  if (typeof retrievalMode !== 'string') return;
+  const normalized = LEGACY_MEMORY_RETRIEVAL_MODE_MAP[retrievalMode];
+  if (normalized) {
+    settings.retrieval_mode = normalized;
+  }
+}
+
 export function loadSettings(): Settings {
   const db = getDb();
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
@@ -15,13 +73,17 @@ export function loadSettings(): Settings {
   }
 
   const merged = { ...DEFAULT_SETTINGS, ...map } as Settings;
+  normalizeBooleanSettings(merged as unknown as Record<string, unknown>, BOOLEAN_SETTING_KEYS);
 
   // 对嵌套对象做深合并，避免部分保存导致默认值丢失
   if (map.image_gen && typeof map.image_gen === 'object') {
     merged.image_gen = { ...DEFAULT_SETTINGS.image_gen, ...map.image_gen as Partial<ImageGenSettings> };
+    normalizeBooleanSettings(merged.image_gen as unknown as Record<string, unknown>, IMAGE_GEN_BOOLEAN_KEYS);
   }
   if (map.memory_engine && typeof map.memory_engine === 'object') {
     merged.memory_engine = { ...DEFAULT_SETTINGS.memory_engine, ...map.memory_engine as Partial<MemoryEngineSettings> };
+    normalizeBooleanSettings(merged.memory_engine as unknown as Record<string, unknown>, MEMORY_ENGINE_BOOLEAN_KEYS);
+    normalizeMemoryRetrievalMode(merged.memory_engine);
   }
 
   return merged;
@@ -41,6 +103,9 @@ export function resolveBackgroundModel(settings: Settings): string {
  * 解析后台任务的完整接口配置（api_base / api_key / model）。
  * - 若设置了 memory_background_provider_id，从 api_providers 表读取该供应商的接口信息
  * - 否则使用主接口的 api_base/api_key，模型回退到 resolveBackgroundModel()
+ *
+ * 这是有意设计：后台模型配置是成本/速度优化，不是强依赖。后台供应商缺失或失效时回退主接口，
+ * 能保持总结、记忆提取、画像 patch 继续可用；审查时不要把这种回退本身当作风险。
  */
 export function resolveBackgroundConfig(settings: Settings): { api_base: string; api_key: string; model: string } {
   const backgroundModel = settings.memory_background_model?.trim();
@@ -53,7 +118,7 @@ export function resolveBackgroundConfig(settings: Settings): { api_base: string;
     if (row && row.api_base && row.model) {
       return { api_base: row.api_base, api_key: row.api_key, model: backgroundModel || row.model };
     }
-    // 供应商无效时回退到主接口
+    // 供应商无效时回退到主接口：这是 local-first 可用性策略，不是静默绕过。
   }
   return {
     api_base: settings.api_base,
@@ -96,16 +161,17 @@ export function getAuthMinIat(): number {
 }
 
 /**
- * 将 min_iat 推进到「当前时间」，立即作废所有签发时间早于现在的 token。
+ * 将 min_iat 推进到「当前时间之后」，立即作废所有已签发 token。
  * 用于登出、密码变更等需要全量踢线场景。
  *
- * 取 max(now, current + 1)：极端情况下系统时钟回拨或同毫秒重复调用，
- * 仍保证严格单调递增，避免之前刚签发的 token 因 iat == min_iat 被误放行。
+ * verifyAuthToken 使用 payload.iat < min_iat 的拒绝语义，因此这里写入 now + 1：
+ * 即使旧 token 与撤销操作同毫秒签发，也会因 iat < min_iat 被立即拒绝。
+ * 再与 current + 1 取 max，可在系统时钟回拨或同毫秒重复调用时保持严格单调递增。
  */
 export function bumpAuthMinIat(): number {
   const db = getDb();
   const current = getAuthMinIat();
-  const next = Math.max(Date.now(), current + 1);
+  const next = Math.max(Date.now() + 1, current + 1);
   db.prepare(
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run(AUTH_MIN_IAT_KEY, JSON.stringify(next));

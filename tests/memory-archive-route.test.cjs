@@ -78,6 +78,11 @@ function jsonRequest(body, url = 'http://test.local/api/memory-archive') {
 function createArchiveRouteDb() {
   const db = new Database(':memory:');
   db.exec(`
+    CREATE TABLE characters (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
+
     CREATE TABLE memories (
       id TEXT PRIMARY KEY,
       character_id TEXT NOT NULL,
@@ -97,6 +102,8 @@ function createArchiveRouteDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    INSERT INTO characters (id, name) VALUES ('char-a', '测试角色');
   `);
   return db;
 }
@@ -151,6 +158,46 @@ test('/api/memory-archive execute queues and starts indexing for the generated s
     status: 'pending',
   });
   assert.equal(triggerCalls, 1);
+});
+
+test('/api/memory-archive execute rejects overlong summary_content before writing memories', async () => {
+  const db = createArchiveRouteDb();
+  insertMemory(db, 'mem-overlong-a');
+  insertMemory(db, 'mem-overlong-b');
+
+  const route = requireFreshWithMocks('../src/app/api/memory-archive/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => {
+        throw new Error('indexing should not start for invalid summary content');
+      },
+    },
+  });
+
+  const response = await route.POST(jsonRequest({
+    action: 'execute',
+    character_id: 'char-a',
+    covered_memory_ids: ['mem-overlong-a', 'mem-overlong-b'],
+    summary_content: 'x'.repeat(8193),
+    summary_memory_id: 'summary-overlong',
+    batch_id: 'batch-overlong',
+  }));
+  const payload = await response.json();
+  const summary = db.prepare("SELECT id FROM memories WHERE id = 'summary-overlong'").get();
+  const sourceRows = db.prepare(`
+    SELECT id, status FROM memories
+    WHERE id IN ('mem-overlong-a', 'mem-overlong-b')
+    ORDER BY id
+  `).all();
+
+  assert.equal(response.status, 400);
+  assert.equal(payload.error, 'summary_content is too long');
+  assert.equal(summary, undefined);
+  assert.deepEqual(sourceRows, [
+    { id: 'mem-overlong-a', status: 'active' },
+    { id: 'mem-overlong-b', status: 'active' },
+  ]);
 });
 
 test('/api/memory-archive ai_archive passes request signal to LLM call', async () => {

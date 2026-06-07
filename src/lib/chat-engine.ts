@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import path from 'path';
 import { getDb } from '@/lib/db';
@@ -230,6 +231,18 @@ function parseExampleDialogue(raw: string): ChatMessage[] {
   return messages;
 }
 
+function appendTextAttachments(content: string, attachments?: MessageAttachment[]): string {
+  if (!attachments || attachments.length === 0) return content;
+
+  let combinedText = content;
+  for (const att of attachments) {
+    if (att.type === 'text') {
+      combinedText += `\n\n[附件: ${att.name}]\n${att.data || ''}`;
+    }
+  }
+  return combinedText;
+}
+
 export async function assemblePrompt(
   character: Character,
   messages: Message[],
@@ -270,7 +283,10 @@ export async function assemblePrompt(
     // ASCII 0.25 token、空格按 0.25 计算，整体 ~5 token。预算时计入，避免长会话
     // 因为时间戳累积偏差导致预算超支。
     const TIMESTAMP_TOKEN_OVERHEAD = 5;
-    const baseTokens = message.token_count || estimateTokens(message.content);
+    const contentForBudget = message.role === 'user'
+      ? appendTextAttachments(message.content, meta.attachments)
+      : message.content;
+    const baseTokens = Math.max(message.token_count || 0, estimateTokens(contentForBudget));
     const messageTokens = baseTokens
       + (settings.show_timestamps && message.created_at ? TIMESTAMP_TOKEN_OVERHEAD : 0);
     // 至少保证最新一条有效消息(通常是当前用户输入)进入上下文,即使系统提示+记忆包已逼近预算——
@@ -297,14 +313,11 @@ export async function assemblePrompt(
     const attachments = meta.attachments;
     if (message.role === 'user' && attachments && attachments.length > 0) {
       let hasImage = false;
-      let combinedText = textContent;
+      let combinedText = appendTextAttachments(textContent, attachments);
 
       for (const att of attachments) {
         if (att.type === 'image') {
           hasImage = true;
-        } else {
-          // 文本附件：拼到文字里
-          combinedText += `\n\n[附件: ${att.name}]\n${att.data || ''}`;
         }
       }
 
@@ -441,7 +454,6 @@ export async function runChat(
   options?: { regenerateAssistantId?: string; skipUserInsert?: boolean; attachments?: AttachmentItem[]; signal?: AbortSignal; timeContext?: ChatTimeContext },
 ): Promise<void> {
   const db = getDb();
-  const { v4: uuidv4 } = await import('uuid');
 
   const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversationId) as { character_id: string } | undefined;
   if (!conversation) {
@@ -456,7 +468,7 @@ export async function runChat(
   }
 
   if (!options?.regenerateAssistantId && !options?.skipUserInsert) {
-    const userMsgId = uuidv4().slice(0, 12);
+    const userMsgId = crypto.randomUUID().slice(0, 12);
     const now = new Date().toISOString();
     // token 统计包含文本附件内容
     let fullContent = userContent;
@@ -609,7 +621,7 @@ export async function runChat(
       })();
       await callbacks.onDone(fullText, tokenCount);
     } else {
-      const asstId = uuidv4().slice(0, 12);
+      const asstId = crypto.randomUUID().slice(0, 12);
       const meta: Record<string, unknown> = { versions: [{ content: fullText, token_count: tokenCount }], activeVersion: 0 };
       if (inlinePrompt) {
         meta.inlineImagePrompt = inlinePrompt;

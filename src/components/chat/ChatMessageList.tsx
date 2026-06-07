@@ -1,10 +1,11 @@
 'use client';
 
-import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Ref } from 'react';
+import { useCallback, useEffect, useMemo, type Ref, type RefObject } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Message, Character } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatDateLabel, getVersionInfo, isSameDay } from '@/lib/chat-view-utils';
+import { usePrependScrollAnchor, useScrollTargetVirtualizer } from '@/hooks/chat/useChatScrollController';
 import { MemoryIcon } from '@/components/ui/icons';
 import MessageBubble from './MessageBubble';
 
@@ -27,7 +28,9 @@ interface Props {
   character: Character;
   streamingBubble: React.ReactNode;
   versionInfoByMessageId: Map<string, VersionInfo | undefined>;
+  messagesEndRef: Ref<HTMLDivElement>;
   topSentinelRef: Ref<HTMLDivElement>;
+  scrollContainerRef: RefObject<HTMLDivElement | null>;
   onLoadOlder: () => void;
   onEdit: (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => void;
   onDelete: (id: string) => void;
@@ -43,14 +46,8 @@ interface Props {
 /**
  * 滚动消息列表（基于 @tanstack/react-virtual 的窗口化渲染）。
  *
- * 通过 forwardRef 暴露 messagesEndRef 给父级，控制滚动到底部。父组件依赖
- * `messagesEndRef.current.parentElement === 滚动容器` 来读取 scrollTop/scrollHeight，
- * 因此 endRef 必须保持为「滚动容器的直接子节点」，不能挪进 virtualizer 的 inner div。
- *
- * 同理 topSentinelRef 也必须是滚动容器的直接子节点，IntersectionObserver 才能正确感知顶部。
- *
  * 虚拟化结构：
- *   <div ref={scrollerRef} class="overflow-y-auto">    ← 滚动容器（virtualizer 的 scroll element）
+ *   <div ref={scrollContainerRef} class="overflow-y-auto"> ← 滚动容器（virtualizer 的 scroll element）
  *     <div ref={topSentinelRef} />                     ← 顶部哨兵
  *     [加载更早消息按钮]
  *     <div style={{ height: totalSize, position: 'relative' }}>  ← virtualizer inner
@@ -63,7 +60,7 @@ interface Props {
  * 动态高度：每个 row 用 measureElement（基于 ResizeObserver）自动测量，
  * 流式生成时最后一条 bubble 高度持续变化也能被自动捕获。
  */
-const ChatMessageList = forwardRef<HTMLDivElement, Props>(function ChatMessageList(
+function ChatMessageList(
   {
     visibleMessages,
     hiddenMessageId,
@@ -78,7 +75,9 @@ const ChatMessageList = forwardRef<HTMLDivElement, Props>(function ChatMessageLi
     character,
     streamingBubble,
     versionInfoByMessageId,
+    messagesEndRef,
     topSentinelRef,
+    scrollContainerRef,
     onLoadOlder,
     onEdit,
     onDelete,
@@ -89,8 +88,7 @@ const ChatMessageList = forwardRef<HTMLDivElement, Props>(function ChatMessageLi
     onDeleteImage,
     onEditImagePrompt,
     onSetPrimaryImage,
-  },
-  endRef,
+  }: Props,
 ) {
   const { t } = useTranslation();
 
@@ -99,11 +97,10 @@ const ChatMessageList = forwardRef<HTMLDivElement, Props>(function ChatMessageLi
     [visibleMessages, hiddenMessageId, streamingTargetId],
   );
 
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally returns imperative helpers used only inside this list.
   const virtualizer = useVirtualizer({
     count: filtered.length,
-    getScrollElement: () => scrollerRef.current,
+    getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => 120,
     getItemKey: index => filtered[index]?.id ?? index,
     overscan: 8,
@@ -117,47 +114,21 @@ const ChatMessageList = forwardRef<HTMLDivElement, Props>(function ChatMessageLi
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
 
-  // 加载更早消息时（prepend），保持已渲染消息的视觉位置不跳动。
-  // 非虚拟化场景下浏览器原生 scroll anchoring 通常能维持位置，
-  // 但 virtualizer 用绝对定位 + 一个高度可变的容器，浏览器无法对齐，需要手动补偿。
-  // 思路：记录上一次顶部消息 id 与当时的 totalSize，下次渲染若顶部消息变了，
-  // 说明发生 prepend，把 scrollTop 加上 totalSize 差量即可视觉对齐。
-  const lastTopIdRef = useRef<string | null>(null);
-  const lastTotalSizeRef = useRef<number>(0);
-  useLayoutEffect(() => {
-    const scroller = scrollerRef.current;
-    const firstId = filtered[0]?.id ?? null;
-    if (!scroller) {
-      lastTopIdRef.current = firstId;
-      lastTotalSizeRef.current = totalSize;
-      return;
-    }
-    const prevTopId = lastTopIdRef.current;
-    const prevTotal = lastTotalSizeRef.current;
-    // 顶部消息发生变化 且 仍能在新数组里找到旧顶部消息 → 视为 prepend，做位移补偿
-    if (prevTopId && firstId && prevTopId !== firstId) {
-      const stillExistsIdx = filtered.findIndex(m => m.id === prevTopId);
-      if (stillExistsIdx > 0) {
-        const delta = totalSize - prevTotal;
-        if (delta > 0) {
-          scroller.scrollTop += delta;
-        }
-      }
-    }
-    lastTopIdRef.current = firstId;
-    lastTotalSizeRef.current = totalSize;
-  }, [filtered, totalSize]);
+  usePrependScrollAnchor({
+    scrollContainerRef,
+    items: filtered,
+    totalSize,
+  });
 
   // 当父组件设定 highlightedId（例如搜索跳转）但目标 row 还没渲染时，主动滚到对应 index，
   // 让 virtualizer 把它挂上 DOM。父组件随后 document.getElementById('msg-${id}').scrollIntoView()
   // 才能拿到真实节点完成最终居中。
-  useEffect(() => {
-    if (!highlightedId) return;
-    const idx = filtered.findIndex(m => m.id === highlightedId);
-    if (idx === -1) return;
-    if (typeof document !== 'undefined' && document.getElementById(`msg-${highlightedId}`)) return;
-    virtualizer.scrollToIndex(idx, { align: 'center' });
-  }, [highlightedId, filtered, virtualizer]);
+  useScrollTargetVirtualizer({
+    targetMessageId: highlightedId,
+    items: filtered,
+    scrollToIndex: (idx, options) => virtualizer.scrollToIndex(idx, options),
+    isTargetRendered: id => typeof document !== 'undefined' && Boolean(document.getElementById(`msg-${id}`)),
+  });
 
   // 流式生成时最后一条 bubble 高度会持续变化。ResizeObserver 已经能捕获绝大多数变化，
   // 但纯文本追加偶尔会在同一帧内多次变化，强制在 streamingText 变化时再触发一次 re-measure，
@@ -184,7 +155,7 @@ const ChatMessageList = forwardRef<HTMLDivElement, Props>(function ChatMessageLi
 
   return (
     <div
-      ref={scrollerRef}
+      ref={scrollContainerRef}
       className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 md:py-5"
     >
       {/* 对话切换加载骨架屏：消息为空但对话存在时显示 */}
@@ -313,11 +284,10 @@ const ChatMessageList = forwardRef<HTMLDivElement, Props>(function ChatMessageLi
       {/* 正在生成时显示占位气泡（仅当没有对应已存在的目标消息时；否则气泡由列表内的 streamingTarget 行渲染） */}
       {isStreamingHere && !streamingTargetId && streamingBubble}
 
-      {/* 底部锚点：必须保持为滚动容器的直接子节点，父组件依赖
-          messagesEndRef.current.parentElement === 滚动容器。 */}
-      <div ref={endRef} />
+      {/* 底部锚点：由 useChatScrollController 控制滚动到底部。 */}
+      <div ref={messagesEndRef} />
     </div>
   );
-});
+}
 
-export default memo(ChatMessageList);
+export default ChatMessageList;

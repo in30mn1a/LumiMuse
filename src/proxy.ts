@@ -15,7 +15,7 @@ import { getAuthMinIat } from './lib/settings';
 // "Route segment config is not allowed in Proxy file"。
 
 // 不需要验证的路径
-const PUBLIC_PATHS = ['/login', '/api/auth', '/manifest.json'];
+const PUBLIC_PATHS = ['/login', '/api/auth', '/api/health', '/manifest.json'];
 
 // ── M3 CSRF 防御 ──────────────────────────────────────────────
 // 对所有写方法（POST/PUT/PATCH/DELETE）强制要求 application/json，
@@ -56,9 +56,9 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // 公开路径直接放行（精确匹配或后接 `/`，避免 `/api/auth-fake` 命中 `/api/auth` 这类前缀误匹配）
+  // 公开路径只做精确匹配，避免 `/api/health/*`、`/api/auth/*` 这类子命名空间被误放行。
   // 但对公开 API 的写请求仍然要做 CSRF 校验（登录接口若被 form 跨站提交也是问题）。
-  const isPublic = PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'));
+  const isPublic = PUBLIC_PATHS.includes(pathname);
 
   // ── M3 CSRF 拦截（先于鉴权，避免 401 错误把请求性质暴露） ──
   const csrfBlock = isWriteRequestBlockedByCsrf(request, pathname);

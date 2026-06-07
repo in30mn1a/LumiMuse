@@ -19,6 +19,7 @@ require.extensions['.ts'] = function loadTs(module, filename) {
 
 const {
   collectUniqueGeneratedImageItems,
+  sanitizeGeneratedImages,
   removeGeneratedImageReferences,
 } = require(path.resolve(__dirname, '../src/lib/generated-image-assets.ts'));
 
@@ -121,4 +122,125 @@ test('removeGeneratedImageReferences removes all selected URL references from on
       activeVersion: 0,
     },
   ]);
+});
+
+test('sanitizeGeneratedImages ignores non-array values and malformed entries', () => {
+  assert.deepEqual(sanitizeGeneratedImages({}), []);
+  assert.deepEqual(sanitizeGeneratedImages('bad'), []);
+  assert.deepEqual(sanitizeGeneratedImages([
+    null,
+    'bad',
+    { id: 123, prompt: 'bad id', url: '/api/files/generated/bad-id.png' },
+    { id: 'bad-prompt', prompt: 123, url: '/api/files/generated/bad-prompt.png' },
+    {
+      id: 'ready',
+      prompt: 'ready prompt',
+      url: '/api/files/generated/ready.png',
+      status: 'ready',
+      error: 123,
+      versions: [
+        { id: 'v-ready', url: '/api/files/generated/ready.png', prompt: 'ready prompt' },
+        { id: 'v-bad', url: 123, prompt: 'bad version' },
+      ],
+      activeVersion: 0,
+    },
+    {
+      id: 'pending',
+      prompt: 'pending prompt',
+      status: 'pending_image',
+    },
+    {
+      id: 'failed',
+      prompt: 'failed prompt',
+      status: 'failed',
+      error: 'boom',
+      activeVersion: 'bad',
+    },
+  ]), [
+    {
+      id: 'ready',
+      prompt: 'ready prompt',
+      url: '/api/files/generated/ready.png',
+      status: 'ready',
+      versions: [
+        { id: 'v-ready', url: '/api/files/generated/ready.png', prompt: 'ready prompt' },
+      ],
+      activeVersion: 0,
+    },
+    {
+      id: 'pending',
+      prompt: 'pending prompt',
+      status: 'pending_image',
+    },
+    {
+      id: 'failed',
+      prompt: 'failed prompt',
+      status: 'failed',
+      error: 'boom',
+    },
+  ]);
+});
+
+test('collectUniqueGeneratedImageItems skips malformed generatedImages metadata', () => {
+  const images = collectUniqueGeneratedImageItems([
+    {
+      messageId: 'msg-object',
+      conversationId: 'conv',
+      conversationTitle: 'Bad object',
+      createdAt: '2026-06-07T10:00:00.000Z',
+      metadata: { generatedImages: {} },
+    },
+    {
+      messageId: 'msg-string',
+      conversationId: 'conv',
+      conversationTitle: 'Bad string',
+      createdAt: '2026-06-07T10:01:00.000Z',
+      metadata: { generatedImages: 'bad' },
+    },
+    {
+      messageId: 'msg-mixed',
+      conversationId: 'conv',
+      conversationTitle: 'Mixed',
+      createdAt: '2026-06-07T10:02:00.000Z',
+      metadata: {
+        generatedImages: [
+          null,
+          { id: 'bad', prompt: 123, url: '/api/files/generated/bad.png' },
+          { id: 'ok', prompt: 'ok prompt', url: '/api/files/generated/ok.png' },
+        ],
+      },
+    },
+  ]);
+
+  assert.deepEqual(images.map(image => image.url), ['/api/files/generated/ok.png']);
+  assert.equal(images[0].prompt, 'ok prompt');
+});
+
+test('removeGeneratedImageReferences skips malformed generatedImages metadata', () => {
+  assert.deepEqual(
+    removeGeneratedImageReferences(
+      { generatedImages: {} },
+      { urls: new Set(['/api/files/generated/ok.png']) },
+    ),
+    {
+      metadata: { generatedImages: {} },
+      removedUrls: [],
+      changed: false,
+    },
+  );
+
+  const result = removeGeneratedImageReferences(
+    {
+      generatedImages: [
+        'bad',
+        { id: 'bad-version', prompt: 'bad version', versions: [{ id: 'v-bad', url: 123, prompt: 'bad' }] },
+        { id: 'ok', prompt: 'ok prompt', url: '/api/files/generated/ok.png' },
+      ],
+    },
+    { urls: new Set(['/api/files/generated/ok.png']) },
+  );
+
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.removedUrls, ['/api/files/generated/ok.png']);
+  assert.deepEqual(result.metadata, {});
 });

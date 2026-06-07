@@ -6,7 +6,7 @@
  * - 强制非 http/https 协议（避免 file://、gopher:// 等）
  * - 阻止链路本地地址（169.254.0.0/16，AWS/GCP/Azure metadata 服务）
  * - 阻止 0.0.0.0 / ::
- * - 默认阻止其他内网地址（127/8、10/8、172.16/12、192.168/16、IPv6 fc00::/7、::1）
+ * - 默认阻止其他内网地址（127/8、10/8、172.16/12、192.168/16、IPv6 fc00::/7、fec0::/10、::1）
  *
  * 设计权衡：
  * 由于本应用允许自部署用户连接本地 LLM（如 Ollama）和本地生图（SD WebUI / ComfyUI），
@@ -59,25 +59,75 @@ function ipv4ToInt(ip: string): number | null {
 function isAlwaysBlockedIPv4(ip: string): boolean {
   const intIp = ipv4ToInt(ip);
   if (intIp === null) return false;
-  return BLOCKED_IPV4_ALWAYS.some(({ net: n, mask }) => (intIp & mask) === n);
+  return BLOCKED_IPV4_ALWAYS.some(({ net: n, mask }) => ((intIp & mask) >>> 0) === n);
 }
 
 function isPrivateIPv4(ip: string): boolean {
   const intIp = ipv4ToInt(ip);
   if (intIp === null) return false;
-  return PRIVATE_IPV4_RANGES.some(({ net: n, mask }) => (intIp & mask) === n);
+  return PRIVATE_IPV4_RANGES.some(({ net: n, mask }) => ((intIp & mask) >>> 0) === n);
+}
+
+function parseIPv6Words(ip: string): number[] | null {
+  const normalized = ip.toLowerCase().replace(/^\[|\]$/g, '');
+  const withoutZone = normalized.split('%')[0];
+  const ipv4Match = withoutZone.match(/(.+:)(\d{1,3}(?:\.\d{1,3}){3})$/);
+  let source = withoutZone;
+
+  if (ipv4Match) {
+    const intIp = ipv4ToInt(ipv4Match[2]);
+    if (intIp === null) return null;
+    source = `${ipv4Match[1]}${((intIp >>> 16) & 0xffff).toString(16)}:${(intIp & 0xffff).toString(16)}`;
+  }
+
+  const halves = source.split('::');
+  if (halves.length > 2) return null;
+
+  const parsePart = (part: string): number[] | null => {
+    if (!part) return [];
+    const words = part.split(':');
+    const parsed: number[] = [];
+    for (const word of words) {
+      if (!/^[0-9a-f]{1,4}$/.test(word)) return null;
+      parsed.push(parseInt(word, 16));
+    }
+    return parsed;
+  };
+
+  const left = parsePart(halves[0]);
+  const right = parsePart(halves[1] ?? '');
+  if (!left || !right) return null;
+
+  if (halves.length === 1) {
+    return left.length === 8 ? left : null;
+  }
+
+  const missing = 8 - left.length - right.length;
+  if (missing < 0) return null;
+  return [...left, ...Array(missing).fill(0), ...right];
+}
+
+function extractIPv4MappedIPv6(ip: string): string | null {
+  const words = parseIPv6Words(ip);
+  if (!words || words.length !== 8) return null;
+  if (!words.slice(0, 5).every(word => word === 0) || words[5] !== 0xffff) return null;
+
+  const high = words[6];
+  const low = words[7];
+  return [
+    (high >>> 8) & 0xff,
+    high & 0xff,
+    (low >>> 8) & 0xff,
+    low & 0xff,
+  ].join('.');
 }
 
 function isAlwaysBlockedIPv6(ip: string): boolean {
   // IPv6 unspecified
   if (ip === '::' || ip === '0:0:0:0:0:0:0:0') return true;
   // IPv4-mapped 中嵌入的危险地址
-  // ::ffff:169.254.x.x 形式
-  const lower = ip.toLowerCase();
-  if (lower.startsWith('::ffff:')) {
-    const v4 = lower.slice(7);
-    if (isAlwaysBlockedIPv4(v4)) return true;
-  }
+  const mappedIPv4 = extractIPv4MappedIPv6(ip);
+  if (mappedIPv4 && isAlwaysBlockedIPv4(mappedIPv4)) return true;
   return false;
 }
 
@@ -90,11 +140,13 @@ function isPrivateIPv6(ip: string): boolean {
   if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) {
     return true;
   }
-  // IPv4-mapped 中嵌入的私有地址
-  if (lower.startsWith('::ffff:')) {
-    const v4 = lower.slice(7);
-    if (isPrivateIPv4(v4)) return true;
+  // fec0::/10 — deprecated site-local addresses
+  if (lower.startsWith('fec') || lower.startsWith('fed') || lower.startsWith('fee') || lower.startsWith('fef')) {
+    return true;
   }
+  // IPv4-mapped 中嵌入的私有地址
+  const mappedIPv4 = extractIPv4MappedIPv6(ip);
+  if (mappedIPv4 && isPrivateIPv4(mappedIPv4)) return true;
   return false;
 }
 
@@ -141,10 +193,15 @@ export async function assertSafeUrl(rawUrl: string): Promise<URL> {
 
   // 主机名可能是 IP 或域名
   const hostname = url.hostname;
-  // IPv6 字面量在 URL 里是 [::1]，URL.hostname 已剥掉方括号
-  if (net.isIP(hostname)) {
-    const reason = classifyIp(hostname, allowLocal);
-    if (reason) throw new Error(`SSRF 防护拒绝: ${reason} (${hostname})`);
+  // IPv6 字面量在 URL 里是 [::1]，剥去方括号后再判定是否为 IP
+  let ipCandidate = hostname;
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    ipCandidate = hostname.slice(1, -1);
+  }
+
+  if (net.isIP(ipCandidate)) {
+    const reason = classifyIp(ipCandidate, allowLocal);
+    if (reason) throw new Error(`SSRF 防护拒绝: ${reason} (${ipCandidate})`);
     return url;
   }
 
@@ -239,6 +296,9 @@ function getGuardedAgent(allowLocal: boolean): Dispatcher {
  * 1. DNS 预解析层（assertSafeUrl）：fail-fast，避免明显的内网 URL 浪费 socket
  * 2. socket 层（undici Agent connect hook）：真实连接 IP 再校验一次，
  *    防御 DNS rebinding（首次解析返回公网 IP，fetch 内部二次解析返回内网 IP）
+ *
+ * 本函数只负责出站地址安全，不设置全局超时。聊天、生图、总结和后台队列对“慢上游”的语义不同；
+ * 若某个调用需要中止，应由调用方传入 AbortSignal 或在业务层做可配置 watchdog。
  */
 export async function safeFetch(
   rawUrl: string,

@@ -206,6 +206,13 @@ test('message response state helper applies active conversation response to UI a
 
 test('message mutation state helper updates inactive cache without flashing active UI', () => {
   clearCachedMessages();
+  writeCachedMessages('conv-active', {
+    messages: [message('active-1', 1, 'conv-active')],
+    hasMore: false,
+    oldestSeq: 1,
+    unextractedCount: 7,
+    totalTokens: 21,
+  });
   writeCachedMessages('conv-bg', {
     messages: [message('bg-1', 1, 'conv-bg'), message('bg-2', 2, 'conv-bg')],
     hasMore: false,
@@ -220,6 +227,49 @@ test('message mutation state helper updates inactive cache without flashing acti
 
   assert.equal(uiTouched, false);
   assert.deepEqual(readCachedMessages('conv-bg')?.messages.map(item => item.id), ['bg-2']);
+  assert.deepEqual(readCachedMessages('conv-active')?.messages.map(item => item.id), ['active-1']);
+  assert.equal(readCachedMessages('conv-active')?.unextractedCount, 7);
+  assert.equal(readCachedMessages('conv-active')?.totalTokens, 21);
+});
+
+test('background message responses interleaved with an active refresh do not pollute current UI or cache', () => {
+  clearCachedMessages();
+  const ui = {};
+  const handlers = {
+    getActiveConversationId: () => 'conv-active',
+    replaceMessages: messages => { ui.messages = messages; },
+    setHasOlderMessages: hasMore => { ui.hasMore = hasMore; },
+    setOldestLoadedSeq: oldestSeq => { ui.oldestSeq = oldestSeq; },
+    setServerUnextractedCount: count => { ui.unextractedCount = count; },
+    setServerTotalTokens: total => { ui.totalTokens = total; },
+  };
+
+  assert.equal(applyMessagesResponseToState('conv-active', {
+    messages: [message('active-new', 2, 'conv-active')],
+    hasMore: false,
+    oldestSeq: 2,
+    unextractedCount: 1,
+    totalTokens: 11,
+  }, handlers), true);
+  assert.equal(applyMessagesResponseToState('conv-bg', {
+    messages: [message('bg-old', 1, 'conv-bg')],
+    hasMore: true,
+    oldestSeq: 1,
+    unextractedCount: 9,
+    totalTokens: 99,
+  }, handlers), false);
+
+  assert.deepEqual(ui.messages.map(item => item.id), ['active-new']);
+  assert.equal(ui.hasMore, false);
+  assert.equal(ui.oldestSeq, 2);
+  assert.equal(ui.unextractedCount, 1);
+  assert.deepEqual(ui.totalTokens, { convId: 'conv-active', value: 11 });
+  assert.deepEqual(readCachedMessages('conv-active')?.messages.map(item => item.id), ['active-new']);
+  assert.equal(readCachedMessages('conv-active')?.unextractedCount, 1);
+  assert.equal(readCachedMessages('conv-active')?.totalTokens, 11);
+  assert.deepEqual(readCachedMessages('conv-bg')?.messages.map(item => item.id), ['bg-old']);
+  assert.equal(readCachedMessages('conv-bg')?.unextractedCount, 9);
+  assert.equal(readCachedMessages('conv-bg')?.totalTokens, 99);
 });
 
 test('message mutation state helper updates active UI and cached metadata together', () => {
@@ -259,4 +309,26 @@ test('cacheMessagesResponse deduplicates server responses before storing the sna
 
   assert.deepEqual(nextMessages.map(item => item.id), ['a-1', 'a-2']);
   assert.deepEqual(readCachedMessages('conv-a')?.messages.map(item => item.id), ['a-1', 'a-2']);
+});
+
+test('message cache evicts least-recently-used conversations when it grows past the cache limit', () => {
+  clearCachedMessages();
+
+  for (let i = 0; i < 55; i += 1) {
+    writeCachedMessages(`conv-${String(i).padStart(2, '0')}`, {
+      messages: [message(`msg-${i}`, i, `conv-${String(i).padStart(2, '0')}`)],
+      hasMore: false,
+      oldestSeq: i,
+    });
+  }
+  readCachedMessages('conv-10');
+  writeCachedMessages('conv-new', {
+    messages: [message('msg-new', 100, 'conv-new')],
+    hasMore: false,
+    oldestSeq: 100,
+  });
+
+  assert.equal(readCachedMessages('conv-00'), null);
+  assert.notEqual(readCachedMessages('conv-10'), null);
+  assert.notEqual(readCachedMessages('conv-new'), null);
 });

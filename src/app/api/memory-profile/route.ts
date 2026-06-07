@@ -224,15 +224,43 @@ export async function POST(request: NextRequest) {
         for (const conv of conversations) {
           // 随机取 10 条用户消息
           const userMsgs = db.prepare(
-            `SELECT id, content, created_at FROM messages
+            `SELECT id, content, created_at, seq FROM messages
              WHERE conversation_id = ? AND role = 'user'
              ORDER BY RANDOM() LIMIT 10`
-          ).all(conv.id) as Array<{ id: string; content: string; created_at: string }>;
+          ).all(conv.id) as Array<{ id: string; content: string; created_at: string; seq: number }>;
 
           if (userMsgs.length === 0) continue;
 
           // 按时间排序保持对话流
           userMsgs.sort((a, b) => a.created_at.localeCompare(b.created_at));
+          const sampledUserValues = userMsgs.map(() => '(?, ?, ?)').join(', ');
+          const assistantRows = db.prepare(
+            `WITH sampled_users(id, created_at, seq) AS (VALUES ${sampledUserValues})
+             SELECT sampled_users.id AS user_id, assistant.content, assistant.created_at, assistant.seq
+             FROM sampled_users
+             LEFT JOIN messages AS assistant ON assistant.id = (
+               SELECT candidate.id
+               FROM messages AS candidate
+               WHERE candidate.conversation_id = ?
+                 AND candidate.role = 'assistant'
+                 AND (
+                   candidate.created_at > sampled_users.created_at
+                   OR (candidate.created_at = sampled_users.created_at AND candidate.seq > sampled_users.seq)
+                 )
+               ORDER BY candidate.created_at ASC, candidate.seq ASC
+               LIMIT 1
+             )
+             WHERE assistant.id IS NOT NULL`
+          ).all(
+            ...userMsgs.flatMap(message => [message.id, message.created_at, message.seq]),
+            conv.id,
+          ) as Array<{
+            user_id: string;
+            content: string;
+            created_at: string;
+            seq: number;
+          }>;
+          const assistantByUserId = new Map(assistantRows.map(message => [message.user_id, message]));
 
           const lines: string[] = [];
           for (const um of userMsgs) {
@@ -240,12 +268,8 @@ export async function POST(request: NextRequest) {
             const ts = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
             lines.push(`用户 (${ts}): ${um.content}`);
 
-            // 取下一条 assistant 回复
-            const nextAssistant = db.prepare(
-              `SELECT content, created_at FROM messages
-               WHERE conversation_id = ? AND role = 'assistant' AND created_at > ?
-               ORDER BY created_at ASC, seq ASC LIMIT 1`
-            ).get(conv.id, um.created_at) as { content: string; created_at: string } | undefined;
+            // 一次批量查询只返回采样用户各自的下一条回复，避免读取采样点之后的整段长会话。
+            const nextAssistant = assistantByUserId.get(um.id);
 
             if (nextAssistant) {
               const ad = new Date(nextAssistant.created_at);

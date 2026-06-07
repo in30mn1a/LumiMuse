@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { parseJsonResponse } from '@/lib/http';
+import { prepareAttachmentPayload } from '@/lib/attachment-payload';
 import { SparkIcon, StopIcon } from '@/components/ui/icons';
 import type { AttachmentItem } from '@/lib/chat-engine';
 
@@ -160,10 +161,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const handleSubmit = () => {
     const trimmed = text.trim();
     if ((!trimmed && attachments.length === 0) || disabled) return;
-    // 剥掉本地 id，向外只暴露纯净的 AttachmentItem
-    const payload = attachments.length > 0
-      ? attachments.map(({ id: _id, ...rest }) => rest as AttachmentItem)
-      : undefined;
+    // 图片 data 仅用于预览；发送时由服务端通过本地 url 读取，避免重复传输 base64。
+    const payload = prepareAttachmentPayload(attachments);
     onSend(trimmed || ' ', payload);
     setText('');
     setAttachments([]);

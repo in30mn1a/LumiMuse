@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AUTH_COOKIE_NAME, issueAuthToken, timingSafeEqualString, TOKEN_TTL_MS } from '@/lib/auth-token';
-import { bumpAuthMinIat } from '@/lib/settings';
+import { AUTH_COOKIE_NAME, issueAuthToken, timingSafeEqualString, TOKEN_TTL_MS, verifyAuthToken } from '@/lib/auth-token';
+import { bumpAuthMinIat, getAuthMinIat } from '@/lib/settings';
 
 // ====== 进程内内存级速率限制 ======
 // 同一 IP 在 RATE_LIMIT_WINDOW_MS 时间窗内最多允许 RATE_LIMIT_MAX 次失败
@@ -8,25 +8,69 @@ const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 分钟
 const RATE_LIMIT_MAX = 10;
 // 跟踪的 IP 上限，防止大量不同 IP 的失败尝试导致 Map 无界增长而 OOM
 const MAX_TRACKED_IPS = 10000;
+const DIRECT_RATE_LIMIT_BUCKET = '__direct__';
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
-function getClientIp(request: NextRequest): string {
-  // 取 x-forwarded-for 的第一个 IP（反代场景）
-  const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded) {
-    const first = forwarded.split(',')[0]?.trim();
-    if (first) return first;
+function isTrustProxyEnabled(): boolean {
+  const value = process.env.TRUST_PROXY?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function hasUntrustedForwardingHeaders(request: NextRequest): boolean {
+  return (
+    request.headers.has('x-forwarded-for') ||
+    request.headers.has('x-real-ip') ||
+    request.headers.has('forwarded')
+  );
+}
+
+function getClientIp(request: NextRequest): string | null {
+  if (isTrustProxyEnabled()) {
+    // 取 x-forwarded-for 的第一个 IP（可信反代场景）
+    const forwarded = request.headers.get('x-forwarded-for');
+    if (forwarded) {
+      const first = forwarded.split(',')[0]?.trim();
+      if (first) return first;
+    }
   }
-  return 'unknown';
+  // NextRequest 在当前部署目标中没有稳定的直连 IP 字段。没有转发头时使用
+  // direct bucket 修复默认直连场景不限流；出现未信任转发头时保持 unknown，
+  // 避免攻击者用伪造头把所有未知来源合并锁死到同一个 bucket。
+  return hasUntrustedForwardingHeaders(request) ? null : DIRECT_RATE_LIMIT_BUCKET;
+}
+
+function touchAttempt(ip: string, entry: { count: number; resetAt: number }): void {
+  loginAttempts.delete(ip);
+  loginAttempts.set(ip, entry);
+}
+
+function sweepExpiredAttempts(now: number): void {
+  for (const [key, value] of loginAttempts) {
+    if (value.resetAt <= now) {
+      loginAttempts.delete(key);
+    }
+  }
+}
+
+function evictOldestAttempt(): void {
+  const oldestKey = loginAttempts.keys().next().value;
+  if (oldestKey !== undefined) {
+    loginAttempts.delete(oldestKey);
+  }
 }
 
 // 检查是否被限流；返回 true 表示已超限，应该拒绝
 function isRateLimited(ip: string): boolean {
   const now = Date.now();
   const entry = loginAttempts.get(ip);
-  if (!entry || entry.resetAt <= now) {
+  if (!entry) {
     return false;
   }
+  if (entry.resetAt <= now) {
+    loginAttempts.delete(ip);
+    return false;
+  }
+  touchAttempt(ip, entry);
   return entry.count >= RATE_LIMIT_MAX;
 }
 
@@ -35,22 +79,20 @@ function recordFailure(ip: string): void {
   const now = Date.now();
   const entry = loginAttempts.get(ip);
   if (!entry || entry.resetAt <= now) {
-    // 写入新条目前顺手清扫所有已过期条目（resetAt <= now），物理释放内存
-    for (const [key, value] of loginAttempts) {
-      if (value.resetAt <= now) {
-        loginAttempts.delete(key);
-      }
+    if (entry) {
+      loginAttempts.delete(ip);
     }
+    // 写入新条目前顺手清扫所有已过期条目（resetAt <= now），物理释放内存
+    sweepExpiredAttempts(now);
     // 清扫后仍达到容量上限，说明同时存在大量未过期的活跃失败 IP。
-    // 权衡：直接清空整个 Map 是最简单稳妥的兜底，可避免无界增长；
-    // 代价是极端情况下会重置所有 IP 的失败计数（限流短暂放宽），
-    // 但这种规模的并发攻击场景本应由上游反代/WAF 处理，此处仅作内存兜底。
-    if (loginAttempts.size >= MAX_TRACKED_IPS) {
-      loginAttempts.clear();
+    // 只淘汰最久未使用的桶，避免攻击者靠制造新 IP 直接清空所有计数。
+    while (loginAttempts.size >= MAX_TRACKED_IPS) {
+      evictOldestAttempt();
     }
     loginAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
   } else {
     entry.count += 1;
+    touchAttempt(ip, entry);
   }
 }
 
@@ -71,7 +113,7 @@ export async function POST(request: NextRequest) {
   const ip = getClientIp(request);
 
   // 限流检查：超过阈值直接 429
-  if (isRateLimited(ip)) {
+  if (ip && isRateLimited(ip)) {
     return NextResponse.json(
       { error: '尝试次数过多，请稍后再试' },
       { status: 429 }
@@ -88,12 +130,16 @@ export async function POST(request: NextRequest) {
   // 常量时间比较，避免通过响应耗时差推测密码
   const submitted = typeof body.password === 'string' ? body.password : '';
   if (!timingSafeEqualString(submitted, password)) {
-    recordFailure(ip);
+    if (ip) {
+      recordFailure(ip);
+    }
     return NextResponse.json({ error: '密码不正确' }, { status: 401 });
   }
 
   // 验证通过，清零失败计数，签发签名 token 并写入 httpOnly cookie
-  clearAttempts(ip);
+  if (ip) {
+    clearAttempts(ip);
+  }
   const token = await issueAuthToken();
   const response = NextResponse.json({ ok: true });
   response.cookies.set(AUTH_COOKIE_NAME, token, {
@@ -109,20 +155,8 @@ export async function POST(request: NextRequest) {
   return response;
 }
 
-// DELETE /api/auth — 退出登录，清除 cookie 并作废所有已签发的 token
-export async function DELETE() {
-  // 服务端撤销：推进 min_iat，让所有签发时间早于此刻的 token 全部失效。
-  // 这是真正的"登出"——即便 cookie 已被窃取或浏览器外其他副本仍持有，也会立即失效。
-  // 仅在启用了访问密码的部署中才需要撤销（无密码模式下 token 体系本就不生效）。
-  if (process.env.ACCESS_PASSWORD) {
-    try {
-      bumpAuthMinIat();
-    } catch (err) {
-      // 撤销写入失败不应阻塞登出响应（cookie 清除依然有效），但要可见
-      console.error('[auth] bumpAuthMinIat failed during logout:', err);
-    }
-  }
-
+// DELETE /api/auth — 退出登录，清除 cookie；只有有效会话才能推进全局撤销点
+export async function DELETE(request: NextRequest) {
   const response = NextResponse.json({ ok: true });
   // 清除 cookie 时也需要带上写入时的属性（secure / path），否则浏览器视作不同 cookie 而无法删除
   response.cookies.set(AUTH_COOKIE_NAME, '', {
@@ -132,6 +166,29 @@ export async function DELETE() {
     maxAge: 0,
     path: '/',
   });
+
+  if (!process.env.ACCESS_PASSWORD) {
+    return response;
+  }
+
+  let minIat = 0;
+  try {
+    minIat = getAuthMinIat();
+  } catch (err) {
+    console.error('[auth] getAuthMinIat failed during logout, skipping revocation check:', err);
+  }
+
+  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+  const valid = await verifyAuthToken(token, { minIat });
+  if (valid) {
+    try {
+      bumpAuthMinIat();
+    } catch (err) {
+      // 撤销写入失败不应阻塞登出响应（cookie 清除依然有效），但要可见
+      console.error('[auth] bumpAuthMinIat failed during logout:', err);
+    }
+  }
+
   return response;
 }
 

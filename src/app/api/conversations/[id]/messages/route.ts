@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { serializeMessage, serializeTypedMessages } from '@/lib/messages';
@@ -38,8 +39,7 @@ export async function POST(
   const { role, content, token_count, metadata } = parsed.data;
   const db = getDb();
 
-  const { v4: uuidv4 } = await import('uuid');
-  const msgId = uuidv4().slice(0, 12);
+  const msgId = crypto.randomUUID().slice(0, 12);
   const now = new Date().toISOString();
   const metaStr = metadata ? JSON.stringify(metadata) : '{}';
 

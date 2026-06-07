@@ -1,16 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-
-async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
-  if (!process.env.ACCESS_PASSWORD) return null;
-  const { AUTH_COOKIE_NAME, verifyAuthToken } = await import('@/lib/auth-token');
-  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const valid = await verifyAuthToken(token);
-  if (!valid) {
-    return NextResponse.json({ error: '未授权' }, { status: 401 });
-  }
-  return null;
-}
+import { readJsonObject } from '@/lib/request-json';
+import { requireAuth } from '@/lib/route-auth';
 
 function isUuid(value: unknown): value is string {
   return typeof value === 'string'
@@ -21,7 +12,10 @@ export async function POST(request: NextRequest) {
   const unauthorized = await requireAuth(request);
   if (unauthorized) return unauthorized;
 
-  const { id } = await request.json() as { id: string };
+  const body = await readJsonObject(request);
+  if (!body.ok) return body.response;
+
+  const id = body.data.id;
   if (!isUuid(id)) {
     return NextResponse.json({ error: '缺少供应商 ID' }, { status: 400 });
   }

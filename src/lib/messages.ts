@@ -22,6 +22,14 @@ export function parseMessageMetadata(value: unknown): MessageMetadata {
     : {};
 }
 
+export function isMessageMemoryExtracted(metadata: MessageMetadata): boolean {
+  return metadata.memory_extracted === true;
+}
+
+export function isSummaryMessage(metadata: MessageMetadata): boolean {
+  return metadata.isSummary === true;
+}
+
 export function serializeMessage<T extends Record<string, unknown>>(row: T): T & { metadata: MessageMetadata } {
   return {
     ...row,

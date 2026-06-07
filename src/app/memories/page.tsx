@@ -12,6 +12,11 @@ import { ArrowLeftIcon, MemoryIcon, SparkIcon } from '@/components/ui/icons';
 interface MemoryAiReviewResult {
   ok: boolean;
   reviewed: number;
+  total_active: number;
+  skipped_due_to_limit: number;
+  reviewed_offset: number;
+  next_offset: number | null;
+  has_more: boolean;
   corrected: number;
   indexing_queued: number;
   indexing_started: boolean;
@@ -49,25 +54,65 @@ export default function MemoriesPage() {
     setMemoryAiReviewRunning(true);
     setShowMemoryAiReviewChanges(false);
     try {
-      const result = await parseJsonResponse<MemoryAiReviewResult>(await fetch('/api/memory-review', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ character_id: requestedCharacterId }),
-      }));
-      if (selectedCharIdRef.current !== requestedCharacterId) return;
-      setLastMemoryAiReviewResult(result);
+      const aggregateResult: MemoryAiReviewResult = {
+        ok: true,
+        reviewed: 0,
+        total_active: 0,
+        skipped_due_to_limit: 0,
+        reviewed_offset: 0,
+        next_offset: null,
+        has_more: false,
+        corrected: 0,
+        indexing_queued: 0,
+        indexing_started: false,
+        changes: [],
+      };
+      let nextOffset: number | null = 0;
+
+      while (nextOffset !== null) {
+        const pageOffset = nextOffset;
+        const response = await fetch('/api/memory-review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ character_id: requestedCharacterId, offset: nextOffset }),
+        });
+        const result: MemoryAiReviewResult = await parseJsonResponse<MemoryAiReviewResult>(response);
+        if (selectedCharIdRef.current !== requestedCharacterId) return;
+
+        aggregateResult.reviewed += result.reviewed ?? 0;
+        aggregateResult.corrected += result.corrected ?? 0;
+        aggregateResult.indexing_queued += result.indexing_queued ?? 0;
+        aggregateResult.indexing_started = aggregateResult.indexing_started || result.indexing_started;
+        aggregateResult.total_active = result.total_active ?? aggregateResult.total_active;
+        aggregateResult.skipped_due_to_limit = result.skipped_due_to_limit ?? 0;
+        aggregateResult.next_offset = result.next_offset;
+        aggregateResult.has_more = result.has_more;
+        aggregateResult.changes.push(...(result.changes ?? []));
+
+        if (!result.has_more) {
+          nextOffset = null;
+        } else if (typeof result.next_offset === 'number' && result.next_offset > pageOffset) {
+          nextOffset = result.next_offset;
+        } else {
+          throw new Error('memory-review pagination did not advance');
+        }
+      }
+
+      setLastMemoryAiReviewResult(aggregateResult);
       setMemoryRefreshNonce(prev => prev + 1);
       showToast(
         t('memory.aiReviewDone')
-          .replace('{reviewed}', String(result.reviewed ?? 0))
-          .replace('{corrected}', String(result.corrected ?? 0)),
+          .replace('{reviewed}', String(aggregateResult.reviewed ?? 0))
+          .replace('{corrected}', String(aggregateResult.corrected ?? 0)),
         'success',
       );
     } catch (err) {
       if (selectedCharIdRef.current !== requestedCharacterId) return;
       showToast(`${t('memory.aiReviewFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
-      setMemoryAiReviewRunning(false);
+      if (selectedCharIdRef.current === requestedCharacterId) {
+        setMemoryAiReviewRunning(false);
+      }
     }
   };
 
@@ -119,6 +164,7 @@ export default function MemoriesPage() {
                   const nextCharacterId = e.target.value || null;
                   selectedCharIdRef.current = nextCharacterId;
                   setSelectedCharId(nextCharacterId);
+                  setMemoryAiReviewRunning(false);
                   setLastMemoryAiReviewResult(null);
                   setShowMemoryAiReviewChanges(false);
                 }}

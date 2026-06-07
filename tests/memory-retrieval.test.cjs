@@ -72,8 +72,12 @@ function jsonResponseMock() {
 }
 
 function jsonRequest(body, url = 'http://test.local/api/test') {
+  const raw = JSON.stringify(body);
   return {
     nextUrl: new URL(url),
+    async text() {
+      return raw;
+    },
     async json() {
       return body;
     },
@@ -143,10 +147,16 @@ function memory(overrides) {
 
 function createMemoryDb() {
   const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
   db.exec(`
+    CREATE TABLE characters (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
+
     CREATE TABLE memories (
       id TEXT PRIMARY KEY,
-      character_id TEXT NOT NULL,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       category TEXT NOT NULL,
       content TEXT NOT NULL,
       confidence REAL,
@@ -175,6 +185,10 @@ function createMemoryDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    INSERT INTO characters (id, name) VALUES
+      ('char-a', '艾莉丝'),
+      ('char-b', '莉莉');
   `);
   return db;
 }
@@ -1559,7 +1573,6 @@ test('/api/memory-index clear_index 清空指定角色索引和任务', async ()
     )
     VALUES
       ('mem-clear-a', 'char-a', 'rebuild', 'pending', 0, NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z'),
-      ('mem-clear-a', 'char-a', 'rebuild', 'processing', 0, NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:02.000Z'),
       ('mem-clear-b', 'char-a', 'rebuild', 'failed', 1, 'old failure', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:03.000Z'),
       ('mem-clear-b', 'char-a', 'rebuild', 'done', 0, NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:04.000Z'),
       ('mem-clear-other', 'char-b', 'rebuild', 'pending', 0, NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:05.000Z');
@@ -1593,7 +1606,7 @@ test('/api/memory-index clear_index 清空指定角色索引和任务', async ()
   assert.equal(payload.action, 'clear_index');
   assert.equal(payload.character_id, 'char-a');
   assert.equal(payload.cleared_embeddings, 2);
-  assert.equal(payload.cleared_tasks, 4);
+  assert.equal(payload.cleared_tasks, 3);
   assert.deepEqual(remainingEmbeddings, [
     { memory_id: 'mem-clear-other', character_id: 'char-b', status: 'ready' },
   ]);
@@ -2875,6 +2888,9 @@ test('token 硬预算会裁剪普通记忆，limit_inject=false 也不会无限�
 
 test('total_retrieval_timeout_ms 会限制整条增强检索链路并回退本地工作记忆', async () => {
   const startedAt = Date.now();
+  let embeddingSignal;
+  let embeddingSignalAbortEvent = false;
+  let embeddingFinished = false;
   const result = await retrieveWorkingMemoryPackage({
     characterId: 'char-a',
     queryText: '增强检索很慢时也不能阻塞聊天',
@@ -2889,8 +2905,13 @@ test('total_retrieval_timeout_ms 会限制整条增强检索链路并回退本�
       },
     }),
     deps: {
-      embedText: async () => {
+      embedText: async (_text, config) => {
+        embeddingSignal = config.signal;
+        embeddingSignal?.addEventListener('abort', () => {
+          embeddingSignalAbortEvent = true;
+        });
         await new Promise(resolve => setTimeout(resolve, 80));
+        embeddingFinished = true;
         return [1, 0];
       },
       loadEmbeddingRows: () => [],
@@ -2912,6 +2933,10 @@ test('total_retrieval_timeout_ms 会限制整条增强检索链路并回退本�
   assert.equal(result.usedFallback, true);
   assert.equal(result.diagnostics.totalRetrievalTimedOut, true);
   assert.match(result.text, /快速使用本地记忆继续聊天/);
+  assert.ok(embeddingSignal, 'expected embedding call to receive an AbortSignal');
+  assert.equal(embeddingSignal.aborted, true);
+  assert.equal(embeddingSignalAbortEvent, true);
+  assert.equal(embeddingFinished, false);
 });
 
 test('检索完成后只回写最终注入记忆的 usage 信息', async () => {

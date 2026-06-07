@@ -6,6 +6,8 @@ import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-categ
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { buildBackgroundChatExtraBody, resolveBackgroundConfig } from '@/lib/settings';
+import { normalizeMemoryRow } from '@/lib/memory-normalization';
+import { parseMemoryMetadata } from '@/lib/metadata';
 
 const CJK_STOPWORDS = new Set([
   // 原有
@@ -18,6 +20,8 @@ const CJK_STOPWORDS = new Set([
   // 知觉 / 行为
   '知道', '看到', '听到', '想到', '感觉', '希望', '如果', '因为', '所以', '但是',
 ]);
+
+const LOCAL_RETRIEVAL_CANDIDATE_LIMIT = 500;
 
 function parseJsonField(value: unknown): unknown {
   if (typeof value !== 'string') return value;
@@ -42,17 +46,7 @@ function normalizeMemoryKind(value: unknown, fallback: MemoryKind): MemoryKind {
 }
 
 function normalizeMemory(record: Memory): Memory {
-  const normalized = record as unknown as Record<string, unknown>;
-  normalized.category = normalizeMemoryCategory(String(normalized.category || '话题历史'));
-  const defaults = inferMemoryDefaults(String(normalized.category));
-  normalized.memory_kind = normalizeMemoryKind(normalized.memory_kind, defaults.memory_kind);
-  normalized.importance = toBoundedNumber(normalized.importance, defaults.importance);
-  normalized.emotional_weight = toBoundedNumber(normalized.emotional_weight, defaults.emotional_weight);
-  normalized.tags = Array.isArray(normalized.tags) ? normalized.tags : parseJsonField(normalized.tags);
-  normalized.source_msg_ids = Array.isArray(normalized.source_msg_ids)
-    ? normalized.source_msg_ids
-    : parseJsonField(normalized.source_msg_ids);
-  return normalized as Memory;
+  return normalizeMemoryRow(record);
 }
 
 function tokenizeForRetrieval(text: string): Set<string> {
@@ -88,8 +82,14 @@ export function retrieveRelevantMemories(
 ): Memory[] {
   const db = getDb();
   const allMemories = db.prepare(
-    "SELECT * FROM memories WHERE character_id = ? AND status = 'active' ORDER BY updated_at DESC"
-  ).all(characterId) as Memory[];
+    `SELECT * FROM memories
+     WHERE character_id = ? AND status = 'active'
+     ORDER BY
+       COALESCE(pinned, 0) DESC,
+       COALESCE(importance, 0) DESC,
+       updated_at DESC
+     LIMIT ?`
+  ).all(characterId, LOCAL_RETRIEVAL_CANDIDATE_LIMIT) as Memory[];
   const normalizedMemories = allMemories.map(normalizeMemory);
 
   if (normalizedMemories.length <= maxMemories) {
@@ -142,6 +142,23 @@ function contentSimilarity(a: string, b: string): number {
   const intersectionSize = [...bigramsA].filter(item => bigramsB.has(item)).length;
   const unionSize = new Set([...bigramsA, ...bigramsB]).size;
   return unionSize === 0 ? 0 : intersectionSize / unionSize;
+}
+
+function supersedeTextSimilarity(a: string, b: string): number {
+  const left = a.replace(/\s+/g, '').toLowerCase();
+  const right = b.replace(/\s+/g, '').toLowerCase();
+  if (left.length < 2 || right.length < 2) return contentSimilarity(a, b);
+  const shorterLength = Math.min(left.length, right.length);
+
+  const bigramsA = new Set<string>();
+  const bigramsB = new Set<string>();
+  for (let i = 0; i < left.length - 1; i += 1) bigramsA.add(left[i] + left[i + 1]);
+  for (let i = 0; i < right.length - 1; i += 1) bigramsB.add(right[i] + right[i + 1]);
+
+  const intersectionSize = [...bigramsA].filter(item => bigramsB.has(item)).length;
+  const smallerSize = Math.min(bigramsA.size, bigramsB.size);
+  const containmentSimilarity = smallerSize === 0 || shorterLength < 20 ? 0 : intersectionSize / smallerSize;
+  return Math.max(contentSimilarity(a, b), containmentSimilarity);
 }
 
 function extractAnchors(text: string): Set<string> {
@@ -228,16 +245,6 @@ function mergeMemories(existing: Memory[], newMemories: Memory[]): Memory[] {
   return result;
 }
 
-function readJsonObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
-}
-
-function parseMetadata(value: unknown): Record<string, unknown> {
-  const parsed = parseJsonField(value);
-  return readJsonObject(parsed);
-}
-
 function uniqueStrings(values: unknown[]): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.trim().length > 0))];
 }
@@ -245,12 +252,15 @@ function uniqueStrings(values: unknown[]): string[] {
 function findSimilarExistingMemories(existing: Memory[], entry: Memory): Memory[] {
   return existing.filter(memory => {
     if (memory.category !== entry.category) return false;
-    const textSimilarity = contentSimilarity(memory.content, entry.content);
+    const textSimilarity = supersedeTextSimilarity(memory.content, entry.content);
     const anchorsA = extractAnchors(memory.content);
     const anchorsB = extractAnchors(entry.content);
     const sharedAnchors = setIntersection(anchorsA, anchorsB).size;
     const tagOverlap = setIntersection(new Set(memory.tags), new Set(entry.tags)).size;
-    return textSimilarity >= 0.72 || sharedAnchors > 0 || tagOverlap > 0;
+    return (
+      textSimilarity >= 0.82 ||
+      (textSimilarity >= 0.72 && (sharedAnchors >= 1 || tagOverlap >= 1))
+    );
   });
 }
 
@@ -637,7 +647,7 @@ export async function extractMemories(
     for (const entry of supersedeEntries) {
       const targets = findSimilarExistingMemories(normalizedExisting, entry);
       for (const target of targets) {
-        const metadata = parseMetadata(target.metadata);
+        const metadata = parseMemoryMetadata(target.metadata);
         metadata.previousStatus = target.status;
         metadata.supersededBy = {
           action: 'memory_extraction_supersede',

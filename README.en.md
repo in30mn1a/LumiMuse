@@ -146,6 +146,7 @@ English · [中文](README.md)
 - Setting a password is strongly recommended when deploying to the public internet
 - After login, the app issues an HMAC-SHA256 signed token (the password is no longer stored in the cookie). Set `AUTH_SECRET` to keep tokens valid across multiple replicas
 - Password verification uses constant-time comparison to prevent timing attacks
+- `X-Forwarded-For` is not trusted by default; set `TRUST_PROXY=1` only behind a trusted reverse proxy that overwrites forwarded headers
 - Outbound requests (image generation, model list, summarization, chat completion) go through an SSRF guard with DNS resolution and per-redirect re-validation, so external URLs cannot be redirected toward your internal network
 - Self-hosting local LLM / SD WebUI? Set `ALLOW_LOCAL_NETWORK=1` to explicitly opt into private network addresses
 
@@ -170,10 +171,12 @@ English · [中文](README.md)
 
 ### Requirements
 
-- Node.js **18.18** or higher
+- Node.js **>=20.18.1**
 - npm (bundled with Node.js)
 - A model service compatible with the OpenAI Chat Completions API format
 - For Docker deployment: Docker and Docker Compose
+
+CI verifies the project on both Node **20.18** and **Node 24**; locally, use Node 20.18.1 or newer.
 
 ### Run Locally
 
@@ -187,6 +190,17 @@ npm run dev
 Open [http://localhost:3000](http://localhost:3000), go to Settings, and enter your model API information to get started.
 
 The database is created automatically at `data/lumimuse.db`.
+
+### Local Production Start
+
+```bash
+npm run build
+npm run start:local
+```
+
+`npm run start:local` uses Next.js `next start` (the Next.js production server), which is the local source-tree check for a production build.
+
+`npm start` is equivalent to `npm run start:standalone` and runs `.next/standalone/server.js` to check the Next.js standalone output. The Docker image copies `.next/standalone` into the container work directory and runs `node server.js` inside the container.
 
 ### Windows Quick Start
 
@@ -260,11 +274,16 @@ ACCESS_PASSWORD=your_password_here
 # Set this explicitly for multi-replica deployments or to keep cookies valid across restarts
 # AUTH_SECRET=use_a_long_random_string_here
 
+# Optional: enable only when a trusted reverse proxy overwrites X-Forwarded-For
+# TRUST_PROXY=1
+
 # Optional: explicitly allow private network addresses for self-hosted local LLM / SD WebUI
 # ALLOW_LOCAL_NETWORK=1
 ```
 
-Without `ACCESS_PASSWORD`, the app won't require login. This mode is only recommended for personal use on your own computer or a trusted LAN.
+Without `ACCESS_PASSWORD`, the app won't require login. This mode is only recommended for personal use on your own computer or a trusted LAN; production Docker startup fails fast when the password is empty or still set to a placeholder such as `your_password_here`.
+
+`docker-compose.yml` reads `.env.local` through `env_file` by default, so the `ACCESS_PASSWORD` / `AUTH_SECRET` values above are injected into the container environment. You do not need an extra `docker compose --env-file ...` flag. To use another file, run `LUMIMUSE_ENV_FILE=.env.production docker compose up -d --build`.
 
 ### 2. Start the Service
 
@@ -285,7 +304,7 @@ Visit [http://localhost:3000](http://localhost:3000) after startup.
 | `./public/avatars` | `/app/public/avatars` | Character avatars |
 | `./public/attachments` | `/app/public/attachments` | Conversation attachments (images / text) |
 
-As long as these directories remain, data survives container rebuilds. The container runs as a non-root user (UID 1001:1001) to reduce attack surface, so on Linux the bind-mounted directories must be owned by that UID: with named volumes Docker aligns ownership automatically; with bind mounts like `./data`, either set `user: "1001:1001"` in `docker-compose.yml`, or run `sudo chown -R 1001:1001 data public/generated public/avatars public/attachments` once.
+As long as these directories remain, data survives container rebuilds. The container runs as a non-root user (UID 1001:1001) to reduce attack surface, and the entrypoint no longer runs `chown` automatically. On Linux, when using bind mounts like `./data`, run `sudo chown -R 1001:1001 data public/generated public/avatars public/attachments` once before the first startup. If you switch to Docker named volumes, Docker initializes the volume from the image-owned directories, so manual permission repair is usually unnecessary.
 
 On Windows / macOS, Docker Desktop handles permissions automatically — `docker compose up -d --build` is enough.
 
@@ -373,7 +392,9 @@ The app itself does not upload your characters, conversations, or memories to an
 When deploying to the public internet, be sure to:
 
 - Set `ACCESS_PASSWORD`
+- Make sure `ACCESS_PASSWORD` is not empty and not an example placeholder; production Docker startup refuses those values
 - Use HTTPS — preferably behind a reverse proxy
+- Set `TRUST_PROXY=1` only when your trusted reverse proxy overwrites forwarded headers
 - Regularly back up `data/`, `public/generated/`, `public/avatars/`, and `public/attachments/`
 - Never commit `.env.local`, database files, or personal backups to a public repository
 

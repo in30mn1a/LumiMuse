@@ -5,6 +5,7 @@ export interface RerankerAdapterConfig {
   api_key?: string;
   model?: string;
   timeout_ms?: number;
+  signal?: AbortSignal;
 }
 
 export interface RerankDocument {
@@ -73,6 +74,13 @@ export async function rerankDocuments(
   const controller = new AbortController();
   const timeoutMs = Math.max(1, config.timeout_ms || 2000);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = config.signal;
+  const abortFromExternalSignal = () => controller.abort();
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true });
+  }
 
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -97,5 +105,6 @@ export async function rerankDocuments(
     return parseRerankerResponse(await response.json(), documents);
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromExternalSignal);
   }
 }

@@ -5,6 +5,7 @@ import {
   collectUniqueGeneratedImageItems,
   removeGeneratedImageReferences,
 } from '@/lib/generated-image-assets';
+import { readJsonObject } from '@/lib/request-json';
 
 type DeleteImageTarget = {
   url?: string;
@@ -12,6 +13,10 @@ type DeleteImageTarget = {
   imageId?: string;
   versionId?: string;
 };
+
+function isDeleteImageTarget(value: unknown): value is DeleteImageTarget {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export async function GET(
   _request: NextRequest,
@@ -50,13 +55,17 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const db = getDb();
-  const body = await request.json() as { items?: Array<DeleteImageTarget> };
-  const items = body.items || [];
+  const body = await readJsonObject(request);
+  if (!body.ok) return body.response;
+
+  const rawItems = body.data.items;
+  const items = Array.isArray(rawItems) ? rawItems.filter(isDeleteImageTarget) : [];
 
   if (items.length === 0) {
     return NextResponse.json({ error: '缺少待删除图片' }, { status: 400 });
   }
+
+  const db = getDb();
 
   const messageQuery = db.prepare(`
     SELECT messages.id, messages.metadata

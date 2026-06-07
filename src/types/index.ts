@@ -39,6 +39,22 @@ export interface MessageVersion {
   token_count: number;
 }
 
+export interface GeneratedImageVersion {
+  id: string;
+  url: string;
+  prompt: string;
+}
+
+export interface GeneratedImage {
+  id: string;
+  url?: string;
+  prompt: string;
+  status?: 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
+  error?: string;
+  versions?: GeneratedImageVersion[];
+  activeVersion?: number;
+}
+
 /**
  * 消息 metadata 的正式类型。所有字段都是可选的，因为不同消息形态用到的字段不同：
  *   - summary 消息：isSummary + summarizedIds
@@ -53,6 +69,7 @@ export interface MessageMetadata {
   memory_extracted?: boolean;
   attachments?: MessageAttachment[];
   versions?: MessageVersion[];
+  generatedImages?: GeneratedImage[];
   /** 内联生图提示词：AI 回复中 [IMG]...[/IMG] 提取出的提示词，出图时直接复用 */
   inlineImagePrompt?: string;
   [key: string]: unknown;

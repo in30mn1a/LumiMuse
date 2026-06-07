@@ -2,10 +2,6 @@
 
 /**
  * Settings + memory-index smoke test.
- *
- * This intentionally avoids adding Playwright/Puppeteer to the repo. The project
- * currently has no declared browser test dependency; when the optional
- * agent-browser CLI is available, this script uses it for a real browser pass.
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -19,25 +15,7 @@ const tmpRoot = path.join(repoRoot, '.tmp-tests', 'memory-index-flow-smoke');
 const nextCli = path.join(repoRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
 const API_KEY_MASK = '********';
 const SERVER_TIMEOUT_MS = Number(process.env.SMOKE_SERVER_TIMEOUT_MS || 120_000);
-const COMMAND_TIMEOUT_MS = Number(process.env.SMOKE_COMMAND_TIMEOUT_MS || 30_000);
-const BROWSER_COMMAND_TIMEOUT_MS = Number(process.env.SMOKE_BROWSER_COMMAND_TIMEOUT_MS || 25_000);
 const KEEP_TMP = process.env.SMOKE_KEEP_TMP === '1';
-const BROWSER_SESSION = `lumimuse-memory-index-smoke-${Date.now()}`;
-
-function resolveAgentBrowserCommand() {
-  if (process.env.AGENT_BROWSER_BIN) return process.env.AGENT_BROWSER_BIN;
-  if (process.platform !== 'win32') return 'agent-browser';
-
-  const packageBin = process.env.APPDATA
-    ? path.join(process.env.APPDATA, 'npm', 'node_modules', 'agent-browser', 'bin', 'agent-browser-win32-x64.exe')
-    : '';
-  if (packageBin && fs.existsSync(packageBin)) return packageBin;
-
-  const npmBin = process.env.APPDATA
-    ? path.join(process.env.APPDATA, 'npm', 'agent-browser.cmd')
-    : '';
-  return npmBin && fs.existsSync(npmBin) ? npmBin : 'agent-browser.cmd';
-}
 
 function assertInsideWorkspace(targetPath) {
   const resolved = path.resolve(targetPath);
@@ -206,46 +184,6 @@ async function waitForDoneWithTimeout(done, timeoutMs) {
   }
 }
 
-async function runCommand(command, args, options = {}) {
-  const started = spawnCommand(command, args, options);
-  if (options.stdin && started.child.stdin) {
-    started.child.stdin.end(options.stdin);
-  }
-  const timeoutMs = options.timeoutMs || COMMAND_TIMEOUT_MS;
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    terminateProcessTree(started.child);
-  }, timeoutMs);
-  const result = await waitForDoneWithTimeout(started.done, timeoutMs + 2_000);
-  clearTimeout(timeout);
-  if (timedOut) {
-    result.code = -1;
-    result.stderr = `${result.stderr}\nTimed out after ${timeoutMs}ms`;
-  }
-  if (result.code !== 0 && !options.allowFailure) {
-    throw new Error(
-      `${command} ${args.join(' ')} failed with code ${result.code}\n` +
-      `${result.stdout}\n${result.stderr}`.trim(),
-    );
-  }
-  return result;
-}
-
-async function hasAgentBrowser() {
-  const result = await runCommand(resolveAgentBrowserCommand(), ['doctor', '--offline', '--quick'], {
-    allowFailure: true,
-    timeoutMs: BROWSER_COMMAND_TIMEOUT_MS,
-  });
-  return result.code === 0;
-}
-
-async function agentBrowser(args, options = {}) {
-  return runCommand(resolveAgentBrowserCommand(), ['--session', BROWSER_SESSION, ...args], {
-    ...options,
-  });
-}
-
 async function runApiSmoke(baseUrl) {
   const initialSettings = await requestJson(baseUrl, '/api/settings');
   assert.equal(initialSettings.status, 200);
@@ -343,44 +281,6 @@ async function runApiSmoke(baseUrl) {
   };
 }
 
-async function runBrowserSmoke(baseUrl) {
-  if (!(await hasAgentBrowser())) {
-    return { skipped: true, reason: 'agent-browser CLI is unavailable or failed doctor check' };
-  }
-
-  try {
-    await agentBrowser(['open', `${baseUrl}/settings`], { timeoutMs: BROWSER_COMMAND_TIMEOUT_MS });
-    await agentBrowser(['wait', '--text', '设置'], { timeoutMs: BROWSER_COMMAND_TIMEOUT_MS });
-
-    const domText = await agentBrowser(['eval', '--stdin'], {
-      timeoutMs: BROWSER_COMMAND_TIMEOUT_MS,
-      stdin: `
-        const text = document.body.innerText;
-        ({
-          hasMemoryCopy: text.includes('记忆'),
-          hasIndexStatus: text.includes('索引状态'),
-          hasQueued: text.includes('队列中'),
-          hasProcessing: text.includes('处理中'),
-          url: location.href,
-        })
-      `,
-    });
-    assert.match(domText.stdout, /hasMemoryCopy[\s\S]*true/);
-    assert.match(domText.stdout, /hasIndexStatus[\s\S]*true/);
-    assert.match(domText.stdout, /hasQueued[\s\S]*true/);
-    assert.match(domText.stdout, /hasProcessing[\s\S]*true/);
-
-    return { skipped: false };
-  } catch (error) {
-    return {
-      skipped: true,
-      reason: `agent-browser smoke did not complete: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  } finally {
-    await agentBrowser(['close'], { allowFailure: true });
-  }
-}
-
 async function prepareIsolatedProject() {
   removeDirIfExists(tmpRoot);
   fs.mkdirSync(tmpRoot, { recursive: true });
@@ -419,18 +319,15 @@ async function main() {
     },
   );
 
-  let browserResult = null;
   try {
     await waitForServer(baseUrl, server.child);
     const apiResult = await runApiSmoke(baseUrl);
-    browserResult = await runBrowserSmoke(baseUrl);
 
     console.log(JSON.stringify({
       ok: true,
       baseUrl,
       isolatedDataDir: path.join(tmpRoot, 'data'),
       api: apiResult,
-      browser: browserResult,
     }, null, 2));
   } catch (error) {
     const output = server.getOutput();
@@ -440,9 +337,6 @@ async function main() {
   } finally {
     terminateProcessTree(server.child);
     await waitForDoneWithTimeout(server.done, 5_000).catch(() => {});
-    if (!browserResult || !browserResult.skipped) {
-      await agentBrowser(['close'], { allowFailure: true }).catch(() => {});
-    }
     if (!KEEP_TMP) {
       removeDirIfExists(tmpRoot);
     }

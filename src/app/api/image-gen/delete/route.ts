@@ -2,10 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import { getDb } from '@/lib/db';
 import { deleteLocalAssetUrls, filterUnreferencedLocalAssetUrls } from '@/lib/character-file-utils';
+import { readJsonObject } from '@/lib/request-json';
 
 export async function POST(request: NextRequest) {
   try {
-    const { url } = await request.json() as { url: string };
+    const body = await readJsonObject(request);
+    if (!body.ok) return body.response;
+
+    const url = body.data.url;
 
     if (!url || typeof url !== 'string') {
       return NextResponse.json({ error: '缺少 url' }, { status: 400 });

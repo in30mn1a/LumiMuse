@@ -5,13 +5,13 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-    environment:
-      # 访问密码（不设置则无需密码）
-      - ACCESS_PASSWORD=${ACCESS_PASSWORD:-}
-      # 登录 cookie 的 HMAC 签名密钥（不设置则回退用 ACCESS_PASSWORD 派生，属弱兜底；建议设置独立随机值）
-      - AUTH_SECRET=${AUTH_SECRET:-}
+    env_file:
+      # 默认读取 README 指引创建的 .env.local；验证或 CI 可通过 LUMIMUSE_ENV_FILE 指向其他占位文件。
+      - ${LUMIMUSE_ENV_FILE:-.env.local}
     volumes:
-      # 首次部署时建议保留默认绑定挂载；如果宿主机目录是新建的，入口脚本会自动修复权限
+      # 默认使用绑定挂载，便于直接备份宿主机文件。
+      # Linux bind mount 首次部署前需确保目录属于 UID/GID 1001；entrypoint 不再自动 chown。
+      # 示例：sudo chown -R 1001:1001 data public/generated public/avatars public/attachments
       # 持久化数据库文件
       - ./data:/app/data
       # 持久化生成的图片和上传的头像

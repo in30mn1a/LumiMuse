@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { Character, Message } from '@/types';
 import { copyLocalAssetUrl, deleteLocalAssetUrls, duplicateCharacterFilesInMetadata, remapJsonStringIds } from '@/lib/character-file-utils';
-import { v4 as uuidv4 } from 'uuid';
 
 type ConversationRow = {
   id: string;
@@ -39,7 +39,7 @@ export async function POST(
 
   const copiedUrls = new Map<string, string>();
   const now = new Date().toISOString();
-  const newCharacterId = uuidv4().slice(0, 12);
+  const newCharacterId = crypto.randomUUID().slice(0, 12);
   const newName = `${original.name}（副本）`;
   try {
     const newAvatarUrl = await copyLocalAssetUrl(original.avatar_url, copiedUrls) as string | null;
@@ -71,7 +71,7 @@ export async function POST(
 
   const preparedConversations = conversations.map(conversation => ({
     originalId: conversation.id,
-    newId: uuidv4().slice(0, 12),
+    newId: crypto.randomUUID().slice(0, 12),
     title: conversation.title,
     ignoreMemory: conversation.ignore_memory ? 1 : 0,
     createdAt: conversation.created_at,
@@ -94,7 +94,7 @@ export async function POST(
     const messages = messagesByConversation.get(preparedConversation.originalId) || [];
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index];
-      const newMessageId = uuidv4().slice(0, 12);
+      const newMessageId = crypto.randomUUID().slice(0, 12);
       newMessageIdMap.set(message.id, newMessageId);
       preparedMessages.push({
         id: newMessageId,
@@ -110,7 +110,7 @@ export async function POST(
   }
 
   const preparedMemories = memories.map(memory => ({
-    id: uuidv4().slice(0, 12),
+    id: crypto.randomUUID().slice(0, 12),
     category: memory.category,
     content: memory.content,
     confidence: memory.confidence,

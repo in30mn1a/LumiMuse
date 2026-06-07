@@ -1,9 +1,10 @@
 import { getDb } from '@/lib/db';
 import { estimateTokens } from '@/lib/token-counter';
 import { Memory, Settings } from '@/types';
-import { normalizeMemoryCategory } from '@/lib/memory-category';
+import { inferMemoryDefaults } from '@/lib/memory-category';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { CharacterMemoryProfile, readMemoryProfile, renderMemoryProfile } from '@/lib/memory-profile';
+import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import {
   EmbeddingAdapterConfig,
   embedText,
@@ -118,6 +119,7 @@ const MEMORY_USAGE_PRINCIPLES = `### 记忆使用原则
 
 // 记忆工作包 token 上限的硬上界(与设置页 UI 的 max 一致):防止越界配置架空「token 预算是硬上限」的设计。
 const MEMORY_PACKAGE_TOKEN_BUDGET_MAX = 32000;
+const LEGACY_MEMORY_CANDIDATE_LIMIT = 300;
 
 function finiteNumber(value: unknown, fallback: number): number {
   const n = Number(value);
@@ -158,25 +160,8 @@ export function resolveMemoryEngineConfig(settings: Settings): MemoryEngineConfi
   };
 }
 
-function parseJsonArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String);
-  if (typeof value !== 'string') return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
-}
-
 function normalizeMemoryRecord(record: Memory): Memory {
-  const raw = record as unknown as Record<string, unknown>;
-  return {
-    ...record,
-    category: normalizeMemoryCategory(String(raw.category || '话题历史')),
-    tags: parseJsonArray(raw.tags),
-    source_msg_ids: parseJsonArray(raw.source_msg_ids),
-  };
+  return normalizeMemoryRow(record);
 }
 
 function loadDefaultPriorityMemories(characterId: string): Memory[] {
@@ -206,8 +191,12 @@ function loadDefaultLegacyMemories(characterId: string): Memory[] {
     `SELECT * FROM memories
      WHERE character_id = ?
        AND status = 'active'
-     ORDER BY updated_at DESC`,
-  ).all(characterId) as Memory[];
+      ORDER BY
+        COALESCE(pinned, 0) DESC,
+        COALESCE(importance, 0) DESC,
+        updated_at DESC
+      LIMIT ?`,
+  ).all(characterId, LEGACY_MEMORY_CANDIDATE_LIMIT) as Memory[];
 
   return rows.map(normalizeMemoryRecord);
 }
@@ -273,34 +262,10 @@ function optionalNumber(memory: Memory, key: string, fallback: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function inferDefaultImportance(memory: Memory): number {
-  switch (memory.category) {
-    case '基础信息': return 0.85;
-    case '人格特质': return 0.8;
-    case '重要事件': return 0.75;
-    case '偏好习惯': return 0.65;
-    case '关系动态': return 0.6;
-    case '四季日常': return 0.4;
-    default:
-      return 0.45;
-  }
-}
-
 function getMemoryKind(memory: Memory): string {
   const rawKind = (memory as unknown as Record<string, unknown>).memory_kind;
   if (typeof rawKind === 'string' && rawKind) return rawKind;
-
-  switch (memory.category) {
-    case '偏好习惯': return 'user_preference';
-    case '基础信息':
-    case '人格特质':
-      return 'user_fact';
-    case '关系动态':
-    case '重要事件':
-      return 'relationship_event';
-    default:
-      return 'general';
-  }
+  return inferMemoryDefaults(memory.category).memory_kind;
 }
 
 function recencyScore(memory: Memory): number {
@@ -327,8 +292,9 @@ function statusPenalty(memory: Memory): number {
 
 function scoreCandidate(candidate: RetrievedMemory): RetrievedMemory {
   const memory = candidate.memory;
-  const importance = optionalNumber(memory, 'importance', inferDefaultImportance(memory));
-  const emotionalWeight = optionalNumber(memory, 'emotional_weight', memory.category === '关系动态' ? 0.6 : 0);
+  const defaults = inferMemoryDefaults(memory.category);
+  const importance = optionalNumber(memory, 'importance', defaults.importance);
+  const emotionalWeight = optionalNumber(memory, 'emotional_weight', defaults.emotional_weight);
   const usageCount = Number((memory as unknown as Record<string, unknown>).usage_count || 0);
   const usageScore = Math.max(0, Math.min(1, Math.log1p(Math.max(0, usageCount)) / Math.log(11)));
   const pinned = Number((memory as unknown as Record<string, unknown>).pinned || 0) > 0 ? 1 : 0;
@@ -363,7 +329,7 @@ function rankCandidates(candidates: Iterable<RetrievedMemory>): RetrievedMemory[
 function layerForMemory(memory: Memory): string {
   const kind = getMemoryKind(memory);
   const pinned = Number((memory as unknown as Record<string, unknown>).pinned || 0) > 0;
-  const importance = optionalNumber(memory, 'importance', inferDefaultImportance(memory));
+  const importance = optionalNumber(memory, 'importance', inferMemoryDefaults(memory.category).importance);
 
   if (pinned || importance >= 0.9) return '重要固定记忆';
   if (kind === 'character_promise') return '角色需要兑现的承诺';
@@ -534,6 +500,7 @@ async function applyReranker(
   config: MemoryEngineConfig,
   deps: RetrievalDeps,
   diagnostics: WorkingMemoryPackage['diagnostics'],
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!config.reranker_enabled || candidates.size === 0) return;
 
@@ -549,6 +516,7 @@ async function applyReranker(
       api_key: config.reranker_api_key,
       model: config.reranker_model,
       timeout_ms: config.reranker_timeout_ms,
+      signal,
     });
     const finiteScores = results
       .map(result => Number(result.score))
@@ -590,6 +558,7 @@ async function addVectorCandidates(
   config: MemoryEngineConfig,
   deps: RetrievalDeps,
   candidates: Map<string, RetrievedMemory>,
+  signal?: AbortSignal,
 ): Promise<void> {
   const embed = deps.embedText || embedText;
   const loadRows = deps.loadEmbeddingRows || loadReadyMemoryEmbeddings;
@@ -602,6 +571,7 @@ async function addVectorCandidates(
     dimension: config.embedding_dimension,
     timeout_ms: config.embedding_timeout_ms,
     provider: 'openai-compatible',
+    signal,
   });
   const rows = loadRows(characterId, {
     provider: 'openai-compatible',
@@ -647,15 +617,18 @@ function maxSelectedMemoryCount(settings: Settings, config: MemoryEngineConfig):
   return Math.max(100, config.keyword_top_k, config.vector_top_k, config.final_top_k * 2);
 }
 
-function withTotalTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+function withTotalTimeout<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const controller = new AbortController();
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      controller.abort();
       reject(new Error(`memory retrieval timed out after ${timeoutMs}ms`));
     }, timeoutMs);
   });
 
-  return Promise.race([work, timeout]).finally(() => {
+  const result = Promise.resolve().then(() => work(controller.signal));
+  return Promise.race([result, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
 }
@@ -777,7 +750,11 @@ async function buildLocalFallbackPackage(
   };
 }
 
-async function buildWorkingMemoryPackage(options: RetrieveWorkingMemoryOptions, config: MemoryEngineConfig): Promise<WorkingMemoryPackage> {
+async function buildWorkingMemoryPackage(
+  options: RetrieveWorkingMemoryOptions,
+  config: MemoryEngineConfig,
+  signal?: AbortSignal,
+): Promise<WorkingMemoryPackage> {
   if (!config.allow_memory_context_in_chat) {
     return buildEmptyPackage();
   }
@@ -798,7 +775,7 @@ async function buildWorkingMemoryPackage(options: RetrieveWorkingMemoryOptions, 
 
   if (config.embedding_enabled) {
     try {
-      await addVectorCandidates(options.queryText, options.characterId, config, deps, candidates);
+      await addVectorCandidates(options.queryText, options.characterId, config, deps, candidates, signal);
       mode = candidates.size > priorityMemories.length ? 'vector' : 'hybrid';
     } catch (error) {
       diagnostics.embeddingFailed = error instanceof Error ? error.message : String(error);
@@ -819,7 +796,7 @@ async function buildWorkingMemoryPackage(options: RetrieveWorkingMemoryOptions, 
     if (config.embedding_enabled && !usedFallback) mode = 'hybrid';
   }
 
-  await applyReranker(options.queryText, candidates, config, deps, diagnostics);
+  await applyReranker(options.queryText, candidates, config, deps, diagnostics, signal);
 
   const ranked = rankCandidates(candidates.values());
   diagnostics.candidateCount = ranked.length;
@@ -857,7 +834,7 @@ export async function retrieveWorkingMemoryPackage(options: RetrieveWorkingMemor
 
   try {
     result = await withTotalTimeout(
-      Promise.resolve().then(() => buildWorkingMemoryPackage(options, config)),
+      signal => buildWorkingMemoryPackage(options, config, signal),
       config.total_retrieval_timeout_ms,
     );
   } catch (error) {

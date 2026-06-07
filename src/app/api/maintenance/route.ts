@@ -8,6 +8,7 @@ import {
   collectLocalAssetUrlsFromContent,
   resolveLocalAssetUrl,
 } from '@/lib/character-file-utils';
+import { requireAuth } from '@/lib/route-auth';
 
 interface OrphanFileStats {
   total: number;
@@ -153,17 +154,6 @@ async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphan
  *   - 维护接口（删除孤儿数据 / 文件）属于高危操作，独立校验可以将单点
  *     失误造成的影响降到最低。
  */
-async function requireAuth(request: NextRequest): Promise<NextResponse | null> {
-  if (!process.env.ACCESS_PASSWORD) return null;
-  const { AUTH_COOKIE_NAME, verifyAuthToken } = await import('@/lib/auth-token');
-  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const valid = await verifyAuthToken(token);
-  if (!valid) {
-    return NextResponse.json({ error: '未授权' }, { status: 401 });
-  }
-  return null;
-}
-
 /**
  * GET /api/maintenance
  * 预览孤儿数据数量，不实际删除（含文件孤儿）

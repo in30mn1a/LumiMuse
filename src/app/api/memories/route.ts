@@ -8,6 +8,10 @@ import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 
 const MAX_PAGINATED_MEMORIES_LIMIT = 500;
 
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, char => `\\${char}`);
+}
+
 function parseJsonArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
   if (typeof value !== 'string') return [];
@@ -96,8 +100,9 @@ export async function GET(request: NextRequest) {
     params.push(characterId);
   }
   if (keyword) {
-    sql += ' AND (content LIKE ? OR tags LIKE ?)';
-    params.push(`%${keyword}%`, `%${keyword}%`);
+    sql += " AND (content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')";
+    const escapedKeyword = escapeLikePattern(keyword);
+    params.push(`%${escapedKeyword}%`, `%${escapedKeyword}%`);
   }
   if (category) {
     sql += ' AND category = ?';

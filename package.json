@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
+    "postbuild": "node scripts/prepare-standalone-assets.js",
     "start": "npm run start:standalone",
     "start:local": "next start",
     "start:standalone": "node .next/standalone/server.js",

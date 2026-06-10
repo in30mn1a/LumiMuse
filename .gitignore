@@ -40,8 +40,8 @@ next-env.d.ts
 # Claude Code
 .claude/
 
-# AI planning docs (not project code)
-docs/superpowers/
+# Docs
+docs/
 
 # Temporary regression check scripts
 scripts/regression-check-*.js
@@ -60,4 +60,3 @@ public/generated/
 public/avatars/
 public/attachments/
 lumimuse_flutter/
-docs/

@@ -12,6 +12,10 @@ test('npm start targets the standalone server while local next start stays expli
   assert.equal(pkg.scripts['start:local'], 'next start');
 });
 
+test('npm build prepares static assets for standalone startup', () => {
+  assert.equal(pkg.scripts.postbuild, 'node scripts/prepare-standalone-assets.js');
+});
+
 test('README files document local and standalone start commands', () => {
   const readmeZh = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
   const readmeEn = fs.readFileSync(path.join(root, 'README.en.md'), 'utf8');

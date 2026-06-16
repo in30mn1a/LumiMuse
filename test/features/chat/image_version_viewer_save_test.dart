@@ -10,7 +10,7 @@ void main() {
               .readAsStringSync();
 
       expect(viewer, contains('onLongPress: _showSaveMenu'));
-      expect(viewer, contains('保存到本地相册'));
+      expect(viewer, contains('image.viewer.saveToGallery'));
       expect(viewer, contains('GallerySaverService.saveImageToGallery'));
     });
 

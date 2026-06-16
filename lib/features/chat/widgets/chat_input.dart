@@ -5,10 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/database/database.dart';
 import '../../../core/models/attachment_item.dart';
-import '../../../core/models/app_settings.dart';
 import '../../../core/providers/database_provider.dart';
+import '../../../core/providers/llm_service_provider.dart';
 import '../../../core/providers/settings_provider.dart';
-import '../../../core/services/llm_service.dart';
 import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/app_widgets.dart';
@@ -16,6 +15,20 @@ import '../../../theme/app_breakpoints.dart';
 import '../../../theme/app_spacing.dart';
 import 'attachment_picker_button.dart';
 import 'attachment_preview_bar.dart';
+
+String _sanitizeModelFetchError(Object error) {
+  var message = error.toString();
+  message = message.replaceAll(RegExp(r'https?://[^\s]+'), '<URL>');
+  message = message.replaceAll(
+    RegExp(r'Bearer\s+[A-Za-z0-9._\-]+', caseSensitive: false),
+    'Bearer <KEY>',
+  );
+  message = message.replaceAll(RegExp(r'[A-Za-z0-9_\-]{24,}'), '<KEY>');
+  if (message.length > 200) {
+    message = '${message.substring(0, 200)}...';
+  }
+  return message;
+}
 
 /// 聊天输入栏 — 严格 1:1 对照 src/components/chat/ChatInput.tsx 复刻。
 ///
@@ -424,13 +437,14 @@ class _ChatInputState extends ConsumerState<ChatInput> {
   }
 
   Future<void> _handleOpenModelPicker() async {
+    String? fetchError;
+
     // 先确保模型列表已加载
     if (_fetchedModels.isEmpty && !_modelLoading) {
       setState(() => _modelLoading = true);
       try {
         final db = ref.read(databaseProvider);
-        final settings =
-            ref.read(settingsProvider).valueOrNull ?? const AppSettings();
+        final settings = await ref.read(settingsProvider.future);
         if (settings.apiBase.isNotEmpty) {
           // 先尝试从本地缓存读取
           final cached =
@@ -445,31 +459,27 @@ class _ChatInputState extends ConsumerState<ChatInput> {
           }
           // 缓存为空，主动调用 API 拉取模型列表
           if (_fetchedModels.isEmpty && settings.apiKey.isNotEmpty) {
-            final llm = LlmService();
-            try {
-              final models = await llm.fetchModels(
-                apiBase: settings.apiBase,
-                apiKey: settings.apiKey,
-              );
-              if (models.isNotEmpty) {
-                _fetchedModels = models;
-                // 写入缓存供下次使用
-                await db
-                    .into(db.modelCache)
-                    .insertOnConflictUpdate(
-                      ModelCacheCompanion.insert(
-                        apiBase: settings.apiBase,
-                        models: drift.Value(jsonEncode(models)),
-                      ),
-                    );
-              }
-            } finally {
-              llm.dispose();
+            final llm = ref.read(llmServiceProvider);
+            final models = await llm.fetchModels(
+              apiBase: settings.apiBase,
+              apiKey: settings.apiKey,
+            );
+            if (models.isNotEmpty) {
+              _fetchedModels = models;
+              // 写入缓存供下次使用
+              await db
+                  .into(db.modelCache)
+                  .insertOnConflictUpdate(
+                    ModelCacheCompanion.insert(
+                      apiBase: settings.apiBase,
+                      models: drift.Value(jsonEncode(models)),
+                    ),
+                  );
             }
           }
         }
-      } catch (_) {
-        // 静默失败
+      } catch (e) {
+        fetchError = _sanitizeModelFetchError(e);
       }
       if (mounted) setState(() => _modelLoading = false);
     }
@@ -492,6 +502,16 @@ class _ChatInputState extends ConsumerState<ChatInput> {
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final accentDark = isDark ? AppTheme.darkAccentDark : AppTheme.accentDark;
+
+    if (fetchError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(fetchError),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
 
     if (_fetchedModels.isEmpty) {
       // 没有模型可选，显示提示

@@ -21,6 +21,7 @@ import '../utils/time_context_builder.dart';
 import '../utils/token_counter.dart';
 import 'character_images_actions.dart';
 import 'database_provider.dart';
+import 'llm_service_provider.dart';
 import 'message_provider.dart';
 import 'settings_provider.dart';
 
@@ -78,7 +79,7 @@ final chatControllerProvider = StateNotifierProvider.autoDispose
 class ChatController extends StateNotifier<ChatState> {
   final Ref _ref;
   final String _conversationId;
-  final LlmService _llm = LlmService();
+  final LlmService _llm;
   CancelToken? _cancelToken;
 
   /// 请求自增序号，用于异步流式回调的「防重入」校验。
@@ -120,7 +121,9 @@ class ChatController extends StateNotifier<ChatState> {
     return true;
   }
 
-  ChatController(this._ref, this._conversationId) : super(const ChatState());
+  ChatController(this._ref, this._conversationId)
+    : _llm = _ref.read(llmServiceProvider),
+      super(const ChatState());
 
   /// 流式 / 非流式生成完成后统一收尾。
   ///
@@ -178,6 +181,28 @@ class ChatController extends StateNotifier<ChatState> {
         error: error,
       );
     }
+  }
+
+  void _finishCancelledResponse(int requestSeq) {
+    if (requestSeq != _requestSeq) return;
+    _requestInFlight = false;
+    if (mounted) {
+      state = const ChatState(isGenerating: false, currentStreamText: '');
+    }
+  }
+
+  void _logPostReplyProcessingError(String stage, Object error) {
+    var message = error.toString();
+    message = message.replaceAll(RegExp(r'https?://[^\s]+'), '<URL>');
+    message = message.replaceAll(
+      RegExp(r'Bearer\s+[A-Za-z0-9._\-]+', caseSensitive: false),
+      'Bearer <KEY>',
+    );
+    message = message.replaceAll(RegExp(r'[A-Za-z0-9_\-]{24,}'), '<KEY>');
+    if (message.length > 200) {
+      message = '${message.substring(0, 200)}...';
+    }
+    debugPrint('ChatController.$stage 后处理失败: $message');
   }
 
   void _releaseRequestLock(int requestSeq) {
@@ -276,7 +301,11 @@ class ChatController extends StateNotifier<ChatState> {
           },
           onDone: (finalText) async {
             // 过期或已取消回调直接跳过，避免污染新一轮请求的状态与数据库
-            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+            if (mySeq != _requestSeq ||
+                cancelToken.isCancelled ||
+                !_claimFinalize()) {
+              return;
+            }
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -311,7 +340,11 @@ class ChatController extends StateNotifier<ChatState> {
           cancelToken: cancelToken,
         );
         // 非流式分支也做防重入与取消校验：在 await 期间若已停止或被新请求覆盖，丢弃结果
-        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+        if (mySeq != _requestSeq ||
+            cancelToken.isCancelled ||
+            !_claimFinalize()) {
+          return;
+        }
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -331,6 +364,8 @@ class ChatController extends StateNotifier<ChatState> {
         _unextractedMessageCount += 1; // AI 回复计数
         await _postReplyProcessing(settings, conversation.characterId);
       }
+    } on LlmRequestCancelledException {
+      _finishCancelledResponse(mySeq);
     } catch (e) {
       _finishWithError(mySeq, e.toString());
     }
@@ -470,7 +505,11 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+            if (mySeq != _requestSeq ||
+                cancelToken.isCancelled ||
+                !_claimFinalize()) {
+              return;
+            }
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -504,7 +543,11 @@ class ChatController extends StateNotifier<ChatState> {
           messages: chatMessages,
           cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+        if (mySeq != _requestSeq ||
+            cancelToken.isCancelled ||
+            !_claimFinalize()) {
+          return;
+        }
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -524,6 +567,8 @@ class ChatController extends StateNotifier<ChatState> {
         _unextractedMessageCount += 1;
         await _postReplyProcessing(settings, conversation.characterId);
       }
+    } on LlmRequestCancelledException {
+      _finishCancelledResponse(mySeq);
     } catch (e) {
       _finishWithError(mySeq, e.toString());
     }
@@ -625,7 +670,11 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+            if (mySeq != _requestSeq ||
+                cancelToken.isCancelled ||
+                !_claimFinalize()) {
+              return;
+            }
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -656,7 +705,11 @@ class ChatController extends StateNotifier<ChatState> {
           messages: chatMessages,
           cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+        if (mySeq != _requestSeq ||
+            cancelToken.isCancelled ||
+            !_claimFinalize()) {
+          return;
+        }
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -673,6 +726,8 @@ class ChatController extends StateNotifier<ChatState> {
           state = const ChatState(isGenerating: false, currentStreamText: '');
         }
       }
+    } on LlmRequestCancelledException {
+      _finishCancelledResponse(mySeq);
     } catch (e) {
       _finishWithError(mySeq, e.toString());
     }
@@ -754,7 +809,11 @@ class ChatController extends StateNotifier<ChatState> {
             }
           },
           onDone: (finalText) async {
-            if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+            if (mySeq != _requestSeq ||
+                cancelToken.isCancelled ||
+                !_claimFinalize()) {
+              return;
+            }
             final cleaned = _stripTimestampPrefix(finalText);
             if (cleaned.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
@@ -788,7 +847,11 @@ class ChatController extends StateNotifier<ChatState> {
           messages: chatMessages,
           cancelToken: cancelToken,
         );
-        if (mySeq != _requestSeq || cancelToken.isCancelled || !_claimFinalize()) return;
+        if (mySeq != _requestSeq ||
+            cancelToken.isCancelled ||
+            !_claimFinalize()) {
+          return;
+        }
         final cleaned = _stripTimestampPrefix(result);
         if (cleaned.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
@@ -808,6 +871,8 @@ class ChatController extends StateNotifier<ChatState> {
         _unextractedMessageCount += 1;
         await _postReplyProcessing(settings, conversation.characterId);
       }
+    } on LlmRequestCancelledException {
+      _finishCancelledResponse(mySeq);
     } catch (e) {
       _finishWithError(mySeq, e.toString());
     }
@@ -1245,21 +1310,24 @@ class ChatController extends StateNotifier<ChatState> {
       if (conv != null && shouldSkipAutoMemoryTrigger(conv.ignoreMemory)) {
         return;
       }
-    } catch (_) {
+    } catch (e) {
+      _logPostReplyProcessingError('_postReplyProcessing.ignoreMemory', e);
       // 查询失败时不阻塞，继续走原有自动后处理流程
     }
 
     // 记忆触发检查
     try {
       await _checkMemoryTrigger(settings, characterId);
-    } catch (_) {
+    } catch (e) {
+      _logPostReplyProcessingError('_checkMemoryTrigger', e);
       // 记忆触发失败不阻塞后续流程
     }
 
     // 自动生图检查
     try {
       await _checkAutoImageGen(settings, characterId);
-    } catch (_) {
+    } catch (e) {
+      _logPostReplyProcessingError('_checkAutoImageGen', e);
       // 自动生图失败不阻塞
     }
   }
@@ -1425,7 +1493,8 @@ class ChatController extends StateNotifier<ChatState> {
       await (db.update(db.messages)
             ..where((t) => t.id.equals(lastAssistant.id)))
           .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
-    } catch (_) {
+    } catch (e) {
+      _logPostReplyProcessingError('_checkAutoImageGen', e);
       // 自动生图失败不中断对话流程
     }
   }
@@ -1436,7 +1505,6 @@ class ChatController extends StateNotifier<ChatState> {
     // 配合 _requestSeq 防重入校验，过期回调不会写库或 setState。
     _requestSeq++;
     _cancelToken?.cancel();
-    _llm.dispose();
     super.dispose();
   }
 }

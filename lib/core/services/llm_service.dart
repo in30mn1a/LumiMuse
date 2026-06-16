@@ -18,18 +18,79 @@ typedef OnChunkCallback = void Function(String text);
 typedef OnDoneCallback = Future<void> Function(String fullText);
 typedef OnErrorCallback = void Function(String error);
 
+/// 模型列表拉取失败。
+class FetchModelsException implements Exception {
+  final String message;
+
+  const FetchModelsException(this.message);
+
+  @override
+  String toString() => message;
+}
+
+/// 用户或调用方主动取消 LLM 请求。
+class LlmRequestCancelledException implements Exception {
+  final String message;
+
+  const LlmRequestCancelledException([this.message = 'LLM 请求已取消']);
+
+  @override
+  String toString() => message;
+}
+
 /// LLM 服务 — 负责与 OpenAI 兼容 API 通信
 class LlmService {
-  final Dio _dio = Dio(
-    BaseOptions(
+  final Dio _dio;
+
+  LlmService({Dio? dio}) : _dio = dio ?? Dio(_defaultOptions());
+
+  static BaseOptions _defaultOptions() {
+    return BaseOptions(
       connectTimeout: const Duration(seconds: 30),
       // LLM 流式响应可能较长（思考链 / 长文本输出），给到 5 分钟
       receiveTimeout: const Duration(minutes: 5),
       sendTimeout: const Duration(seconds: 60),
-    ),
-  );
+    );
+  }
 
-  LlmService();
+  static String _sanitizeForDisplay(Object error) {
+    if (error is DioException) {
+      final status = error.response?.statusCode;
+      final statusText = status == null ? '网络失败' : status.toString();
+      final message = error.message == null
+          ? ''
+          : ': ${_redactSensitiveText(error.message!)}';
+      return '$statusText$message';
+    }
+    return _redactSensitiveText(error.toString());
+  }
+
+  static String _redactSensitiveText(String text) {
+    var result = text.replaceAll(RegExp(r'https?://[^\s]+'), '<URL>');
+    result = result.replaceAll(
+      RegExp(r'Bearer\s+[A-Za-z0-9._\-]+', caseSensitive: false),
+      'Bearer <KEY>',
+    );
+    result = result.replaceAll(RegExp(r'[A-Za-z0-9_\-]{24,}'), '<KEY>');
+    if (result.length > 200) {
+      result = '${result.substring(0, 200)}...';
+    }
+    return result;
+  }
+
+  static String? _extractStreamDelta(Map<String, dynamic> json) {
+    final choices = json['choices'];
+    if (choices is! List || choices.isEmpty) return null;
+
+    final firstChoice = choices.first;
+    if (firstChoice is! Map) return null;
+
+    final delta = firstChoice['delta'];
+    if (delta is! Map) return null;
+
+    final content = delta['content'];
+    return content is String ? content : null;
+  }
 
   /// 流式聊天补全
   Future<void> chatCompletionStream({
@@ -75,9 +136,7 @@ class LlmService {
         if (cancelToken?.isCancelled ?? false) return;
 
         for (final json in parser.parseChunk(chunk)) {
-          final choices = json['choices'] as List?;
-          if (choices == null || choices.isEmpty) continue;
-          final delta = choices[0]?['delta']?['content'] as String?;
+          final delta = _extractStreamDelta(json);
           if (delta != null && delta.isNotEmpty) {
             fullTextBuffer.write(delta);
             onChunk(delta);
@@ -86,9 +145,7 @@ class LlmService {
       }
 
       for (final json in parser.flush()) {
-        final choices = json['choices'] as List?;
-        if (choices == null || choices.isEmpty) continue;
-        final delta = choices[0]?['delta']?['content'] as String?;
+        final delta = _extractStreamDelta(json);
         if (delta != null && delta.isNotEmpty) {
           fullTextBuffer.write(delta);
           onChunk(delta);
@@ -163,10 +220,10 @@ class LlmService {
       }
       return content;
     } on DioException catch (e) {
-      if (e.type == DioExceptionType.cancel) return '';
-      throw Exception(
-        'API 错误: ${e.response?.statusCode ?? "网络失败"} - ${e.message}',
-      );
+      if (e.type == DioExceptionType.cancel) {
+        throw const LlmRequestCancelledException();
+      }
+      throw Exception('API 错误: ${_sanitizeForDisplay(e)}');
     }
   }
 
@@ -181,16 +238,24 @@ class LlmService {
         options: Options(headers: {'Authorization': 'Bearer $apiKey'}),
       );
 
-      final data = response.data['data'] as List?;
+      final responseData = response.data;
+      if (responseData is! Map) {
+        throw const FormatException('模型列表响应不是 JSON 对象');
+      }
+
+      final data = responseData['data'];
       if (data == null) return [];
+      if (data is! List) {
+        throw const FormatException('模型列表 data 字段不是数组');
+      }
 
       return data
-          .map((m) => m['id'] as String? ?? '')
+          .map((m) => m is Map ? (m['id'] as String? ?? '') : '')
           .where((id) => id.isNotEmpty)
           .toList()
         ..sort();
-    } catch (_) {
-      return [];
+    } catch (e) {
+      throw FetchModelsException('模型列表拉取失败: ${_sanitizeForDisplay(e)}');
     }
   }
 

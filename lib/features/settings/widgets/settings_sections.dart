@@ -10,8 +10,8 @@ import '../../../core/providers/database_provider.dart';
 import '../../../core/providers/settings_provider.dart';
 import '../../../core/providers/character_provider.dart';
 import '../../../core/providers/conversation_provider.dart';
+import '../../../core/providers/llm_service_provider.dart';
 import '../../../core/providers/memory_provider.dart';
-import '../../../core/services/llm_service.dart';
 import '../../../core/services/maintenance_service.dart';
 import '../../../core/utils/i18n.dart';
 import '../../../theme/app_spacing.dart';
@@ -28,7 +28,7 @@ String _sanitizeApiError(Object e, {String? lang}) {
   if (e is DioException) {
     final code = e.response?.statusCode;
     return I18n.tArgs('settings.connectFailed', {
-      'code': code ?? (lang == 'en' ? 'no response' : '无响应'),
+      'code': code ?? I18n.t('settings.noResponse', lang: lang),
     }, lang: lang);
   }
   var msg = e.toString();
@@ -654,7 +654,7 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
       _modelError = null;
     });
     try {
-      final llm = LlmService();
+      final llm = ref.read(llmServiceProvider);
       final models = await llm.fetchModels(
         apiBase: _apiBaseController.text.trim(),
         apiKey: _apiKeyController.text.trim(),
@@ -662,7 +662,7 @@ class _ApiSectionState extends ConsumerState<ApiSection> {
       if (!mounted) return;
       setState(() => _availableModels = models);
       if (models.isEmpty) {
-        setState(() => _modelError = '未获取到模型，请检查 API 配置');
+        setState(() => _modelError = '服务返回空模型列表');
       }
     } catch (e) {
       if (!mounted) return;

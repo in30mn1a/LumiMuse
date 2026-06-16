@@ -22,13 +22,19 @@ class _NaiZipResult {
 
 /// 图片生成服务 — 支持 SD WebUI / NovelAI / ComfyUI / 自定义 API
 class ImageGenService {
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 30),
-    // 图像生成（SD/NAI/ComfyUI）耗时较长，给到 5 分钟
-    receiveTimeout: const Duration(minutes: 5),
-    sendTimeout: const Duration(seconds: 60),
-  ));
+  final Dio _dio;
   static const _uuid = Uuid();
+
+  ImageGenService({Dio? dio}) : _dio = dio ?? _createDefaultDio();
+
+  static Dio _createDefaultDio() {
+    return Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 30),
+      // 图像生成（SD/NAI/ComfyUI）耗时较长，给到 5 分钟
+      receiveTimeout: const Duration(minutes: 5),
+      sendTimeout: const Duration(seconds: 60),
+    ));
+  }
 
   // FIX(Major-4): 与 Dio receiveTimeout 5 分钟保持一致，避免轮询提前超时但 Dio 仍在等。
   // 旧代码硬编码 60 次 × 2 秒 = 120 秒，比 receiveTimeout 短一半，长任务会先被
@@ -112,7 +118,10 @@ class ImageGenService {
       'n_iter': 1,
     });
 
-    final base64 = response.data['images']?[0] as String?;
+    final images = response.data['images'];
+    final base64 = images is List && images.isNotEmpty
+        ? images.first as String?
+        : null;
     if (base64 == null) throw Exception('SD WebUI 未返回图片');
     return _saveBase64Image(base64);
   }

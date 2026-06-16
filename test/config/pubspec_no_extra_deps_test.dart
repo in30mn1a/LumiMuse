@@ -1,7 +1,8 @@
 // 文件作用：pubspec 依赖增量 smoke 测试
 //
-// 来源任务：flutter-parity-gaps-fill / 4.6 编写 pubspec 依赖增量 smoke 测试
-// 落实需求：R6.2 —— 本 spec 引入的依赖增量 ⊆ {flutter_localizations}
+// 来源任务：flutter-parity-gaps-fill / 4.6 编写 pubspec 依赖增量 smoke 测试；
+// 后续 flutter-audit-remediation-2026-06-07 允许安全存储依赖。
+// 落实需求：R6.2 + 审计整改需求 1 —— 依赖增量必须显式登记在白名单。
 //
 // 测试思路：
 //   1. 硬编码「本 spec 实施前」的依赖基线（pre-spec baseline），分别记录在
@@ -62,9 +63,10 @@ const Set<String> _baselineDevDependencies = <String>{
   'glados',
 };
 
-/// 本 spec 允许新增的依赖键集合（白名单）。
+/// 已审查并允许新增的依赖键集合（白名单）。
 const Set<String> _allowedNewDependencies = <String>{
   'flutter_localizations',
+  'flutter_secure_storage',
 };
 
 void main() {
@@ -81,7 +83,7 @@ void main() {
     final String pubspecText = pubspecFile.readAsStringSync();
     final _PubspecSections sections = _parsePubspecSections(pubspecText);
 
-    test('dependencies 增量 ⊆ {flutter_localizations}', () {
+    test('dependencies 增量 ⊆ 已审查白名单', () {
       final Set<String> increment =
           sections.dependencies.difference(_baselineDependencies);
       final Set<String> illegal =
@@ -98,7 +100,7 @@ void main() {
       );
     });
 
-    test('dev_dependencies 增量 ⊆ {flutter_localizations}', () {
+    test('dev_dependencies 增量 ⊆ 已审查白名单', () {
       final Set<String> increment =
           sections.devDependencies.difference(_baselineDevDependencies);
       final Set<String> illegal =

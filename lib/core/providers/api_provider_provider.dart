@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../database/database.dart';
 import '../models/app_settings.dart';
+import '../services/secret_storage_service.dart';
 import 'database_provider.dart';
 import 'settings_provider.dart';
 
@@ -86,22 +87,25 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
     final rows = await (db.select(
       db.apiProviders,
     )..orderBy([(t) => OrderingTerm.asc(t.createdAt)])).get();
-    return rows
-        .map(
-          (r) => ApiProviderData(
-            id: r.id,
-            name: r.name,
-            apiBase: r.apiBase,
-            apiKey: r.apiKey,
-            model: r.model,
-            temperature: r.temperature,
-            maxTokens: r.maxTokens,
-            contextWindow: r.contextWindow,
-            jsonMode: r.jsonMode != 0,
-            createdAt: r.createdAt,
-          ),
-        )
-        .toList();
+    final secretStorage = ref.read(secretStorageServiceProvider);
+    final providers = <ApiProviderData>[];
+    for (final r in rows) {
+      providers.add(
+        ApiProviderData(
+          id: r.id,
+          name: r.name,
+          apiBase: r.apiBase,
+          apiKey: await secretStorage.resolveApiKey(r.apiKey),
+          model: r.model,
+          temperature: r.temperature,
+          maxTokens: r.maxTokens,
+          contextWindow: r.contextWindow,
+          jsonMode: r.jsonMode != 0,
+          createdAt: r.createdAt,
+        ),
+      );
+    }
+    return providers;
   }
 
   /// 保存当前设置为新供应商
@@ -110,6 +114,12 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
     final settings =
         ref.read(settingsProvider).valueOrNull ?? const AppSettings();
     final id = _generateId();
+    final apiKeyRef = await ref
+        .read(secretStorageServiceProvider)
+        .storeApiKeyOrEmpty(
+          SecretStorageService.apiProviderKeyRef(id),
+          settings.apiKey,
+        );
 
     await db
         .into(db.apiProviders)
@@ -118,7 +128,7 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
             id: id,
             name: name,
             apiBase: Value(settings.apiBase),
-            apiKey: Value(settings.apiKey),
+            apiKey: Value(apiKeyRef),
             model: Value(settings.model),
             temperature: Value(settings.temperature),
             maxTokens: Value(settings.maxTokens),
@@ -146,13 +156,19 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
 
     final settings =
         ref.read(settingsProvider).valueOrNull ?? const AppSettings();
+    final apiKeyRef = await ref
+        .read(secretStorageServiceProvider)
+        .storeApiKeyOrEmpty(
+          SecretStorageService.apiProviderKeyRef(activeId),
+          settings.apiKey,
+        );
 
     await (db.update(
       db.apiProviders,
     )..where((t) => t.id.equals(activeId))).write(
       ApiProvidersCompanion(
         apiBase: Value(settings.apiBase),
-        apiKey: Value(settings.apiKey),
+        apiKey: Value(apiKeyRef),
         model: Value(settings.model),
         temperature: Value(settings.temperature),
         maxTokens: Value(settings.maxTokens),
@@ -173,13 +189,16 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
     if (row == null) return;
 
     // 把供应商配置写入 settings
+    final resolvedApiKey = await ref
+        .read(secretStorageServiceProvider)
+        .resolveApiKey(row.apiKey);
     final settingsNotifier = ref.read(settingsProvider.notifier);
     final current =
         ref.read(settingsProvider).valueOrNull ?? const AppSettings();
     await settingsNotifier.updateSettings(
       current.copyWith(
         apiBase: row.apiBase,
-        apiKey: row.apiKey,
+        apiKey: resolvedApiKey,
         model: row.model,
         temperature: row.temperature,
         maxTokens: row.maxTokens,
@@ -199,6 +218,9 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
   Future<void> deleteProvider(String id) async {
     final db = ref.read(databaseProvider);
     await (db.delete(db.apiProviders)..where((t) => t.id.equals(id))).go();
+    await ref
+        .read(secretStorageServiceProvider)
+        .deleteApiKey(SecretStorageService.apiProviderKeyRef(id));
 
     // 如果删除的是当前激活的，清空激活 ID
     final activeId = ref.read(activeProviderIdProvider);
@@ -216,13 +238,19 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
   /// 编辑供应商
   Future<void> updateProvider(ApiProviderData provider) async {
     final db = ref.read(databaseProvider);
+    final apiKeyRef = await ref
+        .read(secretStorageServiceProvider)
+        .storeApiKeyOrEmpty(
+          SecretStorageService.apiProviderKeyRef(provider.id),
+          provider.apiKey,
+        );
     await (db.update(
       db.apiProviders,
     )..where((t) => t.id.equals(provider.id))).write(
       ApiProvidersCompanion(
         name: Value(provider.name),
         apiBase: Value(provider.apiBase),
-        apiKey: Value(provider.apiKey),
+        apiKey: Value(apiKeyRef),
         model: Value(provider.model),
         temperature: Value(provider.temperature),
         maxTokens: Value(provider.maxTokens),

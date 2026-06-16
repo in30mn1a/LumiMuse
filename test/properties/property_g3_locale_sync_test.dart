@@ -44,6 +44,7 @@ import 'package:lumimuse/core/database/database.dart';
 import 'package:lumimuse/core/models/app_settings.dart';
 import 'package:lumimuse/core/providers/database_provider.dart';
 import 'package:lumimuse/core/providers/settings_provider.dart';
+import 'package:lumimuse/core/services/secret_storage_service.dart';
 
 // ──────────────────────────────────────────────────────────────────────────
 // 用例数据结构与生成器
@@ -135,6 +136,36 @@ AppDatabase _createTestDb() {
   return AppDatabase.forTesting(NativeDatabase.memory());
 }
 
+class _MemorySecretStorageBackend implements SecretStorageBackend {
+  final Map<String, String> values = {};
+
+  @override
+  Future<void> delete({required String key}) async {
+    values.remove(key);
+  }
+
+  @override
+  Future<String?> read({required String key}) async {
+    return values[key];
+  }
+
+  @override
+  Future<void> write({required String key, required String value}) async {
+    values[key] = value;
+  }
+}
+
+ProviderContainer _createContainer(AppDatabase db) {
+  return ProviderContainer(
+    overrides: [
+      databaseProvider.overrideWithValue(db),
+      secretStorageServiceProvider.overrideWithValue(
+        SecretStorageService(backend: _MemorySecretStorageBackend()),
+      ),
+    ],
+  );
+}
+
 /// 在 settings 表中写入初始 language 字段；`null` 表示完全不插入这一行，
 /// 模拟「首次启动 / DB 中尚未保存过 language」的真实路径。
 Future<void> _seedInitLanguage(AppDatabase db, String? value) async {
@@ -167,9 +198,7 @@ void main() {
         await _seedInitLanguage(db, _initLangToValue(c.initLanguage));
 
         // ── 2. 用 ProviderContainer 隔离运行 settingsProvider ─────────
-        container = ProviderContainer(
-          overrides: [databaseProvider.overrideWithValue(db)],
-        );
+        container = _createContainer(db);
 
         // ── 3. 触发 SettingsNotifier.build：读 DB → 写 localeProvider ──
         // 用 .future 等待 build 完成，确保 build 内部对 localeProvider
@@ -261,9 +290,7 @@ void main() {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seedInitLanguage(db, 'en');
-      final container = ProviderContainer(
-        overrides: [databaseProvider.overrideWithValue(db)],
-      );
+      final container = _createContainer(db);
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -275,9 +302,7 @@ void main() {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seedInitLanguage(db, 'xx');
-      final container = ProviderContainer(
-        overrides: [databaseProvider.overrideWithValue(db)],
-      );
+      final container = _createContainer(db);
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -291,9 +316,7 @@ void main() {
       final db = _createTestDb();
       addTearDown(() => db.close());
       // 不种入任何 language 行
-      final container = ProviderContainer(
-        overrides: [databaseProvider.overrideWithValue(db)],
-      );
+      final container = _createContainer(db);
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -306,9 +329,7 @@ void main() {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seedInitLanguage(db, 'zh');
-      final container = ProviderContainer(
-        overrides: [databaseProvider.overrideWithValue(db)],
-      );
+      final container = _createContainer(db);
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -332,9 +353,7 @@ void main() {
       () async {
         final db = _createTestDb();
         addTearDown(() => db.close());
-        final container = ProviderContainer(
-          overrides: [databaseProvider.overrideWithValue(db)],
-        );
+        final container = _createContainer(db);
         addTearDown(container.dispose);
 
         await container.read(settingsProvider.future);
@@ -353,9 +372,7 @@ void main() {
       () async {
         final db = _createTestDb();
         addTearDown(() => db.close());
-        final container = ProviderContainer(
-          overrides: [databaseProvider.overrideWithValue(db)],
-        );
+        final container = _createContainer(db);
         addTearDown(container.dispose);
 
         await container.read(settingsProvider.future);
@@ -377,9 +394,7 @@ void main() {
           .insertOnConflictUpdate(
             SettingsCompanion.insert(key: 'theme', value: jsonEncode('dark')),
           );
-      final container = ProviderContainer(
-        overrides: [databaseProvider.overrideWithValue(db)],
-      );
+      final container = _createContainer(db);
       addTearDown(container.dispose);
 
       final settings = await container.read(settingsProvider.future);
@@ -392,9 +407,7 @@ void main() {
       () async {
         final db = _createTestDb();
         addTearDown(() => db.close());
-        final container = ProviderContainer(
-          overrides: [databaseProvider.overrideWithValue(db)],
-        );
+        final container = _createContainer(db);
         addTearDown(container.dispose);
 
         await container.read(settingsProvider.future);

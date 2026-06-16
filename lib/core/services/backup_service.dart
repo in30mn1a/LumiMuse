@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import '../database/database.dart';
+import 'secret_storage_service.dart';
 
 // ═══════════════════════════════════════════════════════════════
 // 数据模型
@@ -42,10 +43,7 @@ class BackupValidation {
 
   /// 创建验证失败结果
   factory BackupValidation.invalid(String errorMessage) {
-    return BackupValidation(
-      isValid: false,
-      errorMessage: errorMessage,
-    );
+    return BackupValidation(isValid: false, errorMessage: errorMessage);
   }
 
   /// 创建验证成功结果
@@ -140,9 +138,15 @@ const int maxImportFileSize = 100 * 1024 * 1024;
 
 /// 数据备份与恢复服务
 class BackupService {
-  final AppDatabase _db;
+  static const int currentFullBackupVersion = 1;
+  static const int currentCharacterBackupVersion = 2;
+  static const int currentSchemaVersion = 6;
 
-  BackupService(this._db);
+  final AppDatabase _db;
+  final SecretStorageService _secretStorage;
+
+  BackupService(this._db, {SecretStorageService? secretStorage})
+    : _secretStorage = secretStorage ?? SecretStorageService();
 
   /// 把备份 JSON 字符串解析为 `Map<String, dynamic>`。
   ///
@@ -203,6 +207,210 @@ class BackupService {
     return false;
   }
 
+  static BackupValidation? _validateVersionBounds(Map<String, dynamic> data) {
+    final version = data['version'];
+    if (version != null) {
+      if (version is! int || version < 1) {
+        return BackupValidation.invalid('version 必须是正整数');
+      }
+      final isCharacterBackup =
+          data.containsKey('character') && !data.containsKey('characters');
+      final maxVersion = isCharacterBackup
+          ? BackupService.currentCharacterBackupVersion
+          : BackupService.currentFullBackupVersion;
+      if (version > maxVersion) {
+        return BackupValidation.invalid(
+          'version $version 超出当前支持范围（最大 $maxVersion）',
+        );
+      }
+    }
+
+    final schemaVersion = data['schema_version'];
+    if (schemaVersion != null) {
+      if (schemaVersion is! int || schemaVersion < 1) {
+        return BackupValidation.invalid('schema_version 必须是正整数');
+      }
+      if (schemaVersion > BackupService.currentSchemaVersion) {
+        return BackupValidation.invalid(
+          'schema_version $schemaVersion 超出当前支持范围（最大 ${BackupService.currentSchemaVersion}）',
+        );
+      }
+    }
+
+    return null;
+  }
+
+  static BackupValidation _validateBackupData(Map<String, dynamic> data) {
+    final versionError = _validateVersionBounds(data);
+    if (versionError != null) return versionError;
+
+    // 验证必需顶层字段（支持 v1 characters 数组 和 v2 单 character 两种格式）
+    final missingFields = <String>[];
+    final hasV1Characters = data.containsKey('characters');
+    final hasV2Character =
+        data.containsKey('character') && data['character'] is Map;
+    final isV2CharacterBackup = !hasV1Characters && hasV2Character;
+    final hasValidCharacter = hasV1Characters || hasV2Character;
+
+    if (!hasValidCharacter) {
+      missingFields.add('character');
+    }
+    if (!isV2CharacterBackup) {
+      if (!data.containsKey('conversations')) {
+        missingFields.add('conversations');
+      }
+      if (!data.containsKey('memories')) {
+        missingFields.add('memories');
+      }
+    }
+
+    if (missingFields.isNotEmpty) {
+      // TODO(parity): 主项目缺失 'backup.missingRequiredFields' 键，硬编码兜底
+      return BackupValidation.invalid('缺少必需字段：${missingFields.join("、")}');
+    }
+
+    // v1: characters 是 List，v2: character 是 Map（单个角色）
+    int characterCount = 0;
+    if (hasV1Characters) {
+      final characters = data['characters'];
+      if (characters is! List) {
+        // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
+        return BackupValidation.invalid('字段 characters 必须是数组');
+      }
+      characterCount = characters.length;
+    } else {
+      characterCount = 1; // v2 单角色
+    }
+
+    final conversations = data['conversations'];
+    if (conversations != null && conversations is! List) {
+      // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
+      return BackupValidation.invalid('字段 conversations 必须是数组');
+    }
+    final memories = data['memories'];
+    if (memories != null && memories is! List) {
+      // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
+      return BackupValidation.invalid('字段 memories 必须是数组');
+    }
+
+    final messages = data['messages'];
+    final messageCount = (messages is List) ? messages.length : 0;
+
+    return BackupValidation.valid(
+      characterCount: characterCount,
+      conversationCount: (conversations as List?)?.length ?? 0,
+      messageCount: messageCount,
+      memoryCount: (memories as List?)?.length ?? 0,
+    );
+  }
+
+  static dynamic _tryJsonDecodeValue(dynamic value) {
+    if (value is! String) return value;
+    try {
+      return jsonDecode(value);
+    } catch (_) {
+      return value;
+    }
+  }
+
+  Future<String> _exportSettingValue(
+    Setting row, {
+    required bool includeSecrets,
+  }) async {
+    if (includeSecrets && row.key == 'api_key') {
+      final decoded = _tryJsonDecodeValue(row.value);
+      final storedValue = decoded is String ? decoded : row.value;
+      return jsonEncode(await _secretStorage.resolveApiKey(storedValue));
+    }
+    if (includeSecrets && row.key == 'image_gen') {
+      return _resolveImageGenSettingValue(row.value);
+    }
+    return row.value;
+  }
+
+  Future<String> _resolveImageGenSettingValue(String raw) async {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return raw;
+      final next = Map<String, dynamic>.from(decoded);
+      final naiApiKey = next['nai_api_key'];
+      final customApiKey = next['custom_api_key'];
+      if (naiApiKey is String) {
+        next['nai_api_key'] = await _secretStorage.resolveApiKey(naiApiKey);
+      }
+      if (customApiKey is String) {
+        next['custom_api_key'] = await _secretStorage.resolveApiKey(
+          customApiKey,
+        );
+      }
+      return jsonEncode(next);
+    } catch (_) {
+      return raw;
+    }
+  }
+
+  Future<String> _prepareImportedSettingValue(String key, dynamic value) async {
+    if (key == 'api_key') {
+      final decoded = _tryJsonDecodeValue(value);
+      final apiKey = decoded is String ? decoded : '';
+      final reference = await _secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.settingsApiKeyRef,
+        apiKey,
+      );
+      return jsonEncode(reference);
+    }
+    if (key == 'image_gen') {
+      return _prepareImportedImageGenValue(value);
+    }
+    return value is String ? value : jsonEncode(value);
+  }
+
+  Future<String> _prepareImportedImageGenValue(dynamic value) async {
+    final decoded = _tryJsonDecodeValue(value);
+    if (decoded is! Map<String, dynamic>) {
+      return value is String ? value : jsonEncode(value);
+    }
+
+    final next = Map<String, dynamic>.from(decoded);
+    final naiApiKey = next['nai_api_key'];
+    final customApiKey = next['custom_api_key'];
+    if (naiApiKey is String) {
+      next['nai_api_key'] = await _secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.imageGenNaiApiKeyRef,
+        await _secretStorage.resolveApiKey(naiApiKey),
+      );
+    }
+    if (customApiKey is String) {
+      next['custom_api_key'] = await _secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.imageGenCustomApiKeyRef,
+        await _secretStorage.resolveApiKey(customApiKey),
+      );
+    }
+    return jsonEncode(next);
+  }
+
+  Future<String> _prepareImportedProviderApiKey(
+    String providerId,
+    dynamic value,
+  ) async {
+    final decoded = _tryJsonDecodeValue(value);
+    final apiKey = decoded is String ? decoded : '';
+    return _secretStorage.storeApiKeyOrEmpty(
+      SecretStorageService.apiProviderKeyRef(providerId),
+      apiKey,
+    );
+  }
+
+  DateTime _parseBackupDate(dynamic value) {
+    if (value is int) {
+      return DateTime.fromMillisecondsSinceEpoch(value);
+    }
+    if (value is String && value.isNotEmpty) {
+      return DateTime.parse(value);
+    }
+    return DateTime.now();
+  }
+
   /// 对 settings 表中 `image_gen` 这一行的 value（ImageGenSettings.toJson 后
   /// jsonEncode 的字符串）解析后剔除敏感子字段（如 nai_api_key、custom_api_key），
   /// 再重新 jsonEncode。解析失败原样返回（保守兜底，宁可漏过滤也不破坏备份）。
@@ -237,10 +445,25 @@ class BackupService {
       final messages = await _db.select(_db.messages).get();
       final memories = await _db.select(_db.memories).get();
       final settings = await _db.select(_db.settings).get();
-      return (characters, conversations, messages, memories, settings);
+      final apiProviders = await _db.select(_db.apiProviders).get();
+      return (
+        characters,
+        conversations,
+        messages,
+        memories,
+        settings,
+        apiProviders,
+      );
     });
 
-    final (characters, conversations, messages, memories, settings) = result;
+    final (
+      characters,
+      conversations,
+      messages,
+      memories,
+      settings,
+      apiProviders,
+    ) = result;
 
     // 按 includeSecrets 过滤敏感 settings 条目；并对 image_gen 嵌套 JSON 内的
     // 敏感子字段（nai_api_key、custom_api_key 等）做嵌套过滤。
@@ -253,76 +476,112 @@ class BackupService {
         settingsMap[s.key] = _sanitizeImageGenJsonValue(s.value);
         continue;
       }
-      settingsMap[s.key] = s.value;
+      settingsMap[s.key] = await _exportSettingValue(
+        s,
+        includeSecrets: includeSecrets,
+      );
     }
 
     final data = {
-      'version': 1,
+      'version': BackupService.currentFullBackupVersion,
+      'schema_version': BackupService.currentSchemaVersion,
       'exported_at': DateTime.now().toIso8601String(),
       '_meta': {
         'includesSecrets': includeSecrets,
         'exportedAt': DateTime.now().toIso8601String(),
       },
-      'characters': characters.map((c) => {
-        'id': c.id,
-        'name': c.name,
-        'avatar_url': c.avatarUrl,
-        'personality': c.personality,
-        'scenario': c.scenario,
-        'greeting': c.greeting,
-        'example_dialogue': c.exampleDialogue,
-        'system_prompt': c.systemPrompt,
-        'image_tags': c.imageTags,
-        'basic_info': c.basicInfo,
-        'other_info': c.otherInfo,
-        'sort_order': c.sortOrder,
-        'created_at': c.createdAt.toIso8601String(),
-        'updated_at': c.updatedAt.toIso8601String(),
-      }).toList(),
-      'conversations': conversations.map((c) => {
-        'id': c.id,
-        'character_id': c.characterId,
-        'title': c.title,
-        'ignore_memory': c.ignoreMemory,
-        'created_at': c.createdAt.toIso8601String(),
-        'updated_at': c.updatedAt.toIso8601String(),
-      }).toList(),
-      'messages': messages.map((m) => {
-        'id': m.id,
-        'conversation_id': m.conversationId,
-        'role': m.role,
-        'content': m.content,
-        'token_count': m.tokenCount,
-        'seq': m.seq,
-        'created_at': m.createdAt.toIso8601String(),
-        'metadata': m.metadata,
-      }).toList(),
-      'memories': memories.map((m) => {
-        'id': m.id,
-        'character_id': m.characterId,
-        'category': m.category,
-        'content': m.content,
-        'confidence': m.confidence,
-        'tags': m.tags,
-        'source_msg_ids': m.sourceMsgIds,
-        'created_at': m.createdAt.toIso8601String(),
-        'updated_at': m.updatedAt.toIso8601String(),
-      }).toList(),
+      'characters': characters
+          .map(
+            (c) => {
+              'id': c.id,
+              'name': c.name,
+              'avatar_url': c.avatarUrl,
+              'personality': c.personality,
+              'scenario': c.scenario,
+              'greeting': c.greeting,
+              'example_dialogue': c.exampleDialogue,
+              'system_prompt': c.systemPrompt,
+              'image_tags': c.imageTags,
+              'basic_info': c.basicInfo,
+              'other_info': c.otherInfo,
+              'sort_order': c.sortOrder,
+              'created_at': c.createdAt.toIso8601String(),
+              'updated_at': c.updatedAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'conversations': conversations
+          .map(
+            (c) => {
+              'id': c.id,
+              'character_id': c.characterId,
+              'title': c.title,
+              'ignore_memory': c.ignoreMemory,
+              'created_at': c.createdAt.toIso8601String(),
+              'updated_at': c.updatedAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'messages': messages
+          .map(
+            (m) => {
+              'id': m.id,
+              'conversation_id': m.conversationId,
+              'role': m.role,
+              'content': m.content,
+              'token_count': m.tokenCount,
+              'seq': m.seq,
+              'created_at': m.createdAt.toIso8601String(),
+              'metadata': m.metadata,
+            },
+          )
+          .toList(),
+      'memories': memories
+          .map(
+            (m) => {
+              'id': m.id,
+              'character_id': m.characterId,
+              'category': m.category,
+              'content': m.content,
+              'confidence': m.confidence,
+              'tags': m.tags,
+              'source_msg_ids': m.sourceMsgIds,
+              'created_at': m.createdAt.toIso8601String(),
+              'updated_at': m.updatedAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'api_providers': [
+        for (final p in apiProviders)
+          {
+            'id': p.id,
+            'name': p.name,
+            'api_base': p.apiBase,
+            if (includeSecrets)
+              'api_key': await _secretStorage.resolveApiKey(p.apiKey),
+            'model': p.model,
+            'temperature': p.temperature,
+            'max_tokens': p.maxTokens,
+            'context_window': p.contextWindow,
+            'json_mode': p.jsonMode,
+            'created_at': p.createdAt.toIso8601String(),
+          },
+      ],
       'settings': settingsMap,
     };
 
-    if (kIsWeb) {
-      return jsonEncode(data);
-    } else {
-      return await Isolate.run(() => jsonEncode(data));
-    }
+    return jsonEncode(data);
   }
 
   /// 导出到文件，返回文件路径
   Future<String> exportToFile() async {
     final json = await exportToJson();
     final dir = await getApplicationDocumentsDirectory();
-    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+    final timestamp = DateTime.now()
+        .toIso8601String()
+        .replaceAll(':', '-')
+        .split('.')
+        .first;
     final file = File('${dir.path}/LumiMuse/backup_$timestamp.json');
     await file.parent.create(recursive: true);
     await file.writeAsString(json);
@@ -371,66 +630,7 @@ class BackupService {
       return BackupValidation.invalid('文件不是有效的 JSON 格式');
     }
 
-    final data = parsed;
-
-    // 3. 验证必需顶层字段（支持 v1 characters 数组 和 v2 单 character 两种格式）
-    final missingFields = <String>[];
-    final hasV1Characters = data.containsKey('characters');
-    final hasV2Character = data.containsKey('character') && data['character'] is Map;
-    final hasValidCharacter = hasV1Characters || hasV2Character;
-
-    if (!hasValidCharacter) {
-      missingFields.add('character');
-    }
-    if (!data.containsKey('conversations')) {
-      missingFields.add('conversations');
-    }
-    if (!data.containsKey('memories')) {
-      missingFields.add('memories');
-    }
-
-    if (missingFields.isNotEmpty) {
-      // TODO(parity): 主项目缺失 'backup.missingRequiredFields' 键，硬编码兜底
-      return BackupValidation.invalid(
-        '缺少必需字段：${missingFields.join("、")}',
-      );
-    }
-
-    // 4. 验证字段类型
-    // v1: characters 是 List，v2: character 是 Map（单个角色）
-    int characterCount = 0;
-    if (hasV1Characters) {
-      final characters = data['characters'];
-      if (characters is! List) {
-        // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
-        return BackupValidation.invalid('字段 characters 必须是数组');
-      }
-      characterCount = characters.length;
-    } else {
-      characterCount = 1; // v2 单角色
-    }
-
-    final conversations = data['conversations'];
-    if (conversations is! List) {
-      // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
-      return BackupValidation.invalid('字段 conversations 必须是数组');
-    }
-    final memories = data['memories'];
-    if (memories is! List) {
-      // TODO(parity): 主项目缺失 'backup.fieldMustBeArray' 键，硬编码兜底
-      return BackupValidation.invalid('字段 memories 必须是数组');
-    }
-
-    // 5. 统计数量
-    final messages = data['messages'];
-    final messageCount = (messages is List) ? messages.length : 0;
-
-    return BackupValidation.valid(
-      characterCount: characterCount,
-      conversationCount: conversations.length,
-      messageCount: messageCount,
-      memoryCount: memories.length,
-    );
+    return _validateBackupData(parsed);
   }
 
   /// 从 JSON 导入数据（带验证和统计）
@@ -472,9 +672,9 @@ class BackupService {
         final id = map['id'] as String;
 
         // 检查是否已存在，存在则跳过
-        final existing = await (_db.select(_db.characters)
-              ..where((t) => t.id.equals(id)))
-            .getSingleOrNull();
+        final existing = await (_db.select(
+          _db.characters,
+        )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
           skippedCount++;
@@ -516,9 +716,9 @@ class BackupService {
         final map = c as Map<String, dynamic>;
         final id = map['id'] as String;
 
-        final existing = await (_db.select(_db.conversations)
-              ..where((t) => t.id.equals(id)))
-            .getSingleOrNull();
+        final existing = await (_db.select(
+          _db.conversations,
+        )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
           skippedCount++;
@@ -546,9 +746,7 @@ class BackupService {
       }
 
       // 导入消息：兼容 v1 顶层 messages 与 v2 单角色 conversations[].messages。
-      final messages = <dynamic>[
-        ...data['messages'] as List? ?? const [],
-      ];
+      final messages = <dynamic>[...data['messages'] as List? ?? const []];
       for (final c in conversations) {
         final map = c as Map<String, dynamic>;
         final nestedMessages = map['messages'];
@@ -561,9 +759,9 @@ class BackupService {
         final map = m as Map<String, dynamic>;
         final id = map['id'] as String;
 
-        final existing = await (_db.select(_db.messages)
-              ..where((t) => t.id.equals(id)))
-            .getSingleOrNull();
+        final existing = await (_db.select(
+          _db.messages,
+        )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
           skippedCount++;
@@ -599,9 +797,9 @@ class BackupService {
         final map = m as Map<String, dynamic>;
         final id = map['id'] as String;
 
-        final existing = await (_db.select(_db.memories)
-              ..where((t) => t.id.equals(id)))
-            .getSingleOrNull();
+        final existing = await (_db.select(
+          _db.memories,
+        )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
           skippedCount++;
@@ -615,12 +813,16 @@ class BackupService {
             category: map['category'] as String,
             content: map['content'] as String,
             confidence: Value((map['confidence'] as num?)?.toDouble() ?? 0.8),
-            tags: Value(map['tags'] is String
-                ? map['tags'] as String
-                : jsonEncode(map['tags'] ?? [])),
-            sourceMsgIds: Value(map['source_msg_ids'] is String
-                ? map['source_msg_ids'] as String
-                : jsonEncode(map['source_msg_ids'] ?? [])),
+            tags: Value(
+              map['tags'] is String
+                  ? map['tags'] as String
+                  : jsonEncode(map['tags'] ?? []),
+            ),
+            sourceMsgIds: Value(
+              map['source_msg_ids'] is String
+                  ? map['source_msg_ids'] as String
+                  : jsonEncode(map['source_msg_ids'] ?? []),
+            ),
             createdAt: Value(DateTime.parse(map['created_at'] as String)),
             updatedAt: Value(DateTime.parse(map['updated_at'] as String)),
           ),
@@ -643,23 +845,72 @@ class BackupService {
           continue;
         }
 
-        final existing = await (_db.select(_db.settings)
-              ..where((t) => t.key.equals(entry.key)))
-            .getSingleOrNull();
+        final existing = await (_db.select(
+          _db.settings,
+        )..where((t) => t.key.equals(entry.key))).getSingleOrNull();
 
         if (existing != null) {
           skippedCount++;
           continue;
         }
 
-        await _db.into(_db.settings).insert(
-          SettingsCompanion.insert(
-            key: entry.key,
-            value: entry.value is String
-                ? entry.value as String
-                : jsonEncode(entry.value),
-          ),
-        );
+        await _db
+            .into(_db.settings)
+            .insert(
+              SettingsCompanion.insert(
+                key: entry.key,
+                value: await _prepareImportedSettingValue(
+                  entry.key,
+                  entry.value,
+                ),
+              ),
+            );
+        addedCount++;
+      }
+
+      // 导入 API Provider。旧备份没有该字段时保持兼容；包含凭据时转入安全存储。
+      final apiProviders = data['api_providers'] as List? ?? [];
+      for (final item in apiProviders) {
+        final map = item as Map<String, dynamic>;
+        final id = map['id'] as String? ?? '';
+        if (id.isEmpty) continue;
+
+        final existing = await (_db.select(
+          _db.apiProviders,
+        )..where((t) => t.id.equals(id))).getSingleOrNull();
+
+        if (existing != null) {
+          skippedCount++;
+          continue;
+        }
+
+        await _db
+            .into(_db.apiProviders)
+            .insert(
+              ApiProvidersCompanion.insert(
+                id: id,
+                name: map['name'] as String? ?? '',
+                apiBase: Value(map['api_base'] as String? ?? ''),
+                apiKey: Value(
+                  await _prepareImportedProviderApiKey(
+                    id,
+                    map['api_key'] ?? '',
+                  ),
+                ),
+                model: Value(map['model'] as String? ?? ''),
+                temperature: Value(
+                  (map['temperature'] as num?)?.toDouble() ?? 1.0,
+                ),
+                maxTokens: Value(map['max_tokens'] as int? ?? 4096),
+                contextWindow: Value(map['context_window'] as int? ?? 131072),
+                jsonMode: Value(
+                  map['json_mode'] is bool
+                      ? ((map['json_mode'] as bool) ? 1 : 0)
+                      : (map['json_mode'] as int? ?? 0),
+                ),
+                createdAt: Value(_parseBackupDate(map['created_at'])),
+              ),
+            );
         addedCount++;
       }
     });
@@ -682,10 +933,13 @@ class BackupService {
     String characterId, {
     ExportOptions options = const ExportOptions(),
   }) async {
-    final exportData = await exportCharacterToJson(characterId, options: options);
-    final character = await (_db.select(_db.characters)
-          ..where((t) => t.id.equals(characterId)))
-        .getSingle();
+    final exportData = await exportCharacterToJson(
+      characterId,
+      options: options,
+    );
+    final character = await (_db.select(
+      _db.characters,
+    )..where((t) => t.id.equals(characterId))).getSingle();
 
     // 写入文件
     final dir = await getApplicationDocumentsDirectory();
@@ -726,9 +980,9 @@ class BackupService {
     ExportOptions options = const ExportOptions(),
   }) async {
     // 查询角色
-    final character = await (_db.select(_db.characters)
-          ..where((t) => t.id.equals(characterId)))
-        .getSingleOrNull();
+    final character = await (_db.select(
+      _db.characters,
+    )..where((t) => t.id.equals(characterId))).getSingleOrNull();
 
     if (character == null) {
       // TODO(parity): 主项目缺失 'backup.characterNotFound' 键，硬编码兜底
@@ -737,7 +991,8 @@ class BackupService {
 
     // 构建导出数据
     final Map<String, dynamic> exportData = {
-      'version': 2,
+      'version': BackupService.currentCharacterBackupVersion,
+      'schema_version': BackupService.currentSchemaVersion,
       'exported_at': DateTime.now().toIso8601String(),
     };
 
@@ -763,39 +1018,44 @@ class BackupService {
 
     // 导出角色记忆（按 character_id 过滤）
     if (options.includeMemories) {
-      final memories = await (_db.select(_db.memories)
-            ..where((t) => t.characterId.equals(characterId)))
-          .get();
+      final memories = await (_db.select(
+        _db.memories,
+      )..where((t) => t.characterId.equals(characterId))).get();
 
-      exportData['memories'] = memories.map((m) => {
-        'id': m.id,
-        'character_id': m.characterId,
-        'category': m.category,
-        'content': m.content,
-        'confidence': m.confidence,
-        'tags': m.tags,
-        'source_msg_ids': m.sourceMsgIds,
-        'created_at': m.createdAt.toIso8601String(),
-        'updated_at': m.updatedAt.toIso8601String(),
-      }).toList();
+      exportData['memories'] = memories
+          .map(
+            (m) => {
+              'id': m.id,
+              'character_id': m.characterId,
+              'category': m.category,
+              'content': m.content,
+              'confidence': m.confidence,
+              'tags': m.tags,
+              'source_msg_ids': m.sourceMsgIds,
+              'created_at': m.createdAt.toIso8601String(),
+              'updated_at': m.updatedAt.toIso8601String(),
+            },
+          )
+          .toList();
     }
 
     // 导出角色对话及嵌套消息（按 character_id 过滤）
     if (options.includeConversations) {
-      final conversations = await (_db.select(_db.conversations)
-            ..where((t) => t.characterId.equals(characterId)))
-          .get();
+      final conversations = await (_db.select(
+        _db.conversations,
+      )..where((t) => t.characterId.equals(characterId))).get();
 
       final conversationsWithMessages = <Map<String, dynamic>>[];
       for (final conv in conversations) {
         // 查询该对话的消息，按 created_at 升序、seq 升序
-        final messages = await (_db.select(_db.messages)
-              ..where((t) => t.conversationId.equals(conv.id))
-              ..orderBy([
-                (t) => OrderingTerm.asc(t.createdAt),
-                (t) => OrderingTerm.asc(t.seq),
-              ]))
-            .get();
+        final messages =
+            await (_db.select(_db.messages)
+                  ..where((t) => t.conversationId.equals(conv.id))
+                  ..orderBy([
+                    (t) => OrderingTerm.asc(t.createdAt),
+                    (t) => OrderingTerm.asc(t.seq),
+                  ]))
+                .get();
 
         conversationsWithMessages.add({
           'id': conv.id,
@@ -804,16 +1064,20 @@ class BackupService {
           'ignore_memory': conv.ignoreMemory,
           'created_at': conv.createdAt.toIso8601String(),
           'updated_at': conv.updatedAt.toIso8601String(),
-          'messages': messages.map((m) => {
-            'id': m.id,
-            'conversation_id': m.conversationId,
-            'role': m.role,
-            'content': m.content,
-            'token_count': m.tokenCount,
-            'seq': m.seq,
-            'created_at': m.createdAt.toIso8601String(),
-            'metadata': m.metadata,
-          }).toList(),
+          'messages': messages
+              .map(
+                (m) => {
+                  'id': m.id,
+                  'conversation_id': m.conversationId,
+                  'role': m.role,
+                  'content': m.content,
+                  'token_count': m.tokenCount,
+                  'seq': m.seq,
+                  'created_at': m.createdAt.toIso8601String(),
+                  'metadata': m.metadata,
+                },
+              )
+              .toList(),
         });
       }
 
@@ -843,6 +1107,10 @@ class BackupService {
       // 真正的 JSON 语法错误才报"无法解析"。
       throw const FormatException('备份文件格式无效：无法解析备份文件');
     }
+    final validation = _validateBackupData(data);
+    if (!validation.isValid) {
+      throw FormatException(validation.errorMessage ?? '数据格式无效');
+    }
     const uuid = Uuid();
 
     int addedCount = 0;
@@ -861,7 +1129,8 @@ class BackupService {
         final List<Map<String, dynamic>> characterList;
         if (data.containsKey('character') && data['character'] is Map) {
           characterList = [data['character'] as Map<String, dynamic>];
-        } else if (data.containsKey('characters') && data['characters'] is List) {
+        } else if (data.containsKey('characters') &&
+            data['characters'] is List) {
           characterList = (data['characters'] as List)
               .map((c) => c as Map<String, dynamic>)
               .toList();
@@ -875,9 +1144,9 @@ class BackupService {
           final name = map['name'] as String? ?? '';
 
           // 按名称去重：查询是否已存在同名角色
-          final existing = await (_db.select(_db.characters)
-                ..where((t) => t.name.equals(name)))
-              .getSingleOrNull();
+          final existing = await (_db.select(
+            _db.characters,
+          )..where((t) => t.name.equals(name))).getSingleOrNull();
 
           if (existing != null) {
             // 同名角色已存在，跳过并记录 ID 映射
@@ -896,7 +1165,9 @@ class BackupService {
                 personality: Value(map['personality'] as String? ?? ''),
                 scenario: Value(map['scenario'] as String? ?? ''),
                 greeting: Value(map['greeting'] as String? ?? ''),
-                exampleDialogue: Value(map['example_dialogue'] as String? ?? ''),
+                exampleDialogue: Value(
+                  map['example_dialogue'] as String? ?? '',
+                ),
                 systemPrompt: Value(map['system_prompt'] as String? ?? ''),
                 imageTags: Value(map['image_tags'] as String? ?? ''),
                 basicInfo: Value(map['basic_info'] as String? ?? ''),
@@ -935,9 +1206,8 @@ class BackupService {
           final originalCharId = map['character_id'] as String;
 
           // 使用 idMap 映射 character_id，或使用 targetCharacterId
-          final mappedCharId = targetCharacterId ??
-              idMap[originalCharId] ??
-              originalCharId;
+          final mappedCharId =
+              targetCharacterId ?? idMap[originalCharId] ?? originalCharId;
 
           // 生成新 UUID
           final newMemId = uuid.v4();
@@ -949,12 +1219,16 @@ class BackupService {
               category: map['category'] as String,
               content: map['content'] as String,
               confidence: Value((map['confidence'] as num?)?.toDouble() ?? 0.8),
-              tags: Value(map['tags'] is String
-                  ? map['tags'] as String
-                  : jsonEncode(map['tags'] ?? [])),
-              sourceMsgIds: Value(map['source_msg_ids'] is String
-                  ? map['source_msg_ids'] as String
-                  : jsonEncode(map['source_msg_ids'] ?? [])),
+              tags: Value(
+                map['tags'] is String
+                    ? map['tags'] as String
+                    : jsonEncode(map['tags'] ?? []),
+              ),
+              sourceMsgIds: Value(
+                map['source_msg_ids'] is String
+                    ? map['source_msg_ids'] as String
+                    : jsonEncode(map['source_msg_ids'] ?? []),
+              ),
               createdAt: Value(
                 map['created_at'] != null
                     ? DateTime.parse(map['created_at'] as String)
@@ -989,9 +1263,8 @@ class BackupService {
           final originalCharId = map['character_id'] as String;
 
           // 使用 idMap 映射 character_id，或使用 targetCharacterId
-          final mappedCharId = targetCharacterId ??
-              idMap[originalCharId] ??
-              originalCharId;
+          final mappedCharId =
+              targetCharacterId ?? idMap[originalCharId] ?? originalCharId;
 
           // 生成新对话 ID
           final newConvId = uuid.v4();

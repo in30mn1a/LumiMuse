@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../database/database.dart';
 import '../models/app_settings.dart';
+import '../services/secret_storage_service.dart';
 import 'database_provider.dart';
 
 /// 主题模式 Provider
@@ -135,6 +136,19 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
         map[row.key] = row.value;
       }
     }
+    final storedApiKey = map['api_key'] as String? ?? '';
+    final secretStorage = ref.read(secretStorageServiceProvider);
+    map['api_key'] = await secretStorage.resolveApiKey(storedApiKey);
+    if (map['image_gen'] is Map<String, dynamic>) {
+      final imageGen = ImageGenSettings.fromJson(
+        map['image_gen'] as Map<String, dynamic>,
+      );
+      final resolvedImageGen = await _resolveImageGenSecrets(
+        secretStorage,
+        imageGen,
+      );
+      map['image_gen'] = resolvedImageGen.toJson();
+    }
     return _mapToSettings(map);
   }
 
@@ -145,7 +159,18 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
     final nextSettings = newSettings.copyWith(
       activeProviderId: activeProviderId,
     );
-    final entries = _settingsToMap(nextSettings);
+    final secretStorage = ref.read(secretStorageServiceProvider);
+    final storedApiKey = await secretStorage.storeApiKeyOrEmpty(
+      SecretStorageService.settingsApiKeyRef,
+      nextSettings.apiKey,
+    );
+    final storedImageGen = await _storeImageGenSecrets(
+      secretStorage,
+      nextSettings.imageGen,
+    );
+    final entries = _settingsToMap(
+      nextSettings.copyWith(apiKey: storedApiKey, imageGen: storedImageGen),
+    );
 
     await db.batch((batch) {
       for (final entry in entries.entries) {
@@ -165,13 +190,56 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
     state = AsyncData(nextSettings);
   }
 
+  Future<ImageGenSettings> _resolveImageGenSecrets(
+    SecretStorageService secretStorage,
+    ImageGenSettings imageGen,
+  ) async {
+    return imageGen.copyWith(
+      naiApiKey: await secretStorage.resolveApiKey(imageGen.naiApiKey),
+      customApiKey: await secretStorage.resolveApiKey(imageGen.customApiKey),
+    );
+  }
+
+  Future<ImageGenSettings> _storeImageGenSecrets(
+    SecretStorageService secretStorage,
+    ImageGenSettings imageGen,
+  ) async {
+    final naiApiKey = await secretStorage.resolveApiKey(imageGen.naiApiKey);
+    final customApiKey = await secretStorage.resolveApiKey(
+      imageGen.customApiKey,
+    );
+    return imageGen.copyWith(
+      naiApiKey: await secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.imageGenNaiApiKeyRef,
+        naiApiKey,
+      ),
+      customApiKey: await secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.imageGenCustomApiKeyRef,
+        customApiKey,
+      ),
+    );
+  }
+
   /// 更新单个设置项
   Future<void> updateSetting(String key, dynamic value) async {
     final db = ref.read(databaseProvider);
+    var storedValue = value;
+    final secretStorage = ref.read(secretStorageServiceProvider);
+    if (key == 'api_key') {
+      storedValue = await secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.settingsApiKeyRef,
+        value is String ? value : '',
+      );
+    } else if (key == 'image_gen' && value is Map<String, dynamic>) {
+      storedValue = (await _storeImageGenSecrets(
+        secretStorage,
+        ImageGenSettings.fromJson(value),
+      )).toJson();
+    }
     await db
         .into(db.settings)
         .insertOnConflictUpdate(
-          SettingsCompanion.insert(key: key, value: jsonEncode(value)),
+          SettingsCompanion.insert(key: key, value: jsonEncode(storedValue)),
         );
     // 重新加载
     final nextSettings = await _loadFromDb(db);

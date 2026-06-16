@@ -50,6 +50,7 @@ final searchActionsProvider = Provider<SearchActions>((ref) {
   return SearchActions(ref.read(databaseProvider));
 });
 
+/// 消息搜索操作集合，封装关键词/日期查询和分页结果组装。
 class SearchActions {
   final AppDatabase _db;
 

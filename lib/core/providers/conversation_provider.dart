@@ -56,6 +56,7 @@ final conversationActionsProvider = Provider<ConversationActions>((ref) {
   );
 });
 
+/// 对话写入操作集合，封装创建、重命名、删除、复制和记忆提取标记维护等数据库操作。
 class ConversationActions {
   final AppDatabase _db;
   final CharacterImagesActions _imagesActions;

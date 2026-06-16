@@ -37,6 +37,7 @@ final characterActionsProvider = Provider<CharacterActions>((ref) {
   );
 });
 
+/// 角色写入操作集合，封装创建、更新、删除、复制和排序等数据库操作。
 class CharacterActions {
   final AppDatabase _db;
   final CharacterImagesActions _imagesActions;

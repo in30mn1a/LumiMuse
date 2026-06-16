@@ -39,6 +39,7 @@ final messageActionsProvider = Provider<MessageActions>((ref) {
   );
 });
 
+/// 消息写入操作集合，封装用户消息、助手消息和附件元数据的数据库变更。
 class MessageActions {
   final AppDatabase _db;
   final CharacterImagesActions _imagesActions;

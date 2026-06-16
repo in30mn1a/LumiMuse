@@ -167,6 +167,7 @@ final memoryActionsProvider = Provider<MemoryActions>((ref) {
   return MemoryActions(ref.read(databaseProvider));
 });
 
+/// 记忆写入操作集合，封装创建、编辑、删除和提取状态维护等数据库操作。
 class MemoryActions {
   final AppDatabase _db;
   static const _uuid = Uuid();

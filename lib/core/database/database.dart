@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
@@ -96,11 +97,9 @@ class MemoryTasks extends Table {
   TextColumn get characterId => text()
       .named('character_id')
       .references(Characters, #id, onDelete: KeyAction.cascade)();
-  // FIX(Major-3)：conversation_id 缺 FK，导致 conversations 删除时 memory_tasks
-  // 不会级联清理；为避免本次修复触发 schema 升级风险，此处仅留 TODO，等下次
-  // schema 升级（v5→v6）时一并加 references(Conversations, #id, onDelete: cascade)。
-  // TODO(schema-v6): 升级 schema 时加 FK references Conversations(id) onDelete cascade
-  TextColumn get conversationId => text().named('conversation_id')();
+  TextColumn get conversationId => text()
+      .named('conversation_id')
+      .references(Conversations, #id, onDelete: KeyAction.cascade)();
   TextColumn get messageIds => text().named('message_ids').withDefault(const Constant('[]'))();
   TextColumn get status => text().withDefault(const Constant('pending'))(); // pending / processing / done / failed
   IntColumn get mergeCount => integer().named('merge_count').withDefault(const Constant(0))();
@@ -156,7 +155,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -240,10 +239,80 @@ class AppDatabase extends _$AppDatabase {
           WHERE created_at < 100000000000
         ''');
       }
+      if (from < 6) {
+        await _migrateMemoryTasksToV6(from, to);
+      }
       // 每次升级后都确保所有索引存在
       await _createIndexes();
     },
   );
+
+  Future<void> _migrateMemoryTasksToV6(int from, int to) async {
+    var step = 'count_orphan_memory_tasks';
+    try {
+      final orphanRows = await customSelect('''
+        SELECT COUNT(*) AS cnt, GROUP_CONCAT(mt.id) AS ids
+        FROM memory_tasks mt
+        LEFT JOIN conversations c ON c.id = mt.conversation_id
+        WHERE c.id IS NULL
+      ''').getSingle();
+      final orphanCount = orphanRows.read<int>('cnt');
+      final orphanIds = orphanRows.readNullable<String>('ids') ?? '';
+      if (orphanCount > 0) {
+        debugPrint(
+          '[database migration v6] skip_orphan_memory_tasks '
+          'from=$from to=$to count=$orphanCount ids=$orphanIds',
+        );
+      }
+
+      step = 'create_memory_tasks_v6';
+      await customStatement('''
+        CREATE TABLE memory_tasks_v6 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          character_id TEXT NOT NULL
+            REFERENCES characters(id) ON DELETE CASCADE,
+          conversation_id TEXT NOT NULL
+            REFERENCES conversations(id) ON DELETE CASCADE,
+          message_ids TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'pending',
+          merge_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+        )
+      ''');
+
+      step = 'copy_valid_memory_tasks';
+      await customStatement('''
+        INSERT INTO memory_tasks_v6 (
+          id, character_id, conversation_id, message_ids, status,
+          merge_count, created_at, updated_at
+        )
+        SELECT
+          mt.id,
+          mt.character_id,
+          mt.conversation_id,
+          mt.message_ids,
+          mt.status,
+          mt.merge_count,
+          mt.created_at,
+          mt.updated_at
+        FROM memory_tasks mt
+        INNER JOIN conversations c ON c.id = mt.conversation_id
+      ''');
+
+      step = 'replace_memory_tasks_table';
+      await customStatement('DROP TABLE memory_tasks');
+      await customStatement(
+        'ALTER TABLE memory_tasks_v6 RENAME TO memory_tasks',
+      );
+    } catch (e, s) {
+      debugPrint(
+        '[database migration v6] failed from=$from to=$to step=$step error=$e',
+      );
+      debugPrint('$s');
+      rethrow;
+    }
+  }
 
   /// 创建所有索引（使用 IF NOT EXISTS，可重复调用）
   Future<void> _createIndexes() async {

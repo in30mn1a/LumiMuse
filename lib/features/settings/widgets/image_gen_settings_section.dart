@@ -187,25 +187,10 @@ class _ImageGenSettingsSectionState
     final current =
         ref.read(settingsProvider).valueOrNull ?? const AppSettings();
     final newImageGen = updater(current.imageGen);
-    // 允许先启用再填写 URL；已启用后的保存仍校验当前引擎 URL。
-    if (newImageGen.enabled && current.imageGen.enabled) {
-      String? urlField;
-      if (newImageGen.engine == 'sd') {
-        urlField = newImageGen.sdUrl;
-      } else if (newImageGen.engine == 'comfyui') {
-        urlField = newImageGen.comfyuiUrl;
-      } else if (newImageGen.engine == 'custom') {
-        urlField = newImageGen.customUrl;
-      }
-      if (urlField != null && urlField.trim().isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('请先填写 URL 地址')));
-        }
-        return;
-      }
-    }
+    // 与主项目对等：不在设置保存时校验引擎 URL。
+    // customUrl 默认为空，若在此校验会使用户无法切换到 custom 引擎
+    // （custom 参数面板仅在 engine=='custom' 时显示，形成死循环）。
+    // URL 有效性应在实际生图时由 ImageGenService 校验。
     final newSettings = current.copyWith(imageGen: newImageGen);
     try {
       await ref.read(settingsProvider.notifier).updateSettings(newSettings);

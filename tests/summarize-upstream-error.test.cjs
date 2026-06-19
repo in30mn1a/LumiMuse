@@ -130,6 +130,10 @@ test('/api/summarize POST redacts sensitive upstream error details', async () =>
   const route = requireFreshWithMocks('../src/app/api/summarize/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => createSummarizeDb() },
+    '@/lib/memory-profile': {
+      readMemoryProfile() { return null; },
+      renderMemoryProfile() { return ''; },
+    },
     '@/lib/settings': {
       loadSettings() {
         return {

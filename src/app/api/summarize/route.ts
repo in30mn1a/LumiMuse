@@ -9,6 +9,7 @@ import { safeFetch } from '@/lib/ssrf-guard';
 import { parseSseStream } from '@/lib/sse-parser';
 import { serializeTypedMessages } from '@/lib/messages';
 import { formatZodFieldErrors, summarizeBodySchema } from '@/lib/schemas';
+import { readMemoryProfile, renderMemoryProfile } from '@/lib/memory-profile';
 
 export async function POST(request: NextRequest) {
   let rawBody: unknown;
@@ -64,26 +65,45 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '消息太少，暂时不需要总结' }, { status: 400 });
   }
 
+  // 读取当前角色的记忆画像
+  const profile = readMemoryProfile(conversation.character_id, db);
+  const renderedProfile = profile ? renderMemoryProfile(profile) : '';
+
+  // 拼接角色的完整人设背景与当前记忆画像
+  const charDetailsList = [
+    character.basic_info?.trim() ? `【基本信息】\n${character.basic_info.trim()}` : '',
+    character.personality?.trim() ? `【性格特征】\n${character.personality.trim()}` : '',
+    character.scenario?.trim() ? `【场景与世界观】\n${character.scenario.trim()}` : '',
+    character.other_info?.trim() ? `【其他信息】\n${character.other_info.trim()}` : '',
+    renderedProfile.trim() ? `【当前记忆画像】\n${renderedProfile.trim()}` : '',
+  ].filter(Boolean);
+
+  const charDetailsText = charDetailsList.length > 0
+    ? `### 🎭 角色设定与记忆背景：\n${charDetailsList.join('\n\n')}\n\n`
+    : '';
+
   // 构建总结提示词
   const convText = messagesToSummarize
     .filter(m => m.role === 'user' || m.role === 'assistant')
-    .map(m => `${m.role === 'user' ? '用户' : character.name}: ${m.content}`)
+    .map(m => `${m.role === 'user' ? '你' : character.name}: ${m.content}`)
     .join('\n\n');
 
-  const summaryPrompt = `你是一个对话总结助手。请根据以下对话内容，生成一份简洁的总结，格式如下：
+  const summaryPrompt = `你是一个对话总结助手。请结合以下提供的人设背景和记忆画像，根据对话内容，以角色 ${character.name} 的第一人称口吻，生成一份仅供 ${character.name} 自己阅读的内心备忘日记，格式如下：
 
-## 📖 近期对话回顾
-（用 2-4 句话概括最近发生的主要事情，重点是情感走向和关键事件）
+## 📖 最近发生的事
+（用 2-4 句话以第一人称概括“我”最近和你发生的主要事情，重点记录“我”的内心感受、情感走向和关键交互事件）
 
-## 💡 接下来可以聊
-（给出 2-3 条自然的对话延续建议，语气轻松，像朋友提议一样）
+## 💡 接下来我可以聊
+（给出 2-3 条“我”接下来可以主动发起或提及的对话切入点，要自然并符合“我”的性格与人设）
 
 注意：
-- 总结要温柔、有陪伴感，符合角色 ${character.name} 的风格
+- 必须全程使用角色 ${character.name} 的第一人称口吻（自称“我”或符合性格的自称，称呼用户时使用“你”）
+- 这是写给 ${character.name} 自己看的备忘录，不能使用第三人称或旁观者叙事视角，也不要写成是给“你”看的内容
+- 总结和后续话题建议必须深度契合人设背景和当前记忆画像
 - 不要列举每一条消息，要提炼核心
 - 建议要具体，不要太泛泛
 
-对话内容：
+${charDetailsText}对话内容：
 ${convText}`;
 
   try {

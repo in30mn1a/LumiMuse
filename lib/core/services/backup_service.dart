@@ -401,7 +401,7 @@ class BackupService {
     );
   }
 
-  DateTime _parseBackupDate(dynamic value) {
+  static DateTime _parseBackupDate(dynamic value) {
     if (value is int) {
       return DateTime.fromMillisecondsSinceEpoch(value);
     }
@@ -439,31 +439,12 @@ class BackupService {
   /// 默认为 false — 备份文件可以被安全分享；显式传 true 时备份文件包含
   /// 可还原所有 API 配置的明文凭据，调用方必须在 UI 上提示用户。
   Future<String> exportToJson({bool includeSecrets = false}) async {
-    final result = await _db.transaction(() async {
-      final characters = await _db.select(_db.characters).get();
-      final conversations = await _db.select(_db.conversations).get();
-      final messages = await _db.select(_db.messages).get();
-      final memories = await _db.select(_db.memories).get();
-      final settings = await _db.select(_db.settings).get();
-      final apiProviders = await _db.select(_db.apiProviders).get();
-      return (
-        characters,
-        conversations,
-        messages,
-        memories,
-        settings,
-        apiProviders,
-      );
-    });
-
-    final (
-      characters,
-      conversations,
-      messages,
-      memories,
-      settings,
-      apiProviders,
-    ) = result;
+    final characters = await _db.select(_db.characters).get();
+    final conversations = await _db.select(_db.conversations).get();
+    final messages = await _db.select(_db.messages).get();
+    final memories = await _db.select(_db.memories).get();
+    final settings = await _db.select(_db.settings).get();
+    final apiProviders = await _db.select(_db.apiProviders).get();
 
     // 按 includeSecrets 过滤敏感 settings 条目；并对 image_gen 嵌套 JSON 内的
     // 敏感子字段（nai_api_key、custom_api_key 等）做嵌套过滤。
@@ -648,8 +629,36 @@ class BackupService {
     int addedCount = 0;
     int skippedCount = 0;
 
-    // 使用事务确保原子性
-    await _db.transaction(() async {
+    // 在进入数据库事务前，预先存入敏感设置和 API Provider 密钥
+    final preparedSettings = <String, String>{};
+    final settings = data['settings'] as Map<String, dynamic>? ?? {};
+    for (final entry in settings.entries) {
+      if (entry.key.startsWith('launch_password_')) {
+        continue;
+      }
+      preparedSettings[entry.key] = await _prepareImportedSettingValue(
+        entry.key,
+        entry.value,
+      );
+    }
+
+    final preparedApiKeys = <String, String>{};
+    final apiProviders = data['api_providers'] as List? ?? [];
+    for (final item in apiProviders) {
+      final map = item as Map<String, dynamic>;
+      final id = map['id'] as String? ?? '';
+      if (id.isEmpty) continue;
+      preparedApiKeys[id] = await _prepareImportedProviderApiKey(
+        id,
+        map['api_key'] ?? '',
+      );
+    }
+
+    // 使用事务确保原子性。为了在后台数据库 Isolate 下不抛出 unsendable 错误，
+    // 我们必须将 _db 复制为局部变量 db，且在事务闭包内只引用局部变量和静态方法，
+    // 确保闭包不捕获 BackupService 实例（即不捕获 _db 或 _secretStorage）。
+    final db = _db;
+    await db.transaction(() async {
       // FIX(C4): 兼容三种备份格式，避免 v2 单角色备份在此分支静默丢失角色：
       //   - v1（exportToJson）            ：顶层 `characters` 为 List<角色>
       //   - v2 全量（exportToJson 续版）   ：顶层 `characters` 为 List<角色>
@@ -672,8 +681,8 @@ class BackupService {
         final id = map['id'] as String;
 
         // 检查是否已存在，存在则跳过
-        final existing = await (_db.select(
-          _db.characters,
+        final existing = await (db.select(
+          db.characters,
         )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
@@ -702,9 +711,9 @@ class BackupService {
         addedCount++;
       }
       if (characterCompanions.isNotEmpty) {
-        await _db.batch((batch) {
+        await db.batch((batch) {
           for (final companion in characterCompanions) {
-            batch.insert(_db.characters, companion);
+            batch.insert(db.characters, companion);
           }
         });
       }
@@ -716,8 +725,8 @@ class BackupService {
         final map = c as Map<String, dynamic>;
         final id = map['id'] as String;
 
-        final existing = await (_db.select(
-          _db.conversations,
+        final existing = await (db.select(
+          db.conversations,
         )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
@@ -738,9 +747,9 @@ class BackupService {
         addedCount++;
       }
       if (conversationCompanions.isNotEmpty) {
-        await _db.batch((batch) {
+        await db.batch((batch) {
           for (final companion in conversationCompanions) {
-            batch.insert(_db.conversations, companion);
+            batch.insert(db.conversations, companion);
           }
         });
       }
@@ -759,8 +768,8 @@ class BackupService {
         final map = m as Map<String, dynamic>;
         final id = map['id'] as String;
 
-        final existing = await (_db.select(
-          _db.messages,
+        final existing = await (db.select(
+          db.messages,
         )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
@@ -783,9 +792,9 @@ class BackupService {
         addedCount++;
       }
       if (messageCompanions.isNotEmpty) {
-        await _db.batch((batch) {
+        await db.batch((batch) {
           for (final companion in messageCompanions) {
-            batch.insert(_db.messages, companion);
+            batch.insert(db.messages, companion);
           }
         });
       }
@@ -797,8 +806,8 @@ class BackupService {
         final map = m as Map<String, dynamic>;
         final id = map['id'] as String;
 
-        final existing = await (_db.select(
-          _db.memories,
+        final existing = await (db.select(
+          db.memories,
         )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
@@ -830,23 +839,22 @@ class BackupService {
         addedCount++;
       }
       if (memoryCompanions.isNotEmpty) {
-        await _db.batch((batch) {
+        await db.batch((batch) {
           for (final companion in memoryCompanions) {
-            batch.insert(_db.memories, companion);
+            batch.insert(db.memories, companion);
           }
         });
       }
 
       // 导入设置（设置使用 key 作为主键，重复则跳过）
-      final settings = data['settings'] as Map<String, dynamic>? ?? {};
       for (final entry in settings.entries) {
         // 跳过密码相关设置，避免导入备份时覆盖当前的登录密码
         if (entry.key.startsWith('launch_password_')) {
           continue;
         }
 
-        final existing = await (_db.select(
-          _db.settings,
+        final existing = await (db.select(
+          db.settings,
         )..where((t) => t.key.equals(entry.key))).getSingleOrNull();
 
         if (existing != null) {
@@ -854,29 +862,26 @@ class BackupService {
           continue;
         }
 
-        await _db
-            .into(_db.settings)
+        await db
+            .into(db.settings)
             .insert(
               SettingsCompanion.insert(
                 key: entry.key,
-                value: await _prepareImportedSettingValue(
-                  entry.key,
-                  entry.value,
-                ),
+                // 必定存在：预处理循环已覆盖所有非 launch_password_ 前缀的 key
+                value: preparedSettings[entry.key]!,
               ),
             );
         addedCount++;
       }
 
       // 导入 API Provider。旧备份没有该字段时保持兼容；包含凭据时转入安全存储。
-      final apiProviders = data['api_providers'] as List? ?? [];
       for (final item in apiProviders) {
         final map = item as Map<String, dynamic>;
         final id = map['id'] as String? ?? '';
         if (id.isEmpty) continue;
 
-        final existing = await (_db.select(
-          _db.apiProviders,
+        final existing = await (db.select(
+          db.apiProviders,
         )..where((t) => t.id.equals(id))).getSingleOrNull();
 
         if (existing != null) {
@@ -884,19 +889,15 @@ class BackupService {
           continue;
         }
 
-        await _db
-            .into(_db.apiProviders)
+        await db
+            .into(db.apiProviders)
             .insert(
               ApiProvidersCompanion.insert(
                 id: id,
                 name: map['name'] as String? ?? '',
                 apiBase: Value(map['api_base'] as String? ?? ''),
-                apiKey: Value(
-                  await _prepareImportedProviderApiKey(
-                    id,
-                    map['api_key'] ?? '',
-                  ),
-                ),
+                // 必定存在：预处理循环已覆盖所有 apiProviders 的 id
+                apiKey: Value(preparedApiKeys[id]!),
                 model: Value(map['model'] as String? ?? ''),
                 temperature: Value(
                   (map['temperature'] as num?)?.toDouble() ?? 1.0,
@@ -908,7 +909,7 @@ class BackupService {
                       ? ((map['json_mode'] as bool) ? 1 : 0)
                       : (map['json_mode'] as int? ?? 0),
                 ),
-                createdAt: Value(_parseBackupDate(map['created_at'])),
+                createdAt: Value(BackupService._parseBackupDate(map['created_at'])),
               ),
             );
         addedCount++;
@@ -1122,7 +1123,10 @@ class BackupService {
     // ID 映射表：原始 ID → 新/已有 ID
     final Map<String, String> idMap = {};
 
-    await _db.transaction(() async {
+    // 为了在后台数据库 Isolate 下不抛出 unsendable 错误，我们必须将 _db 复制
+    // 为局部变量 db，且在事务闭包内只引用局部变量，确保闭包不捕获 BackupService 实例。
+    final db = _db;
+    await db.transaction(() async {
       // ─── 导入角色（按名称去重）───
       if (options.includeCharacter) {
         // 支持 version 2 格式（单个 character）和 version 1 格式（characters 数组）
@@ -1144,8 +1148,8 @@ class BackupService {
           final name = map['name'] as String? ?? '';
 
           // 按名称去重：查询是否已存在同名角色
-          final existing = await (_db.select(
-            _db.characters,
+          final existing = await (db.select(
+            db.characters,
           )..where((t) => t.name.equals(name))).getSingleOrNull();
 
           if (existing != null) {
@@ -1189,9 +1193,9 @@ class BackupService {
           }
         }
         if (characterCompanions.isNotEmpty) {
-          await _db.batch((batch) {
+          await db.batch((batch) {
             for (final companion in characterCompanions) {
-              batch.insert(_db.characters, companion);
+              batch.insert(db.characters, companion);
             }
           });
         }
@@ -1245,9 +1249,9 @@ class BackupService {
           addedCount++;
         }
         if (memoryCompanions.isNotEmpty) {
-          await _db.batch((batch) {
+          await db.batch((batch) {
             for (final companion in memoryCompanions) {
-              batch.insert(_db.memories, companion);
+              batch.insert(db.memories, companion);
             }
           });
         }
@@ -1320,16 +1324,16 @@ class BackupService {
           }
         }
         if (conversationCompanions.isNotEmpty) {
-          await _db.batch((batch) {
+          await db.batch((batch) {
             for (final companion in conversationCompanions) {
-              batch.insert(_db.conversations, companion);
+              batch.insert(db.conversations, companion);
             }
           });
         }
         if (messageCompanions.isNotEmpty) {
-          await _db.batch((batch) {
+          await db.batch((batch) {
             for (final companion in messageCompanions) {
-              batch.insert(_db.messages, companion);
+              batch.insert(db.messages, companion);
             }
           });
         }

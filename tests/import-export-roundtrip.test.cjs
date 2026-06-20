@@ -357,10 +357,11 @@ test('/api/import fills v2 defaults for old packages without those fields', asyn
 test('/api/import enforces the secondary size limit by UTF-8 bytes, not UTF-16 string length', async () => {
   const db = createImportDb();
   const route = loadImportRoute(db);
-  const raw = `"${'界'.repeat(17_500_000)}"`;
+  // 70M 个「界」字：UTF-16 长度 70M < 200MB，但 UTF-8 字节数 210MB > 200MB
+  const raw = `"${'界'.repeat(70_000_000)}"`;
 
-  assert.ok(raw.length < 50 * 1024 * 1024);
-  assert.ok(Buffer.byteLength(raw, 'utf8') > 50 * 1024 * 1024);
+  assert.ok(raw.length < 200 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(raw, 'utf8') > 200 * 1024 * 1024);
 
   const response = await route.POST(rawImportRequest(raw));
   const body = await response.json();
@@ -496,7 +497,7 @@ test('/api/import round-trips memory profile, profile versions, and embeddings w
 
   const response = await route.POST(importRequest(
     payload,
-    'target_character_id=target-char&include_character=0',
+    'target_character_id=target-char&include_character=0&include_embeddings=1',
   ));
   const body = await response.json();
 
@@ -583,7 +584,7 @@ test('/api/import skips embeddings whose memory was not imported (orphan vector)
 
   const response = await route.POST(importRequest(
     payload,
-    'target_character_id=target-char&include_character=0',
+    'target_character_id=target-char&include_character=0&include_embeddings=1',
   ));
   const body = await response.json();
 
@@ -722,7 +723,7 @@ test('/api/export includes memory profiles, profile versions, and embeddings for
 
   const route = loadExportRoute(db);
   const request = {
-    nextUrl: new URL('http://test.local/api/export?type=character&id=target-char'),
+    nextUrl: new URL('http://test.local/api/export?type=character&id=target-char&include_embeddings=1'),
   };
 
   const response = await route.GET(request);
@@ -753,7 +754,7 @@ test('/api/export includes memory profiles, profile versions, and embeddings for
   assert.equal(payload.memory_embeddings[0].embedding_blob.data.length, 8);
 });
 
-test('/api/export respects include_profiles=0 and include_embeddings=0', async () => {
+test('/api/export omits embeddings by default and respects include_profiles=0', async () => {
   const db = createImportDb();
   db.prepare(`
     INSERT INTO character_memory_profiles (character_id, profile_name, updated_at)
@@ -761,8 +762,9 @@ test('/api/export respects include_profiles=0 and include_embeddings=0', async (
   `).run('target-char', '不应导出', '2026-06-01T00:00:00.000Z');
 
   const route = loadExportRoute(db);
+  // 不传 include_embeddings，默认应跳过 embedding（体积大且可重建）
   const request = {
-    nextUrl: new URL('http://test.local/api/export?type=character&id=target-char&include_profiles=0&include_embeddings=0'),
+    nextUrl: new URL('http://test.local/api/export?type=character&id=target-char&include_profiles=0'),
   };
 
   const response = await route.GET(request);
@@ -777,9 +779,9 @@ test('/api/export respects include_profiles=0 and include_embeddings=0', async (
 test('/api/export skips embeddings when include_memories=0', async () => {
   const db = createImportDb();
   const route = loadExportRoute(db);
-  // include_memories=0 时，即使 include_embeddings 默认开启，也应该跳过 embedding
+  // include_memories=0 时，即使显式传 include_embeddings=1，也应该跳过 embedding
   const request = {
-    nextUrl: new URL('http://test.local/api/export?type=character&id=target-char&include_memories=0'),
+    nextUrl: new URL('http://test.local/api/export?type=character&id=target-char&include_memories=0&include_embeddings=1'),
   };
 
   const response = await route.GET(request);

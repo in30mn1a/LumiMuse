@@ -623,7 +623,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'export.includeMemories': '记忆条目',
     'export.includeConversations': '对话记录（含全部消息）',
     'export.includeProfiles': '记忆画像（含版本历史）',
-    'export.includeEmbeddings': '记忆向量索引',
+    'export.includeEmbeddings': '记忆向量索引（体积大，可重建）',
     'export.download': '下载备份',
 
     'import.characterTitle': '导入到当前角色',
@@ -1345,7 +1345,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'export.includeMemories': 'Memory entries',
     'export.includeConversations': 'Conversations (all messages)',
     'export.includeProfiles': 'Memory profiles (with version history)',
-    'export.includeEmbeddings': 'Memory vector index',
+    'export.includeEmbeddings': 'Memory vector index (large, rebuildable)',
     'export.download': 'Download backup',
 
     'import.characterTitle': 'Import to current character',

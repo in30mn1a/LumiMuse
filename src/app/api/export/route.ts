@@ -12,7 +12,7 @@ import { EXPORT_VERSION } from '@/lib/export-version';
  *   include_memories=1        是否包含记忆（默认 1）
  *   include_conversations=1   是否包含对话和消息（默认 1）
  *   include_profiles=1        是否包含记忆画像及画像版本历史（默认 1）
- *   include_embeddings=1      是否包含记忆向量索引（默认 1）
+ *   include_embeddings=1      是否包含记忆向量索引（默认 0，体积大且可重建）
  *
  * 单角色导出（type=character）始终尝试带上画像 / 画像版本 / embedding，
  * 并受 include_profiles / include_embeddings 控制；include_memories=0 时
@@ -29,8 +29,10 @@ export async function GET(request: NextRequest) {
   const includeMemories = searchParams.get('include_memories') !== '0';
   const includeConversations = searchParams.get('include_conversations') !== '0';
   const includeProfiles = searchParams.get('include_profiles') !== '0';
-  // embedding 只在导出记忆时才有意义，避免空记忆库带一堆孤儿向量
-  const includeEmbeddings = includeMemories && searchParams.get('include_embeddings') !== '0';
+  // embedding 默认不导出：向量索引是可重建的派生数据（从记忆内容 + embedding 模型重新生成），
+  // 但体积庞大（每条记忆几千 float32 = 几十 KB），默认塞进备份会让文件膨胀到几十甚至上百 MB。
+  // 需要保留索引的用户可显式传 include_embeddings=1。
+  const includeEmbeddings = includeMemories && searchParams.get('include_embeddings') === '1';
 
   // ── 单角色导出 ──────────────────────────────────────────────
   if (type === 'character' && id) {

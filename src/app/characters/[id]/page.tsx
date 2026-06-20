@@ -38,7 +38,9 @@ function ExportDialog({ characterId, onClose }: { characterId: string; onClose: 
   const [includeMemories, setIncludeMemories] = useState(true);
   const [includeConversations, setIncludeConversations] = useState(true);
   const [includeProfiles, setIncludeProfiles] = useState(true);
-  const [includeEmbeddings, setIncludeEmbeddings] = useState(true);
+  // embedding 默认关闭：向量索引体积大（每条记忆几十 KB），且可从记忆内容重建，
+  // 默认勾选会让备份膨胀到几十甚至上百 MB。需要保留索引的用户手动勾选。
+  const [includeEmbeddings, setIncludeEmbeddings] = useState(false);
 
   const handleExport = () => {
     const params = new URLSearchParams({ type: 'character', id: characterId });
@@ -46,7 +48,7 @@ function ExportDialog({ characterId, onClose }: { characterId: string; onClose: 
     if (!includeMemories) params.set('include_memories', '0');
     if (!includeConversations) params.set('include_conversations', '0');
     if (!includeProfiles) params.set('include_profiles', '0');
-    if (!includeEmbeddings) params.set('include_embeddings', '0');
+    if (includeEmbeddings) params.set('include_embeddings', '1');
     const a = document.createElement('a');
     a.href = '/api/export?' + params.toString();
     a.download = '';
@@ -120,7 +122,8 @@ function ImportDialog({
   const [includeMemories, setIncludeMemories] = useState(true);
   const [includeConversations, setIncludeConversations] = useState(true);
   const [includeProfiles, setIncludeProfiles] = useState(true);
-  const [includeEmbeddings, setIncludeEmbeddings] = useState(true);
+  // embedding 默认关闭，与 ExportDialog 对称
+  const [includeEmbeddings, setIncludeEmbeddings] = useState(false);
   const nothingSelected = !includeCharacter && !includeMemories && !includeConversations && !includeProfiles && !includeEmbeddings;
 
   return (
@@ -334,7 +337,8 @@ export default function CharacterEditor({ params }: Props) {
         include_memories: options.includeMemories ? '1' : '0',
         include_conversations: options.includeConversations ? '1' : '0',
         include_profiles: options.includeProfiles ? '1' : '0',
-        include_embeddings: options.includeEmbeddings ? '1' : '0',
+        // embedding 默认关闭，仅在勾选时传 1，不传 0（与导出端语义对称：默认关）
+        ...(options.includeEmbeddings ? { include_embeddings: '1' } : {}),
       });
       const response = await fetch('/api/import?' + params.toString(), {
         method: 'POST',

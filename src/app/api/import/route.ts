@@ -190,9 +190,10 @@ function createEmptyResults() {
  *   - 记忆：全量追加
  *   - 对话：导入时重建对话和消息 ID，避免和现有数据冲突
  */
-// 导入文件体积上限：50MB。
-// 保留余量给合法的大库导出（角色/对话/消息全量），同时避免恶意 100MB+ JSON 耗尽内存。
-const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+// 导入文件体积上限：200MB。
+// 合法的大库备份（多角色 + 长期对话 + 记忆）可能接近或超过 100MB；
+// 200MB 在现代服务器内存下可安全解析，同时仍能挡住明显异常的请求。
+const MAX_IMPORT_BYTES = 200 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
   // 提前用 Content-Length 拒绝超大请求，避免先把整个 body 读进内存才发现超限。
@@ -239,8 +240,9 @@ export async function POST(request: NextRequest) {
   const includeMemories = includeParam(searchParams.get('include_memories'));
   const includeConversations = includeParam(searchParams.get('include_conversations'));
   const includeProfiles = includeParam(searchParams.get('include_profiles'));
-  // embedding 只在导入记忆时才有意义，避免孤儿向量
-  const includeEmbeddings = includeMemories && includeParam(searchParams.get('include_embeddings'));
+  // embedding 默认不导入：与导出端对称，向量索引可重建且体积庞大。
+  // 需要导入索引的用户可显式传 include_embeddings=1。
+  const includeEmbeddings = includeMemories && searchParams.get('include_embeddings') === '1';
   const characterDraft = target_character_id && includeCharacter ? getCharacterDraft(payload) : null;
 
   const memoriesToImport: Record<string, unknown>[] = includeMemories

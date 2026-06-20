@@ -68,6 +68,13 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // 本地使用时隐藏 Next.js 开发工具悬浮按钮
   devIndicators: false,
+  experimental: {
+    // Next.js 16 的 proxy（中间件）会自动缓冲请求 body 以支持多次读取，
+    // 默认上限 10MB。导入路由需要处理大体积备份文件（合法的全量备份可能 100MB+），
+    // 这里调到与 import route 的 MAX_IMPORT_BYTES 一致（200MB）。
+    // 不调高的话，超过 10MB 的请求体会被静默截断，导致 JSON 解析失败。
+    proxyClientMaxBodySize: '200mb',
+  },
   async headers() {
     return [
       {

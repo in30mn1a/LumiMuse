@@ -21,6 +21,12 @@ interface OrphanStats {
   orphanMemories: number;
   orphanMemoryTasks: number;
   orphanFts: number;
+  orphanMemoryProfiles: number;
+  orphanMemoryProfileVersions: number;
+  orphanMemoryProfileUpdateTasks: number;
+  orphanMemoryEmbeddings: number;
+  orphanMemoryEmbeddingTasks: number;
+  orphanMemoryExtractionCandidates: number;
   total: number;
   orphanFiles?: {
     avatars: OrphanFileStats;
@@ -62,14 +68,89 @@ function countOrphans(): OrphanStats {
     // messages_fts 可能不存在
   }
 
+  // 记忆画像相关孤儿（character_id 不在 characters 表）
+  const orphanMemoryProfiles = safeCount(db, `
+    SELECT COUNT(*) as n FROM character_memory_profiles
+    WHERE character_id NOT IN (SELECT id FROM characters)
+  `);
+
+  const orphanMemoryProfileVersions = safeCount(db, `
+    SELECT COUNT(*) as n FROM character_memory_profile_versions
+    WHERE character_id NOT IN (SELECT id FROM characters)
+  `);
+
+  const orphanMemoryProfileUpdateTasks = safeCount(db, `
+    SELECT COUNT(*) as n FROM character_memory_profile_update_tasks
+    WHERE character_id NOT IN (SELECT id FROM characters)
+  `);
+
+  // 向量索引孤儿：character_id 不在 characters 表，或 memory_id 不在 memories 表
+  const orphanMemoryEmbeddings = safeCount(db, `
+    SELECT COUNT(*) as n FROM memory_embeddings
+    WHERE character_id NOT IN (SELECT id FROM characters)
+       OR memory_id NOT IN (SELECT id FROM memories)
+  `);
+
+  const orphanMemoryEmbeddingTasks = safeCount(db, `
+    SELECT COUNT(*) as n FROM memory_embedding_tasks
+    WHERE character_id NOT IN (SELECT id FROM characters)
+       OR memory_id NOT IN (SELECT id FROM memories)
+  `);
+
+  const orphanMemoryExtractionCandidates = safeCount(db, `
+    SELECT COUNT(*) as n FROM memory_extraction_candidates
+    WHERE character_id NOT IN (SELECT id FROM characters)
+  `);
+
+  const total =
+    orphanMessages +
+    orphanConversations +
+    orphanMemories +
+    orphanMemoryTasks +
+    orphanFts +
+    orphanMemoryProfiles +
+    orphanMemoryProfileVersions +
+    orphanMemoryProfileUpdateTasks +
+    orphanMemoryEmbeddings +
+    orphanMemoryEmbeddingTasks +
+    orphanMemoryExtractionCandidates;
+
   return {
     orphanMessages,
     orphanConversations,
     orphanMemories,
     orphanMemoryTasks,
     orphanFts,
-    total: orphanMessages + orphanConversations + orphanMemories + orphanMemoryTasks + orphanFts,
+    orphanMemoryProfiles,
+    orphanMemoryProfileVersions,
+    orphanMemoryProfileUpdateTasks,
+    orphanMemoryEmbeddings,
+    orphanMemoryEmbeddingTasks,
+    orphanMemoryExtractionCandidates,
+    total,
   };
+}
+
+/**
+ * 安全计数：表可能不存在（旧库未迁移），返回 0 而非抛错。
+ */
+function safeCount(db: ReturnType<typeof getDb>, sql: string): number {
+  try {
+    return (db.prepare(sql).get() as { n: number }).n;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 安全删除：表可能不存在（旧库未迁移），返回删除行数而非抛错。
+ */
+function safeDelete(db: ReturnType<typeof getDb>, sql: string): number {
+  try {
+    return db.prepare(sql).run().changes;
+  } catch {
+    return 0;
+  }
 }
 
 function addReferencedFromUrl(url: string, dirName: string, set: Set<string>) {
@@ -239,6 +320,36 @@ export async function POST(request: NextRequest) {
     } catch {
       // messages_fts 可能不存在，忽略
     }
+
+    // 6. 孤儿记忆画像相关数据（character_id 不在 characters 表）
+    // 这些表有 ON DELETE CASCADE 外键，正常情况下不会产生孤儿；
+    // 但历史上若曾关过 foreign_keys 或通过其他途径写入，可能残留，这里兜底清理。
+    deleted += safeDelete(db, `
+      DELETE FROM memory_extraction_candidates
+      WHERE character_id NOT IN (SELECT id FROM characters)
+    `);
+    deleted += safeDelete(db, `
+      DELETE FROM memory_embedding_tasks
+      WHERE character_id NOT IN (SELECT id FROM characters)
+         OR memory_id NOT IN (SELECT id FROM memories)
+    `);
+    deleted += safeDelete(db, `
+      DELETE FROM memory_embeddings
+      WHERE character_id NOT IN (SELECT id FROM characters)
+         OR memory_id NOT IN (SELECT id FROM memories)
+    `);
+    deleted += safeDelete(db, `
+      DELETE FROM character_memory_profile_update_tasks
+      WHERE character_id NOT IN (SELECT id FROM characters)
+    `);
+    deleted += safeDelete(db, `
+      DELETE FROM character_memory_profile_versions
+      WHERE character_id NOT IN (SELECT id FROM characters)
+    `);
+    deleted += safeDelete(db, `
+      DELETE FROM character_memory_profiles
+      WHERE character_id NOT IN (SELECT id FROM characters)
+    `);
 
     return deleted;
   });

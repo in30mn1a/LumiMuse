@@ -108,6 +108,7 @@ export async function POST(request: NextRequest) {
 
         await runChat(conversation_id, content, settings, {
           onChunk: (text) => send('chunk', JSON.stringify({ text })),
+          onUsage: (usage) => send('usage', JSON.stringify(usage)),
           onDone: async (fullText, tokenCount) => {
             send('done', JSON.stringify({ token_count: tokenCount }));
 

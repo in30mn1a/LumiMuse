@@ -3,7 +3,7 @@ import { readFile, stat } from 'fs/promises';
 import path from 'path';
 import { getDb } from '@/lib/db';
 import { Character, Message, Settings, MessageAttachment } from '@/types';
-import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion } from '@/lib/api-client';
+import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion, LlmUsage } from '@/lib/api-client';
 import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
@@ -444,6 +444,11 @@ export interface ChatEngineCallbacks {
   onChunk: (text: string) => void;
   onDone: (fullText: string, tokenCount: number) => Promise<void> | void;
   onError: (error: Error) => void;
+  /**
+   * 上游返回真实 usage 时触发（流式在最后一个 chunk，非流式在响应 body）。
+   * 上游未返回 usage 时不调用，调用方应保留估算逻辑作为 fallback。
+   */
+  onUsage?: (usage: LlmUsage) => void;
 }
 
 export async function runChat(
@@ -535,6 +540,9 @@ export async function runChat(
   );
 
   let memoryContents: string[] | string = [];
+  // 上一轮记忆注入统计：注入条数 + 实际 token 数（来自 workingMemoryPackage 或 fallback）
+  // 存入 assistant 消息 metadata.last_memory_injection，供前端 TokenBreakdownModal 展示
+  let lastMemoryInjection: { count: number; tokens: number; mode?: string } | undefined;
   if (settings.memory_inject) {
     // 重新生成时 userContent 为空，改用最近几条消息内容作为相关性查询
     const queryText = userContent || contextMessages.slice(-4).map(m => m.content).join(' ');
@@ -553,6 +561,11 @@ export async function runChat(
         settings: retrievalSettings,
       });
       memoryContents = workingMemoryPackage.text;
+      lastMemoryInjection = {
+        count: workingMemoryPackage.selectedMemories.length,
+        tokens: workingMemoryPackage.tokenCount,
+        mode: workingMemoryPackage.mode,
+      };
     } catch (error) {
       console.warn('[chat-engine] 工作记忆包检索失败，回退旧记忆检索:', error);
       try {
@@ -562,14 +575,21 @@ export async function runChat(
           settings.memory_max_inject || 30,
         );
         memoryContents = relevantMemories.map(memory => memory.content);
+        // fallback 路径没有精确 tokenCount，用 0 表示未知（前端不展示 token 数，只展示条数）
+        lastMemoryInjection = { count: relevantMemories.length, tokens: 0, mode: 'legacy-fallback' };
       } catch (fallbackError) {
         console.warn('[chat-engine] 旧记忆检索回退也失败，本轮不注入记忆:', fallbackError);
         memoryContents = [];
+        lastMemoryInjection = { count: 0, tokens: 0, mode: 'failed' };
       }
     }
   }
 
   const chatMessages = await assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext);
+
+  // 捕获上游返回的真实 usage（流式在最后一个 chunk，非流式在响应 body）。
+  // abort 场景下可能未捕获到（usage 在流末尾），此时 metadata 不写入 last_usage。
+  let capturedUsage: LlmUsage | undefined;
 
   const saveAssistantMessage = async (rawText: string) => {
     // 清理 AI 可能误输出的时间戳前缀
@@ -580,6 +600,15 @@ export async function runChat(
     const tokenCount = estimateTokens(fullText);
     const asstNow = new Date().toISOString();
     const wasStopped = options?.signal?.aborted === true;
+
+    // 上报真实 usage 给上层（chat/route.ts 会通过 SSE 传给前端）
+    if (capturedUsage && callbacks.onUsage) {
+      try {
+        callbacks.onUsage(capturedUsage);
+      } catch {
+        // 上报失败不影响保存
+      }
+    }
 
     if (options?.regenerateAssistantId) {
       const existing = db.prepare('SELECT content, token_count, metadata FROM messages WHERE id = ?').get(options.regenerateAssistantId) as { content: string; token_count: number; metadata: string } | undefined;
@@ -606,6 +635,14 @@ export async function runChat(
         delete meta.generation_stopped;
         delete meta.generation_stop_reason;
       }
+      // 保存上游真实 usage，供前端展示「上次真实输入 token」校准估算
+      if (capturedUsage) {
+        meta.last_usage = capturedUsage;
+      }
+      // 保存本轮记忆注入统计（条数 + token 数 + 模式），供前端展示
+      if (lastMemoryInjection) {
+        meta.last_memory_injection = lastMemoryInjection;
+      }
 
       // 用事务包裹两条 UPDATE，保持与新建分支对称、避免半成功状态
       db.transaction(() => {
@@ -630,6 +667,14 @@ export async function runChat(
         meta.generation_stopped = true;
         meta.generation_stop_reason = 'abort';
       }
+      // 保存上游真实 usage，供前端展示「上次真实输入 token」校准估算
+      if (capturedUsage) {
+        meta.last_usage = capturedUsage;
+      }
+      // 保存本轮记忆注入统计（条数 + token 数 + 模式），供前端展示
+      if (lastMemoryInjection) {
+        meta.last_memory_injection = lastMemoryInjection;
+      }
       // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
       db.transaction(() => {
         const asstSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
@@ -648,11 +693,18 @@ export async function runChat(
       onChunk: callbacks.onChunk,
       onDone: saveAssistantMessage,
       onError: callbacks.onError,
+      onUsage: (usage) => { capturedUsage = usage; },
       signal: options?.signal,
     });
   } else {
     try {
-      const fullText = await chatCompletion(settings, chatMessages, options?.signal);
+      const fullText = await chatCompletion(
+        settings,
+        chatMessages,
+        options?.signal,
+        undefined,
+        (usage) => { capturedUsage = usage; },
+      );
       await saveAssistantMessage(fullText);
     } catch (error) {
       callbacks.onError(error instanceof Error ? error : new Error(String(error)));

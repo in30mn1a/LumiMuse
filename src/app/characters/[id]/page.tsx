@@ -17,6 +17,9 @@ interface ImportResponse {
   error?: string;
   memoriesImported?: number;
   conversationsImported?: number;
+  profilesImported?: number;
+  profileVersionsImported?: number;
+  embeddingsImported?: number;
   characterDraft?: Partial<Character>;
 }
 
@@ -34,12 +37,16 @@ function ExportDialog({ characterId, onClose }: { characterId: string; onClose: 
   const [includeCharacter, setIncludeCharacter] = useState(true);
   const [includeMemories, setIncludeMemories] = useState(true);
   const [includeConversations, setIncludeConversations] = useState(true);
+  const [includeProfiles, setIncludeProfiles] = useState(true);
+  const [includeEmbeddings, setIncludeEmbeddings] = useState(true);
 
   const handleExport = () => {
     const params = new URLSearchParams({ type: 'character', id: characterId });
     if (!includeCharacter) params.set('include_characters', '0');
     if (!includeMemories) params.set('include_memories', '0');
     if (!includeConversations) params.set('include_conversations', '0');
+    if (!includeProfiles) params.set('include_profiles', '0');
+    if (!includeEmbeddings) params.set('include_embeddings', '0');
     const a = document.createElement('a');
     a.href = '/api/export?' + params.toString();
     a.download = '';
@@ -47,7 +54,7 @@ function ExportDialog({ characterId, onClose }: { characterId: string; onClose: 
     onClose();
   };
 
-  const nothingSelected = !includeCharacter && !includeMemories && !includeConversations;
+  const nothingSelected = !includeCharacter && !includeMemories && !includeConversations && !includeProfiles && !includeEmbeddings;
 
   return (
     <Modal open onClose={onClose} title={t('export.characterTitle')} maxWidth="max-w-sm">
@@ -64,6 +71,19 @@ function ExportDialog({ characterId, onClose }: { characterId: string; onClose: 
         <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
           {t('export.includeConversations')}
+        </label>
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeProfiles} onChange={e => setIncludeProfiles(e.target.checked)} />
+          {t('export.includeProfiles')}
+        </label>
+        <label className={`flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm ${includeMemories ? 'cursor-pointer text-text-secondary' : 'cursor-not-allowed opacity-50'}`}>
+          <input
+            type="checkbox"
+            checked={includeMemories && includeEmbeddings}
+            disabled={!includeMemories}
+            onChange={e => setIncludeEmbeddings(e.target.checked)}
+          />
+          {t('export.includeEmbeddings')}
         </label>
       </div>
       <div className="mt-5 flex justify-end gap-2">
@@ -87,13 +107,21 @@ function ImportDialog({
 }: {
   fileName: string;
   onCancel: () => void;
-  onConfirm: (options: { includeCharacter: boolean; includeMemories: boolean; includeConversations: boolean }) => void;
+  onConfirm: (options: {
+    includeCharacter: boolean;
+    includeMemories: boolean;
+    includeConversations: boolean;
+    includeProfiles: boolean;
+    includeEmbeddings: boolean;
+  }) => void;
 }) {
   const { t } = useTranslation();
   const [includeCharacter, setIncludeCharacter] = useState(true);
   const [includeMemories, setIncludeMemories] = useState(true);
   const [includeConversations, setIncludeConversations] = useState(true);
-  const nothingSelected = !includeCharacter && !includeMemories && !includeConversations;
+  const [includeProfiles, setIncludeProfiles] = useState(true);
+  const [includeEmbeddings, setIncludeEmbeddings] = useState(true);
+  const nothingSelected = !includeCharacter && !includeMemories && !includeConversations && !includeProfiles && !includeEmbeddings;
 
   return (
     <Modal open onClose={onCancel} title={t('import.characterTitle')} maxWidth="max-w-sm">
@@ -112,11 +140,24 @@ function ImportDialog({
           <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
           {t('export.includeConversations')}
         </label>
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+          <input type="checkbox" checked={includeProfiles} onChange={e => setIncludeProfiles(e.target.checked)} />
+          {t('export.includeProfiles')}
+        </label>
+        <label className={`flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm ${includeMemories ? 'cursor-pointer text-text-secondary' : 'cursor-not-allowed opacity-50'}`}>
+          <input
+            type="checkbox"
+            checked={includeMemories && includeEmbeddings}
+            disabled={!includeMemories}
+            onChange={e => setIncludeEmbeddings(e.target.checked)}
+          />
+          {t('export.includeEmbeddings')}
+        </label>
       </div>
       <div className="mt-5 flex justify-end gap-2">
         <button onClick={onCancel} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
         <button
-          onClick={() => onConfirm({ includeCharacter, includeMemories, includeConversations })}
+          onClick={() => onConfirm({ includeCharacter, includeMemories, includeConversations, includeProfiles, includeEmbeddings })}
           disabled={nothingSelected}
           className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -277,7 +318,13 @@ export default function CharacterEditor({ params }: Props) {
     if (characterImportRef.current) characterImportRef.current.value = '';
   };
 
-  const applyPendingImport = async (options: { includeCharacter: boolean; includeMemories: boolean; includeConversations: boolean }) => {
+  const applyPendingImport = async (options: {
+    includeCharacter: boolean;
+    includeMemories: boolean;
+    includeConversations: boolean;
+    includeProfiles: boolean;
+    includeEmbeddings: boolean;
+  }) => {
     if (!pendingImport || !character) return;
 
     try {
@@ -286,6 +333,8 @@ export default function CharacterEditor({ params }: Props) {
         include_character: options.includeCharacter ? '1' : '0',
         include_memories: options.includeMemories ? '1' : '0',
         include_conversations: options.includeConversations ? '1' : '0',
+        include_profiles: options.includeProfiles ? '1' : '0',
+        include_embeddings: options.includeEmbeddings ? '1' : '0',
       });
       const response = await fetch('/api/import?' + params.toString(), {
         method: 'POST',
@@ -300,7 +349,15 @@ export default function CharacterEditor({ params }: Props) {
         setCharacter({ ...character, ...data.characterDraft });
       }
 
-      setImportMsg({ type: 'ok', text: t('import.characterSuccess').replace('{memories}', String(data.memoriesImported || 0)).replace('{conversations}', String(data.conversationsImported || 0)) });
+      // 拼接导入成功提示，包含记忆/对话/画像/向量索引的数量
+      const parts: string[] = [];
+      if (data.memoriesImported) parts.push(`${data.memoriesImported} ${t('import.memoriesUnit')}`);
+      if (data.conversationsImported) parts.push(`${data.conversationsImported} ${t('import.conversationsUnit')}`);
+      if (data.profilesImported) parts.push(`${data.profilesImported} ${t('import.profilesUnit')}`);
+      if (data.profileVersionsImported) parts.push(`${data.profileVersionsImported} ${t('import.profileVersionsUnit')}`);
+      if (data.embeddingsImported) parts.push(`${data.embeddingsImported} ${t('import.embeddingsUnit')}`);
+      const summary = parts.length > 0 ? parts.join('，') : t('import.nothingImported');
+      setImportMsg({ type: 'ok', text: `${t('import.successPrefix')}${summary}。${t('import.characterFormHint')}` });
     } catch (err) {
       setImportMsg({ type: 'err', text: err instanceof Error ? err.message : t('editor.importError') });
     } finally {

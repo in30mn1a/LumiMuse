@@ -10,7 +10,7 @@ import ChatToolbar from './ChatToolbar';
 import ChatMessageList from './ChatMessageList';
 import RenameConvModal from './RenameConvModal';
 import DeleteConvModal from './DeleteConvModal';
-import type { TokenBreakdownItem } from './TokenBreakdownModal';
+import type { TokenBreakdownItem, RealUsage, MemoryInjectionInfo } from './TokenBreakdownModal';
 import { ConversationDesktopAside, ConversationMobileDrawer } from './ConversationListPanels';
 import { useTranslation } from '@/lib/i18n-context';
 import { useConversationLoader } from '@/hooks/chat/useConversationLoader';
@@ -60,6 +60,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   // 记忆包 token 预算（后端 trimByTokenBudget 的裁剪上限）与记忆注入开关，用于前端估算实际注入量
   const [memoryPackageBudget, setMemoryPackageBudget] = useState(12000);
   const [memoryInjectEnabled, setMemoryInjectEnabled] = useState(true);
+  // limit_inject=false（关闭增强记忆）时全量注入 active 记忆，不受 budget 裁剪
+  const [limitInject, setLimitInject] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -86,6 +88,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   // Token 拆分弹窗
   const [tokenBreakdownOpen, setTokenBreakdownOpen] = useState(false);
+  // 本轮 SSE 实时上报的 usage（带 convId 防止切对话后残留）。
+  // 与 visibleMessages 里落库的 last_usage 互补：SSE 上报在 refreshMessages 完成前就能显示，
+  // 切对话后 convId 不匹配自动失效，fallback 到从消息派生的 persistedUsage。
+  const [streamingUsage, setStreamingUsage] = useState<{ convId: string; usage: RealUsage } | null>(null);
   const {
     conversations,
     setConversations,
@@ -147,8 +153,12 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     onInitialMessagesLoaded: () => scrollControllerRef.current?.markScrollToBottomOnLoad(),
     onError: message => showToast(`${t('chat.messageLoadFailed')}: ${message}`, 'error'),
   });
-  clearMessagesRef.current = clearMessages;
-  clearStreamingTextRef.current = clearStreamingText;
+  // 用 useEffect 更新 ref 而非渲染期间直接赋值：React 19 禁止渲染期间更新 ref，
+  // 否则可能导致渲染不一致（react-hooks/refs 规则）
+  useEffect(() => {
+    clearMessagesRef.current = clearMessages;
+    clearStreamingTextRef.current = clearStreamingText;
+  }, [clearMessages, clearStreamingText]);
 
   const {
     highlightedId,
@@ -169,7 +179,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     streamingConvId,
     loadOlderMessages,
   });
-  scrollControllerRef.current = { markTargetForScroll, markScrollToBottomOnLoad };
+  useEffect(() => {
+    scrollControllerRef.current = { markTargetForScroll, markScrollToBottomOnLoad };
+  }, [markTargetForScroll, markScrollToBottomOnLoad]);
 
   const { memoryExtractStatus, pollMemoryTask } = useMemoryTaskPolling({
     activeConvIdRef,
@@ -256,10 +268,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const memoriesTokens = useMemo(() => {
     if (!memoryInjectEnabled || memories.length === 0) return 0;
     const memText = memories.map((m, i) => `${i + 1}. ${m.content}`).join('\n');
-    // 实际注入受后端 trimByTokenBudget 按 memory_package_token_budget 裁剪，
-    // 这里用 budget 作为上限，反映实际注入量而非全量召回（前端估算口径，非精确值）。
-    return Math.min(estimateClientTokens(memText), memoryPackageBudget);
-  }, [memories, memoryInjectEnabled, memoryPackageBudget]);
+    const fullTokens = estimateClientTokens(memText);
+    // limit_inject=false（关闭增强记忆）时全量注入，后端不裁剪；
+    // limit_inject=true 时受 memory_package_token_budget 裁剪
+    return limitInject ? Math.min(fullTokens, memoryPackageBudget) : fullTokens;
+  }, [memories, memoryInjectEnabled, memoryPackageBudget, limitInject]);
 
   const systemPromptTokens = useMemo(() => {
     return (
@@ -273,7 +286,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     );
   }, [systemPromptParts, memoriesTokens]);
 
-  const tokenCount = messageTokens + systemPromptTokens;
+  // 估算总量（fallback 用）：当没有真实 usage 时（新对话/上游不支持）才显示
+  const estimatedTokenCount = messageTokens + systemPromptTokens;
 
   // 弹窗展示用的拆分项。fields 顺序按"出现在 system prompt 中的顺序"排列，
   // 让用户读起来和角色卡编辑界面对得上。零 token 项也保留，避免缺失误以为统计有 bug。
@@ -294,6 +308,24 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     ];
   }, [systemPromptParts, memoriesTokens, messageTokens, memories.length, t]);
 
+  // 从最近 assistant 消息 metadata.last_usage 派生真实统计。
+  // 派生逻辑抽成纯函数（extractLastRealUsage），useMemo 只调用纯函数，
+  // 避免 useMemo 回调里的复杂逻辑导致 React Compiler 放弃优化整个 ChatView 组件。
+  const lastRealUsage = useMemo(
+    () => extractLastRealUsage(streamingUsage, activeConvId, visibleMessages),
+    [streamingUsage, activeConvId, visibleMessages],
+  );
+  // 从最近 assistant 消息 metadata.last_memory_injection 派生上轮记忆注入统计
+  const lastMemoryInjection = useMemo(
+    () => extractLastMemoryInjection(visibleMessages),
+    [visibleMessages],
+  );
+
+  // chip 显示的 token 数：优先用上轮真实 prompt_tokens，无真实值时 fallback 到估算。
+  // 真实值是模型已处理的上一个请求的输入 token 数，时序上属于「上一轮」，
+  // 但比估算准确得多（估算对中文模型普遍高估 1.7-2 倍）。
+  const tokenCount = lastRealUsage ? lastRealUsage.prompt_tokens : estimatedTokenCount;
+
   // 未提取记忆的用户消息数（使用服务端返回的真实数量，不受前端分页限制）
   const unextractedCount = serverUnextractedCount;
 
@@ -305,6 +337,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         setCurrentModel(s.model || '');
         setMemoryPackageBudget(s.memory_engine?.memory_package_token_budget ?? 12000);
         setMemoryInjectEnabled(s.memory_inject ?? true);
+        setLimitInject(s.limit_inject ?? false);
       })
       .catch(err => {
         showToast(`${t('settings.loadFailed')}: ${getErrorMessage(err)}`, 'error');
@@ -507,6 +540,12 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           // fullText 在闭包内继续累积，保证后端持久化的内容完整。
           if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
             scheduleStreamingText(fullText);
+          }
+        },
+        onUsage: (usage) => {
+          // 仅当本流仍属于当前对话时更新，避免切走后残留
+          if (activeConvIdRef.current === myConvId) {
+            setStreamingUsage({ convId: myConvId, usage });
           }
         },
         onMemoryExtracting: () => {
@@ -799,6 +838,11 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             scheduleStreamingText(fullText);
           }
         },
+        onUsage: (usage) => {
+          if (activeConvIdRef.current === myConvId) {
+            setStreamingUsage({ convId: myConvId, usage });
+          }
+        },
         onMemoryExtracting: () => {
           void pollMemoryTask(myConvId);
         },
@@ -925,6 +969,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             unextractedCount={unextractedCount}
             memoryExtractStatus={memoryExtractStatus}
             tokenCount={tokenCount}
+            isRealTokenCount={!!lastRealUsage}
             onOpenResetExtraction={() => setResetExtractionOpen(true)}
             onOpenTokenBreakdown={() => setTokenBreakdownOpen(true)}
           />
@@ -1081,8 +1126,64 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           open={tokenBreakdownOpen}
           onClose={() => setTokenBreakdownOpen(false)}
           items={tokenBreakdownItems}
+          lastRealUsage={lastRealUsage}
+          lastMemoryInjection={lastMemoryInjection}
         />
       )}
     </div>
   );
+}
+
+/**
+ * 从最近 assistant 消息 metadata.last_memory_injection 派生上轮记忆注入统计。
+ * 与 extractLastRealUsage 同理：抽成纯函数避免 React Compiler 放弃优化整个组件。
+ */
+function extractLastMemoryInjection(messages: Message[]): MemoryInjectionInfo | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    const meta = (msg.metadata || {}) as Record<string, unknown>;
+    const injection = meta.last_memory_injection as { count?: number; tokens?: number; mode?: string } | undefined;
+    if (injection && Number.isFinite(injection.count)) {
+      return {
+        count: Number(injection.count),
+        tokens: Number.isFinite(injection.tokens) ? Number(injection.tokens) : 0,
+        mode: injection.mode,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * 从 streamingUsage 或最近 assistant 消息 metadata.last_usage 派生真实 usage。
+ *
+ * 抽成纯函数（而非内联在 ChatView 的 useMemo 里）：React Compiler 对 useMemo 回调做静态分析，
+ * 复杂的循环+条件+动态属性访问会让 Compiler 放弃优化整个组件，暴露 pre-existing 的 ref 错误。
+ * 纯函数在独立作用域里，Compiler 只需优化 useMemo 的函数调用本身。
+ */
+function extractLastRealUsage(
+  streamingUsage: { convId: string; usage: RealUsage } | null,
+  activeConvId: string | null,
+  messages: Message[],
+): RealUsage | null {
+  // 优先用本轮 SSE 实时上报的 streamingUsage（convId 匹配时）
+  if (streamingUsage && streamingUsage.convId === activeConvId) {
+    return streamingUsage.usage;
+  }
+  // 否则从最近 assistant 消息的 metadata.last_usage 派生
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    const meta = (msg.metadata || {}) as Record<string, unknown>;
+    const usage = meta.last_usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+    if (usage && Number.isFinite(usage.prompt_tokens) && Number.isFinite(usage.completion_tokens)) {
+      return {
+        prompt_tokens: Number(usage.prompt_tokens),
+        completion_tokens: Number(usage.completion_tokens),
+        total_tokens: Number.isFinite(usage.total_tokens) ? Number(usage.total_tokens) : Number(usage.prompt_tokens) + Number(usage.completion_tokens),
+      };
+    }
+  }
+  return null;
 }

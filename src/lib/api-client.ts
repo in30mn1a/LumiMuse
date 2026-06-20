@@ -38,11 +38,51 @@ export interface ChatMessage {
   content: ChatMessageContent;
 }
 
+/**
+ * LLM 上游返回的 token 用量统计。
+ *
+ * OpenAI 兼容协议下，非流式响应直接在 body.usage 返回；
+ * 流式响应需要请求体带 `stream_options: { include_usage: true }`，
+ * 上游会在最后一个 chunk（choices 为空数组）里附带 usage。
+ *
+ * 不同上游可能额外返回 prompt_cache_hit_tokens 等字段，
+ * 这里只保留跨上游通用的三个核心字段。
+ */
+export interface LlmUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
 export interface StreamCallbacks {
   onChunk: (text: string) => void;
   onDone: (fullText: string) => Promise<void> | void;
   onError: (error: Error) => void;
+  /**
+   * 上游返回 usage 时触发（流式仅在最后一个 chunk 携带）。
+   * 上游未返回 usage 时不会调用，调用方应保留原有估算逻辑作为 fallback。
+   */
+  onUsage?: (usage: LlmUsage) => void;
   signal?: AbortSignal;
+}
+
+/**
+ * 从 SSE chunk 的 raw JSON 中提取 usage 字段（若存在）。
+ * OpenAI 协议规定 usage 出现在最后一个 chunk，choices 为空数组。
+ */
+function extractUsageFromChunk(raw: unknown): LlmUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const usage = (raw as { usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown } }).usage;
+  if (!usage) return undefined;
+  const promptTokens = Number(usage.prompt_tokens);
+  const completionTokens = Number(usage.completion_tokens);
+  const totalTokens = Number(usage.total_tokens);
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens)) return undefined;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: Number.isFinite(totalTokens) ? totalTokens : promptTokens + completionTokens,
+  };
 }
 
 export async function chatCompletionStream(
@@ -56,6 +96,9 @@ export async function chatCompletionStream(
     max_tokens: settings.max_tokens,
     temperature: settings.temperature,
     stream: true,
+    // OpenAI 协议：流式默认不返回 usage，需显式开启。
+    // 兼容上游会忽略未知字段，不支持的也不会报错；支持的上游会在最后一个 chunk 附带 usage。
+    stream_options: { include_usage: true },
   };
 
   const response = await safeFetch(`${settings.api_base}/chat/completions`, {
@@ -81,12 +124,20 @@ export async function chatCompletionStream(
 
   const reader = response.body.getReader();
   let fullText = '';
+  // 捕获最后一个 chunk 的 usage；流正常结束时通过 onUsage 回调上报。
+  // abort 场景下 usage 通常尚未到达，不上报（调用方 fallback 到估算值）。
+  let capturedUsage: LlmUsage | undefined;
 
   try {
-    await parseSseStream(reader, ({ text }) => {
+    await parseSseStream(reader, ({ text, raw }) => {
       if (text) {
         fullText += text;
         callbacks.onChunk(text);
+      }
+      // usage 只在最后一个 chunk 出现，每次都尝试提取，后到的覆盖先到的
+      const usage = extractUsageFromChunk(raw);
+      if (usage) {
+        capturedUsage = usage;
       }
     }, { signal: callbacks.signal });
   } catch (err) {
@@ -112,6 +163,14 @@ export async function chatCompletionStream(
   // parseSseStream 在 abort 时静默返回；已有部分内容时仍保存，空内容则不写入空回复
   if (callbacks.signal?.aborted && !fullText) return;
 
+  // 正常结束：先上报 usage（若有），再触发 onDone
+  if (capturedUsage && callbacks.onUsage) {
+    try {
+      callbacks.onUsage(capturedUsage);
+    } catch {
+      // usage 上报失败不应影响主流程
+    }
+  }
   await callbacks.onDone(fullText);
 }
 
@@ -120,6 +179,7 @@ export async function chatCompletion(
   messages: ChatMessage[],
   signal?: AbortSignal,
   extraBody?: Record<string, unknown>,
+  onUsage?: (usage: LlmUsage) => void,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: settings.model,
@@ -162,5 +222,18 @@ export async function chatCompletion(
     }
     throw new Error('LLM 返回了空内容，请检查模型是否支持当前请求格式');
   }
+
+  // 非流式响应直接在 body.usage 返回；提取后通过回调上报（调用方可选消费）
+  if (onUsage) {
+    const usage = extractUsageFromChunk(data);
+    if (usage) {
+      try {
+        onUsage(usage);
+      } catch {
+        // usage 上报失败不应影响主流程
+      }
+    }
+  }
+
   return content;
 }

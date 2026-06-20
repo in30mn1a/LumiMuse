@@ -55,7 +55,14 @@ export interface WorkingMemoryPackage {
   text: string;
   selectedMemories: Memory[];
   tokenCount: number;
-  mode: 'local' | 'hybrid' | 'vector';
+  /**
+   * 检索模式：
+   * - local: 增强记忆本地检索（无 embedding）或 legacy 限制注入（limit_inject=true）
+   * - hybrid: 增强记忆混合检索（向量 + 本地）
+   * - vector: 增强记忆纯向量检索
+   * - full: 关闭增强记忆 + 全量注入（limit_inject=false），不检索只按预算裁剪
+   */
+  mode: 'local' | 'hybrid' | 'vector' | 'full';
   usedFallback: boolean;
   diagnostics: {
     embeddingFailed?: string;
@@ -607,14 +614,22 @@ function localMemoryLimit(settings: Settings, config: MemoryEngineConfig): numbe
   if (settings.limit_inject) {
     return Math.max(1, settings.memory_max_inject || config.final_top_k);
   }
-  return Math.max(config.keyword_top_k, config.final_top_k * 2, 100);
+  const baseLimit = Math.max(config.keyword_top_k, config.final_top_k * 2, 100);
+  // 按 token 预算放宽本地召回上限，与 maxSelectedMemoryCount 保持一致，
+  // 避免候选池太小导致 token 预算用不完（例如 32000 budget 只召回 100 条本地候选）
+  const budgetLimit = Math.floor(config.memory_package_token_budget / 50);
+  return Math.max(baseLimit, budgetLimit);
 }
 
 function maxSelectedMemoryCount(settings: Settings, config: MemoryEngineConfig): number {
   if (settings.limit_inject) {
     return Math.max(1, config.final_top_k);
   }
-  return Math.max(100, config.keyword_top_k, config.vector_top_k, config.final_top_k * 2);
+  const baseCap = Math.max(100, config.keyword_top_k, config.vector_top_k, config.final_top_k * 2);
+  // 按 token 预算放宽条数上限：每 50 token 至少允许 1 条候选进入裁剪，
+  // 避免 budget 还有大量余量却被条数卡死（例如 32000 budget 只注入 120 条/7588 token）
+  const budgetCap = Math.floor(config.memory_package_token_budget / 50);
+  return Math.max(baseCap, budgetCap);
 }
 
 function withTotalTimeout<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
@@ -679,7 +694,8 @@ function buildLegacyFullMemoryPackage(
     text: trimmed.text,
     selectedMemories: trimmed.selected,
     tokenCount: trimmed.tokenCount,
-    mode: 'local',
+    // limit_inject=false 是全量注入（不检索，只按预算裁剪）；limit_inject=true 是 legacy 本地关键词检索
+    mode: options.settings.limit_inject ? 'local' : 'full',
     usedFallback: false,
     diagnostics: { candidateCount: ranked.length },
   };

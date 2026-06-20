@@ -12,6 +12,8 @@ interface Props {
   unextractedCount: number;
   memoryExtractStatus: ExtractStatus;
   tokenCount: number;
+  /** true 表示 tokenCount 是模型返回的真实值（不带 ≈）；false 表示是估算值（带 ≈） */
+  isRealTokenCount?: boolean;
   onOpenResetExtraction: () => void;
   onOpenTokenBreakdown: () => void;
 }
@@ -26,6 +28,7 @@ function ChatToolbarImpl({
   unextractedCount,
   memoryExtractStatus,
   tokenCount,
+  isRealTokenCount,
   onOpenResetExtraction,
   onOpenTokenBreakdown,
 }: Props) {
@@ -82,7 +85,7 @@ function ChatToolbarImpl({
           className="chip cursor-pointer text-[10px] md:text-xs hover:bg-white/80"
           title={t('token.breakdownTitle')}
         >
-          ≈{tokenCount} {t('status.tokens')}
+          {isRealTokenCount ? '' : '≈'}{tokenCount} {t('status.tokens')}
         </button>
       </div>
     </div>

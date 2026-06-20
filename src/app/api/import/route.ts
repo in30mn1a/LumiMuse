@@ -12,8 +12,15 @@ interface ImportPayload {
   character?: Record<string, unknown>;
   memories?: Record<string, unknown>[];
   conversations?: ConversationWithMessages[];
+  // 单角色导出：画像为单个对象或 null；画像版本和 embedding 为数组
+  memory_profile?: Record<string, unknown> | null;
+  memory_profile_versions?: Record<string, unknown>[];
+  memory_embeddings?: Record<string, unknown>[];
   // 全量导出格式
   characters?: Record<string, unknown>[];
+  // 全量导出：画像、画像版本、embedding 均为数组
+  memory_profiles?: Record<string, unknown>[];
+  // memory_profile_versions 和 memory_embeddings 在两种格式下字段名相同
 }
 
 interface ConversationWithMessages {
@@ -67,6 +74,47 @@ function jsonArrayString(value: unknown): string {
     }
   }
   return JSON.stringify(asArray<unknown>(value));
+}
+
+/**
+ * 将 open_threads 字段规范化为 JSON 字符串。
+ * 接受：JSON 字符串（DB 格式）、字符串数组（导出格式）、其他（返回 '[]'）。
+ */
+function jsonStringArray(value: unknown): string {
+  if (Array.isArray(value)) {
+    return JSON.stringify(value.filter(item => typeof item === 'string'));
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) {
+        return JSON.stringify(parsed.filter(item => typeof item === 'string'));
+      }
+    } catch {
+      // 非法 JSON，返回空数组
+    }
+  }
+  return '[]';
+}
+
+/**
+ * 从序列化后的 embedding_blob 还原 Buffer。
+ * better-sqlite3 的 Buffer 在 JSON.stringify 后变成 { type: 'Buffer', data: [...] }。
+ * 也接受 Buffer / Uint8Array / number[] 等格式。
+ */
+function bufferFromSerialized(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (Array.isArray(value)) {
+    return value.length > 0 ? Buffer.from(value as number[]) : null;
+  }
+  if (value && typeof value === 'object' && value !== null) {
+    const obj = value as { type?: string; data?: unknown };
+    if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+      return Buffer.from(obj.data as number[]);
+    }
+  }
+  return null;
 }
 
 function jsonRecordString(value: unknown): string {
@@ -126,6 +174,9 @@ function createEmptyResults() {
     conversationsImported: 0,
     conversationsSkipped: 0,
     messagesImported: 0,
+    profilesImported: 0,
+    profileVersionsImported: 0,
+    embeddingsImported: 0,
     // 同名冲突重命名后的角色列表，便于前端提示用户「这些角色已重命名导入」。
     warnings: [] as { type: 'character_renamed'; originalName: string; newName: string }[],
   };
@@ -187,6 +238,9 @@ export async function POST(request: NextRequest) {
   const includeCharacter = includeParam(searchParams.get('include_character'));
   const includeMemories = includeParam(searchParams.get('include_memories'));
   const includeConversations = includeParam(searchParams.get('include_conversations'));
+  const includeProfiles = includeParam(searchParams.get('include_profiles'));
+  // embedding 只在导入记忆时才有意义，避免孤儿向量
+  const includeEmbeddings = includeMemories && includeParam(searchParams.get('include_embeddings'));
   const characterDraft = target_character_id && includeCharacter ? getCharacterDraft(payload) : null;
 
   const memoriesToImport: Record<string, unknown>[] = includeMemories
@@ -199,7 +253,30 @@ export async function POST(request: NextRequest) {
     ? []
     : getCharactersToImport(payload, includeCharacter);
 
-  if (target_character_id && !characterDraft && memoriesToImport.length === 0 && conversationsToImport.length === 0) {
+  // 画像：单角色格式是单个对象（memory_profile），全量格式是数组（memory_profiles）。
+  // 统一收集成数组，导入时按 character_id 重映射。
+  const profilesToImport: Record<string, unknown>[] = includeProfiles
+    ? [
+        ...asArray<Record<string, unknown>>(payload.memory_profiles),
+        ...(payload.memory_profile ? [payload.memory_profile] : []),
+      ]
+    : [];
+  const profileVersionsToImport: Record<string, unknown>[] = includeProfiles
+    ? asArray<Record<string, unknown>>(payload.memory_profile_versions)
+    : [];
+  const embeddingsToImport: Record<string, unknown>[] = includeEmbeddings
+    ? asArray<Record<string, unknown>>(payload.memory_embeddings)
+    : [];
+
+  if (
+    target_character_id &&
+    !characterDraft &&
+    memoriesToImport.length === 0 &&
+    conversationsToImport.length === 0 &&
+    profilesToImport.length === 0 &&
+    profileVersionsToImport.length === 0 &&
+    embeddingsToImport.length === 0
+  ) {
     return NextResponse.json({ error: '没有可导入的内容' }, { status: 400 });
   }
 
@@ -213,6 +290,9 @@ export async function POST(request: NextRequest) {
     charactersToImport,
     memoriesToImport,
     conversationsToImport,
+    profilesToImport,
+    profileVersionsToImport,
+    embeddingsToImport,
     target_character_id,
   });
 
@@ -240,18 +320,25 @@ function importPayload({
   charactersToImport,
   memoriesToImport,
   conversationsToImport,
+  profilesToImport,
+  profileVersionsToImport,
+  embeddingsToImport,
   target_character_id,
 }: {
   charactersToImport: Record<string, unknown>[];
   memoriesToImport: Record<string, unknown>[];
   conversationsToImport: ConversationWithMessages[];
+  profilesToImport: Record<string, unknown>[];
+  profileVersionsToImport: Record<string, unknown>[];
+  embeddingsToImport: Record<string, unknown>[];
   target_character_id?: string;
 }) {
   const db = getDb();
   const now = new Date().toISOString();
   const results = createEmptyResults();
-  const idMap = new Map<string, string>(); // 原 id → 新 id
+  const idMap = new Map<string, string>(); // 原 character id → 新 id
   const messageIdMap = new Map<string, string>(); // 原消息 id → 新消息 id
+  const memoryIdMap = new Map<string, string>(); // 原记忆 id → 新记忆 id（embedding 导入需要）
 
   const importAll = db.transaction(() => {
     // ── 导入角色 ────────────────────────────────────────────────
@@ -364,6 +451,7 @@ function importPayload({
     }
 
     // ── 导入记忆 ────────────────────────────────────────────────
+    // 同时建立 memoryIdMap，供后续 embedding 导入关联新记忆 id。
     for (const mem of memoriesToImport) {
       const originalCharId = asString(mem.character_id);
       const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
@@ -372,6 +460,9 @@ function importPayload({
       if (!charExists) continue;
 
       const newMemId = crypto.randomUUID().slice(0, 12);
+      const originalMemId = asString(mem.id);
+      if (originalMemId) memoryIdMap.set(originalMemId, newMemId);
+
       const category = normalizeMemoryCategory(asString(mem.category) || '话题历史');
       const defaults = inferMemoryDefaults(category);
       db.prepare(`
@@ -401,6 +492,131 @@ function importPayload({
         now,
       );
       results.memoriesImported++;
+    }
+
+    // ── 导入记忆画像 ────────────────────────────────────────────
+    // 画像跟角色绑定，character_id 重映射到新 id。
+    // open_threads 在 DB 里是 JSON 字符串，导出时保持字符串形式，这里直接透传。
+    for (const profile of profilesToImport) {
+      const originalCharId = asString(profile.character_id);
+      const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
+
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
+      if (!charExists) continue;
+
+      // 用 UPSERT 避免重复导入时主键冲突
+      db.prepare(`
+        INSERT INTO character_memory_profiles (
+          character_id, profile_name, relationship_state, recent_story_state,
+          emotional_baseline, open_threads, user_profile_summary, pinned_summary, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(character_id) DO UPDATE SET
+          profile_name = excluded.profile_name,
+          relationship_state = excluded.relationship_state,
+          recent_story_state = excluded.recent_story_state,
+          emotional_baseline = excluded.emotional_baseline,
+          open_threads = excluded.open_threads,
+          user_profile_summary = excluded.user_profile_summary,
+          pinned_summary = excluded.pinned_summary,
+          updated_at = excluded.updated_at
+      `).run(
+        newCharId,
+        asString(profile.profile_name),
+        asString(profile.relationship_state),
+        asString(profile.recent_story_state),
+        asString(profile.emotional_baseline),
+        // open_threads 必须是合法 JSON 字符串，否则导入后读取会报错
+        jsonStringArray(profile.open_threads),
+        asString(profile.user_profile_summary),
+        asString(profile.pinned_summary),
+        asString(profile.updated_at) || now,
+      );
+      results.profilesImported++;
+    }
+
+    // ── 导入画像版本历史 ────────────────────────────────────────
+    // 版本历史跟角色绑定，character_id 重映射。
+    // snapshot_json 是画像快照的 JSON 字符串，直接透传。
+    // version_number 用原值，避免历史版本号断裂；导入后若与现有版本号冲突则跳过。
+    for (const version of profileVersionsToImport) {
+      const originalCharId = asString(version.character_id);
+      const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
+
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
+      if (!charExists) continue;
+
+      const versionNumber = asNumber(version.version_number);
+      if (versionNumber === undefined) continue;
+
+      // 检查是否已存在同版本号，避免重复导入
+      const existing = db.prepare(
+        'SELECT id FROM character_memory_profile_versions WHERE character_id = ? AND version_number = ?',
+      ).get(newCharId, versionNumber);
+      if (existing) continue;
+
+      db.prepare(`
+        INSERT INTO character_memory_profile_versions (
+          character_id, version_number, snapshot_json, reason, task_id, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        newCharId,
+        versionNumber,
+        asString(version.snapshot_json) || '{}',
+        asString(version.reason) || 'imported',
+        asNumber(version.task_id) ?? null,
+        asString(version.created_at) || now,
+      );
+      results.profileVersionsImported++;
+    }
+
+    // ── 导入记忆向量索引 ────────────────────────────────────────
+    // embedding 跟记忆绑定，memory_id 必须能映射到新记忆 id，否则跳过（孤儿向量）。
+    // embedding_blob 在导出时是 { type: 'Buffer', data: [...] } 对象，用 Buffer.from() 还原。
+    for (const embedding of embeddingsToImport) {
+      const originalMemId = asString(embedding.memory_id);
+      const newMemId = memoryIdMap.get(originalMemId);
+      if (!newMemId) continue; // 记忆没导入或没映射，跳过
+
+      const originalCharId = asString(embedding.character_id);
+      const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
+
+      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
+      if (!charExists) continue;
+
+      const embeddingBlob = bufferFromSerialized(embedding.embedding_blob);
+      if (!embeddingBlob) continue;
+
+      // 用 UPSERT 避免重复导入时唯一索引冲突
+      db.prepare(`
+        INSERT INTO memory_embeddings (
+          memory_id, character_id, provider, model, dimension, embedding_blob,
+          normalized, embedding_text_hash, status, error_message, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(memory_id, provider, model, dimension) DO UPDATE SET
+          embedding_blob = excluded.embedding_blob,
+          normalized = excluded.normalized,
+          embedding_text_hash = excluded.embedding_text_hash,
+          status = excluded.status,
+          error_message = excluded.error_message,
+          updated_at = excluded.updated_at
+      `).run(
+        newMemId,
+        newCharId,
+        asString(embedding.provider) || 'openai-compatible',
+        asString(embedding.model) || 'unknown',
+        asNumber(embedding.dimension) ?? 0,
+        embeddingBlob,
+        asFlag(embedding.normalized) || 1,
+        asString(embedding.embedding_text_hash) || '',
+        asString(embedding.status) || 'ready',
+        asString(embedding.error_message) || null,
+        asString(embedding.created_at) || now,
+        asString(embedding.updated_at) || now,
+      );
+      results.embeddingsImported++;
     }
   });
 

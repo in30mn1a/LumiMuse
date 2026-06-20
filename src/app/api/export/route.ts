@@ -8,9 +8,15 @@ import { EXPORT_VERSION } from '@/lib/export-version';
  * GET /api/export?type=all               — 导出全部（角色、记忆、对话、消息）
  *
  * 可选过滤参数（type=all 时生效）：
- *   include_characters=1  是否包含角色（默认 1）
- *   include_memories=1    是否包含记忆（默认 1）
- *   include_conversations=1 是否包含对话和消息（默认 1）
+ *   include_characters=1      是否包含角色（默认 1）
+ *   include_memories=1        是否包含记忆（默认 1）
+ *   include_conversations=1   是否包含对话和消息（默认 1）
+ *   include_profiles=1        是否包含记忆画像及画像版本历史（默认 1）
+ *   include_embeddings=1      是否包含记忆向量索引（默认 1）
+ *
+ * 单角色导出（type=character）始终尝试带上画像 / 画像版本 / embedding，
+ * 并受 include_profiles / include_embeddings 控制；include_memories=0 时
+ * embedding 自动跳过（没有记忆就没有向量索引）。
  */
 export async function GET(request: NextRequest) {
   const db = getDb();
@@ -22,6 +28,9 @@ export async function GET(request: NextRequest) {
   const includeCharacters = searchParams.get('include_characters') !== '0';
   const includeMemories = searchParams.get('include_memories') !== '0';
   const includeConversations = searchParams.get('include_conversations') !== '0';
+  const includeProfiles = searchParams.get('include_profiles') !== '0';
+  // embedding 只在导出记忆时才有意义，避免空记忆库带一堆孤儿向量
+  const includeEmbeddings = includeMemories && searchParams.get('include_embeddings') !== '0';
 
   // ── 单角色导出 ──────────────────────────────────────────────
   if (type === 'character' && id) {
@@ -37,12 +46,27 @@ export async function GET(request: NextRequest) {
       ? buildConversationsForCharacter(db, id)
       : [];
 
+    // 画像与画像版本历史：跟角色绑定，导出后可在导入端直接还原，
+    // 避免重新跑 LLM 画像提取（昂贵且会丢失人工 patch 历史）。
+    const profile = includeProfiles ? loadProfileForCharacter(db, id) : null;
+    const profileVersions = includeProfiles ? loadProfileVersionsForCharacter(db, id) : [];
+
+    // 向量索引：跟记忆绑定，导出后避免重新跑 embedding（API 调用 + 时间成本）。
+    // 只导出 ready 状态的向量，failed/pending 的让导入端按需重建。
+    const embeddings = includeEmbeddings
+      ? loadEmbeddingsForCharacter(db, id)
+      : [];
+
     const payload = {
       version: EXPORT_VERSION,
       exported_at: new Date().toISOString(),
       character,
       memories,
       conversations,
+      // 画像可能为 null（角色从未生成过画像），导入端按「有则写入」处理。
+      memory_profile: profile,
+      memory_profile_versions: profileVersions,
+      memory_embeddings: embeddings,
     };
 
     return new Response(JSON.stringify(payload, null, 2), {
@@ -68,12 +92,19 @@ export async function GET(request: NextRequest) {
     ? buildAllConversations(db)
     : [];
 
+  const profiles = includeProfiles ? loadAllProfiles(db) : [];
+  const profileVersions = includeProfiles ? loadAllProfileVersions(db) : [];
+  const embeddings = includeEmbeddings ? loadAllEmbeddings(db) : [];
+
   const payload = {
     version: EXPORT_VERSION,
     exported_at: new Date().toISOString(),
     characters,
     memories,
     conversations,
+    memory_profiles: profiles,
+    memory_profile_versions: profileVersions,
+    memory_embeddings: embeddings,
   };
 
   // 根据实际包含内容生成文件名
@@ -81,6 +112,8 @@ export async function GET(request: NextRequest) {
     includeCharacters && 'chars',
     includeMemories && 'mems',
     includeConversations && 'convs',
+    includeProfiles && 'profiles',
+    includeEmbeddings && 'embeds',
   ].filter(Boolean).join('-');
   const filename = `lumimuse-${parts}-${new Date().toISOString().slice(0, 10)}.json`;
 
@@ -113,6 +146,82 @@ function parseJsonArray(value: unknown): unknown[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * 序列化画像行：open_threads 在 DB 里是 JSON 字符串，导出时保持字符串形式，
+ * 导入端会重新解析。其余字段都是 TEXT，直接透传。
+ */
+function serializeProfile(row: Record<string, unknown>) {
+  return { ...row };
+}
+
+/**
+ * 序列化画像版本行：snapshot_json 在 DB 里是 JSON 字符串（画像快照），
+ * 导出时保持字符串形式，导入端直接写入。
+ */
+function serializeProfileVersion(row: Record<string, unknown>) {
+  return { ...row };
+}
+
+/**
+ * 序列化 embedding 行：embedding_blob 是 Float32Array 的二进制 Buffer，
+ * JSON.stringify 会自动转成 { type: 'Buffer', data: [...] } 对象。
+ * 导入端用 Buffer.from() 还原。保留所有字段以便导入端完整重建索引。
+ */
+function serializeEmbedding(row: Record<string, unknown>) {
+  return { ...row };
+}
+
+function tableExists(db: ReturnType<typeof getDb>, tableName: string): boolean {
+  const row = db.prepare(
+    "SELECT 1 AS exists_flag FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+  ).get(tableName) as { exists_flag?: number } | undefined;
+  return Boolean(row?.exists_flag);
+}
+
+function loadProfileForCharacter(db: ReturnType<typeof getDb>, characterId: string): Record<string, unknown> | null {
+  if (!tableExists(db, 'character_memory_profiles')) return null;
+  const row = db.prepare('SELECT * FROM character_memory_profiles WHERE character_id = ?').get(characterId) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? serializeProfile(row) : null;
+}
+
+function loadProfileVersionsForCharacter(db: ReturnType<typeof getDb>, characterId: string): Record<string, unknown>[] {
+  if (!tableExists(db, 'character_memory_profile_versions')) return [];
+  return (db.prepare(
+    'SELECT * FROM character_memory_profile_versions WHERE character_id = ? ORDER BY version_number ASC',
+  ).all(characterId) as Record<string, unknown>[]).map(serializeProfileVersion);
+}
+
+function loadEmbeddingsForCharacter(db: ReturnType<typeof getDb>, characterId: string): Record<string, unknown>[] {
+  if (!tableExists(db, 'memory_embeddings')) return [];
+  // 只导出 ready 状态的向量，failed/pending 的让导入端按需重建
+  return (db.prepare(
+    "SELECT * FROM memory_embeddings WHERE character_id = ? AND status = 'ready' ORDER BY memory_id",
+  ).all(characterId) as Record<string, unknown>[]).map(serializeEmbedding);
+}
+
+function loadAllProfiles(db: ReturnType<typeof getDb>): Record<string, unknown>[] {
+  if (!tableExists(db, 'character_memory_profiles')) return [];
+  return (db.prepare('SELECT * FROM character_memory_profiles ORDER BY character_id').all() as Record<string, unknown>[]).map(
+    serializeProfile,
+  );
+}
+
+function loadAllProfileVersions(db: ReturnType<typeof getDb>): Record<string, unknown>[] {
+  if (!tableExists(db, 'character_memory_profile_versions')) return [];
+  return (db.prepare(
+    'SELECT * FROM character_memory_profile_versions ORDER BY character_id, version_number ASC',
+  ).all() as Record<string, unknown>[]).map(serializeProfileVersion);
+}
+
+function loadAllEmbeddings(db: ReturnType<typeof getDb>): Record<string, unknown>[] {
+  if (!tableExists(db, 'memory_embeddings')) return [];
+  return (db.prepare(
+    "SELECT * FROM memory_embeddings WHERE status = 'ready' ORDER BY character_id, memory_id",
+  ).all() as Record<string, unknown>[]).map(serializeEmbedding);
 }
 
 function buildConversationsForCharacter(db: ReturnType<typeof import('@/lib/db').getDb>, characterId: string) {

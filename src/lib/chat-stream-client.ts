@@ -14,6 +14,11 @@ export type ChatSseHandlers = {
   onChunk: (text: string) => void;
   onMemoryExtracting: () => void;
   getErrorMessage: () => string;
+  /**
+   * 上游返回真实 usage 时触发（流式在最后一个 chunk）。
+   * 上游未返回 usage 时不调用。
+   */
+  onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
 };
 
 export function buildClientTimePayload() {
@@ -60,7 +65,7 @@ export function parseChatSsePart(part: string): { eventType: string; eventData: 
 export function handleChatSseEvent(eventType: string, eventData: string, handlers: ChatSseHandlers): void {
   if (!eventData) return;
 
-  let parsed: { text?: unknown; status?: unknown; message?: unknown };
+  let parsed: { text?: unknown; status?: unknown; message?: unknown; prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown };
   try {
     parsed = JSON.parse(eventData) as typeof parsed;
   } catch (parseErr) {
@@ -74,6 +79,17 @@ export function handleChatSseEvent(eventType: string, eventData: string, handler
     handlers.onChunk(parsed.text);
   } else if (eventType === 'memory' && parsed.status === 'extracting') {
     handlers.onMemoryExtracting();
+  } else if (eventType === 'usage' && handlers.onUsage) {
+    const promptTokens = Number(parsed.prompt_tokens);
+    const completionTokens = Number(parsed.completion_tokens);
+    const totalTokens = Number(parsed.total_tokens);
+    if (Number.isFinite(promptTokens) && Number.isFinite(completionTokens)) {
+      handlers.onUsage({
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: Number.isFinite(totalTokens) ? totalTokens : promptTokens + completionTokens,
+      });
+    }
   } else if (eventType === 'error') {
     throw new Error(typeof parsed.message === 'string' ? parsed.message : handlers.getErrorMessage());
   }

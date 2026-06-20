@@ -2765,7 +2765,7 @@ test('memory_engine.enabled=false 且 limit_inject=false 时全量注入 active 
   assert.equal(localCalls, 0);
   assert.equal(embeddingCalls, 0);
   assert.equal(rerankerCalls, 0);
-  assert.equal(result.mode, 'local');
+  assert.equal(result.mode, 'full');
   assert.equal(result.usedFallback, false);
   assert.deepEqual(result.selectedMemories.map(item => item.id), ['legacy-a', 'legacy-b', 'legacy-c']);
   assert.match(result.text, /第一条旧版全量记忆/);

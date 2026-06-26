@@ -120,6 +120,13 @@ export const settingsUpdateSchema = z.looseObject({
   temperature: settingFiniteNumberSchema.min(0).max(10).optional(),
   max_tokens: settingPositiveIntegerSchema.max(10_000_000).optional(),
   context_window: settingPositiveIntegerSchema.max(100_000_000).optional(),
+  // 高级采样参数：null 表示未设置，请求体不包含该字段
+  top_p: z.union([z.null(), settingFiniteNumberSchema.min(0).max(1)]).optional(),
+  frequency_penalty: z.union([z.null(), settingFiniteNumberSchema.min(-2).max(2)]).optional(),
+  presence_penalty: z.union([z.null(), settingFiniteNumberSchema.min(-2).max(2)]).optional(),
+  top_k: z.union([z.null(), settingPositiveIntegerSchema.max(1000)]).optional(),
+  repetition_penalty: z.union([z.null(), settingFiniteNumberSchema.min(0).max(10)]).optional(),
+  seed: z.union([z.null(), z.number().int().min(0).max(2_147_483_647)]).optional(),
   streaming: z.boolean().optional(),
   example_dialogue: z.boolean().optional(),
   memory_inject: z.boolean().optional(),

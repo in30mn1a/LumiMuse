@@ -84,3 +84,94 @@ test('chatCompletion merges extra request body into non-streaming completion req
   assert.equal(capturedBody.model, 'deepseek-v4-pro');
   assert.deepEqual(capturedBody.thinking, { type: 'disabled' });
 });
+
+test('chatCompletion omits null/undefined sampling params and includes set ones', async () => {
+  let capturedBody = null;
+
+  const { chatCompletion } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': {
+      safeFetch: async (_url, init) => {
+        capturedBody = JSON.parse(init.body);
+        return {
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'ok' } }] };
+          },
+        };
+      },
+    },
+  });
+
+  await chatCompletion(
+    {
+      api_base: 'https://llm.example/v1',
+      api_key: 'secret',
+      model: 'glm-5.2',
+      max_tokens: 2048,
+      temperature: 0.9,
+      json_mode: false,
+      // 启用 top_p 和 frequency_penalty，其余留空
+      top_p: 0.9,
+      frequency_penalty: 0.5,
+      presence_penalty: null,
+      top_k: null,
+      repetition_penalty: null,
+      seed: null,
+    },
+    [{ role: 'user', content: 'hi' }],
+  );
+
+  // 启用的参数应出现在请求体
+  assert.equal(capturedBody.top_p, 0.9);
+  assert.equal(capturedBody.frequency_penalty, 0.5);
+  // null 的参数不应出现在请求体（JSON.stringify 会丢弃 undefined，这里测的是不写入）
+  assert.equal('presence_penalty' in capturedBody, false, 'presence_penalty should be absent');
+  assert.equal('top_k' in capturedBody, false, 'top_k should be absent');
+  assert.equal('repetition_penalty' in capturedBody, false, 'repetition_penalty should be absent');
+  assert.equal('seed' in capturedBody, false, 'seed should be absent');
+});
+
+test('chatCompletion with all-null sampling params produces clean body', async () => {
+  let capturedBody = null;
+
+  const { chatCompletion } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': {
+      safeFetch: async (_url, init) => {
+        capturedBody = JSON.parse(init.body);
+        return {
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'ok' } }] };
+          },
+        };
+      },
+    },
+  });
+
+  await chatCompletion(
+    {
+      api_base: 'https://llm.example/v1',
+      api_key: 'secret',
+      model: 'glm-5.2',
+      max_tokens: 2048,
+      temperature: 0.9,
+      json_mode: false,
+      top_p: null,
+      frequency_penalty: null,
+      presence_penalty: null,
+      top_k: null,
+      repetition_penalty: null,
+      seed: null,
+    },
+    [{ role: 'user', content: 'hi' }],
+  );
+
+  // 全部 null 时请求体应只有基础字段
+  const expectedKeys = ['model', 'messages', 'max_tokens', 'temperature', 'stream'];
+  for (const key of expectedKeys) {
+    assert.equal(key in capturedBody, true, `${key} should be present`);
+  }
+  for (const key of ['top_p', 'frequency_penalty', 'presence_penalty', 'top_k', 'repetition_penalty', 'seed']) {
+    assert.equal(key in capturedBody, false, `${key} should be absent when null`);
+  }
+});

@@ -85,12 +85,30 @@ function extractUsageFromChunk(raw: unknown): LlmUsage | undefined {
   };
 }
 
+/**
+ * 把用户在设置里配置的可选采样参数（top_p / frequency_penalty / presence_penalty / top_k /
+ * repetition_penalty / seed）追加到请求体。
+ *
+ * 约定：值为 null 表示「未设置」，对应的字段不会出现在请求体里——这样兼容那些
+ * 不支持其中部分参数的上游（不支持的字段若强行发送可能被某些网关直接拒绝）。
+ * 非空数值才会被写入。
+ */
+function appendOptionalSamplingParams(body: Record<string, unknown>, settings: Settings): void {
+  // 用 != null 同时兼容 null 和 undefined（旧测试数据可能不带这些字段）
+  if (settings.top_p != null) body.top_p = settings.top_p;
+  if (settings.frequency_penalty != null) body.frequency_penalty = settings.frequency_penalty;
+  if (settings.presence_penalty != null) body.presence_penalty = settings.presence_penalty;
+  if (settings.top_k != null) body.top_k = settings.top_k;
+  if (settings.repetition_penalty != null) body.repetition_penalty = settings.repetition_penalty;
+  if (settings.seed != null) body.seed = settings.seed;
+}
+
 export async function chatCompletionStream(
   settings: Settings,
   messages: ChatMessage[],
   callbacks: StreamCallbacks,
 ): Promise<void> {
-  const body = {
+  const body: Record<string, unknown> = {
     model: settings.model,
     messages,
     max_tokens: settings.max_tokens,
@@ -100,6 +118,7 @@ export async function chatCompletionStream(
     // 兼容上游会忽略未知字段，不支持的也不会报错；支持的上游会在最后一个 chunk 附带 usage。
     stream_options: { include_usage: true },
   };
+  appendOptionalSamplingParams(body, settings);
 
   const response = await safeFetch(`${settings.api_base}/chat/completions`, {
     method: 'POST',
@@ -188,6 +207,7 @@ export async function chatCompletion(
     temperature: settings.temperature,
     stream: false,
   };
+  appendOptionalSamplingParams(body, settings);
 
   if (settings.json_mode) {
     body.response_format = { type: 'json_object' };

@@ -879,6 +879,64 @@ export default function SettingsPage() {
             </section>
 
             <section className="surface-panel p-5">
+              <div className="mb-2">
+                <h2 className="section-title text-lg">{t('settings.advancedSampling')}</h2>
+                <p className="mt-1 text-xs text-text-muted">{t('settings.advancedSamplingHint')}</p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <SamplingParamRow
+                  label={t('settings.topP')}
+                  value={settings.top_p}
+                  defaultValue={0.9}
+                  min={0} max={1} step={0.01}
+                  onChange={v => update('top_p', v)}
+                  parseNumber={parseNumber}
+                />
+                <SamplingParamRow
+                  label={t('settings.topK')}
+                  value={settings.top_k}
+                  defaultValue={40}
+                  min={1} max={1000} step={1}
+                  onChange={v => update('top_k', v)}
+                  parseNumber={parseNumber}
+                />
+                <SamplingParamRow
+                  label={t('settings.frequencyPenalty')}
+                  value={settings.frequency_penalty}
+                  defaultValue={0}
+                  min={-2} max={2} step={0.05}
+                  onChange={v => update('frequency_penalty', v)}
+                  parseNumber={parseNumber}
+                />
+                <SamplingParamRow
+                  label={t('settings.presencePenalty')}
+                  value={settings.presence_penalty}
+                  defaultValue={0}
+                  min={-2} max={2} step={0.05}
+                  onChange={v => update('presence_penalty', v)}
+                  parseNumber={parseNumber}
+                />
+                <SamplingParamRow
+                  label={t('settings.repetitionPenalty')}
+                  value={settings.repetition_penalty}
+                  defaultValue={1.1}
+                  min={0} max={10} step={0.01}
+                  onChange={v => update('repetition_penalty', v)}
+                  parseNumber={parseNumber}
+                />
+                <SamplingParamRow
+                  label={t('settings.seed')}
+                  value={settings.seed}
+                  defaultValue={0}
+                  min={0} max={2147483647} step={1}
+                  onChange={v => update('seed', v)}
+                  parseNumber={parseNumber}
+                />
+              </div>
+            </section>
+
+            <section className="surface-panel p-5">
               <div className="mb-4">
                 <h2 className="section-title text-lg">{t('settings.chatBehavior')}</h2>
               </div>
@@ -1062,6 +1120,56 @@ export default function SettingsPage() {
           </main>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ========== 高级采样参数行 ==========
+interface SamplingParamRowProps {
+  label: string;
+  value: number | null;
+  /** 勾选启用时若当前值为 null，自动填入的初值 */
+  defaultValue: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number | null) => void;
+  parseNumber: (v: string) => number;
+}
+
+function SamplingParamRow({ label, value, defaultValue, min, max, step, onChange, parseNumber }: SamplingParamRowProps) {
+  const enabled = value !== null;
+  return (
+    <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
+      enabled
+        ? 'border-accent/30 bg-accent/5'
+        : 'border-border-light bg-white/70'
+    }`}>
+      <input
+        type="checkbox"
+        checked={enabled}
+        onChange={e => {
+          if (e.target.checked) {
+            // 启用：若当前为 null，填入默认初值；已有值则保留
+            onChange(value === null ? defaultValue : value);
+          } else {
+            // 禁用：置为 null，请求体将不包含该字段
+            onChange(null);
+          }
+        }}
+      />
+      <label className="flex-1 text-sm text-text-secondary">{label}</label>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={enabled ? value : ''}
+        disabled={!enabled}
+        onChange={e => onChange(parseNumber(e.target.value))}
+        className="input-rich w-28"
+        placeholder="—"
+      />
     </div>
   );
 }

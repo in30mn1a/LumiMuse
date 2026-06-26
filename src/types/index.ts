@@ -328,6 +328,13 @@ export interface Settings {
   language: 'zh' | 'en';
   font_style: FontStyle;
   active_provider_id: string;
+  // 高级采样参数：null 表示未设置，请求体中不会包含该字段（部分模型不支持）。
+  top_p: number | null;
+  frequency_penalty: number | null;
+  presence_penalty: number | null;
+  top_k: number | null;
+  repetition_penalty: number | null;
+  seed: number | null;
   // 生图设置
   image_gen: ImageGenSettings;
   memory_engine: MemoryEngineSettings;
@@ -362,6 +369,12 @@ export const DEFAULT_SETTINGS: Settings = {
   language: 'zh',
   font_style: 'wenkai',
   active_provider_id: '',
+  top_p: null,
+  frequency_penalty: null,
+  presence_penalty: null,
+  top_k: null,
+  repetition_penalty: null,
+  seed: null,
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
   memory_engine: { ...DEFAULT_MEMORY_ENGINE_SETTINGS },
   artist_strings: [],

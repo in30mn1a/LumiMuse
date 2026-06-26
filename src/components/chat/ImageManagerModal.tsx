@@ -142,10 +142,9 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
     setDownloading(true);
     try {
       const zip = new JSZip();
-      const selectedImages = images.filter(img => {
-        const key = `${img.messageId}::${img.imageId}::${img.versionId}`;
-        return selected.has(key);
-      });
+      // 选中态以 img.url 为 key（与单选/全选/删除一致），这里必须同样用 url 过滤，
+      // 否则匹配不到任何图片，会导致打出空压缩包。
+      const selectedImages = images.filter(img => selected.has(img.url));
       const blobs = await fetchImagesWithConcurrency(selectedImages);
       for (const { blob, url } of blobs) {
         const ext = url.split('.').pop()?.split('?')[0] ?? 'png';

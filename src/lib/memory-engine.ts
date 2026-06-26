@@ -2,6 +2,7 @@ import { getDb } from '@/lib/db';
 import { Memory, MemoryCategory, MemoryKind, Settings, MEMORY_CATEGORIES, MEMORY_KINDS } from '@/types';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { EXTRACTION_PROMPT } from '@/lib/prompt-templates';
+import { normalizeTags as canonicalizeTags } from '@/lib/memory-tag-spec';
 import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-category';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
@@ -570,7 +571,7 @@ export async function extractMemories(
       category: item.category as MemoryCategory,
       content: item.content,
       confidence: Math.min(Math.max(item.confidence || 0.8, 0), 1),
-      tags: (item.tags || []).slice(0, 3),
+      tags: canonicalizeTags(item.tags).slice(0, 3),
       source_msg_ids: sourceMsgIds,
       memory_kind: item.memory_kind,
       importance: item.importance,

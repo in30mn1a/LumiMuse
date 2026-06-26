@@ -4,6 +4,7 @@ import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } f
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
+import { normalizeTags, TAG_SPEC_PROMPT_SECTION } from '@/lib/memory-tag-spec';
 import { MEMORY_CATEGORIES } from '@/types';
 
 const MEMORY_REVIEW_OUTPUT_MAX_TOKENS = REASONING_SAFE_MAX_TOKENS;
@@ -82,35 +83,37 @@ function buildMemoryReviewBatches(entries: string[]): string[][] {
   return batches;
 }
 
-async function mapWithConcurrency<T, R>(
+type SettledResult<R> = { ok: true; value: R } | { ok: false; error: unknown };
+
+/**
+ * 有界并发执行，且单个任务失败相互隔离：不再 abort 整批，而是逐个返回成功/失败结果。
+ * 这样某一批 API 报错只会跳过该批，其它批次的整理结果仍然落库（问题2修复）。
+ */
+async function mapWithConcurrencySettled<T, R>(
   items: T[],
   concurrency: number,
   worker: (item: T, index: number) => Promise<R>,
-): Promise<{ ok: true; results: R[] } | { ok: false; error: unknown }> {
-  const results = new Array<R>(items.length);
+): Promise<SettledResult<R>[]> {
+  const results = new Array<SettledResult<R>>(items.length);
   let nextIndex = 0;
-  let firstError: unknown = null;
   const workerCount = Math.min(Math.max(1, concurrency), items.length);
 
   async function runWorker() {
-    while (!firstError) {
+    while (true) {
       const index = nextIndex;
       nextIndex += 1;
       if (index >= items.length) return;
 
       try {
-        results[index] = await worker(items[index], index);
+        results[index] = { ok: true, value: await worker(items[index], index) };
       } catch (error) {
-        firstError = error;
-        return;
+        results[index] = { ok: false, error };
       }
     }
   }
 
   await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
-
-  if (firstError) return { ok: false, error: firstError };
-  return { ok: true, results };
+  return results;
 }
 
 function buildMemoryReviewPrompt(
@@ -123,12 +126,14 @@ function buildMemoryReviewPrompt(
   return `你是 LumiMuse 的记忆审核助手。请审阅以下记忆条目，检查并修正问题。
 
 ## 检查项
-1. **缺失标签**：没有任何标签的记忆，根据内容给出合适的短标签
-2. **标签整理**：整理当前条目的已有标签，删除重复、过泛或不贴切的标签，并在所有条目中统一意思相近的标签；例如：午饭/午餐统一为"午餐"，聊天/对话统一为"对话"
+1. **缺失标签**：没有任何标签的记忆，根据内容给出合适的短标签（优先取自下方标签规范表）
+2. **标签整理**：整理当前条目的已有标签，删除重复、过泛或不贴切的标签，并在所有条目中统一意思相近的标签；优先替换为下方标签规范表中的标准标签；例如：午饭/午餐统一为"午餐"，聊天/对话统一为"对话"
 3. **缺失重要度**：importance 为 0 或明显不合理的，给出建议值（0-1）
 4. **分类错误**：明显归类不当的，给出正确的分类（可选：${validCategories}）
    - 例如：日常琐事（作息、饮食、天气）不应归"重要事件"，应归"四季日常"
    - 例如：有长期价值的信息不应归"四季日常"，应归"偏好习惯"或"基础信息"
+
+${TAG_SPEC_PROMPT_SECTION}
 
 ## 全局参考
 - 这是第 ${batchIndex + 1}/${batchCount} 批；本批只输出本批条目的 correction，不要输出其他批次的 ID
@@ -215,6 +220,8 @@ export async function POST(request: NextRequest) {
       next_offset: nextOffset,
       has_more: hasMore,
       corrected: 0,
+      failed_batches: 0,
+      failed_messages: [],
       indexing_queued: 0,
       indexing_started: false,
       changes: [],
@@ -244,7 +251,7 @@ export async function POST(request: NextRequest) {
   }
   const backgroundExtraBody = buildBackgroundChatExtraBody(settings, llmSettings.model);
 
-  const batchResults = await mapWithConcurrency(
+  const batchOutcomes = await mapWithConcurrencySettled(
     reviewBatches,
     MEMORY_REVIEW_BATCH_CONCURRENCY,
     async (batch, batchIndex) => {
@@ -275,14 +282,21 @@ export async function POST(request: NextRequest) {
     },
   );
 
-  if (!batchResults.ok) {
+  // 失败批次相互隔离：收集失败信息，仍应用成功批次的修正。
+  // 仅当本页所有批次全部失败时才视为整页失败返回 500（与单批失败场景的契约保持一致）。
+  const failedMessages = batchOutcomes
+    .filter((outcome): outcome is { ok: false; error: unknown } => !outcome.ok)
+    .map(outcome => (outcome.error instanceof Error ? outcome.error.message : String(outcome.error)));
+  const failedBatches = failedMessages.length;
+
+  if (reviewBatches.length > 0 && failedBatches === reviewBatches.length) {
     return NextResponse.json(
-      { ok: false, error: batchResults.error instanceof Error ? batchResults.error.message : String(batchResults.error) },
+      { ok: false, error: failedMessages.join('；'), failed_batches: failedBatches, failed_messages: failedMessages },
       { status: 500 },
     );
   }
 
-  const corrections = batchResults.results.flat();
+  const corrections = batchOutcomes.flatMap(outcome => (outcome.ok ? outcome.value : []));
 
   // 应用修正
   const validIds = new Set(memories.map(m => m.id));
@@ -312,7 +326,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (Array.isArray(c.tags)) {
-        const cleanTags = c.tags.map(t => String(t).trim()).filter(Boolean);
+        const cleanTags = normalizeTags(c.tags);
         if (!areStringArraysEqual(parseTags(current.tags), cleanTags)) {
           setClauses.push('tags = ?');
           setValues.push(JSON.stringify(cleanTags));
@@ -367,6 +381,8 @@ export async function POST(request: NextRequest) {
     next_offset: nextOffset,
     has_more: hasMore,
     corrected: changes.length,
+    failed_batches: failedBatches,
+    failed_messages: failedMessages,
     indexing_queued: indexingQueued,
     indexing_started: indexingStarted,
     changes,

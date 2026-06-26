@@ -752,6 +752,136 @@ test('/api/memory-review returns structured JSON when the AI call fails', async 
   assert.match(payload.error, /AI 调用失败（第 1\/1 批）: API error 400: bad request/);
 });
 
+test('/api/memory-review isolates a failed batch and still applies successful corrections', async () => {
+  const db = createLargeReviewDb();
+  let callCount = 0;
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 16384,
+      chatCompletion: async () => {
+        callCount += 1;
+        // 恰好让一批失败，其余批次正常返回对同一条记忆的修正。
+        if (callCount === 1) throw new Error('API error 500: upstream down');
+        return JSON.stringify({ corrections: [{ id: 'tail-memory', tags: ['回忆'] }] });
+      },
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => true,
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => true,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+  const row = db.prepare('SELECT tags FROM memories WHERE id = ?').get('tail-memory');
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.reviewed, 81);
+  assert.equal(payload.failed_batches, 1);
+  assert.equal(payload.failed_messages.length, 1);
+  assert.match(payload.failed_messages[0], /API error 500: upstream down/);
+  assert.equal(payload.corrected, 1);
+  assert.deepEqual(JSON.parse(row.tags), ['回忆']);
+});
+
+test('/api/memory-review returns 500 only when every batch fails', async () => {
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 16384,
+      chatCompletion: async () => {
+        throw new Error('API error 429: rate limited');
+      },
+    },
+    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 500);
+  assert.equal(payload.ok, false);
+  assert.ok(payload.failed_batches > 1, 'fixture should produce more than one failing batch');
+  assert.match(payload.error, /API error 429: rate limited/);
+});
+
+test('/api/memory-review normalizes alias tags to canonical tags', async () => {
+  const db = createReviewDb();
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 100 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async () => JSON.stringify({
+        corrections: [{ id: 'mem-a', tags: ['午饭', '聊天', '午餐'] }],
+      }),
+    },
+    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const row = db.prepare('SELECT tags FROM memories WHERE id = ?').get('mem-a');
+
+  assert.equal(response.status, 200);
+  // 午饭→午餐、聊天→对话，且与已有"午餐"去重保序。
+  assert.deepEqual(JSON.parse(row.tags), ['午餐', '对话']);
+});
+
+test('/api/memory-review injects the shared tag spec table into the prompt', async () => {
+  let capturedPrompt = '';
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createReviewDb() },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 100 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async (_settings, messages) => {
+        capturedPrompt = messages[0].content;
+        return JSON.stringify({ corrections: [] });
+      },
+    },
+    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  await response.json();
+
+  assert.equal(response.status, 200);
+  assert.match(capturedPrompt, /标签规范表/);
+  assert.match(capturedPrompt, /近义写法统一示例/);
+});
+
 test('/api/memory-review rejects non-object JSON bodies', async () => {
   const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
     'next/server': jsonResponseMock(),
@@ -783,6 +913,8 @@ test('/api/memory-review returns zero correction counts when there are no active
     next_offset: null,
     has_more: false,
     corrected: 0,
+    failed_batches: 0,
+    failed_messages: [],
     indexing_queued: 0,
     indexing_started: false,
     changes: [],

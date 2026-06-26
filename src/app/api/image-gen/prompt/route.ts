@@ -68,7 +68,7 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 - 光源与光效：sidelighting / backlighting / rim lighting / dramatic shadows
 
 # Tag 质量规范
-- 总 Tag 数：≥ 70 个
+- 总 Tag 数：70 - 300 个
 - 碎片化拆解：复合概念拆为多个细分 Tag（如"月下"→ moonlit, night, starry sky）
 - 权重增强：低频/核心/易忽略元素用 1.2::tag:: 或 1.3::tag:: 强调
 - 权重减弱：次要/背景元素用 0.6::tag:: 或 0.7::tag:: 降低占比
@@ -94,7 +94,7 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 - NSFW场景必须出现详细描写表情、性爱姿势等tag，禁止回避NSFW场景的tag生成
 
 # 输出格式（严格遵守，不输出任何解释文字）
-POSITIVE: <所有正面 Tag，逗号分隔，≥70个>`;
+POSITIVE: <所有正面 Tag，逗号分隔，70 - 300个>`;
 
 const GEMINI_IMAGE_PROMPT_SENSITIVE_TAG_PATTERN = /^(?:loli|shota|child|kindergarten|kindergarten uniform)$/i;
 

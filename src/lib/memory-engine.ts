@@ -24,6 +24,60 @@ const CJK_STOPWORDS = new Set([
 
 const LOCAL_RETRIEVAL_CANDIDATE_LIMIT = 500;
 
+// ── 检索 token 集缓存 ──────────────────────────────────────────
+// retrieveRelevantMemories 每轮都会对最多 500 条 active 记忆做 tokenizeForRetrieval
+// （正则 + CJK bigram + 去停用词），是同步热路径。记忆内容在两轮检索间通常不变，
+// 故按 memory.id 缓存「content tokens ∪ tags ∪ category」合集。
+// 用 content 的 hash 判定内容是否变化：upsert/supersede 改 content 后自动失效重建，
+// 无需手动维护失效。带上限的 FIFO 淘汰，防长生命周期进程无界增长。
+const MEMORY_TOKEN_CACHE_LIMIT = 2000;
+const memoryTokenCache = new Map<string, { hash: number; tokens: Set<string> }>();
+
+/**
+ * 轻量字符串 hash（djb2）。仅用于缓存键比对内容是否变化，不要求密码学强度。
+ */
+function hashStringForCache(text: string): number {
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+/**
+ * 取某条记忆用于检索评分的完整 token 集（content 分词 + tags 小写 + category）。
+ * 命中缓存且 content 未变时直接复用，避免每轮重复 tokenize。
+ */
+function getMemoryTokensForScoring(memory: Memory): Set<string> {
+  const hash = hashStringForCache(memory.content);
+  const cached = memoryTokenCache.get(memory.id);
+  if (cached && cached.hash === hash) {
+    return cached.tokens;
+  }
+
+  const tokens = tokenizeForRetrieval(memory.content);
+  for (const tag of memory.tags) {
+    if (tag) tokens.add(tag.toLowerCase());
+  }
+  tokens.add(memory.category);
+
+  // FIFO 淘汰：达上限时删最早写入的条目（Map 迭代保持插入顺序）
+  if (memoryTokenCache.size >= MEMORY_TOKEN_CACHE_LIMIT) {
+    const oldestKey = memoryTokenCache.keys().next().value;
+    if (oldestKey !== undefined) memoryTokenCache.delete(oldestKey);
+  }
+  memoryTokenCache.set(memory.id, { hash, tokens });
+  return tokens;
+}
+
+/**
+ * 供记忆写入路径（upsert/supersede/删除）主动失效缓存。
+ * content 变化已能靠 hash 自动失效，但 id 被复用或删除后主动清理更干净。
+ */
+export function invalidateMemoryTokenCache(memoryId: string): void {
+  memoryTokenCache.delete(memoryId);
+}
+
 function parseJsonField(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   try {
@@ -104,11 +158,7 @@ export function retrieveRelevantMemories(
 
   const scored: Array<[number, Memory]> = [];
   for (const memory of normalizedMemories) {
-    const memoryTokens = tokenizeForRetrieval(memory.content);
-    for (const tag of memory.tags) {
-      if (tag) memoryTokens.add(tag.toLowerCase());
-    }
-    memoryTokens.add(memory.category);
+    const memoryTokens = getMemoryTokensForScoring(memory);
 
     // 评分归一化：原先只用交集大小，长记忆 token 数天然更多，会霸榜检索结果。
     // 改用 TF-IDF 风格的余弦近似：intersection / sqrt(|memoryTokens| * |queryTokens|)
@@ -679,6 +729,10 @@ export async function extractMemories(
           existing.emotional_weight !== entry.emotional_weight;
 
         if (isChanged) {
+          // content/tags 变化后，检索 token 集缓存按 hash 自动失效；
+          // 此处主动清理是对「同事务内该 id 先被 supersede、又作为 merged upsert 目标」
+          // 等边界的兜底，避免任何残留旧 token 集被后续检索误用。
+          invalidateMemoryTokenCache(entry.id);
           const result = db.prepare(`
             UPDATE memories
             SET content = ?, confidence = ?, tags = ?, source_msg_ids = ?, memory_kind = ?, importance = ?, emotional_weight = ?, updated_at = ?

@@ -263,15 +263,20 @@ function addCandidate(
   }
 }
 
-function optionalNumber(memory: Memory, key: string, fallback: number): number {
-  const value = Number((memory as unknown as Record<string, unknown>)[key]);
+/**
+ * 把已类型化为 number 的字段钳制到 [0,1]，非有限值回退 fallback。
+ * 字段已在 normalizeMemoryRow 中规范化为 number，无需再绕过类型系统动态取列。
+ */
+function clamp01(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(0, Math.min(1, value));
 }
 
 function getMemoryKind(memory: Memory): string {
-  const rawKind = (memory as unknown as Record<string, unknown>).memory_kind;
-  if (typeof rawKind === 'string' && rawKind) return rawKind;
+  // memory_kind 已在 normalizeMemoryRow 中规范化为合法 MemoryKind（非空 string）。
+  // 保留 fallback 以防未经规范化的裸 DB 行直接进入评分。
+  const rawKind = memory.memory_kind;
+  if (rawKind) return rawKind;
   return inferMemoryDefaults(memory.category).memory_kind;
 }
 
@@ -291,7 +296,7 @@ function categoryBonus(memory: Memory): number {
 }
 
 function statusPenalty(memory: Memory): number {
-  const status = String((memory as unknown as Record<string, unknown>).status || 'active');
+  const status = memory.status;
   if (status === 'archived' || status === 'superseded') return 0.7;
   if (status === 'conflict') return 0.4;
   return 0;
@@ -300,11 +305,11 @@ function statusPenalty(memory: Memory): number {
 function scoreCandidate(candidate: RetrievedMemory): RetrievedMemory {
   const memory = candidate.memory;
   const defaults = inferMemoryDefaults(memory.category);
-  const importance = optionalNumber(memory, 'importance', defaults.importance);
-  const emotionalWeight = optionalNumber(memory, 'emotional_weight', defaults.emotional_weight);
-  const usageCount = Number((memory as unknown as Record<string, unknown>).usage_count || 0);
+  const importance = clamp01(memory.importance, defaults.importance);
+  const emotionalWeight = clamp01(memory.emotional_weight, defaults.emotional_weight);
+  const usageCount = memory.usage_count;
   const usageScore = Math.max(0, Math.min(1, Math.log1p(Math.max(0, usageCount)) / Math.log(11)));
-  const pinned = Number((memory as unknown as Record<string, unknown>).pinned || 0) > 0 ? 1 : 0;
+  const pinned = memory.pinned ? 1 : 0;
 
   const finalScore =
     0.45 * candidate.relevance +
@@ -335,8 +340,8 @@ function rankCandidates(candidates: Iterable<RetrievedMemory>): RetrievedMemory[
 
 function layerForMemory(memory: Memory): string {
   const kind = getMemoryKind(memory);
-  const pinned = Number((memory as unknown as Record<string, unknown>).pinned || 0) > 0;
-  const importance = optionalNumber(memory, 'importance', inferMemoryDefaults(memory.category).importance);
+  const pinned = memory.pinned;
+  const importance = clamp01(memory.importance, inferMemoryDefaults(memory.category).importance);
 
   if (pinned || importance >= 0.9) return '重要固定记忆';
   if (kind === 'character_promise') return '角色需要兑现的承诺';

@@ -341,6 +341,21 @@ export function ImageGenSettingsSection({
               <input value={imgGen.quality_tags} onChange={e => updateImg('quality_tags', e.target.value)} className="input-rich" />
             </div>
 
+            {/* 出图超时：适用于 SD WebUI 与自定义 API，避免慢上游无限挂起 */}
+            <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenTimeout')}</label>
+              <input
+                type="number"
+                min="1000"
+                step="1000"
+                value={imgGen.generate_timeout_ms}
+                onChange={e => updateImg('generate_timeout_ms', parseNumber(e.target.value))}
+                className="input-rich"
+                placeholder="120000"
+              />
+              <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.imageGenTimeoutHint')}</p>
+            </div>
+
             {/* 内联提示词：聊天回复附带生图提示词 */}
             <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
               <input

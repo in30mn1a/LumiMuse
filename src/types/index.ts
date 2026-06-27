@@ -182,6 +182,12 @@ export interface ImageGenSettings {
   custom_size: string;
   // 通用
   quality_tags: string;
+  /**
+   * 出图请求超时（毫秒）。适用于 SD WebUI 与自定义 API 这两条直接 fetch 上游的路径，
+   * 避免慢/半挂上游让请求无限挂起。默认 120000（与 ComfyUI 轮询上限一致）。
+   * 用户可按上游性能调大/调小。≤0 视为未设置，由路由层兜底为默认值。
+   */
+  generate_timeout_ms: number;
   auto_generate: boolean;
   auto_generate_keywords: string;
   // 内联提示词：让 AI 在聊天回复末尾用 [IMG]...[/IMG] 附带生图提示词，
@@ -218,6 +224,7 @@ export const DEFAULT_IMAGE_GEN_SETTINGS: ImageGenSettings = {
   custom_model: 'dall-e-3',
   custom_size: '1024x1024',
   quality_tags: 'best quality, amazing quality, very aesthetic, masterpiece',
+  generate_timeout_ms: 120000,
   auto_generate: false,
   auto_generate_keywords: '画,生图,来一张,看看',
   inline_prompt: false,

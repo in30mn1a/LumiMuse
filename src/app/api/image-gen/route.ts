@@ -23,6 +23,49 @@ const MAX_COMFYUI_WORKFLOW_SIZE = 64 * 1024; // 64KB
 type ImageFormat = 'png' | 'jpeg' | 'webp';
 
 /**
+ * 出图请求默认超时（毫秒）。SD WebUI / 自定义 API 在用户未配置 generate_timeout_ms
+ * 或配置非法（≤0）时使用此兜底值，与 ComfyUI 轮询上限保持一致。
+ */
+const DEFAULT_GENERATE_TIMEOUT_MS = 120_000;
+
+/**
+ * 解析出图超时配置：≤0 或非有限值回退到默认，避免脏配置让请求永不超时。
+ */
+function resolveGenerateTimeout(cfg: ImageGenSettings): number {
+  const ms = Number(cfg.generate_timeout_ms);
+  return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_GENERATE_TIMEOUT_MS;
+}
+
+/**
+ * 构造一个「超时 + 客户端断连」任一触发即 abort 的信号。
+ * 返回 clear() 用于在调用完成后清理定时器，避免泄漏。
+ * 即使 clientSignal 为空也能工作（仅靠超时）。
+ */
+function withTimeoutSignal(timeoutMs: number, clientSignal?: AbortSignal): {
+  signal: AbortSignal;
+  clear: () => void;
+} {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (clientSignal) {
+    if (clientSignal.aborted) controller.abort();
+    else clientSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
+/**
+ * 把 AbortError（超时或客户端中止）转成可读的「上游超时」错误，
+ * 其余错误原样抛出，便于调用方区分「超时」与「业务错误」。
+ */
+function wrapTimeoutError(err: unknown, engine: string): Error {
+  if (err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message))) {
+    return new Error(`${engine} 出图超时（${engine === 'SD WebUI' ? 'SD' : '自定义'} 上游响应过慢或已断开）`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
  * 校验图片 magic bytes，识别 PNG / JPEG / WEBP。
  * 失败时返回 null，调用方应据此拒绝写入。
  */
@@ -188,7 +231,12 @@ async function saveRemoteImage(imageUrl: string, init?: Parameters<typeof safeFe
 }
 
 // ========== SD WebUI ==========
-async function generateSD(prompt: string, negativePrompt: string, cfg: ImageGenSettings): Promise<string> {
+async function generateSD(
+  prompt: string,
+  negativePrompt: string,
+  cfg: ImageGenSettings,
+  clientSignal?: AbortSignal,
+): Promise<string> {
   const fullPrompt = cfg.quality_tags ? `${cfg.quality_tags}, ${prompt}` : prompt;
   const fullNeg = negativePrompt || cfg.sd_negative_prompt;
 
@@ -205,22 +253,30 @@ async function generateSD(prompt: string, negativePrompt: string, cfg: ImageGenS
   };
 
   const url = `${cfg.sd_url.replace(/\/$/, '')}/sdapi/v1/txt2img`;
-  const response = await safeFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const { signal, clear } = withTimeoutSignal(resolveGenerateTimeout(cfg), clientSignal);
+  try {
+    const response = await safeFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`SD WebUI 错误 ${response.status}: ${text.slice(0, 200)}`);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`SD WebUI 错误 ${response.status}: ${text.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    const base64 = data.images?.[0];
+    if (!base64) throw new Error('SD WebUI 未返回图片');
+
+    return saveBase64Image(base64);
+  } catch (err) {
+    throw wrapTimeoutError(err, 'SD WebUI');
+  } finally {
+    clear();
   }
-
-  const data = await response.json();
-  const base64 = data.images?.[0];
-  if (!base64) throw new Error('SD WebUI 未返回图片');
-
-  return saveBase64Image(base64);
 }
 
 // ========== NovelAI ==========
@@ -455,7 +511,7 @@ function buildDefaultComfyWorkflow(prompt: string, negPrompt: string, cfg: Image
 }
 
 // ========== 自定义 API（兼容 OpenAI Images API 格式）==========
-async function generateCustom(prompt: string, cfg: ImageGenSettings): Promise<string> {
+async function generateCustom(prompt: string, cfg: ImageGenSettings, clientSignal?: AbortSignal): Promise<string> {
   const fullPrompt = cfg.quality_tags ? `${cfg.quality_tags}, ${prompt}` : prompt;
   const url = cfg.custom_url.replace(/\/$/, '');
 
@@ -472,35 +528,43 @@ async function generateCustom(prompt: string, cfg: ImageGenSettings): Promise<st
     headers['Authorization'] = `Bearer ${cfg.custom_api_key}`;
   }
 
-  const response = await safeFetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  const { signal, clear } = withTimeoutSignal(resolveGenerateTimeout(cfg), clientSignal);
+  try {
+    const response = await safeFetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`自定义 API 错误 ${response.status}: ${text.slice(0, 200)}`);
-  }
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`自定义 API 错误 ${response.status}: ${text.slice(0, 200)}`);
+    }
 
-  const data = await response.json();
+    const data = await response.json();
 
-  // 兼容 OpenAI 格式
-  if (data.data?.[0]?.b64_json) {
-    return saveBase64Image(data.data[0].b64_json);
-  }
-  if (data.data?.[0]?.url) {
-    return saveRemoteImage(data.data[0].url);
-  }
-  // 兼容直接返回 base64 的格式
-  if (data.images?.[0]) {
-    return saveBase64Image(data.images[0]);
-  }
-  if (data.image) {
-    return saveBase64Image(data.image);
-  }
+    // 兼容 OpenAI 格式
+    if (data.data?.[0]?.b64_json) {
+      return saveBase64Image(data.data[0].b64_json);
+    }
+    if (data.data?.[0]?.url) {
+      return saveRemoteImage(data.data[0].url);
+    }
+    // 兼容直接返回 base64 的格式
+    if (data.images?.[0]) {
+      return saveBase64Image(data.images[0]);
+    }
+    if (data.image) {
+      return saveBase64Image(data.image);
+    }
 
-  throw new Error('自定义 API 返回格式无法解析');
+    throw new Error('自定义 API 返回格式无法解析');
+  } catch (err) {
+    throw wrapTimeoutError(err, '自定义 API');
+  } finally {
+    clear();
+  }
 }
 
 // ========== 主路由 ==========
@@ -563,7 +627,7 @@ export async function POST(request: NextRequest) {
 
     switch (imgCfg.engine) {
       case 'sd':
-        url = await generateSD(prompt, negative_prompt || '', imgCfg);
+        url = await generateSD(prompt, negative_prompt || '', imgCfg, request.signal);
         break;
       case 'nai':
         url = await generateNAI(prompt, negative_prompt || '', imgCfg);
@@ -572,7 +636,7 @@ export async function POST(request: NextRequest) {
         url = await generateComfyUI(prompt, negative_prompt || '', imgCfg, request.signal);
         break;
       case 'custom':
-        url = await generateCustom(prompt, imgCfg);
+        url = await generateCustom(prompt, imgCfg, request.signal);
         break;
       default:
         return NextResponse.json({ error: `不支持的引擎: ${imgCfg.engine}` }, { status: 400 });

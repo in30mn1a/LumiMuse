@@ -300,7 +300,8 @@ export async function POST(request: NextRequest) {
 
   // 应用修正
   const validIds = new Set(memories.map(m => m.id));
-  const changes: Array<{ id: string; fields: string[] }> = [];
+  const memoryContentById = new Map(memories.map(memory => [memory.id, memory.content]));
+  const changes: Array<{ id: string; fields: string[]; content: string }> = [];
 
   const updateMemory = db.transaction(() => {
     const selectCurrentStmt = db.prepare(`
@@ -350,7 +351,7 @@ export async function POST(request: NextRequest) {
           WHERE id = ? AND character_id = ? AND status = 'active'
         `).run(...setValues, c.id, characterId);
         if (result.changes > 0) {
-          changes.push({ id: c.id, fields: changedFields });
+          changes.push({ id: c.id, fields: changedFields, content: memoryContentById.get(c.id) ?? '' });
         }
       }
     }

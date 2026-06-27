@@ -25,14 +25,22 @@ test('/memories page places AI review beside character selector and exposes late
     'offset: nextOffset',
     'aggregateResult.reviewed += result.reviewed ?? 0;',
     'aggregateResult.changes.push(...(result.changes ?? []));',
+    'changes: Array<{ id: string; fields: string[]; content: string }>',
     "t('memory.aiReview')",
     "t('memory.viewLatestAiReviewChanges')",
     "t('memory.hideLatestAiReviewChanges')",
+    "t('memory.aiReviewMemoryContent')",
     "setMemoryRefreshNonce(prev => prev + 1)",
     '<MemoryList characterId={selectedCharId} refreshNonce={memoryRefreshNonce} />',
   ]) {
     assert.ok(memoriesPage.includes(snippet), `missing snippet: ${snippet}`);
   }
+
+  assert.match(
+    memoriesPage,
+    /\{change\.id\}[\s\S]*?\{t\('memory\.aiReviewChangedFields'\)\}: \{change\.fields\.join\('；'\)\}[\s\S]*?<details[\s\S]*?\{change\.content\}/,
+    'AI review changes should keep changed fields visible and collapse only memory content',
+  );
 
   const controlsStart = memoriesPage.indexOf('<div className="flex flex-wrap items-center gap-3">');
   assert.notEqual(controlsStart, -1, 'missing header controls');
@@ -53,6 +61,7 @@ test('/memories page places AI review beside character selector and exposes late
     'memory.hideLatestAiReviewChanges',
     'memory.aiReviewNoChanges',
     'memory.aiReviewChangedFields',
+    'memory.aiReviewMemoryContent',
   ]) {
     assert.match(i18n, new RegExp(`'${key}'`));
   }

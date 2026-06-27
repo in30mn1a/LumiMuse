@@ -7,7 +7,7 @@ import Link from 'next/link';
 import { useTranslation } from '@/lib/i18n-context';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { useToast } from '@/components/ui/Toast';
-import { ArrowLeftIcon, MemoryIcon, SparkIcon } from '@/components/ui/icons';
+import { ArrowLeftIcon, ChevronDownIcon, MemoryIcon, SparkIcon } from '@/components/ui/icons';
 
 interface MemoryAiReviewResult {
   ok: boolean;
@@ -22,7 +22,7 @@ interface MemoryAiReviewResult {
   failed_messages: string[];
   indexing_queued: number;
   indexing_started: boolean;
-  changes: Array<{ id: string; fields: string[] }>;
+  changes: Array<{ id: string; fields: string[]; content: string }>;
 }
 
 export default function MemoriesPage() {
@@ -222,10 +222,17 @@ export default function MemoriesPage() {
               <div className="space-y-2">
                 {lastMemoryAiReviewResult.changes.map(change => (
                   <div key={change.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
-                    <div className="font-medium text-text-primary">{change.id}</div>
+                    <div className="font-medium text-text-primary break-all">{change.id}</div>
                     <div className="mt-1 text-xs text-text-muted">
                       {t('memory.aiReviewChangedFields')}: {change.fields.join('；')}
                     </div>
+                    <details className="group mt-2 border-t border-border-light pt-2">
+                      <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-text-primary marker:hidden">
+                        <ChevronDownIcon className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+                        <span>{t('memory.aiReviewMemoryContent')}</span>
+                      </summary>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">{change.content}</p>
+                    </details>
                   </div>
                 ))}
               </div>

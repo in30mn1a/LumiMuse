@@ -234,6 +234,11 @@ test('/api/memory-review requeues and starts indexing after changing embedding-r
   assert.equal(response.status, 200);
   assert.equal(payload.ok, true);
   assert.equal(payload.corrected, 1);
+  assert.deepEqual(payload.changes, [{
+    id: 'mem-a',
+    fields: ['category→四季日常', 'tags→[午餐]', 'importance→0.4'],
+    content: '2026年6月4日，用户午饭吃了面。',
+  }]);
   assert.deepEqual(row, {
     category: '四季日常',
     tags: JSON.stringify(['午餐']),
@@ -432,7 +437,11 @@ test('/api/memory-review treats tags empty array as an explicit tag clear', asyn
 
   assert.equal(response.status, 200);
   assert.equal(payload.corrected, 1);
-  assert.deepEqual(payload.changes, [{ id: 'mem-a', fields: ['tags→[]'] }]);
+  assert.deepEqual(payload.changes, [{
+    id: 'mem-a',
+    fields: ['tags→[]'],
+    content: '2026年6月4日，用户午饭吃了面。',
+  }]);
   assert.deepEqual(JSON.parse(row.tags), []);
   assert.notEqual(row.updated_at, '2026-06-04T01:02:03.000Z');
   assert.deepEqual(enqueueCalls, [{ memoryId: 'mem-a', characterId: 'char-a', reason: 'updated' }]);

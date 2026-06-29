@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -242,8 +242,17 @@ function MessageBubbleInner({
   const [editAttachments, setEditAttachments] = useState<Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>>([]);
   const [copied, setCopied] = useState(false);
   const [showActions, setShowActions] = useState(false);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const hasVersions = versionInfo && versionInfo.total > 1;
+
+  // 编辑框高度自适应内容：长消息进入编辑时不再被压成固定 3 行的小框，而是撑到原内容高度（与 ChatInput 同款 auto-grow），超长封顶 60vh 内部滚动
+  useEffect(() => {
+    const el = editTextareaRef.current;
+    if (!editing || !el) return;
+    el.style.height = '0px';
+    el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.6))}px`;
+  }, [editing, editContent]);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -436,10 +445,11 @@ function MessageBubbleInner({
               </div>
             )}
             <textarea
+              ref={editTextareaRef}
               value={editContent}
               onChange={e => setEditContent(e.target.value)}
               onKeyDown={handleEditKeyDown}
-              className={`w-full rounded-xl border p-2 text-sm outline-none ${
+              className={`max-h-[60vh] min-h-[3.25rem] w-full resize-none overflow-y-auto rounded-xl border p-2 text-sm outline-none ${
                 isUser
                   ? 'border-white/30 bg-white/20 text-white placeholder-white/50 focus:border-white/60'
                   : 'border-border-light bg-white/90 text-text-primary focus:border-accent/40 dark:bg-white/10'

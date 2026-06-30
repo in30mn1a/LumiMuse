@@ -105,7 +105,9 @@ export function useMemoryTaskPolling({
       };
     };
 
-    for (let attempt = 0; attempt < 60; attempt += 1) {
+    // 轮询上限 200 次（约 7 分钟，1.5s 间隔 + 网络往返）；
+    // 后端 undici 默认 300s 超时，前端略长避免提前放弃导致误报 failed
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       if (controller.signal.aborted) return;
 
       let result: Awaited<ReturnType<typeof pollOnce>>;

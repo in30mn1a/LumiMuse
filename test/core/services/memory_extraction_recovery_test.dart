@@ -27,6 +27,7 @@ class _FakeLlmService extends LlmService {
   Future<String> chatCompletion({
     required AppSettings settings,
     required List<ChatMessage> messages,
+    OnUsageCallback? onUsage,
     CancelToken? cancelToken,
   }) async {
     return jsonEncode({'memories': []});

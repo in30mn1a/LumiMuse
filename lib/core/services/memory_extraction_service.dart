@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import '../database/database.dart';
 import '../models/app_settings.dart';
 import '../models/message_metadata.dart';
 import '../services/llm_service.dart';
+import '../services/memory_candidates_service.dart';
 import '../services/memory_engine.dart';
+import '../services/secret_storage_service.dart';
 
 /// 记忆任务状态快照 — 用于 ChatView 显示「记忆提取中」指示器与
 /// 「已合并/更新 N 条记忆」Toast（对应 Next.js 端 GET /api/memory-tasks）。
@@ -28,16 +31,49 @@ class MemoryTaskStatus {
   });
 }
 
+/// 提取响应解析结果 — [_parseExtractionResponse] 的返回结构。
+/// - [items]：解析成功并经 [MemoryEngine.calibrateRawMemoryItem] 校准后的记忆列表
+///   （空数组表示解析成功但无有效记忆）。
+/// - [parseFailed]：true=完全解析失败（找不到 JSON 块 / JSON 解析异常 / 顶层
+///   非 memories 对象或数组）；false=解析成功（含空数组）。
+/// - [errorReason]：parseFailed=true 时的失败原因，用于写候选表的 error_reason。
+class _ExtractionParseResult {
+  final List<Map<String, dynamic>> items;
+  final bool parseFailed;
+  final String? errorReason;
+
+  const _ExtractionParseResult({
+    this.items = const [],
+    this.parseFailed = false,
+    this.errorReason,
+  });
+}
+
 /// 记忆提取服务 — 对应 Next.js 版的 memory-queue.ts + memory-engine.ts 的提取部分
 class MemoryExtractionService {
   final AppDatabase _db;
   final LlmService _llm;
   final MemoryEngine _memoryEngine;
+  /// 候选修复服务 — 解析失败/无有效记忆时把原始响应写入候选表，供 UI 修复。
+  /// 默认内部 new 一个，保持 chat_provider.dart 行 1574 调用兼容；
+  /// 测试可注入 null 跳过候选写入，或注入 mock 验证调用。
+  final MemoryCandidatesService? _candidatesService;
+  /// 安全存储适配，用于解析 DB 里 `secret://api-key/...` 引用为真实 key。
+  /// 默认内部 new 一个；测试可注入 mock 验证解析路径。
+  final SecretStorageService _secretStorage;
   bool _processing = false;
   final Set<String> _inFlightConversations = {};
   static const _uuid = Uuid();
 
-  MemoryExtractionService(this._db, this._llm, this._memoryEngine);
+  MemoryExtractionService(
+    this._db,
+    this._llm,
+    this._memoryEngine, {
+    MemoryCandidatesService? candidatesService,
+    SecretStorageService? secretStorage,
+  })  : _candidatesService = candidatesService ??
+            MemoryCandidatesService(_db, _memoryEngine),
+        _secretStorage = secretStorage ?? SecretStorageService();
 
   /// 启动时清理上一次运行残留的 memory_tasks。
   ///
@@ -141,7 +177,9 @@ class MemoryExtractionService {
     });
   }
 
-  /// 提取提示词模板 — 与主项目 src/lib/prompt-templates.ts EXTRACTION_PROMPT 严格一致
+  /// 提取提示词模板 — 对齐主项目 src/lib/prompt-templates.ts 七类提取提示词
+  /// （七大分类含「四季日常」+ memory_kind/importance/emotional_weight/lifecycle_action
+  ///   完整字段 + 防污染规则）
   static const String _extractionPrompt = '''逐行扫描以下对话，提取用户的所有记忆信息。输出一个 JSON 对象。
 
 ## 已提取的记忆（供参考，避免重复，可补充完善）
@@ -181,7 +219,7 @@ class MemoryExtractionService {
 - 错误: "我们经常亲吻拥抱" → 用"经常"概括，没有具体内容
 - 正确: 把每次具体的互动写出来（不同时间的动作应当拆分）
 
-## 六大分类
+## 七大分类
 
 ### 1. 关系动态（重点！逐轮逐句挖）
 - 用户对我的称呼 → 合并为一条（不需要时间戳）
@@ -215,10 +253,23 @@ class MemoryExtractionService {
 - **必须带时间戳，日期前置加逗号**，格式："2026年X月X日，用户+事件描述"
 - 如对话中无法确定日期，可写"某次"，但必须附上具体事件内容，禁止只写"某次+结果"这种空洞表达
 
+### 7. 四季日常
+- 用户日常生活的琐碎记录：天气、饮食、睡眠、散步、家务、通勤等
+- **必须有时间戳，日期前置**，格式："2026年X月X日，用户+日常描述"
+- 合并同类日常：如"2026年5月30日，用户一觉睡到下午一点半才自然醒"
+- 低信息密度的日常生活片段归入此类，不要和重要事件混淆
+- 注意：有长期价值的习惯/偏好仍归"偏好习惯"，不归四季日常
+
 ## 不要提取的内容
 - 闲聊寒暄（"早上好""晚安""嗯嗯"等无信息量的话）
 - 客观知识问答（用户问知识点、AI回答知识点，不提取）
 - 纯情绪宣泄无实质信息（"好烦啊""唉"等单独出现时不提取）
+
+## 防污染规则
+- 角色说"我会记得"、"我不会忘"、"以后我会"本身不是记忆内容，只能保存它承诺记住或承诺执行的具体对象
+- 角色承诺、边界、以后会怎么陪伴用户，memory_kind 必须写 character_promise，不要写成 user_fact
+- 如果角色凭空承诺了用户没有表达过的事实，不能把这个虚构事实写成用户记忆；只能在确有承诺价值时写成 character_promise
+- 用户事实、用户偏好和角色承诺必须分开写，不要混在同一条 content 里
 
 ## 内容要求
 - content 必须写成适合长期记忆的完整句子，包含对象、事件、观点、原因、结果
@@ -228,10 +279,26 @@ class MemoryExtractionService {
 - 优先描述用户做了什么、说了什么、喜欢什么、怎么看
 - tags 填0-3个短标签，便于后续检索
 
-## 输出格式
-{"memories": [{"category": "话题历史", "content": "2026年3月30日，用户和我一起看了《海上钢琴师》，觉得不太戳自己的喜好，尤其不喜欢1900过于固执。", "confidence": 0.9, "tags": ["电影", "观后感"]}, {"category": "关系动态", "content": "用户会叫我'宝宝'和'広ちゃん'。", "confidence": 0.9, "tags": ["称呼"]}, {"category": "偏好习惯", "content": "用户不喜欢吃猪肉。", "confidence": 0.9, "tags": ["饮食"]}]}
+## memory_kind 规则
+- general：普通话题历史或无法归入其他类型的记忆
+- user_fact：用户基础信息、人格特质、长期背景
+- user_preference：用户偏好、习惯、边界、喜欢/不喜欢的陪伴方式
+- relationship_event：关系变化、共同经历、重要互动、重要事件
+- character_promise：角色自己的承诺、约定、以后要兑现的陪伴方式
+- open_thread：未完成事项、后续需要继续跟进的话题
+- world_state：角色世界观或长期状态变化
 
-直接输出 JSON 对象，不要代码块标记。顶层只有 memories 字段。每个条目必须包含: category、content、confidence、tags。category 必须是以下之一：关系动态、话题历史、基础信息、偏好习惯、人格特质、重要事件。
+## 重要性与情绪权重
+- importance 和 emotional_weight 都是 0 到 1 的数字
+- 承诺、禁忌、关系变化、冲突和解：importance 至少 0.8
+- 普通话题历史：importance 不超过 0.6
+- 情绪强、关系强、需要长期兑现的内容 emotional_weight 较高
+- 一次性闲聊、低信息密度内容不要入库
+
+## 输出格式
+{"memories": [{"category": "话题历史", "memory_kind": "general", "content": "2026年3月30日，用户和我一起看了《海上钢琴师》，觉得不太戳自己的喜好，尤其不喜欢1900过于固执。", "tags": ["电影", "观后感"], "importance": 0.55, "emotional_weight": 0.2, "lifecycle_action": "upsert"}, {"category": "关系动态", "memory_kind": "relationship_event", "content": "用户会叫我'宝宝'和'広ちゃん'。", "tags": ["称呼"], "importance": 0.75, "emotional_weight": 0.6, "lifecycle_action": "upsert"}, {"category": "关系动态", "memory_kind": "character_promise", "content": "我承诺以后用户难过时，会先安抚和陪伴，再讨论问题。", "tags": ["承诺", "陪伴方式"], "importance": 0.9, "emotional_weight": 0.85, "lifecycle_action": "upsert"}]}
+
+直接输出 JSON 对象，不要代码块标记。顶层只有 memories 字段。每个条目必须包含: category、memory_kind、content、tags、importance、emotional_weight、lifecycle_action。category 必须是以下之一：关系动态、话题历史、基础信息、偏好习惯、人格特质、重要事件、四季日常。memory_kind 必须是以下之一：general、user_fact、user_preference、relationship_event、character_promise、open_thread、world_state。lifecycle_action 第一版只用 insert、upsert、supersede、ignore；不确定时用 upsert。
 
 ## 对话内容
 {conversation_text}
@@ -262,24 +329,30 @@ class MemoryExtractionService {
       updatedAt: Value(DateTime.now()),
     ));
 
-    // 数据库层去重
-    final existing = await (_db.select(_db.memoryTasks)
-          ..where((t) =>
-              t.conversationId.equals(conversationId) &
-              (t.status.equals('pending') | t.status.equals('processing')))
-          ..limit(1))
-        .get();
-    if (existing.isNotEmpty) return;
-
+    // 数据库层去重 — SELECT + INSERT 必须在同一事务内原子执行，
+    // 对齐主项目 memory-queue.ts:103-114 的 TOCTOU 保护：避免两个并发
+    // enqueueExtraction 同时观测到「无 pending/processing 行」后各自 INSERT，
+    // 产生两条 pending 任务行（队列虽能串行消费，但去重 guard 失效会污染
+    // 状态指示器与计数）。
     final now = DateTime.now();
-    await _db.into(_db.memoryTasks).insert(MemoryTasksCompanion.insert(
-      characterId: characterId,
-      conversationId: conversationId,
-      messageIds: Value(jsonEncode(messageIds)),
-      status: const Value('pending'),
-      createdAt: Value(now),
-      updatedAt: Value(now),
-    ));
+    await _db.transaction(() async {
+      final existing = await (_db.select(_db.memoryTasks)
+            ..where((t) =>
+                t.conversationId.equals(conversationId) &
+                (t.status.equals('pending') | t.status.equals('processing')))
+            ..limit(1))
+          .get();
+      if (existing.isNotEmpty) return;
+
+      await _db.into(_db.memoryTasks).insert(MemoryTasksCompanion.insert(
+        characterId: characterId,
+        conversationId: conversationId,
+        messageIds: Value(jsonEncode(messageIds)),
+        status: const Value('pending'),
+        createdAt: Value(now),
+        updatedAt: Value(now),
+      ));
+    });
 
     if (!_processing) unawaited(_processQueue());
   }
@@ -302,8 +375,15 @@ class MemoryExtractionService {
 
     try {
       while (true) {
+        // SQL 层直接排除 inFlight 对话（对齐主项目 memory-queue.ts:154-160）：
+        // 取下一条 pending 任务时附带 `conversation_id NOT IN (_inFlightConversations)`，
+        // 这样 inFlight 中的对话自然不会被选出来，避免「命中 inFlight 后 break
+        // 退出整个 while」导致其他对话的 pending 任务被一同阻塞。
+        // _inFlightConversations 为空时 isNotIn([]) 等价于无条件，不影响首轮。
         final tasks = await (_db.select(_db.memoryTasks)
-              ..where((t) => t.status.equals('pending'))
+              ..where((t) =>
+                  t.status.equals('pending') &
+                  t.conversationId.isNotIn(_inFlightConversations.toList()))
               ..orderBy([(t) => OrderingTerm.asc(t.id)])
               ..limit(1))
             .get();
@@ -311,14 +391,19 @@ class MemoryExtractionService {
         if (tasks.isEmpty) break;
         final task = tasks.first;
 
-        if (_inFlightConversations.contains(task.conversationId)) break;
+        // SQL 已过滤 inFlight 对话，理论上这里不会命中；保留 continue 作兜底，
+        // 万一 SQL 与内存集合在边界时机不一致也不至于退出整个 while。
+        if (_inFlightConversations.contains(task.conversationId)) continue;
         _inFlightConversations.add(task.conversationId);
 
-        // 标记为 processing
+        // 标记为 processing —— 同步写 started_at（毫秒级时间戳，记录进入 processing 的时间）
+        // 对齐主项目 memory-queue.ts 的任务追踪字段，便于后续「卡死自愈」按时间阈值判定孤儿。
+        final processingAt = DateTime.now();
         await (_db.update(_db.memoryTasks)..where((t) => t.id.equals(task.id)))
             .write(MemoryTasksCompanion(
           status: const Value('processing'),
-          updatedAt: Value(DateTime.now()),
+          startedAt: Value(processingAt.millisecondsSinceEpoch),
+          updatedAt: Value(processingAt),
         ));
 
         try {
@@ -330,10 +415,17 @@ class MemoryExtractionService {
             updatedAt: Value(DateTime.now()),
           ));
         } catch (e) {
+          // 失败时写 error_message，截断到 1000 字符避免 DB 体积膨胀
+          // （LLM 异常堆栈或超长响应可能上千行）。
+          final errorStr = e.toString();
+          final truncatedError = errorStr.length > 1000
+              ? errorStr.substring(0, 1000)
+              : errorStr;
           await (_db.update(_db.memoryTasks)
                 ..where((t) => t.id.equals(task.id)))
               .write(MemoryTasksCompanion(
             status: const Value('failed'),
+            errorMessage: Value(truncatedError),
             updatedAt: Value(DateTime.now()),
           ));
         } finally {
@@ -430,12 +522,91 @@ class MemoryExtractionService {
     );
 
     // 解析结果
-    final newMemories = _parseExtractionResponse(response);
-    if (newMemories.isEmpty) return;
+    final parseResult = _parseExtractionResponse(response);
+    final newMemories = parseResult.items;
+    if (newMemories.isEmpty) {
+      // 解析失败/无有效记忆 → 写候选。对照主项目 memory-engine.ts
+      // extractMemoriesFromConversation 内 insertCandidate 调用点：
+      // parseFailed=true → status='repairable'（UI 可修复）；
+      // parseFailed=false 但 items 空 → status='ignored'（空 memories 数组，无需修复）。
+      await _candidatesService?.insertCandidate(
+        characterId: task.characterId,
+        options: ExtractMemoryOptions(
+          taskId: task.id,
+          conversationId: task.conversationId,
+        ),
+        rawResponse: response,
+        status: parseResult.parseFailed ? 'repairable' : 'ignored',
+        errorReason: parseResult.errorReason ?? '无有效记忆可提取',
+      );
+      return;
+    }
 
     // 合并并存入数据库 — 对照主项目 src/lib/memory-engine.ts mergeMemories
+    //
+    // 事务包裹整个写入循环（含所有 supersede / upsert / insert 分支）以及紧随其后的
+    // mergeCount 写入（spec Task 15）：保证「一批提取结果要么全部落库要么全部回滚」，
+    // 避免 supersede 命中后 INSERT 新记忆成功、UPDATE 旧记忆 status='superseded'
+    // 失败时出现「新旧记忆并存」的污染态。循环内只有 DB 操作（含
+    // findSimilarExistingMemories 的查询），无 LLM 调用等外部资源，可安全放进事务。
     int changedCount = 0;
-    for (final entry in newMemories) {
+    await _db.transaction(() async {
+      for (final entry in newMemories) {
+      // supersede 分支：LLM 在 entry 上带 lifecycle_action='supersede' 时，
+      // 先查找相似旧记忆；命中则把旧记忆翻 status='superseded' 并在 metadata
+      // 上写 supersededBy=<新记忆 id>，再 INSERT 新记忆（spec Task 9）。
+      // 未命中或 lifecycle_action 缺失 / = 'insert' 时走下方原有合并 / 插入流程。
+      final lifecycleAction =
+          (entry['lifecycle_action'] as String?) ?? 'insert';
+      if (lifecycleAction == 'supersede') {
+        final candidateContent = entry['content'] as String? ?? '';
+        final target = await _memoryEngine.findSimilarExistingMemories(
+          task.characterId,
+          candidateContent,
+        );
+        if (target != null) {
+          // 命中：先 INSERT 新记忆拿到 id，再 UPDATE 旧记忆写 metadata.supersededBy。
+          // 新记忆显式 status='active'，不依赖列默认值（spec SubTask 9.3）
+          final newId = _uuid.v4();
+          await _db.into(_db.memories).insert(MemoriesCompanion.insert(
+            id: newId,
+            characterId: task.characterId,
+            category: entry['category'] as String,
+            content: candidateContent,
+            confidence:
+                Value((entry['confidence'] as num?)?.toDouble() ?? 0.8),
+            tags: Value(jsonEncode(entry['tags'] ?? [])),
+            // 落库 calibrateRawMemoryItem 校准出的字段（FIX：supersede 分支
+            // 此前丢弃这些字段，导致承诺记忆 importance 退化为列默认 0.5）
+            memoryKind:
+                Value(entry['memory_kind'] as String? ?? 'general'),
+            importance: Value(
+                (entry['importance'] as num?)?.toDouble() ?? 0.5),
+            emotionalWeight: Value(
+                (entry['emotional_weight'] as num?)?.toDouble() ?? 0),
+            sourceMsgIds: Value(jsonEncode(messageIds)),
+            status: const Value('active'),
+            createdAt: Value(DateTime.now()),
+            updatedAt: Value(DateTime.now()),
+          ));
+          changedCount++;
+
+          // UPDATE 旧记忆：status='superseded' + metadata.supersededBy=<newId>
+          // （metadata 是 JSON 字符串，需要读出 → 修改 → 写回，spec SubTask 9.2）
+          final oldMetadata = _readMetadata(target.metadata);
+          oldMetadata['supersededBy'] = newId;
+          await (_db.update(_db.memories)
+                ..where((t) => t.id.equals(target.id)))
+              .write(MemoriesCompanion(
+            status: const Value('superseded'),
+            metadata: Value(_writeMetadata(oldMetadata)),
+            updatedAt: Value(DateTime.now()),
+          ));
+          continue;
+        }
+        // 未命中目标：退化为普通 insert（落到下方"新增记忆"分支，spec SubTask 9.4）
+      }
+
       // 检查是否与已有记忆相似（使用 anchor + tag 增强的相似度）
       double bestSimilarity = 0;
       Memory? bestMatch;
@@ -475,7 +646,13 @@ class MemoryExtractionService {
         }
       }
 
-      if (bestSimilarity >= 0.72 && bestMatch != null) {
+      // 动态阈值：以两条记忆中较短的一方判定，避免长记忆带短记忆"蹭过"阈值
+      // （对照主项目 src/lib/memory-engine.ts:274-277）
+      if (bestMatch != null &&
+          bestSimilarity >=
+              _mergeThreshold(newContent.length < bestMatch.content.length
+                  ? newContent.length
+                  : bestMatch.content.length)) {
         // 合并：更新已有记忆（取更长的 content，合并 tags）
         final mergedContent = newContent.length > bestMatch.content.length
             ? newContent
@@ -516,17 +693,27 @@ class MemoryExtractionService {
           content: entry['content'] as String,
           confidence: Value((entry['confidence'] as num?)?.toDouble() ?? 0.8),
           tags: Value(jsonEncode(entry['tags'] ?? [])),
+          // 落库 calibrateRawMemoryItem 校准出的字段（与 supersede 分支一致）
+          memoryKind: Value(entry['memory_kind'] as String? ?? 'general'),
+          importance:
+              Value((entry['importance'] as num?)?.toDouble() ?? 0.5),
+          emotionalWeight:
+              Value((entry['emotional_weight'] as num?)?.toDouble() ?? 0),
+          sourceMsgIds: Value(jsonEncode(messageIds)),
           createdAt: Value(DateTime.now()),
           updatedAt: Value(DateTime.now()),
         ));
       }
-    }
+      }
 
-    // 更新本次实际新增/合并的记忆数量，供 UI 判断是否真的提取到内容。
-    if (changedCount > 0) {
-      await (_db.update(_db.memoryTasks)..where((t) => t.id.equals(task.id)))
-          .write(MemoryTasksCompanion(mergeCount: Value(changedCount)));
-    }
+      // 更新本次实际新增/合并的记忆数量，供 UI 判断是否真的提取到内容。
+      // 与写入循环同事务：循环回滚时 mergeCount 也不应被写入，避免「0 条结果
+      // 却显示 N 条」的不一致。
+      if (changedCount > 0) {
+        await (_db.update(_db.memoryTasks)..where((t) => t.id.equals(task.id)))
+            .write(MemoryTasksCompanion(mergeCount: Value(changedCount)));
+      }
+    });
 
     // 不论是否提取到记忆，本批消息扫描完成后均标记为已提取，
     // 避免无营养闲聊（changedCount == 0）被反复送给 LLM 造成 Token 浪费。
@@ -540,43 +727,58 @@ class MemoryExtractionService {
   }
 
   /// 解析 LLM 返回的提取结果
-  List<Map<String, dynamic>> _parseExtractionResponse(String response) {
-    var text = response.trim();
-    if (text.startsWith('```')) {
-      text = text.split('\n').skip(1).join('\n');
+  ///
+  /// 改写为基于 [MemoryEngine.findBalancedJsonSnippet] 的平衡花括号扫描，
+  /// 替代旧的「先直接 parse 失败再走贪婪正则」逻辑：
+  /// - 贪婪正则 `\{[\s\S]*"memories"[\s\S]*\}` 会越过第一个 `}` 后续出现的
+  ///   内容，遇到带 markdown 代码块或前后解释文本时会误把多段 JSON 拼成一个
+  ///   无法解析的字符串；findBalancedJsonSnippet 考虑字符串字面量与转义，
+  ///   在多个完整候选块中优先返回含 `"memories"` 字段的块，更稳健。
+  /// - 解析出的每条记忆在返回前调用 [MemoryEngine.calibrateRawMemoryItem]
+  ///   做承诺信号词校准（memory_kind/importance/emotional_weight/category）。
+  ///
+  /// 返回 [_ExtractionParseResult]：
+  /// - findBalancedJsonSnippet 返回 null → parseFailed=true
+  /// - jsonDecode 抛异常 → parseFailed=true
+  /// - 顶层非 Map/List 或 Map 无 memories 字段 → parseFailed=true
+  /// - 解析成功（含空数组）→ parseFailed=false，items 可能为空
+  _ExtractionParseResult _parseExtractionResponse(String response) {
+    final snippet = MemoryEngine.findBalancedJsonSnippet(response);
+    if (snippet == null) {
+      return const _ExtractionParseResult(
+        parseFailed: true,
+        errorReason: '无法找到 JSON 代码块',
+      );
     }
-    if (text.endsWith('```')) {
-      text = text.substring(0, text.lastIndexOf('```'));
-    }
-
     try {
-      final result = jsonDecode(text);
-      if (result is Map && result['memories'] is List) {
-        return _normalizeCategories(
-            (result['memories'] as List).cast<Map<String, dynamic>>());
+      final decoded = jsonDecode(snippet);
+      List<Map<String, dynamic>> items;
+      if (decoded is Map && decoded['memories'] is List) {
+        items = (decoded['memories'] as List).cast<Map<String, dynamic>>();
+      } else if (decoded is List) {
+        // 兼容直接返回数组的情况
+        items = decoded.cast<Map<String, dynamic>>();
+      } else {
+        return const _ExtractionParseResult(
+          parseFailed: true,
+          errorReason: 'JSON 顶层非 memories 对象或数组',
+        );
       }
-      if (result is List) {
-        return _normalizeCategories(result.cast<Map<String, dynamic>>());
-      }
-      return [];
-    } catch (_) {
-      // 尝试提取 JSON 片段
-      final match = RegExp(r'\{[\s\S]*"memories"[\s\S]*\}').firstMatch(text);
-      if (match != null) {
-        try {
-          final parsed = jsonDecode(match.group(0)!);
-          if (parsed['memories'] is List) {
-            return _normalizeCategories(
-                (parsed['memories'] as List).cast<Map<String, dynamic>>());
-          }
-        } catch (_) {}
-      }
-      return [];
+      final normalized = _normalizeCategories(items);
+      final calibrated = normalized
+          .map((item) => _memoryEngine.calibrateRawMemoryItem(item))
+          .toList();
+      return _ExtractionParseResult(items: calibrated);
+    } catch (e) {
+      return _ExtractionParseResult(
+        parseFailed: true,
+        errorReason: 'JSON 解析失败: $e',
+      );
     }
   }
 
   /// 对照主项目 src/lib/memory-category.ts normalizeMemoryCategory
-  /// 模糊匹配 category 字符串，确保存入数据库的值是标准六大分类之一
+  /// 模糊匹配 category 字符串，确保存入数据库的值是标准七大分类之一
   static String _normalizeCategory(String value) {
     if (value.contains('关系')) return '关系动态';
     if (value.contains('话题')) return '话题历史';
@@ -584,6 +786,7 @@ class MemoryExtractionService {
     if (value.contains('偏好')) return '偏好习惯';
     if (value.contains('人格')) return '人格特质';
     if (value.contains('重要')) return '重要事件';
+    if (value.contains('四季') || value.contains('日常')) return '四季日常';
     return '话题历史'; // 默认回退
   }
 
@@ -599,6 +802,12 @@ class MemoryExtractionService {
   }
 
   /// 加载设置
+  ///
+  /// 从 settings 表读取并以 [SecretStorageService.resolveApiKey] 解析
+  /// `secret://api-key/...` 引用为真实 key——否则会把引用串当 Bearer token
+  /// 发给上游导致 401（FIX：记忆提取全 401 失效）。
+  /// 同时补齐后台模型相关字段（memoryBackgroundModel 等），供后续后台模型
+  /// 解析复用，避免本服务静默用主对话模型。
   Future<AppSettings> _loadSettings() async {
     final rows = await _db.select(_db.settings).get();
     final map = <String, dynamic>{};
@@ -609,12 +818,19 @@ class MemoryExtractionService {
         map[row.key] = row.value;
       }
     }
+    final rawApiKey = map['api_key'] as String? ?? '';
+    final apiKey = await _secretStorage.resolveApiKey(rawApiKey);
     return AppSettings(
       apiBase: map['api_base'] as String? ?? '',
-      apiKey: map['api_key'] as String? ?? '',
+      apiKey: apiKey,
       model: map['model'] as String? ?? '',
       temperature: (map['temperature'] as num?)?.toDouble() ?? 1.0,
       maxTokens: map['max_tokens'] as int? ?? 4096,
+      memoryBackgroundModel: map['memory_background_model'] as String? ?? '',
+      memoryBackgroundProviderId:
+          map['memory_background_provider_id'] as String? ?? '',
+      disableDeepseekThinkingForBackground:
+          map['disable_deepseek_thinking_for_background'] as bool? ?? false,
     );
   }
 
@@ -665,4 +881,63 @@ class MemoryExtractionService {
       return [];
     }
   }
+
+  /// 读取记忆的 metadata（JSON 字符串 → Map），null / 异常时返回空 Map
+  /// 用于 supersede 分支在旧记忆上追加 supersededBy 等字段（spec SubTask 9.2）
+  static Map<String, dynamic> _readMetadata(String? metadataJson) {
+    if (metadataJson == null || metadataJson.isEmpty) return {};
+    try {
+      return jsonDecode(metadataJson) as Map<String, dynamic>;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// 把 metadata Map 写回 JSON 字符串
+  static String _writeMetadata(Map<String, dynamic> map) => jsonEncode(map);
+
+  /// 合并动态阈值 — 对照主项目 src/lib/memory-engine.ts:274-277
+  ///
+  /// 短文本（如"喜欢猫" vs "喜欢狗"）bigram 重叠率天然偏高但语义可能
+  /// 完全不同，因此对较短记忆采用更严格的阈值；以两条中较短的一方判定，
+  /// 避免长记忆带短记忆"蹭过"阈值。调用方传入
+  /// `min(existing.content.length, newContent.length)`。
+  static double _mergeThreshold(int shorterLen) =>
+      shorterLen < 20 ? 0.85 : 0.72;
+
+  /// 对 [_mergeThreshold] 的 `@visibleForTesting` 公开别名，
+  /// 便于单元测试在不构造完整提取流程的前提下断言阈值边界。
+  @visibleForTesting
+  static double mergeThresholdForTesting(int shorterLen) =>
+      _mergeThreshold(shorterLen);
+
+  /// 对 [_processQueue] 的 `@visibleForTesting` 公开入口，
+  /// 便于单元测试在手动构造 inFlight 集合后直接驱动一次队列处理，
+  /// 验证「inFlight 中的对话被 SQL 排除，其他对话的 pending 任务被处理」。
+  /// 不改业务逻辑，仅暴露私有方法。
+  @visibleForTesting
+  Future<void> processQueueForTesting() => _processQueue();
+
+  /// 对 [_inFlightConversations] 集合的 `@visibleForTesting` 手动注入入口。
+  /// 用于 SubTask 21.3：在不实际启动 _processTask 的前提下，把指定对话标记为
+  /// 「正在处理中」，验证 _processQueue 的 SQL 排除逻辑。
+  /// 测试结束前必须调用 [unmarkConversationInFlightForTesting] 清理，避免
+  /// finally 中 pending 探测触发的 unawaited(_processQueue) 因永远排除该对话
+  /// 而形成空转循环。
+  @visibleForTesting
+  void markConversationInFlightForTesting(String conversationId) =>
+      _inFlightConversations.add(conversationId);
+
+  /// 对 [_inFlightConversations] 集合的 `@visibleForTesting` 清理入口，
+  /// 与 [markConversationInFlightForTesting] 配对使用。
+  @visibleForTesting
+  void unmarkConversationInFlightForTesting(String conversationId) =>
+      _inFlightConversations.remove(conversationId);
+
+  /// 对 [_inFlightConversations] 集合的 `@visibleForTesting` 只读视图，
+  /// 便于单元测试断言「_processTask 执行期间 inFlight 集合包含当前对话」、
+  /// 「_processTask 结束后 inFlight 集合移除当前对话」。
+  @visibleForTesting
+  Set<String> get inFlightConversationsForTesting =>
+      Set<String>.unmodifiable(_inFlightConversations);
 }

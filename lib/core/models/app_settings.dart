@@ -40,6 +40,15 @@ class AppSettings {
   // 图片生成
   final ImageGenSettings imageGen;
 
+  // 记忆引擎（对照主项目 Settings.memory_engine 嵌套对象）
+  final MemoryEngineSettings memoryEngine;
+  // 后台任务（记忆提取/画像/总结）专用模型；留空则回退到主聊天模型 model。
+  final String memoryBackgroundModel;
+  // 后台任务专用供应商 ID；留空则使用主接口的 api_base/api_key。
+  final String memoryBackgroundProviderId;
+  // 后台任务使用 DeepSeek 模型时关闭 thinking，避免思考内容耗尽输出 token。
+  final bool disableDeepseekThinkingForBackground;
+
   // 画师串管理
   final List<ArtistString> artistStrings;
 
@@ -72,6 +81,10 @@ class AppSettings {
     this.lastConversationId = '',
     this.activeProviderId = '',
     this.imageGen = const ImageGenSettings(),
+    this.memoryEngine = const MemoryEngineSettings(),
+    this.memoryBackgroundModel = '',
+    this.memoryBackgroundProviderId = '',
+    this.disableDeepseekThinkingForBackground = false,
     this.artistStrings = const [],
   });
 
@@ -104,6 +117,10 @@ class AppSettings {
     String? lastConversationId,
     String? activeProviderId,
     ImageGenSettings? imageGen,
+    MemoryEngineSettings? memoryEngine,
+    String? memoryBackgroundModel,
+    String? memoryBackgroundProviderId,
+    bool? disableDeepseekThinkingForBackground,
     List<ArtistString>? artistStrings,
   }) {
     return AppSettings(
@@ -142,6 +159,14 @@ class AppSettings {
       lastConversationId: lastConversationId ?? this.lastConversationId,
       activeProviderId: activeProviderId ?? this.activeProviderId,
       imageGen: imageGen ?? this.imageGen,
+      memoryEngine: memoryEngine ?? this.memoryEngine,
+      memoryBackgroundModel:
+          memoryBackgroundModel ?? this.memoryBackgroundModel,
+      memoryBackgroundProviderId:
+          memoryBackgroundProviderId ?? this.memoryBackgroundProviderId,
+      disableDeepseekThinkingForBackground:
+          disableDeepseekThinkingForBackground ??
+          this.disableDeepseekThinkingForBackground,
       artistStrings: artistStrings ?? this.artistStrings,
     );
   }
@@ -189,6 +214,10 @@ class ImageGenSettings {
   final String qualityTags;
   final bool autoGenerate;
   final String autoGenerateKeywords;
+  // 内联提示词：让 AI 在聊天回复末尾用 [IMG]...[/IMG] 附带生图提示词，
+  // 出图时直接复用该提示词，跳过单独的（慢速）提示词生成请求。
+  // 对照主项目 `src/types/index.ts` 的 `inline_prompt` 字段。
+  final bool inlinePrompt;
 
   const ImageGenSettings({
     this.enabled = false,
@@ -224,6 +253,7 @@ class ImageGenSettings {
         'best quality, amazing quality, very aesthetic, masterpiece',
     this.autoGenerate = false,
     this.autoGenerateKeywords = '画,生图,来一张,看看',
+    this.inlinePrompt = false,
   });
 
   /// 从 JSON Map 反序列化
@@ -266,6 +296,7 @@ class ImageGenSettings {
       autoGenerate: json['auto_generate'] as bool? ?? false,
       autoGenerateKeywords:
           json['auto_generate_keywords'] as String? ?? '画,生图,来一张,看看',
+      inlinePrompt: json['inline_prompt'] as bool? ?? false,
     );
   }
 
@@ -302,6 +333,7 @@ class ImageGenSettings {
       'quality_tags': qualityTags,
       'auto_generate': autoGenerate,
       'auto_generate_keywords': autoGenerateKeywords,
+      'inline_prompt': inlinePrompt,
     };
   }
 
@@ -337,6 +369,7 @@ class ImageGenSettings {
     String? qualityTags,
     bool? autoGenerate,
     String? autoGenerateKeywords,
+    bool? inlinePrompt,
   }) {
     return ImageGenSettings(
       enabled: enabled ?? this.enabled,
@@ -369,6 +402,7 @@ class ImageGenSettings {
       qualityTags: qualityTags ?? this.qualityTags,
       autoGenerate: autoGenerate ?? this.autoGenerate,
       autoGenerateKeywords: autoGenerateKeywords ?? this.autoGenerateKeywords,
+      inlinePrompt: inlinePrompt ?? this.inlinePrompt,
     );
   }
 }
@@ -402,6 +436,182 @@ class ArtistString {
       id: id ?? this.id,
       name: name ?? this.name,
       tags: tags ?? this.tags,
+    );
+  }
+}
+
+/// 记忆引擎设置 — 对照主项目 `src/types/index.ts` 的 `MemoryEngineSettings`
+/// 接口与 `DEFAULT_MEMORY_ENGINE_SETTINGS` 默认值。
+///
+/// 字段命名使用 camelCase（Dart 风格），[toJson]/[fromJson] 时转为
+/// snake_case 对齐主项目 DB key。
+class MemoryEngineSettings {
+  final bool enabled;
+  final bool allowMemoryContextInChat;
+  final bool allowExternalMemoryPayloads;
+  final String retrievalMode; // 'local' / 'hybrid' / 'vector'
+  final bool embeddingEnabled;
+  final String embeddingApiBase;
+  final String embeddingApiKey; // 走 SecretStorage
+  final String embeddingModel;
+  final int embeddingDimension;
+  final bool rerankerEnabled;
+  final String rerankerApiBase;
+  final String rerankerApiKey; // 走 SecretStorage
+  final String rerankerModel;
+  final bool fallbackLocalEnabled;
+  final int memoryPackageTokenBudget;
+  final int retrievalTokenBudget;
+  final int vectorTopK;
+  final int keywordTopK;
+  final int rerankerTopK;
+  final int finalTopK;
+  final int embeddingTimeoutMs;
+  final int rerankerTimeoutMs;
+  final int totalRetrievalTimeoutMs;
+
+  const MemoryEngineSettings({
+    this.enabled = false,
+    this.allowMemoryContextInChat = true,
+    this.allowExternalMemoryPayloads = true,
+    this.retrievalMode = 'local',
+    this.embeddingEnabled = false,
+    this.embeddingApiBase = '',
+    this.embeddingApiKey = '',
+    this.embeddingModel = '',
+    this.embeddingDimension = 0,
+    this.rerankerEnabled = false,
+    this.rerankerApiBase = '',
+    this.rerankerApiKey = '',
+    this.rerankerModel = '',
+    this.fallbackLocalEnabled = true,
+    this.memoryPackageTokenBudget = 12000,
+    this.retrievalTokenBudget = 8000,
+    this.vectorTopK = 80,
+    this.keywordTopK = 20,
+    this.rerankerTopK = 40,
+    this.finalTopK = 30,
+    this.embeddingTimeoutMs = 1500,
+    this.rerankerTimeoutMs = 2000,
+    this.totalRetrievalTimeoutMs = 2500,
+  });
+
+  /// 从 JSON Map 反序列化（key 为 snake_case，对齐主项目 DB key）。
+  factory MemoryEngineSettings.fromJson(Map<String, dynamic> json) {
+    return MemoryEngineSettings(
+      enabled: json['enabled'] as bool? ?? false,
+      allowMemoryContextInChat:
+          json['allow_memory_context_in_chat'] as bool? ?? true,
+      allowExternalMemoryPayloads:
+          json['allow_external_memory_payloads'] as bool? ?? true,
+      retrievalMode: json['retrieval_mode'] as String? ?? 'local',
+      embeddingEnabled: json['embedding_enabled'] as bool? ?? false,
+      embeddingApiBase: json['embedding_api_base'] as String? ?? '',
+      embeddingApiKey: json['embedding_api_key'] as String? ?? '',
+      embeddingModel: json['embedding_model'] as String? ?? '',
+      embeddingDimension: json['embedding_dimension'] as int? ?? 0,
+      rerankerEnabled: json['reranker_enabled'] as bool? ?? false,
+      rerankerApiBase: json['reranker_api_base'] as String? ?? '',
+      rerankerApiKey: json['reranker_api_key'] as String? ?? '',
+      rerankerModel: json['reranker_model'] as String? ?? '',
+      fallbackLocalEnabled: json['fallback_local_enabled'] as bool? ?? true,
+      memoryPackageTokenBudget:
+          json['memory_package_token_budget'] as int? ?? 12000,
+      retrievalTokenBudget: json['retrieval_token_budget'] as int? ?? 8000,
+      vectorTopK: json['vector_top_k'] as int? ?? 80,
+      keywordTopK: json['keyword_top_k'] as int? ?? 20,
+      rerankerTopK: json['reranker_top_k'] as int? ?? 40,
+      finalTopK: json['final_top_k'] as int? ?? 30,
+      embeddingTimeoutMs: json['embedding_timeout_ms'] as int? ?? 1500,
+      rerankerTimeoutMs: json['reranker_timeout_ms'] as int? ?? 2000,
+      totalRetrievalTimeoutMs:
+          json['total_retrieval_timeout_ms'] as int? ?? 2500,
+    );
+  }
+
+  /// 序列化为 JSON Map（key 为 snake_case，对齐主项目 DB key）。
+  Map<String, dynamic> toJson() {
+    return {
+      'enabled': enabled,
+      'allow_memory_context_in_chat': allowMemoryContextInChat,
+      'allow_external_memory_payloads': allowExternalMemoryPayloads,
+      'retrieval_mode': retrievalMode,
+      'embedding_enabled': embeddingEnabled,
+      'embedding_api_base': embeddingApiBase,
+      'embedding_api_key': embeddingApiKey,
+      'embedding_model': embeddingModel,
+      'embedding_dimension': embeddingDimension,
+      'reranker_enabled': rerankerEnabled,
+      'reranker_api_base': rerankerApiBase,
+      'reranker_api_key': rerankerApiKey,
+      'reranker_model': rerankerModel,
+      'fallback_local_enabled': fallbackLocalEnabled,
+      'memory_package_token_budget': memoryPackageTokenBudget,
+      'retrieval_token_budget': retrievalTokenBudget,
+      'vector_top_k': vectorTopK,
+      'keyword_top_k': keywordTopK,
+      'reranker_top_k': rerankerTopK,
+      'final_top_k': finalTopK,
+      'embedding_timeout_ms': embeddingTimeoutMs,
+      'reranker_timeout_ms': rerankerTimeoutMs,
+      'total_retrieval_timeout_ms': totalRetrievalTimeoutMs,
+    };
+  }
+
+  /// 创建副本并覆盖指定字段。
+  MemoryEngineSettings copyWith({
+    bool? enabled,
+    bool? allowMemoryContextInChat,
+    bool? allowExternalMemoryPayloads,
+    String? retrievalMode,
+    bool? embeddingEnabled,
+    String? embeddingApiBase,
+    String? embeddingApiKey,
+    String? embeddingModel,
+    int? embeddingDimension,
+    bool? rerankerEnabled,
+    String? rerankerApiBase,
+    String? rerankerApiKey,
+    String? rerankerModel,
+    bool? fallbackLocalEnabled,
+    int? memoryPackageTokenBudget,
+    int? retrievalTokenBudget,
+    int? vectorTopK,
+    int? keywordTopK,
+    int? rerankerTopK,
+    int? finalTopK,
+    int? embeddingTimeoutMs,
+    int? rerankerTimeoutMs,
+    int? totalRetrievalTimeoutMs,
+  }) {
+    return MemoryEngineSettings(
+      enabled: enabled ?? this.enabled,
+      allowMemoryContextInChat:
+          allowMemoryContextInChat ?? this.allowMemoryContextInChat,
+      allowExternalMemoryPayloads:
+          allowExternalMemoryPayloads ?? this.allowExternalMemoryPayloads,
+      retrievalMode: retrievalMode ?? this.retrievalMode,
+      embeddingEnabled: embeddingEnabled ?? this.embeddingEnabled,
+      embeddingApiBase: embeddingApiBase ?? this.embeddingApiBase,
+      embeddingApiKey: embeddingApiKey ?? this.embeddingApiKey,
+      embeddingModel: embeddingModel ?? this.embeddingModel,
+      embeddingDimension: embeddingDimension ?? this.embeddingDimension,
+      rerankerEnabled: rerankerEnabled ?? this.rerankerEnabled,
+      rerankerApiBase: rerankerApiBase ?? this.rerankerApiBase,
+      rerankerApiKey: rerankerApiKey ?? this.rerankerApiKey,
+      rerankerModel: rerankerModel ?? this.rerankerModel,
+      fallbackLocalEnabled: fallbackLocalEnabled ?? this.fallbackLocalEnabled,
+      memoryPackageTokenBudget:
+          memoryPackageTokenBudget ?? this.memoryPackageTokenBudget,
+      retrievalTokenBudget: retrievalTokenBudget ?? this.retrievalTokenBudget,
+      vectorTopK: vectorTopK ?? this.vectorTopK,
+      keywordTopK: keywordTopK ?? this.keywordTopK,
+      rerankerTopK: rerankerTopK ?? this.rerankerTopK,
+      finalTopK: finalTopK ?? this.finalTopK,
+      embeddingTimeoutMs: embeddingTimeoutMs ?? this.embeddingTimeoutMs,
+      rerankerTimeoutMs: rerankerTimeoutMs ?? this.rerankerTimeoutMs,
+      totalRetrievalTimeoutMs:
+          totalRetrievalTimeoutMs ?? this.totalRetrievalTimeoutMs,
     );
   }
 }

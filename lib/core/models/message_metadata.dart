@@ -38,6 +38,29 @@ class MessageMetadata {
   /// 消息级别的当前激活图片版本索引
   final int? activeImageVersion;
 
+  /// 最近一次 LLM 调用的 token 用量统计（原始 usage Map，避免与 llm_service 循环依赖）。
+  ///
+  /// 形如 `{'prompt_tokens': 100, 'completion_tokens': 50, 'total_tokens': 150}`。
+  /// 流式响应由上游在最后一个 chunk 附带，非流式响应在 body.usage 返回；
+  /// 上游未返回时为 null，调用方应保留原有 token 估算作为 fallback。
+  final Map<String, dynamic>? lastUsage;
+
+  /// 最近一次记忆注入的元信息（注入条数 / token 估算 / 来源模式）。
+  final MemoryInjectionInfo? lastMemoryInjection;
+
+  /// 生成是否被用户主动中断（stop / abort）。正常完成时为 false。
+  final bool generationStopped;
+
+  /// 生成中断原因（如 'abort'）。正常完成时为 null。
+  final String? generationStopReason;
+
+  /// 内联生图提示词（inline image prompt）。
+  ///
+  /// 聊天模型在回复尾部用 `[IMG]...[/IMG]` 包裹的 danbooru 标签串，
+  /// onDone 时从正文提取并剥离后写入此字段；为空时不写入。
+  /// 对照主项目 `src/lib/chat-engine.ts` 的 `meta.inlineImagePrompt`。
+  final String? inlineImagePrompt;
+
   const MessageMetadata({
     this.attachments = const [],
     this.generatedImages = const [],
@@ -50,6 +73,11 @@ class MessageMetadata {
     this.summarizedIds,
     this.imageVersions,
     this.activeImageVersion,
+    this.lastUsage,
+    this.lastMemoryInjection,
+    this.generationStopped = false,
+    this.generationStopReason,
+    this.inlineImagePrompt,
   });
 
   /// 从 JSON 字符串解析，解析失败返回空元数据
@@ -90,6 +118,15 @@ class MessageMetadata {
               ?.map((e) => ImageVersion.fromJson(e as Map<String, dynamic>))
               .toList(),
       activeImageVersion: json['activeImageVersion'] as int?,
+      lastUsage: (json['last_usage'] as Map<String, dynamic>?)?.cast<String, dynamic>(),
+      lastMemoryInjection: json['last_memory_injection'] is Map<String, dynamic>
+          ? MemoryInjectionInfo.fromJson(
+              json['last_memory_injection'] as Map<String, dynamic>,
+            )
+          : null,
+      generationStopped: json['generation_stopped'] as bool? ?? false,
+      generationStopReason: json['generation_stop_reason'] as String?,
+      inlineImagePrompt: json['inlineImagePrompt'] as String?,
     );
   }
 
@@ -132,6 +169,21 @@ class MessageMetadata {
     if (activeImageVersion != null) {
       map['activeImageVersion'] = activeImageVersion;
     }
+    if (lastUsage != null) {
+      map['last_usage'] = lastUsage;
+    }
+    if (lastMemoryInjection != null) {
+      map['last_memory_injection'] = lastMemoryInjection!.toJson();
+    }
+    if (generationStopped) {
+      map['generation_stopped'] = true;
+    }
+    if (generationStopReason != null) {
+      map['generation_stop_reason'] = generationStopReason;
+    }
+    if (inlineImagePrompt != null && inlineImagePrompt!.isNotEmpty) {
+      map['inlineImagePrompt'] = inlineImagePrompt;
+    }
     return map;
   }
 
@@ -159,6 +211,11 @@ class MessageMetadata {
     List<String>? summarizedIds,
     List<ImageVersion>? imageVersions,
     int? activeImageVersion,
+    Map<String, dynamic>? lastUsage,
+    MemoryInjectionInfo? lastMemoryInjection,
+    bool? generationStopped,
+    String? generationStopReason,
+    String? inlineImagePrompt,
   }) {
     return MessageMetadata(
       attachments: attachments ?? this.attachments,
@@ -172,6 +229,11 @@ class MessageMetadata {
       summarizedIds: summarizedIds ?? this.summarizedIds,
       imageVersions: imageVersions ?? this.imageVersions,
       activeImageVersion: activeImageVersion ?? this.activeImageVersion,
+      lastUsage: lastUsage ?? this.lastUsage,
+      lastMemoryInjection: lastMemoryInjection ?? this.lastMemoryInjection,
+      generationStopped: generationStopped ?? this.generationStopped,
+      generationStopReason: generationStopReason ?? this.generationStopReason,
+      inlineImagePrompt: inlineImagePrompt ?? this.inlineImagePrompt,
     );
   }
 
@@ -192,6 +254,11 @@ class MessageMetadata {
       summarizedIds: summarizedIds,
       imageVersions: imageVersions,
       activeImageVersion: activeImageVersion,
+      lastUsage: lastUsage,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
     );
   }
 
@@ -209,6 +276,11 @@ class MessageMetadata {
       summarizedIds: summarizedIds,
       imageVersions: imageVersions,
       activeImageVersion: activeImageVersion,
+      lastUsage: lastUsage,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
     );
   }
 
@@ -226,6 +298,11 @@ class MessageMetadata {
       summarizedIds: null,
       imageVersions: imageVersions,
       activeImageVersion: activeImageVersion,
+      lastUsage: lastUsage,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
     );
   }
 
@@ -243,6 +320,11 @@ class MessageMetadata {
       summarizedIds: summarizedIds,
       imageVersions: null,
       activeImageVersion: activeImageVersion,
+      lastUsage: lastUsage,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
     );
   }
 
@@ -260,8 +342,134 @@ class MessageMetadata {
       summarizedIds: summarizedIds,
       imageVersions: imageVersions,
       activeImageVersion: null,
+      lastUsage: lastUsage,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
     );
   }
+
+  /// 清空 [lastUsage] 为 null（其余字段保持不变）
+  MessageMetadata clearLastUsage() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: imageVersions,
+      activeImageVersion: activeImageVersion,
+      lastUsage: null,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
+    );
+  }
+
+  /// 清空 [lastMemoryInjection] 为 null（其余字段保持不变）
+  MessageMetadata clearLastMemoryInjection() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: imageVersions,
+      activeImageVersion: activeImageVersion,
+      lastUsage: lastUsage,
+      lastMemoryInjection: null,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
+    );
+  }
+
+  /// 清空 [generationStopReason] 为 null（其余字段保持不变）
+  MessageMetadata clearGenerationStopReason() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: imageVersions,
+      activeImageVersion: activeImageVersion,
+      lastUsage: lastUsage,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: null,
+      inlineImagePrompt: inlineImagePrompt,
+    );
+  }
+
+  /// 清空 [inlineImagePrompt] 为 null（其余字段保持不变，常用于重新生成时清掉旧的内联提示词）
+  MessageMetadata clearInlineImagePrompt() {
+    return MessageMetadata(
+      attachments: attachments,
+      generatedImages: generatedImages,
+      versions: versions,
+      activeVersion: activeVersion,
+      memoryExtracted: memoryExtracted,
+      memoryExtractedAt: memoryExtractedAt,
+      memoryIgnored: memoryIgnored,
+      isSummary: isSummary,
+      summarizedIds: summarizedIds,
+      imageVersions: imageVersions,
+      activeImageVersion: activeImageVersion,
+      lastUsage: lastUsage,
+      lastMemoryInjection: lastMemoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: null,
+    );
+  }
+}
+
+/// 记忆注入元信息 — 记录最近一次注入到 prompt 的记忆统计。
+///
+/// 与 lastUsage 不同，这里用强类型小类而非原始 Map，因为字段固定且语义明确，
+/// 不涉及跨上游协议兼容问题；字段含义：
+/// - [count]：实际入选注入的回忆条数（`memoryContents.length`，未入选不计数）；
+/// - [tokens]：记忆上下文文本（`### 本轮相关回忆\n- ...`）的 token 估算；
+/// - [mode]：注入来源模式，当前固定 `'local'`（本地检索），预留后续远程/混合模式。
+class MemoryInjectionInfo {
+  final int count;
+  final int tokens;
+  final String mode;
+
+  const MemoryInjectionInfo({
+    required this.count,
+    required this.tokens,
+    required this.mode,
+  });
+
+  factory MemoryInjectionInfo.fromJson(Map<String, dynamic> json) {
+    return MemoryInjectionInfo(
+      count: json['count'] as int? ?? 0,
+      tokens: json['tokens'] as int? ?? 0,
+      mode: json['mode'] as String? ?? 'local',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'count': count,
+        'tokens': tokens,
+        'mode': mode,
+      };
 }
 
 /// 附件数据

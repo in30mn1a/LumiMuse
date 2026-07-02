@@ -18,7 +18,9 @@ void main() {
       final db = _openDatabase(file);
       addTearDown(db.close);
 
-      expect(await _schemaVersion(db), 6);
+      // 升级终点已推进到 v8（v7→v8 仅新增 6 张扩展表，不影响本测试），
+      // v6 的 memory_tasks 重建逻辑仍在 from=5 路径中执行。
+      expect(await _schemaVersion(db), 8);
 
       final tasks = await db
           .customSelect(
@@ -87,7 +89,7 @@ void main() {
           allOf(
             contains('v6'),
             contains('from=5'),
-            contains('to=6'),
+            contains('to=8'),
             contains('copy_valid_memory_tasks'),
           ),
         ),

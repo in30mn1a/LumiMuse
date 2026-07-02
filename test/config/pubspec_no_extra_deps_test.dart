@@ -64,9 +64,15 @@ const Set<String> _baselineDevDependencies = <String>{
 };
 
 /// 已审查并允许新增的依赖键集合（白名单）。
+///
+/// - `flutter_localizations`：i18n 中文/英文双语支持
+/// - `flutter_secure_storage`：API Key 安全存储（feat(security): migrate API keys）
+/// - `crypto`：记忆向量嵌入文本哈希（SHA-256）— 对齐主项目
+///   `src/lib/memory-embeddings.ts:210-212`，Wave 8 引入但漏登记，此处补登
 const Set<String> _allowedNewDependencies = <String>{
   'flutter_localizations',
   'flutter_secure_storage',
+  'crypto',
 };
 
 void main() {

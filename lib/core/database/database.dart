@@ -24,6 +24,10 @@ class Characters extends Table {
   TextColumn get basicInfo => text().named('basic_info').withDefault(const Constant(''))();
   TextColumn get otherInfo => text().named('other_info').withDefault(const Constant(''))();
   TextColumn get imageTags => text().named('image_tags').withDefault(const Constant(''))();
+  // 用户外貌标签（生图时保持用户形象一致）。
+  // 主项目 db.ts 中 user_image_tags 为 nullable TEXT 无默认值，
+  // 这里沿用 imageTags 的 withDefault('') 风格保持代码对称、避免 nullable 解析负担。
+  TextColumn get userImageTags => text().named('user_image_tags').withDefault(const Constant(''))();
   IntColumn get sortOrder => integer().named('sort_order').withDefault(const Constant(0))();
   DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
   DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
@@ -77,6 +81,15 @@ class Memories extends Table {
   TextColumn get sourceMsgIds => text().named('source_msg_ids').withDefault(const Constant('[]'))(); // JSON 数组
   DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
   DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
+  // v6 新增字段 — 记忆分层与生命周期管理
+  TextColumn get memoryKind => text().named('memory_kind').withDefault(const Constant('general'))(); // 记忆类型
+  RealColumn get importance => real().withDefault(const Constant(0.5))(); // 重要性 0.0-1.0
+  RealColumn get emotionalWeight => real().named('emotional_weight').withDefault(const Constant(0.5))(); // 情感权重 0.0-1.0
+  TextColumn get status => text().withDefault(const Constant('active'))(); // active / archived / decayed
+  BoolColumn get pinned => boolean().withDefault(const Constant(false))(); // 是否置顶（不受裁剪影响）
+  IntColumn get lastUsedAt => integer().named('last_used_at').nullable()(); // 毫秒级时间戳，最后一次参与检索
+  IntColumn get usageCount => integer().named('usage_count').withDefault(const Constant(0))(); // 检索命中次数
+  TextColumn get metadata => text().nullable()(); // JSON 字符串，扩展元数据
 
   @override
   Set<Column> get primaryKey => {id};
@@ -105,6 +118,10 @@ class MemoryTasks extends Table {
   IntColumn get mergeCount => integer().named('merge_count').withDefault(const Constant(0))();
   DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
   DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
+  // v6 新增字段 — 任务追踪与重试
+  IntColumn get startedAt => integer().named('started_at').nullable()(); // 毫秒级时间戳，进入 processing 的时间
+  IntColumn get retryCount => integer().named('retry_count').withDefault(const Constant(0))(); // 重试次数
+  TextColumn get errorMessage => text().named('error_message').nullable()(); // 失败原因
 }
 
 /// 模型缓存表
@@ -135,6 +152,130 @@ class ApiProviders extends Table {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// v8 扩展表 — 记忆向量化 / 角色画像 / 提取候选
+// 对照主项目 src/lib/memory-embedding-schema.ts 与 src/lib/db.ts
+// ═══════════════════════════════════════════════════════════════
+
+/// 记忆向量表 — 存放每条记忆的 embedding（多 provider/model/dimension 共存）。
+/// 对照主项目 memory-embedding-schema.ts 第 4-17 行。
+/// 偏差：主项目此表无显式主键（靠 rowid 隐式），Drift 要求每表有显式主键，
+/// 故加 `id INTEGER PRIMARY KEY AUTOINCREMENT` 作代理键；业务唯一性仍由
+/// unique 索引 idx_memory_embeddings_unique_model(memory_id+provider+model+dimension) 保证。
+class MemoryEmbeddings extends Table {
+  // 代理主键（偏差：主项目无此列，用 rowid 隐式）
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get memoryId => text()
+      .named('memory_id')
+      .references(Memories, #id, onDelete: KeyAction.cascade)();
+  TextColumn get characterId => text()
+      .named('character_id')
+      .references(Characters, #id, onDelete: KeyAction.cascade)();
+  TextColumn get provider => text()();
+  TextColumn get model => text()();
+  IntColumn get dimension => integer()();
+  BlobColumn get embeddingBlob => blob().named('embedding_blob')();
+  // 0/1 布尔语义：向量是否已归一化
+  IntColumn get normalized => integer().withDefault(const Constant(1))();
+  TextColumn get embeddingTextHash => text().named('embedding_text_hash')();
+  TextColumn get status => text().withDefault(const Constant('ready'))();
+  TextColumn get errorMessage => text().named('error_message').nullable()();
+  DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
+  DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
+}
+
+/// 记忆向量化任务表 — 异步生成 embedding 的任务队列。
+/// 对照主项目 memory-embedding-schema.ts 第 19-30 行。
+class MemoryEmbeddingTasks extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get memoryId => text()
+      .named('memory_id')
+      .references(Memories, #id, onDelete: KeyAction.cascade)();
+  TextColumn get characterId => text()
+      .named('character_id')
+      .references(Characters, #id, onDelete: KeyAction.cascade)();
+  TextColumn get reason => text()();
+  TextColumn get status => text().withDefault(const Constant('pending'))();
+  TextColumn get claimToken => text().named('claim_token').nullable()();
+  IntColumn get retryCount => integer().named('retry_count').withDefault(const Constant(0))();
+  TextColumn get errorMessage => text().named('error_message').nullable()();
+  DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
+  DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
+}
+
+/// 角色记忆画像表 — 每角色一行，存放关系/故事/情感基线等聚合状态。
+/// 对照主项目 src/lib/db.ts 第 131-141 行。
+class CharacterMemoryProfiles extends Table {
+  TextColumn get characterId => text()
+      .named('character_id')
+      .references(Characters, #id, onDelete: KeyAction.cascade)();
+  TextColumn get profileName => text().named('profile_name').withDefault(const Constant(''))();
+  TextColumn get relationshipState => text().named('relationship_state').withDefault(const Constant(''))();
+  TextColumn get recentStoryState => text().named('recent_story_state').withDefault(const Constant(''))();
+  TextColumn get emotionalBaseline => text().named('emotional_baseline').withDefault(const Constant(''))();
+  TextColumn get openThreads => text().named('open_threads').withDefault(const Constant('[]'))();
+  TextColumn get userProfileSummary => text().named('user_profile_summary').withDefault(const Constant(''))();
+  TextColumn get pinnedSummary => text().named('pinned_summary').withDefault(const Constant(''))();
+  DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
+
+  @override
+  Set<Column> get primaryKey => {characterId};
+}
+
+/// 角色记忆画像更新任务表 — 异步 patch 队列。
+/// 对照主项目 src/lib/db.ts 第 143-155 行。
+/// 偏差：主项目 lease_expires_at 为 TEXT（存 datetime('now') 文本），
+/// 这里改为 IntColumn nullable 存毫秒级时间戳，与项目 DateTime 约定一致。
+class CharacterMemoryProfileUpdateTasks extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get characterId => text()
+      .named('character_id')
+      .references(Characters, #id, onDelete: KeyAction.cascade)();
+  TextColumn get reason => text()();
+  TextColumn get patchJson => text().named('patch_json')();
+  TextColumn get status => text().withDefault(const Constant('pending'))();
+  TextColumn get claimToken => text().named('claim_token').nullable()();
+  // 偏差：主项目为 TEXT datetime，这里用毫秒整数（项目约定）
+  IntColumn get leaseExpiresAt => integer().named('lease_expires_at').nullable()();
+  IntColumn get retryCount => integer().named('retry_count').withDefault(const Constant(0))();
+  TextColumn get errorMessage => text().named('error_message').nullable()();
+  DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
+  DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
+}
+
+/// 角色记忆画像版本快照表 — 每次画像变更存一份 snapshot。
+/// 对照主项目 src/lib/db.ts 第 157-165 行。
+class CharacterMemoryProfileVersions extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get characterId => text()
+      .named('character_id')
+      .references(Characters, #id, onDelete: KeyAction.cascade)();
+  IntColumn get versionNumber => integer().named('version_number')();
+  TextColumn get snapshotJson => text().named('snapshot_json')();
+  TextColumn get reason => text()();
+  // 主项目仅引用 update_tasks.id，无 FK 声明
+  IntColumn get taskId => integer().named('task_id').nullable()();
+  DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
+}
+
+/// 记忆提取候选表 — 隔离原始 LLM 提取响应，过滤后再入正式 memories。
+/// 对照主项目 src/lib/db.ts 第 314-325 行。
+/// task_id / conversation_id 主项目均无 FK 声明（仅引用/TEXT），这里保持一致。
+class MemoryExtractionCandidates extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get taskId => integer().named('task_id').nullable()();
+  TextColumn get characterId => text()
+      .named('character_id')
+      .references(Characters, #id, onDelete: KeyAction.cascade)();
+  TextColumn get conversationId => text().named('conversation_id').nullable()();
+  TextColumn get rawCandidateJson => text().named('raw_candidate_json').nullable()();
+  TextColumn get rawResponse => text().named('raw_response').nullable()();
+  TextColumn get status => text()();
+  TextColumn get errorReason => text().named('error_reason').nullable()();
+  DateTimeColumn get createdAt => dateTime().named('created_at').withDefault(currentDateAndTime)();
+  DateTimeColumn get updatedAt => dateTime().named('updated_at').withDefault(currentDateAndTime)();
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 数据库类
 // ═══════════════════════════════════════════════════════════════
 
@@ -147,6 +288,13 @@ class ApiProviders extends Table {
   MemoryTasks,
   ModelCache,
   ApiProviders,
+  // v8 扩展表
+  MemoryEmbeddings,
+  MemoryEmbeddingTasks,
+  CharacterMemoryProfiles,
+  CharacterMemoryProfileUpdateTasks,
+  CharacterMemoryProfileVersions,
+  MemoryExtractionCandidates,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
@@ -155,7 +303,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -240,7 +388,31 @@ class AppDatabase extends _$AppDatabase {
         ''');
       }
       if (from < 6) {
+        // 重建 memory_tasks 表（补 conversation FK + 加 3 个新列）
         await _migrateMemoryTasksToV6(from, to);
+        // Memories 表追加 8 列（无 FK 变化，用 addColumn 即可）
+        await m.addColumn(memories, memories.memoryKind);
+        await m.addColumn(memories, memories.importance);
+        await m.addColumn(memories, memories.emotionalWeight);
+        await m.addColumn(memories, memories.status);
+        await m.addColumn(memories, memories.pinned);
+        await m.addColumn(memories, memories.lastUsedAt);
+        await m.addColumn(memories, memories.usageCount);
+        await m.addColumn(memories, memories.metadata);
+      }
+      if (from < 7) {
+        // v7: Characters 表新增 user_image_tags（用户外貌标签，生图时保持用户形象一致）
+        await m.addColumn(characters, characters.userImageTags);
+      }
+      if (from < 8) {
+        // v8: 记忆系统扩展表 — 向量化 / 角色画像 / 提取候选
+        // 用 createTable 逐表建（IF NOT EXISTS 语义），避免 createAll 重建已有表
+        await m.createTable(memoryEmbeddings);
+        await m.createTable(memoryEmbeddingTasks);
+        await m.createTable(characterMemoryProfiles);
+        await m.createTable(characterMemoryProfileUpdateTasks);
+        await m.createTable(characterMemoryProfileVersions);
+        await m.createTable(memoryExtractionCandidates);
       }
       // 每次升级后都确保所有索引存在
       await _createIndexes();
@@ -277,7 +449,10 @@ class AppDatabase extends _$AppDatabase {
           status TEXT NOT NULL DEFAULT 'pending',
           merge_count INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+          started_at INTEGER,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT
         )
       ''');
 
@@ -340,6 +515,87 @@ class AppDatabase extends _$AppDatabase {
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_memory_tasks_character ON memory_tasks(character_id)',
     );
+    // v6 新增复合索引 — 支持按状态过滤的检索与过期清理
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memories_character_status_category '
+      'ON memories(character_id, status, category)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memories_status_updated '
+      'ON memories(status, updated_at)',
+    );
+    // v8 扩展表索引 — 对照主项目 memory-embedding-schema.ts 第 65-80 行
+    // 与 src/lib/db.ts 第 167-189、327 行
+    // memory_embeddings：业务唯一性 + 检索
+    await customStatement(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_embeddings_unique_model '
+      'ON memory_embeddings(memory_id, provider, model, dimension)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embeddings_character_status '
+      'ON memory_embeddings(character_id, status)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embeddings_memory '
+      'ON memory_embeddings(memory_id)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embeddings_character '
+      'ON memory_embeddings(character_id, status, provider, model)',
+    );
+    // memory_embedding_tasks：活跃任务去重 + 状态检索
+    await customStatement(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_embedding_tasks_active_memory '
+      'ON memory_embedding_tasks(memory_id) '
+      "WHERE status IN ('pending', 'processing')",
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_status '
+      'ON memory_embedding_tasks(status)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_status_id '
+      'ON memory_embedding_tasks(status, id)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_memory '
+      'ON memory_embedding_tasks(memory_id)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_memory_status '
+      'ON memory_embedding_tasks(memory_id, status)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_character '
+      'ON memory_embedding_tasks(character_id)',
+    );
+    // memory_embedding_tasks：partial 索引（仅 claim_token 非空行）
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_claim '
+      'ON memory_embedding_tasks(claim_token) '
+      'WHERE claim_token IS NOT NULL',
+    );
+    // character_memory_profiles：PK 即 character_id，无额外索引
+    // character_memory_profile_update_tasks
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_profile_update_tasks_character_status '
+      'ON character_memory_profile_update_tasks(character_id, status)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_profile_update_tasks_claim '
+      'ON character_memory_profile_update_tasks(claim_token) '
+      'WHERE claim_token IS NOT NULL',
+    );
+    // character_memory_profile_versions
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_profile_versions_character '
+      'ON character_memory_profile_versions(character_id, version_number DESC)',
+    );
+    // memory_extraction_candidates
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_memory_extraction_candidates_character_status '
+      'ON memory_extraction_candidates(character_id, status)',
+    );
   }
 }
 
@@ -357,7 +613,11 @@ LazyDatabase _openConnection() {
     return NativeDatabase.createInBackground(
       file,
       // SQLite 默认未开启外键，需在每次连接时显式打开
-      setup: (db) => db.execute('PRAGMA foreign_keys = ON'),
+      setup: (db) {
+        db.execute('PRAGMA foreign_keys = ON');
+        // v6 新增：繁忙时等待 5 秒再报 SQLITE_BUSY，避免并发写入冲突
+        db.execute('PRAGMA busy_timeout = 5000');
+      },
     );
   });
 }

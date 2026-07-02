@@ -52,6 +52,8 @@ dependencies:
   # 启动密码 PBKDF2 哈希
   cryptography: ^2.7.0
   flutter_secure_storage: ^10.3.1
+  # 记忆向量嵌入文本哈希（SHA-256）— 对齐主项目 memory-embeddings.ts:210-212
+  crypto: ^3.0.6
 
 dev_dependencies:
   flutter_test:

@@ -1,3 +1,7 @@
+// CupertinoPageTransitionsBuilder 在较新的 Flutter stable 中不再被 material.dart
+// 重新导出，需显式引入；旧版 SDK 下 material 已含该类，故忽略冗余提示。
+// ignore: unnecessary_import
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import 'font_config.dart';

@@ -5,10 +5,10 @@
 // 通过内存 Drift（`AppDatabase.forTesting`）+ `package:glados` 生成 `(对话消息列表, messageId)`，
 // 调用 `ImagePromptService.loadContextWindowForTesting`（`@visibleForTesting`
 // 暴露的 `_loadContextWindow` 别名）后断言：
-// - `messageId` 命中：取 `seq <= target.seq` 的最近 4 条消息，再按 `seq` 升序返回
-//   （`seq < 4` 时不足 4 条则返回全部）。
-// - `messageId == null` 或未命中：取该对话最近 4 条消息按 `seq` 升序返回
-//   （消息 < 4 条时返回全部）。
+// - `messageId` 命中：取 `seq <= target.seq` 的最近 10 条消息，再按 `seq` 升序返回
+//   （`seq < 10` 时不足 10 条则返回全部）。
+// - `messageId == null` 或未命中：取该对话最近 10 条消息按 `seq` 升序返回
+//   （消息 < 10 条时返回全部）。
 //
 // 默认 100 次迭代（glados ExploreConfig 默认值）。
 
@@ -70,30 +70,30 @@ Future<void> _seed(AppDatabase db, {required int messageCount}) async {
 /// 命中 / 未命中 / 空 messageId 三种场景的预期结果（仅返回 seq 列表）。
 ///
 /// - 命中（`targetSeq != null`）：取 `seq ∈ [targetSeq - limit + 1, targetSeq]`，
-///   其中 `limit = min(targetSeq + 1, 4)`，按升序输出。
+///   其中 `limit = min(targetSeq + 1, 10)`，按升序输出。
 /// - 未命中或为空：取 `seq ∈ [messageCount - limit, messageCount - 1]`，
-///   其中 `limit = min(messageCount, 4)`，按升序输出。
+///   其中 `limit = min(messageCount, 10)`，按升序输出。
 List<int> _expectedSeqs({
   required int messageCount,
   required int? targetSeq,
 }) {
   if (messageCount == 0) return const <int>[];
   if (targetSeq != null) {
-    final limit = math.min(targetSeq + 1, 4);
+    final limit = math.min(targetSeq + 1, 10);
     return List<int>.generate(limit, (j) => targetSeq - (limit - 1) + j);
   }
-  final limit = math.min(messageCount, 4);
+  final limit = math.min(messageCount, 10);
   return List<int>.generate(limit, (j) => messageCount - limit + j);
 }
 
 void main() {
   group('Property 20: messageId 锚点上下文窗口', () {
     Glados3<int, int, int>(
-      any.intInRange(0, 11), // messageCount: 0..10，覆盖空对话与中等规模
+      any.intInRange(0, 15), // messageCount: 0..14，覆盖空对话到超过 10 条
       any.intInRange(0, 1 << 20), // 用于派生确定性 Random（target / mode 选择）
       any.intInRange(0, 4), // mode: 0=null, 1=miss, 2..3=hit（hit 占 50%）
     ).test(
-      'hit: 取 seq<=target.seq 的最近 4 条升序; null/miss: 取最近 4 条升序',
+      'hit: 取 seq<=target.seq 的最近 10 条升序; null/miss: 取最近 10 条升序',
       (messageCount, seed, modeChoice) async {
         final db = _createTestDb();
         try {
@@ -149,9 +149,9 @@ void main() {
             );
           }
 
-          // 至多 4 条（无论命中与否）。
-          expect(actual.length <= 4, isTrue,
-              reason: '上下文窗口最多 4 条，实际 ${actual.length}');
+          // 至多 10 条（无论命中与否）。
+          expect(actual.length <= 10, isTrue,
+              reason: '上下文窗口最多 10 条，实际 ${actual.length}');
 
           // 命中时所有返回 seq 不超过 target.seq。
           if (targetSeq != null) {
@@ -187,7 +187,7 @@ void main() {
       expect(r2, isEmpty);
     });
 
-    test('hit：target.seq==0 时返回 1 条（不足 4 条不报错）', () async {
+    test('hit：target.seq==0 时返回 1 条（不足 10 条不报错）', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seed(db, messageCount: 5);
@@ -213,7 +213,7 @@ void main() {
       expect(result.map((m) => m.seq).toList(), [0, 1, 2]);
     });
 
-    test('hit：target.seq==5 且总条数 6 时返回 [2, 3, 4, 5]', () async {
+    test('hit：target.seq==5 且总条数 6 时返回 [0, 1, 2, 3, 4, 5]', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seed(db, messageCount: 6);
@@ -223,10 +223,52 @@ void main() {
         conversationId: _convId,
         messageId: 'msg-5',
       );
-      expect(result.map((m) => m.seq).toList(), [2, 3, 4, 5]);
+      expect(result.map((m) => m.seq).toList(), [0, 1, 2, 3, 4, 5]);
     });
 
-    test('null：取最近 4 条升序', () async {
+    test('hit：target.seq==12 且总条数 15 时返回最近 10 条升序 [3..12]', () async {
+      final db = _createTestDb();
+      addTearDown(() => db.close());
+      await _seed(db, messageCount: 15);
+      final svc = ImagePromptService();
+      final result = await svc.loadContextWindowForTesting(
+        db: db,
+        conversationId: _convId,
+        messageId: 'msg-12',
+      );
+      expect(result.map((m) => m.seq).toList(),
+          [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    });
+
+    test('null：取最近 10 条升序', () async {
+      final db = _createTestDb();
+      addTearDown(() => db.close());
+      await _seed(db, messageCount: 12);
+      final svc = ImagePromptService();
+      final result = await svc.loadContextWindowForTesting(
+        db: db,
+        conversationId: _convId,
+        messageId: null,
+      );
+      expect(result.map((m) => m.seq).toList(),
+          [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    });
+
+    test('miss（messageId 不存在）：与 null 等价，取最近 10 条升序', () async {
+      final db = _createTestDb();
+      addTearDown(() => db.close());
+      await _seed(db, messageCount: 12);
+      final svc = ImagePromptService();
+      final result = await svc.loadContextWindowForTesting(
+        db: db,
+        conversationId: _convId,
+        messageId: 'msg-not-in-conversation',
+      );
+      expect(result.map((m) => m.seq).toList(),
+          [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    });
+
+    test('null：消息少于 10 条时返回全部升序', () async {
       final db = _createTestDb();
       addTearDown(() => db.close());
       await _seed(db, messageCount: 7);
@@ -236,20 +278,7 @@ void main() {
         conversationId: _convId,
         messageId: null,
       );
-      expect(result.map((m) => m.seq).toList(), [3, 4, 5, 6]);
-    });
-
-    test('miss（messageId 不存在）：与 null 等价，取最近 4 条升序', () async {
-      final db = _createTestDb();
-      addTearDown(() => db.close());
-      await _seed(db, messageCount: 7);
-      final svc = ImagePromptService();
-      final result = await svc.loadContextWindowForTesting(
-        db: db,
-        conversationId: _convId,
-        messageId: 'msg-not-in-conversation',
-      );
-      expect(result.map((m) => m.seq).toList(), [3, 4, 5, 6]);
+      expect(result.map((m) => m.seq).toList(), [0, 1, 2, 3, 4, 5, 6]);
     });
   });
 }

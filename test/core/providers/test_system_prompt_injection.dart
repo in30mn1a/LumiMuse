@@ -73,7 +73,7 @@ void main() {
       },
     );
 
-    // ─── 当 otherInfo 非空时，"## 其他补充信息"出现在"## 场景设定"之后、"## 你需要记住的事"之前 ───
+    // ─── 当 otherInfo 非空时，"## 其他补充信息"出现在"## 场景设定"之后、"## 记忆上下文"之前 ───
     Glados<String>(any.nonEmptyText).test(
       '**Validates: Requirements 1.5** — otherInfo 非空时，"## 其他补充信息"出现在"## 场景设定"之后',
       (otherInfo) {
@@ -88,18 +88,18 @@ void main() {
 
         final scenarioIdx = result.indexOf('## 场景设定');
         final otherInfoIdx = result.indexOf('## 其他补充信息');
-        final memoryIdx = result.indexOf('## 你需要记住的事');
+        final memoryIdx = result.indexOf('## 记忆上下文');
 
         expect(scenarioIdx, greaterThanOrEqualTo(0),
             reason: '应包含"## 场景设定"段落');
         expect(otherInfoIdx, greaterThanOrEqualTo(0),
             reason: 'otherInfo 非空时应包含"## 其他补充信息"段落');
         expect(memoryIdx, greaterThanOrEqualTo(0),
-            reason: '应包含"## 你需要记住的事"段落');
+            reason: '应包含"## 记忆上下文"段落');
         expect(otherInfoIdx, greaterThan(scenarioIdx),
             reason: '"## 其他补充信息"应出现在"## 场景设定"之后');
         expect(otherInfoIdx, lessThan(memoryIdx),
-            reason: '"## 其他补充信息"应出现在"## 你需要记住的事"之前');
+            reason: '"## 其他补充信息"应出现在"## 记忆上下文"之前');
 
         // 验证段落包含实际内容
         expect(result.contains(otherInfo), isTrue,
@@ -144,7 +144,7 @@ void main() {
         final personalityIdx = result.indexOf('## 角色性格');
         final scenarioIdx = result.indexOf('## 场景设定');
         final otherInfoIdx = result.indexOf('## 其他补充信息');
-        final memoryIdx = result.indexOf('## 你需要记住的事');
+        final memoryIdx = result.indexOf('## 记忆上下文');
         final behaviorIdx = result.indexOf('## 行为要求');
 
         // 所有段落都应存在
@@ -163,9 +163,9 @@ void main() {
         expect(scenarioIdx, lessThan(otherInfoIdx),
             reason: '场景设定 应在 其他补充信息 之前');
         expect(otherInfoIdx, lessThan(memoryIdx),
-            reason: '其他补充信息 应在 你需要记住的事 之前');
+            reason: '其他补充信息 应在 记忆上下文 之前');
         expect(memoryIdx, lessThan(behaviorIdx),
-            reason: '你需要记住的事 应在 行为要求 之前');
+            reason: '记忆上下文 应在 行为要求 之前');
       },
     );
 
@@ -203,7 +203,7 @@ void main() {
 
       final scenIdx = result.indexOf('## 场景设定');
       final otherIdx = result.indexOf('## 其他补充信息');
-      final memIdx = result.indexOf('## 你需要记住的事');
+      final memIdx = result.indexOf('## 记忆上下文');
       expect(otherIdx, greaterThan(scenIdx));
       expect(otherIdx, lessThan(memIdx));
     });
@@ -245,7 +245,81 @@ void main() {
       expect(result.contains('## 其他补充信息'), isFalse);
       expect(result.contains('## 角色性格'), isTrue);
       expect(result.contains('## 场景设定'), isTrue);
-      expect(result.contains('## 你需要记住的事'), isTrue);
+      expect(result.contains('## 记忆上下文'), isTrue);
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // C1：记忆上下文格式对齐（对照主项目 normalizeMemoryContextText /
+  //     renderLegacyMemoryContext / buildSystemPrompt）
+  // ─────────────────────────────────────────────
+  group('C1: 记忆上下文格式对齐', () {
+    test('build 注入记忆段含标题/正文/使用原则三段', () {
+      final memoryText = SystemPromptBuilder.renderLegacyMemoryContext(
+        const ['用户喜欢猫', '用户怕打雷'],
+      );
+      final result = SystemPromptBuilder.build(
+        systemPrompt: '你是一个角色',
+        basicInfo: '',
+        personality: '温柔',
+        scenario: '现代都市',
+        otherInfo: '',
+        memoryText: memoryText,
+      );
+
+      expect(result, contains('## 记忆上下文'));
+      expect(result, contains('### 本轮相关回忆'));
+      expect(result, contains('- 用户喜欢猫'));
+      expect(result, contains('- 用户怕打雷'));
+      expect(result, contains('### 记忆使用原则'));
+      // 原则段关键约束逐字出现
+      expect(result, contains('以当前消息为准'));
+      expect(result, contains('不得覆盖用户当前消息'));
+      // 不再使用旧标题
+      expect(result, isNot(contains('## 你需要记住的事')));
+    });
+
+    test('normalizeMemoryContextText 能剥离已有前缀与原则段后重组（幂等）', () {
+      const raw = '### 本轮相关回忆\n- A\n- B';
+      final once = SystemPromptBuilder.normalizeMemoryContextText(raw);
+      final twice = SystemPromptBuilder.normalizeMemoryContextText(once);
+
+      expect(once, twice, reason: '已规范化文本再次规范化应保持不变（幂等）');
+      // 重组后只出现一次标题与一次原则段
+      expect('## 记忆上下文'.allMatches(once).length, 1);
+      expect('### 记忆使用原则'.allMatches(once).length, 1);
+      expect(once, contains('### 本轮相关回忆'));
+    });
+
+    test('normalizeMemoryContextText 空白输入返回空串', () {
+      expect(SystemPromptBuilder.normalizeMemoryContextText('   '), '');
+    });
+
+    test('renderLegacyMemoryContext 跳过空白条目，全空返回空串', () {
+      expect(
+        SystemPromptBuilder.renderLegacyMemoryContext(const ['', '  ']),
+        '',
+      );
+      final rendered = SystemPromptBuilder.renderLegacyMemoryContext(
+        const ['', '有效记忆'],
+      );
+      expect(rendered, '### 本轮相关回忆\n- 有效记忆');
+    });
+
+    test('renderLegacyMemoryContext 预算裁剪：超预算的尾部条目被丢弃', () {
+      // 用极小预算逼出裁剪：第一条即超 budget=1 时一条都进不去
+      final none = SystemPromptBuilder.renderLegacyMemoryContext(
+        const ['这是一条比较长的记忆内容用于占用 token'],
+        budget: 1,
+      );
+      expect(none, '', reason: 'budget=1 时任何非空记忆都超预算，应返回空串');
+
+      // 足够大的预算下两条都保留
+      final both = SystemPromptBuilder.renderLegacyMemoryContext(
+        const ['甲', '乙'],
+        budget: 12000,
+      );
+      expect(both, '### 本轮相关回忆\n- 甲\n- 乙');
     });
   });
 }

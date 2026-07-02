@@ -7,15 +7,16 @@ import 'llm_service.dart';
 /// AI 生图 prompt 系统提示词常量
 ///
 /// 与 Node.js 主项目 `src/app/api/image-gen/prompt/route.ts` 的
-/// `PROMPT_GENERATION_SYSTEM` 严格等价，原样保留 9 块结构：
+/// `PROMPT_GENERATION_SYSTEM` 严格等价，原样保留 10 块结构：
 /// 1. 核心功能
 /// 2. 导演思考（内部步骤，不输出）
 /// 3. Tag 构成规则下的 Scene Composition / Character Prompt / Background Elements 三大子块
 ///    （Character Prompt 内部再细分角色 DNA、当前动作、当前表情等）
 /// 4. Tag 质量规范
-/// 5. 视觉一致性
-/// 6. 生成限制
-/// 7. 输出格式
+/// 5. 视觉一致性（含 user_image_tags 出场约束）
+/// 6. 用户外貌标签（user_image_tags 使用规范，区别于风格偏好）
+/// 7. 生成限制
+/// 8. 输出格式
 ///
 /// 该常量为 R12 的「正确性基线」：调用方（generateImagePrompt 等，由后续子任务 13.2 接入）
 /// 必须把它作为 system 消息发给 LLM，以保证 Flutter 端生图 prompt 质量与主项目持平。
@@ -74,7 +75,7 @@ const String _kPromptGenerationSystem = '''# 核心功能
 - 光源与光效：sidelighting / backlighting / rim lighting / dramatic shadows
 
 # Tag 质量规范
-- 总 Tag 数：≥ 70 个
+- 总 Tag 数：70 - 300 个
 - 碎片化拆解：复合概念拆为多个细分 Tag（如"月下"→ moonlit, night, starry sky）
 - 权重增强：低频/核心/易忽略元素用 1.2::tag:: 或 1.3::tag:: 强调
 - 权重减弱：次要/背景元素用 0.6::tag:: 或 0.7::tag:: 降低占比
@@ -83,17 +84,24 @@ const String _kPromptGenerationSystem = '''# 核心功能
 
 # 视觉一致性
 - 如果提供了角色固定外貌标签（image_tags），必须完整包含，不得省略或修改
+- 如果提供了用户外貌标签（user_image_tags），在用户出场时必须完整包含，保持发色/瞳色等特征一致
 - 每次生成同一角色时，发色/瞳色/核心特征保持一致
+
+# 用户外貌标签（user_image_tags）
+- 描述用户本人的外貌特征（发色、瞳色、性别、体型等），不是风格偏好
+- **仅当用户出现在画面中时才包含这些标签**——根据对话内容判断用户是否在场
+- 用户出场时：完整包含所有用户外貌标签
+- 用户未出场（仅角色独白/旁白/单人场景）：不包含用户外貌标签
 
 # 生成限制
 - 默认第三人称视角，禁止 POV 视角，不要输出 pov 或任何第一人称视角相关 tag
 - 禁止矛盾 tag（如 facing viewer + buttocks visible）
 - 每张图为单一静态瞬间，不描述连续动作
-- SFW场景不要出现男性角色 tag，除非是男女之间的亲密互动如kiss,hugging；对话明确要求 NSFW 互动时允许男性角色 tag
+- SFW场景不要出现男性角色 tag，除非用户外貌标签中明确标注了用户为男性（如 1boy），或男女之间的亲密互动如kiss,hugging；对话明确要求 NSFW 互动时允许男性角色 tag
 - NSFW场景必须出现详细描写表情、性爱姿势等tag，禁止回避NSFW场景的tag生成
 
 # 输出格式（严格遵守，不输出任何解释文字）
-POSITIVE: <所有正面 Tag，逗号分隔，≥70个>''';
+POSITIVE: <所有正面 Tag，逗号分隔，70 - 300个>''';
 
 /// 图片提示词生成服务 — 根据对话上下文生成 Danbooru 风格标签
 class ImagePromptService {
@@ -105,8 +113,8 @@ class ImagePromptService {
   /// [db] 数据库实例
   /// [userHint] 用户额外提示（可选）
   /// [messageId] 触发生图的目标消息 ID（可选，R12 上下文窗口锚点）
-  ///   - 命中：取该消息及之前共 4 条（`seq <= target.seq` 取最近 4，按 `seq` 升序）
-  ///   - 为空或未命中：取该对话最近 4 条消息（按 `seq` 升序）
+  ///   - 命中：取该消息及之前共 10 条（`seq <= target.seq` 取最近 10，按 `seq` 升序）
+  ///   - 为空或未命中：取该对话最近 10 条消息（按 `seq` 升序）
   ///
   /// 返回值为命名记录 `({String positive, String negative})`，与 Node.js 主项目
   /// `src/app/api/image-gen/prompt/route.ts` 的 POSITIVE/NEGATIVE 双段输出对齐：
@@ -177,6 +185,14 @@ class ImagePromptService {
         contextBuffer.writeln('【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】');
         contextBuffer.writeln(character.imageTags);
       }
+    }
+
+    // 注入用户外貌标签（user_image_tags），对照主项目 route.ts 195-197 行
+    // 与 image_tags 不同：这里不做 Gemini 敏感标签分离（主项目也未对 user_image_tags 做）
+    if (character.userImageTags.isNotEmpty) {
+      contextBuffer.writeln();
+      contextBuffer.writeln('【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时才包含在 POSITIVE 中；用户未出场则忽略这些标签）】');
+      contextBuffer.writeln(character.userImageTags);
     }
 
     contextBuffer.writeln();
@@ -263,11 +279,11 @@ class ImagePromptService {
     return (positive: text.trim(), negative: '');
   }
 
-  /// 按 messageId 锚点加载上下文窗口（共 4 条，按 `seq` 升序）
+  /// 按 messageId 锚点加载上下文窗口（共 10 条，按 `seq` 升序）
   ///
-  /// 与设计文档「P1 / R12」的伪代码对齐：
-  /// - `messageId` 命中：取 `seq <= target.seq` 的最近 4 条，再按 `seq` 升序返回
-  /// - `messageId == null` 或未命中：取该对话最近 4 条（按 `seq DESC LIMIT 4` 后反转升序）
+  /// 与主项目 `src/app/api/image-gen/prompt/route.ts:158,166` 的 `LIMIT 10` 对齐：
+  /// - `messageId` 命中：取 `seq <= target.seq` 的最近 10 条，再按 `seq` 升序返回
+  /// - `messageId == null` 或未命中：取该对话最近 10 条（按 `seq DESC LIMIT 10` 后反转升序）
   Future<List<Message>> _loadContextWindow({
     required AppDatabase db,
     required String conversationId,
@@ -280,22 +296,22 @@ class ImagePromptService {
                 t.conversationId.equals(conversationId)))
           .getSingleOrNull();
       if (target != null) {
-        // 命中：取 seq <= target.seq 的最近 4 条，再升序返回
+        // 命中：取 seq <= target.seq 的最近 10 条，再升序返回
         final recent = await (db.select(db.messages)
               ..where((t) =>
                   t.conversationId.equals(conversationId) &
                   t.seq.isSmallerOrEqualValue(target.seq))
               ..orderBy([(t) => OrderingTerm.desc(t.seq)])
-              ..limit(4))
+              ..limit(10))
             .get();
         return recent.reversed.toList();
       }
     }
-    // 未命中或未传：取该对话最近 4 条，按 seq 升序
+    // 未命中或未传：取该对话最近 10 条，按 seq 升序
     final recent = await (db.select(db.messages)
           ..where((t) => t.conversationId.equals(conversationId))
           ..orderBy([(t) => OrderingTerm.desc(t.seq)])
-          ..limit(4))
+          ..limit(10))
         .get();
     return recent.reversed.toList();
   }

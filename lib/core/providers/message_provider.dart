@@ -100,9 +100,21 @@ class MessageActions {
   ///
   /// FIX(C2)：与 [insertUserMessage] 同样的并发 seq 修复——在事务内分配 seq
   /// 后立即 INSERT，避免并发写入读到同一个 maxSeq。
+  ///
+  /// 可选参数（D1/D2/D3 对齐主项目 metadata）：
+  /// - [usage]：LLM 上游返回的 token 用量，写入 `metadata.last_usage`；
+  /// - [memoryInjection]：本轮注入的记忆统计，写入 `metadata.last_memory_injection`；
+  /// - [generationStopped] / [generationStopReason]：用户主动中断时标记。
+  /// - [inlineImagePrompt]：内联生图提示词（`[IMG]...[/IMG]` 提取结果），
+  ///   非空时写入 `metadata.inlineImagePrompt`，对照主项目 `chat-engine.ts`。
   Future<String> insertAssistantMessage({
     required String conversationId,
     required String content,
+    Map<String, dynamic>? usage,
+    MemoryInjectionInfo? memoryInjection,
+    bool generationStopped = false,
+    String? generationStopReason,
+    String? inlineImagePrompt,
   }) async {
     // FIX(C1)：使用完整 UUID（之前 substring(0, 8) 短 UUID 在大数据量下存在
     // 碰撞风险，与 character_provider.dart 的修复保持一致）。
@@ -113,6 +125,11 @@ class MessageActions {
     final meta = MessageMetadata(
       versions: [MessageVersion(content: content, tokenCount: tokenCount)],
       activeVersion: 0,
+      lastUsage: usage,
+      lastMemoryInjection: memoryInjection,
+      generationStopped: generationStopped,
+      generationStopReason: generationStopReason,
+      inlineImagePrompt: inlineImagePrompt,
     ).toJsonString();
 
     // FIX(C2)：seq 分配 + 消息写入 + 对话时间更新原子化
@@ -145,9 +162,17 @@ class MessageActions {
   ///
   /// 使用 [_db.transaction] 包裹读写，保证读-改-写的原子性，
   /// 避免并发 regenerate 时版本列表被交错覆盖（P1-2 修复）。
+  ///
+  /// 可选参数（D1/D2 对齐主项目 metadata）：[usage] / [memoryInjection]
+  /// 写入最新版本的 metadata；不传则保留原值（传 null 因 `??` 语义等同于不传）。
+  /// [inlineImagePrompt] 内联生图提示词：非空字符串覆盖原值；传 null（默认）时
+  /// **显式清空**原值（对照主项目：重新生成后 inlineImagePrompt 有则设、无则 delete）。
   Future<void> updateAssistantRegenerate({
     required String messageId,
     required String newContent,
+    Map<String, dynamic>? usage,
+    MemoryInjectionInfo? memoryInjection,
+    String? inlineImagePrompt,
   }) async {
     await _db.transaction(() async {
       final existing = await (_db.select(
@@ -172,10 +197,25 @@ class MessageActions {
         MessageVersion(content: newContent, tokenCount: tokenCount),
       );
 
-      final newMeta = meta.copyWith(
-        versions: newVersions,
-        activeVersion: newVersions.length - 1,
-      );
+      // inlineImagePrompt：有则设、无则清空。
+      // 这里不用 copyWith（传 null 等同于不变），而是显式按内容决定 set 或 clear。
+      final newMeta = (inlineImagePrompt != null && inlineImagePrompt.isNotEmpty)
+          ? meta.copyWith(
+              versions: newVersions,
+              activeVersion: newVersions.length - 1,
+              lastUsage: usage ?? meta.lastUsage,
+              lastMemoryInjection: memoryInjection ?? meta.lastMemoryInjection,
+              inlineImagePrompt: inlineImagePrompt,
+            )
+          : meta
+              .clearInlineImagePrompt()
+              .copyWith(
+                versions: newVersions,
+                activeVersion: newVersions.length - 1,
+                lastUsage: usage ?? meta.lastUsage,
+                lastMemoryInjection:
+                    memoryInjection ?? meta.lastMemoryInjection,
+              );
 
       await (_db.update(
         _db.messages,

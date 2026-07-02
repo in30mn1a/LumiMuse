@@ -1,6 +1,7 @@
 import 'dart:convert';
 import '../models/app_settings.dart';
 import 'llm_service.dart';
+import 'memory_engine.dart';
 
 /// AI 角色生成服务 — 根据用户需求自动生成角色字段
 class CharacterGenService {
@@ -9,7 +10,8 @@ class CharacterGenService {
   CharacterGenService() : _llm = LlmService();
 
   /// 生成角色
-  /// 返回 Map 包含: name, personality, scenario, greeting, example_dialogue, system_prompt, image_tags
+  /// 返回 Map 包含: name, basic_info, personality, scenario, greeting,
+  /// example_dialogue, system_prompt, other_info, image_tags, user_image_tags
   Future<Map<String, String>> generateCharacter(
     AppSettings settings,
     String requirement,
@@ -25,6 +27,7 @@ class CharacterGenService {
 - other_info: 其他补充信息（特殊设定、注意事项等）
 - system_prompt: 系统提示词（指导AI如何扮演这个角色的详细指令）
 - image_tags: 生图标签（英文，逗号分隔，描述角色外貌特征，用于AI绘图）
+- user_image_tags: 用户外貌标签（英文，danbooru 风格逗号分隔，如 1boy, black hair, brown eyes, glasses，用于生图时保持用户形象一致，可留空）
 
 只输出 JSON，不要有其他文字。确保 JSON 格式正确可解析。''';
 
@@ -63,13 +66,16 @@ class CharacterGenService {
         'other_info': parsed['other_info']?.toString() ?? '',
         'system_prompt': parsed['system_prompt']?.toString() ?? '',
         'image_tags': parsed['image_tags']?.toString() ?? '',
+        'user_image_tags': parsed['user_image_tags']?.toString() ?? '',
       };
     } catch (_) {
-      // 尝试从文本中提取 JSON
-      final jsonMatch = RegExp(r'\{[\s\S]*\}').firstMatch(result);
-      if (jsonMatch != null) {
+      // 尝试从文本中提取 JSON：用平衡花括号扫描替代贪婪正则 `\{[\s\S]*\}`，
+      // 后者会越过第一个 `}` 把后续内容也吞进来（FIX，对齐 memory_engine 的
+      // findBalancedJsonSnippet）。
+      final snippet = MemoryEngine.findBalancedJsonSnippet(result);
+      if (snippet != null) {
         try {
-          final parsed = jsonDecode(jsonMatch.group(0)!) as Map<String, dynamic>;
+          final parsed = jsonDecode(snippet) as Map<String, dynamic>;
           return {
             'name': parsed['name']?.toString() ?? '',
             'basic_info': parsed['basic_info']?.toString() ?? '',
@@ -80,6 +86,7 @@ class CharacterGenService {
             'other_info': parsed['other_info']?.toString() ?? '',
             'system_prompt': parsed['system_prompt']?.toString() ?? '',
             'image_tags': parsed['image_tags']?.toString() ?? '',
+            'user_image_tags': parsed['user_image_tags']?.toString() ?? '',
           };
         } catch (_) {}
       }

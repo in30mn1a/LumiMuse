@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/scheduler.dart';
@@ -8,13 +9,20 @@ import '../database/database.dart';
 import '../models/app_settings.dart';
 import '../models/attachment_item.dart';
 import '../models/message_metadata.dart';
+import '../models/working_memory_package.dart';
 import '../services/image_gen_service.dart';
 import '../services/image_prompt_service.dart';
 import '../services/llm_service.dart';
 import '../services/memory_engine.dart';
 import '../services/memory_extraction_service.dart';
+import '../services/memory_embedding_tasks_service.dart';
+import '../services/memory_embeddings_service.dart';
+import '../services/memory_profile_service.dart';
+import '../services/memory_retrieval_service.dart';
+import '../services/secret_storage_service.dart';
 import '../services/chat_engine.dart' show parseExampleDialogueForTesting;
 import '../utils/attachment_processor.dart';
+import '../utils/inline_image_prompt.dart';
 import '../utils/local_asset_utils.dart';
 import '../utils/system_prompt_builder.dart';
 import '../utils/time_context_builder.dart';
@@ -25,11 +33,12 @@ import 'llm_service_provider.dart';
 import 'message_provider.dart';
 import 'settings_provider.dart';
 
-/// 记忆注入「无上限」时使用的占位上限值。
+/// 时间戳前缀的 token 开销估算 —— 对照主项目 TIMESTAMP_TOKEN_OVERHEAD。
 ///
-/// 替换原先散落在多处的硬编码 `9999`，避免魔法值；
-/// 取一个足够大但远小于 int 上限的常量，保证下游 SQL/数组操作不会溢出。
-const int _kMaxMemoriesUnlimited = 100000;
+/// 时间戳形如 "[2026-05-13 14:30] "（约 19 个 ASCII 字符），按 estimateTokens 的
+/// ASCII 0.25 token/字符估算整体 ~5 token；在预算时计入，避免长会话因时间戳累积
+/// 偏差导致预算超支。
+const int _kTimestampTokenOverhead = 5;
 
 /// 聊天状态
 class ChatState {
@@ -261,28 +270,23 @@ class ChatController extends StateNotifier<ChatState> {
                 ]))
               .get();
 
-      // 4. 检索相关记忆
-      List<String> memoryContents = [];
-      if (settings.memoryInject) {
-        final memoryEngine = MemoryEngine(db, _llm);
-        final relevant = await memoryEngine.retrieveRelevantMemories(
-          queryText: content,
-          characterId: conversation.characterId,
-          maxMemories: settings.limitInject
-              ? settings.memoryMaxInject
-              : _kMaxMemoriesUnlimited,
-        );
-        memoryContents = relevant.map((m) => m.content).toList();
-      }
+      // 4. 检索工作记忆包（含向量召回/重排/画像/兜底，异常 fallback 到空包）
+      final memoryPackage = await _retrieveMemoryPackage(
+        queryText: content,
+        characterId: conversation.characterId,
+        settings: settings,
+      );
 
-      // 5. 组装 prompt（普通发送使用当前时间）
+      // 5. 组装 prompt（memoryText 已由 retrieveWorkingMemoryPackage 渲染）
       final chatMessages = _assemblePrompt(
         character: character,
         messages: messages,
         settings: settings,
-        memories: memoryContents,
+        memoryText: memoryPackage.text,
         timeContext: DateTime.now(),
       );
+      // D2：记录本轮记忆注入统计（mode 从 package.mode 取）
+      final memoryInjection = _buildMemoryInjection(memoryPackage);
 
       // 6. 调用 LLM
       // 注意：chatControllerProvider 已改为 autoDispose，dispose 时会取消 cancel token；
@@ -290,6 +294,8 @@ class ChatController extends StateNotifier<ChatState> {
       // 跳过来自上一轮已覆盖请求的过期回调。
       if (settings.streaming) {
         String fullText = '';
+        // D1：捕获上游 usage，onDone 落库时写入 metadata.lastUsage
+        LlmUsage? capturedUsage;
         await _llm.chatCompletionStream(
           settings: settings,
           messages: chatMessages,
@@ -299,6 +305,7 @@ class ChatController extends StateNotifier<ChatState> {
               state = state.copyWith(currentStreamText: fullText);
             }
           },
+          onUsage: (u) => capturedUsage = u,
           onDone: (finalText) async {
             // 过期或已取消回调直接跳过，避免污染新一轮请求的状态与数据库
             if (mySeq != _requestSeq ||
@@ -307,13 +314,23 @@ class ChatController extends StateNotifier<ChatState> {
               return;
             }
             final cleaned = _stripTimestampPrefix(finalText);
-            if (cleaned.trim().isEmpty) {
+            // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离，
+            // 保证落库 / 上下文 / 记忆 / token 都干净（对照主项目 chat-engine.ts onDone）。
+            final inlinePrompt = extractInlinePrompt(cleaned);
+            final storedContent = inlinePrompt.isNotEmpty
+                ? stripInlinePrompt(cleaned)
+                : cleaned;
+            if (storedContent.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
               return;
             }
             await messageActions.insertAssistantMessage(
               conversationId: _conversationId,
-              content: cleaned,
+              content: storedContent,
+              usage: capturedUsage?.toJson(),
+              memoryInjection: memoryInjection,
+              inlineImagePrompt:
+                  inlinePrompt.isNotEmpty ? inlinePrompt : null,
             );
             await _waitForMessagesUpdate();
             if (mySeq != _requestSeq) return;
@@ -334,9 +351,12 @@ class ChatController extends StateNotifier<ChatState> {
           cancelToken: cancelToken,
         );
       } else {
+        // D1：非流式分支同样捕获 usage
+        LlmUsage? capturedUsage;
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
+          onUsage: (u) => capturedUsage = u,
           cancelToken: cancelToken,
         );
         // 非流式分支也做防重入与取消校验：在 await 期间若已停止或被新请求覆盖，丢弃结果
@@ -346,13 +366,22 @@ class ChatController extends StateNotifier<ChatState> {
           return;
         }
         final cleaned = _stripTimestampPrefix(result);
-        if (cleaned.trim().isEmpty) {
+        // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离
+        final inlinePrompt = extractInlinePrompt(cleaned);
+        final storedContent = inlinePrompt.isNotEmpty
+            ? stripInlinePrompt(cleaned)
+            : cleaned;
+        if (storedContent.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
           return;
         }
         await messageActions.insertAssistantMessage(
           conversationId: _conversationId,
-          content: cleaned,
+          content: storedContent,
+          usage: capturedUsage?.toJson(),
+          memoryInjection: memoryInjection,
+          inlineImagePrompt:
+              inlinePrompt.isNotEmpty ? inlinePrompt : null,
         );
         await _waitForMessagesUpdate();
         if (mySeq != _requestSeq) return;
@@ -447,28 +476,23 @@ class ChatController extends StateNotifier<ChatState> {
                 ]))
               .get();
 
-      // 5. 检索相关记忆
-      List<String> memoryContents = [];
-      if (settings.memoryInject) {
-        final memoryEngine = MemoryEngine(db, _llm);
-        final relevant = await memoryEngine.retrieveRelevantMemories(
-          queryText: enrichedContent,
-          characterId: conversation.characterId,
-          maxMemories: settings.limitInject
-              ? settings.memoryMaxInject
-              : _kMaxMemoriesUnlimited,
-        );
-        memoryContents = relevant.map((m) => m.content).toList();
-      }
+      // 5. 检索工作记忆包（含向量召回/重排/画像/兜底，异常 fallback 到空包）
+      final memoryPackage = await _retrieveMemoryPackage(
+        queryText: enrichedContent,
+        characterId: conversation.characterId,
+        settings: settings,
+      );
 
-      // 6. 组装 prompt
+      // 6. 组装 prompt（memoryText 已由 retrieveWorkingMemoryPackage 渲染）
       final chatMessages = _assemblePrompt(
         character: character,
         messages: messages,
         settings: settings,
-        memories: memoryContents,
+        memoryText: memoryPackage.text,
         timeContext: DateTime.now(),
       );
+      // D2：记录本轮记忆注入统计（mode 从 package.mode 取）
+      final memoryInjection = _buildMemoryInjection(memoryPackage);
 
       // 7. 如果有图片附件，构建多模态内容替换最后一条用户消息
       final imageAttachments = attachments
@@ -495,6 +519,8 @@ class ChatController extends StateNotifier<ChatState> {
       // 8. 调用 LLM
       if (settings.streaming) {
         String fullText = '';
+        // D1：捕获上游 usage
+        LlmUsage? capturedUsage;
         await _llm.chatCompletionStream(
           settings: settings,
           messages: chatMessages,
@@ -504,6 +530,7 @@ class ChatController extends StateNotifier<ChatState> {
               state = state.copyWith(currentStreamText: fullText);
             }
           },
+          onUsage: (u) => capturedUsage = u,
           onDone: (finalText) async {
             if (mySeq != _requestSeq ||
                 cancelToken.isCancelled ||
@@ -511,13 +538,22 @@ class ChatController extends StateNotifier<ChatState> {
               return;
             }
             final cleaned = _stripTimestampPrefix(finalText);
-            if (cleaned.trim().isEmpty) {
+            // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离
+            final inlinePrompt = extractInlinePrompt(cleaned);
+            final storedContent = inlinePrompt.isNotEmpty
+                ? stripInlinePrompt(cleaned)
+                : cleaned;
+            if (storedContent.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
               return;
             }
             await messageActions.insertAssistantMessage(
               conversationId: _conversationId,
-              content: cleaned,
+              content: storedContent,
+              usage: capturedUsage?.toJson(),
+              memoryInjection: memoryInjection,
+              inlineImagePrompt:
+                  inlinePrompt.isNotEmpty ? inlinePrompt : null,
             );
             await _waitForMessagesUpdate();
             if (mySeq != _requestSeq) return;
@@ -538,9 +574,12 @@ class ChatController extends StateNotifier<ChatState> {
           cancelToken: cancelToken,
         );
       } else {
+        // D1：非流式分支同样捕获 usage
+        LlmUsage? capturedUsage;
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
+          onUsage: (u) => capturedUsage = u,
           cancelToken: cancelToken,
         );
         if (mySeq != _requestSeq ||
@@ -549,13 +588,22 @@ class ChatController extends StateNotifier<ChatState> {
           return;
         }
         final cleaned = _stripTimestampPrefix(result);
-        if (cleaned.trim().isEmpty) {
+        // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离
+        final inlinePrompt = extractInlinePrompt(cleaned);
+        final storedContent = inlinePrompt.isNotEmpty
+            ? stripInlinePrompt(cleaned)
+            : cleaned;
+        if (storedContent.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
           return;
         }
         await messageActions.insertAssistantMessage(
           conversationId: _conversationId,
-          content: cleaned,
+          content: storedContent,
+          usage: capturedUsage?.toJson(),
+          memoryInjection: memoryInjection,
+          inlineImagePrompt:
+              inlinePrompt.isNotEmpty ? inlinePrompt : null,
         );
         await _waitForMessagesUpdate();
         if (mySeq != _requestSeq) return;
@@ -632,34 +680,32 @@ class ChatController extends StateNotifier<ChatState> {
       }
       regenTimeContext ??= DateTime.now();
 
-      // 检索记忆
+      // 检索记忆用的 queryText
       final queryText = contextMessages.isNotEmpty
           ? contextMessages.reversed.take(4).map((m) => m.content).join(' ')
           : '';
-      List<String> memoryContents = [];
-      if (settings.memoryInject) {
-        final memoryEngine = MemoryEngine(db, _llm);
-        final relevant = await memoryEngine.retrieveRelevantMemories(
-          queryText: queryText,
-          characterId: conversation.characterId,
-          maxMemories: settings.limitInject
-              ? settings.memoryMaxInject
-              : _kMaxMemoriesUnlimited,
-        );
-        memoryContents = relevant.map((m) => m.content).toList();
-      }
+      // 检索工作记忆包（含向量召回/重排/画像/兜底，异常 fallback 到空包）
+      final memoryPackage = await _retrieveMemoryPackage(
+        queryText: queryText,
+        characterId: conversation.characterId,
+        settings: settings,
+      );
 
       // 重新生成使用消息的 created_at 作为时间上下文
       final chatMessages = _assemblePrompt(
         character: character,
         messages: contextMessages,
         settings: settings,
-        memories: memoryContents,
+        memoryText: memoryPackage.text,
         timeContext: regenTimeContext,
       );
+      // D2：记录本轮记忆注入统计（mode 从 package.mode 取）
+      final memoryInjection = _buildMemoryInjection(memoryPackage);
 
       if (settings.streaming) {
         String fullText = '';
+        // D1：捕获上游 usage
+        LlmUsage? capturedUsage;
         await _llm.chatCompletionStream(
           settings: settings,
           messages: chatMessages,
@@ -669,6 +715,7 @@ class ChatController extends StateNotifier<ChatState> {
               state = state.copyWith(currentStreamText: fullText);
             }
           },
+          onUsage: (u) => capturedUsage = u,
           onDone: (finalText) async {
             if (mySeq != _requestSeq ||
                 cancelToken.isCancelled ||
@@ -676,14 +723,37 @@ class ChatController extends StateNotifier<ChatState> {
               return;
             }
             final cleaned = _stripTimestampPrefix(finalText);
-            if (cleaned.trim().isEmpty) {
+            // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离
+            final inlinePrompt = extractInlinePrompt(cleaned);
+            final storedContent = inlinePrompt.isNotEmpty
+                ? stripInlinePrompt(cleaned)
+                : cleaned;
+            if (storedContent.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
               return;
             }
             await messageActions.updateAssistantRegenerate(
               messageId: messageId,
-              newContent: cleaned,
+              newContent: storedContent,
+              usage: capturedUsage?.toJson(),
+              memoryInjection: memoryInjection,
+              inlineImagePrompt:
+                  inlinePrompt.isNotEmpty ? inlinePrompt : null,
             );
+            // 失效源自该 assistant 消息的活跃记忆（spec Task 11：重新生成后旧版本失效）
+            // 失败不阻塞主流程，仅记录日志
+            try {
+              final memoryEngine = MemoryEngine(db, _llm);
+              await memoryEngine.invalidateMemoriesForSourceMessage(
+                messageId,
+                reason: 'regenerated',
+              );
+            } catch (e) {
+              _logPostReplyProcessingError(
+                'regenerate.invalidateMemories',
+                e,
+              );
+            }
             await _waitForMessagesUpdate();
             if (mySeq != _requestSeq) return;
             _releaseRequestLock(mySeq);
@@ -700,9 +770,12 @@ class ChatController extends StateNotifier<ChatState> {
           cancelToken: cancelToken,
         );
       } else {
+        // D1：非流式分支同样捕获 usage
+        LlmUsage? capturedUsage;
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
+          onUsage: (u) => capturedUsage = u,
           cancelToken: cancelToken,
         );
         if (mySeq != _requestSeq ||
@@ -711,14 +784,37 @@ class ChatController extends StateNotifier<ChatState> {
           return;
         }
         final cleaned = _stripTimestampPrefix(result);
-        if (cleaned.trim().isEmpty) {
+        // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离
+        final inlinePrompt = extractInlinePrompt(cleaned);
+        final storedContent = inlinePrompt.isNotEmpty
+            ? stripInlinePrompt(cleaned)
+            : cleaned;
+        if (storedContent.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
           return;
         }
         await messageActions.updateAssistantRegenerate(
           messageId: messageId,
-          newContent: cleaned,
+          newContent: storedContent,
+          usage: capturedUsage?.toJson(),
+          memoryInjection: memoryInjection,
+          inlineImagePrompt:
+              inlinePrompt.isNotEmpty ? inlinePrompt : null,
         );
+        // 失效源自该 assistant 消息的活跃记忆（spec Task 11：重新生成后旧版本失效）
+        // 失败不阻塞主流程，仅记录日志
+        try {
+          final memoryEngine = MemoryEngine(db, _llm);
+          await memoryEngine.invalidateMemoriesForSourceMessage(
+            messageId,
+            reason: 'regenerated',
+          );
+        } catch (e) {
+          _logPostReplyProcessingError(
+            'regenerate.invalidateMemories',
+            e,
+          );
+        }
         await _waitForMessagesUpdate();
         if (mySeq != _requestSeq) return;
         _releaseRequestLock(mySeq);
@@ -776,29 +872,27 @@ class ChatController extends StateNotifier<ChatState> {
                 ]))
               .get();
 
-      List<String> memoryContents = [];
-      if (settings.memoryInject) {
-        final memoryEngine = MemoryEngine(db, _llm);
-        final relevant = await memoryEngine.retrieveRelevantMemories(
-          queryText: userContent,
-          characterId: conversation.characterId,
-          maxMemories: settings.limitInject
-              ? settings.memoryMaxInject
-              : _kMaxMemoriesUnlimited,
-        );
-        memoryContents = relevant.map((m) => m.content).toList();
-      }
+      // 检索工作记忆包（含向量召回/重排/画像/兜底，异常 fallback 到空包）
+      final memoryPackage = await _retrieveMemoryPackage(
+        queryText: userContent,
+        characterId: conversation.characterId,
+        settings: settings,
+      );
 
       final chatMessages = _assemblePrompt(
         character: character,
         messages: messages,
         settings: settings,
-        memories: memoryContents,
+        memoryText: memoryPackage.text,
         timeContext: DateTime.now(),
       );
+      // D2：记录本轮记忆注入统计（mode 从 package.mode 取）
+      final memoryInjection = _buildMemoryInjection(memoryPackage);
 
       if (settings.streaming) {
         String fullText = '';
+        // D1：捕获上游 usage
+        LlmUsage? capturedUsage;
         await _llm.chatCompletionStream(
           settings: settings,
           messages: chatMessages,
@@ -808,6 +902,7 @@ class ChatController extends StateNotifier<ChatState> {
               state = state.copyWith(currentStreamText: fullText);
             }
           },
+          onUsage: (u) => capturedUsage = u,
           onDone: (finalText) async {
             if (mySeq != _requestSeq ||
                 cancelToken.isCancelled ||
@@ -815,14 +910,23 @@ class ChatController extends StateNotifier<ChatState> {
               return;
             }
             final cleaned = _stripTimestampPrefix(finalText);
-            if (cleaned.trim().isEmpty) {
+            // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离
+            final inlinePrompt = extractInlinePrompt(cleaned);
+            final storedContent = inlinePrompt.isNotEmpty
+                ? stripInlinePrompt(cleaned)
+                : cleaned;
+            if (storedContent.trim().isEmpty) {
               await _finishEmptyResponse(mySeq);
               return;
             }
             final messageActions = _ref.read(messageActionsProvider);
             await messageActions.insertAssistantMessage(
               conversationId: _conversationId,
-              content: cleaned,
+              content: storedContent,
+              usage: capturedUsage?.toJson(),
+              memoryInjection: memoryInjection,
+              inlineImagePrompt:
+                  inlinePrompt.isNotEmpty ? inlinePrompt : null,
             );
             await _waitForMessagesUpdate();
             if (mySeq != _requestSeq) return;
@@ -842,9 +946,12 @@ class ChatController extends StateNotifier<ChatState> {
           cancelToken: cancelToken,
         );
       } else {
+        // D1：非流式分支同样捕获 usage
+        LlmUsage? capturedUsage;
         final result = await _llm.chatCompletion(
           settings: settings,
           messages: chatMessages,
+          onUsage: (u) => capturedUsage = u,
           cancelToken: cancelToken,
         );
         if (mySeq != _requestSeq ||
@@ -853,14 +960,23 @@ class ChatController extends StateNotifier<ChatState> {
           return;
         }
         final cleaned = _stripTimestampPrefix(result);
-        if (cleaned.trim().isEmpty) {
+        // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离
+        final inlinePrompt = extractInlinePrompt(cleaned);
+        final storedContent = inlinePrompt.isNotEmpty
+            ? stripInlinePrompt(cleaned)
+            : cleaned;
+        if (storedContent.trim().isEmpty) {
           await _finishEmptyResponse(mySeq);
           return;
         }
         final messageActions = _ref.read(messageActionsProvider);
         await messageActions.insertAssistantMessage(
           conversationId: _conversationId,
-          content: cleaned,
+          content: storedContent,
+          usage: capturedUsage?.toJson(),
+          memoryInjection: memoryInjection,
+          inlineImagePrompt:
+              inlinePrompt.isNotEmpty ? inlinePrompt : null,
         );
         await _waitForMessagesUpdate();
         if (mySeq != _requestSeq) return;
@@ -884,13 +1000,12 @@ class ChatController extends StateNotifier<ChatState> {
   /// 调用 stop() 仅取消本对话的请求，不影响其他对话的生成。
   ///
   /// 修复：若已有非空 partial 流式文本，先把它落库为 assistant 消息再清状态，
-  /// 避免用户看到的内容直接消失。truncated 标记暂未持久化（MessageMetadata
-  /// 模型当前无此字段，按精准修改原则不扩展）。
+  /// 避免用户看到的内容直接消失。D3：落库时写入 `generationStopped: true`
+  /// 与 `generationStopReason: 'abort'`，UI 可据此展示「已中断」标记。
   ///
   /// 双写防护：stop() 与 onDone 共用 [_finalized] 互斥位。若 onDone 已经过
   /// 入口检查并 claim（即 `_finalized == true`），表示对方正在或已经把完整
   /// 文本落库，此处不再写 partial，避免同一轮对话出现两条 assistant 消息。
-  // TODO(parity): MessageMetadata 增加 truncated 字段后，在此写入 metadata 中。
   Future<void> stop() async {
     // 1) 先快照 partial 文本，再自增序号 + 取消 cancelToken，
     //    阻止流式 onDone/onError 过期回调继续写入。
@@ -901,13 +1016,24 @@ class ChatController extends StateNotifier<ChatState> {
 
     // 2) 若有 partial 内容且 onDone 尚未 claim finalize，落库为 assistant 消息，
     //    并等待 watcher 派发新行，再切换 state，避免出现"气泡消失 + 列表无新消息"的中间空白。
+    //    D3：标记为用户主动中断。
+    //    与 onDone 路径对齐：剥离 [IMG]...[/IMG] 内联生图标签，避免原始 danbooru
+    //    标签落库进 content（否则会泄漏到 UI / 上下文 / 记忆提取）。中断场景下
+    //    usage/memoryInjection 本就不完整，置空与 partial 语义一致。
     final cleaned = _stripTimestampPrefix(partial);
-    if (cleaned.trim().isNotEmpty && _claimFinalize()) {
+    final inlinePrompt = extractInlinePrompt(cleaned);
+    final storedContent =
+        inlinePrompt.isNotEmpty ? stripInlinePrompt(cleaned) : cleaned;
+    if (storedContent.trim().isNotEmpty && _claimFinalize()) {
       try {
         final messageActions = _ref.read(messageActionsProvider);
         await messageActions.insertAssistantMessage(
           conversationId: _conversationId,
-          content: cleaned,
+          content: storedContent,
+          generationStopped: true,
+          generationStopReason: 'abort',
+          inlineImagePrompt:
+              inlinePrompt.isNotEmpty ? inlinePrompt : null,
         );
         await _waitForMessagesUpdate();
       } catch (e) {
@@ -1131,18 +1257,14 @@ class ChatController extends StateNotifier<ChatState> {
     required Character character,
     required List<Message> messages,
     required AppSettings settings,
-    required List<String> memories,
+    required String memoryText,
     DateTime? timeContext,
   }) {
-    final memoryText = settings.memoryInject && memories.isNotEmpty
-        ? memories
-              .asMap()
-              .entries
-              .map((e) => '${e.key + 1}. ${e.value}')
-              .join('\n')
-        : '';
+    // memoryText 已由 retrieveWorkingMemoryPackage.text 渲染（含画像/5 分层/使用原则
+    // + token 预算裁剪）；memoryInject 关闭时调用方传空串。此处仅做防御性清空。
+    final effectiveMemoryText = settings.memoryInject ? memoryText : '';
 
-    final systemPrompt = _buildSystemPrompt(character, memoryText, timeContext);
+    final systemPrompt = _buildSystemPrompt(character, effectiveMemoryText, timeContext);
     final result = <ChatMessage>[
       ChatMessage(role: 'system', content: systemPrompt),
     ];
@@ -1162,43 +1284,64 @@ class ChatController extends StateNotifier<ChatState> {
       settings.contextWindow,
     );
 
-    // 从最新往前填充
-    final history = <ChatMessage>[];
-    for (int i = messages.length - 1; i >= 0; i--) {
-      final msg = messages[i];
-      if (msg.content.isEmpty) continue;
-      if (msg.role == 'system') {
-        final meta = MessageMetadata.fromJsonString(msg.metadata);
-        if (!meta.isSummary) continue;
-      }
-
-      final msgTokens = msg.tokenCount > 0
-          ? msg.tokenCount
-          : estimateTokens(msg.content);
-      if (usedTokens + msgTokens > availableBudget) break;
-      usedTokens += msgTokens;
-
-      final meta = MessageMetadata.fromJsonString(msg.metadata);
-      if (meta.isSummary) {
-        history.insert(
-          0,
-          ChatMessage(role: 'assistant', content: '[对话总结]\n${msg.content}'),
-        );
-        continue;
-      }
-
-      String content = msg.content;
-      if (settings.showTimestamps) {
-        final ts = _formatTimestamp(msg.createdAt);
-        content = '[$ts] $content';
-      }
-
-      history.insert(0, ChatMessage(role: msg.role, content: content));
-    }
+    // 从最新往前填充（C2：时间戳 token 开销 + 当前消息优先）
+    final history = fillHistoryWithinBudget(
+      messages: messages,
+      settings: settings,
+      usedTokens: usedTokens,
+      availableBudget: availableBudget,
+    );
 
     // 对照主项目：合并相邻同角色消息（避免 API 报错）
     final merged = _mergeAdjacentSameRole(history);
     result.addAll(merged);
+
+    // 内联生图提示词：把指令追加到最后一条 user 消息尾部（约束力最强，实测稳定触发）。
+    // 仅作用于发给模型的请求副本，不落库 —— 避免污染对话记录 / 记忆 / 前端显示。
+    // 对照主项目 `src/lib/chat-engine.ts` assemblePrompt 419-438 行。
+    if (settings.imageGen.enabled && settings.imageGen.inlinePrompt) {
+      final instruction = buildInlinePromptInstruction(
+        imageTags: character.imageTags,
+        userImageTags: character.userImageTags,
+      );
+      for (int i = result.length - 1; i >= 0; i--) {
+        final msg = result[i];
+        if (msg.role != 'user') continue;
+        final content = msg.content;
+        if (content is String) {
+          result[i] = ChatMessage(
+            role: 'user',
+            content: '$content\n\n$instruction',
+          );
+        } else if (content is List) {
+          // 多模态：追加到第一个 text part；若无 text part 则插入一个。
+          final newContent = List<dynamic>.from(content);
+          int textIdx = -1;
+          for (var j = 0; j < newContent.length; j++) {
+            final part = newContent[j];
+            if (part is Map && part['type'] == 'text') {
+              textIdx = j;
+              break;
+            }
+          }
+          if (textIdx >= 0) {
+            final part = newContent[textIdx] as Map<String, dynamic>;
+            newContent[textIdx] = <String, dynamic>{
+              'type': 'text',
+              'text': '${part['text'] as String}\n\n$instruction',
+            };
+          } else {
+            newContent.insert(0, <String, dynamic>{
+              'type': 'text',
+              'text': instruction,
+            });
+          }
+          result[i] = ChatMessage(role: 'user', content: newContent);
+        }
+        break;
+      }
+    }
+
     return result;
   }
 
@@ -1265,9 +1408,89 @@ class ChatController extends StateNotifier<ChatState> {
     return TimeContextBuilder.stripTimestampPrefix(text);
   }
 
-  String _formatTimestamp(DateTime dt) {
-    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
-        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  /// 检索工作记忆包 — 对齐主项目 retrieveWorkingMemoryPackage。
+  ///
+  /// 内部 new MemoryRetrievalService（5 个依赖），try/catch fallback 到空包。
+  /// memoryInject 关闭时直接返回空包，不进入检索。异常时记录诊断但不阻塞聊天。
+  ///
+  /// 从 `settings.memoryEngine` 构造运行时 [MemoryEngineConfig] 传入，使设置页
+  /// 的记忆引擎配置（embedding/reranker/enabled/allowMemoryContextInChat 等）
+  /// 真正生效——否则 resolveMemoryEngineConfig 会回落到 MemoryEngineConfig.defaults，
+  /// 用户的配置在生产聊天流里成了死代码（FIX）。
+  Future<WorkingMemoryPackage> _retrieveMemoryPackage({
+    required String queryText,
+    required String characterId,
+    required AppSettings settings,
+  }) async {
+    if (!settings.memoryInject) {
+      return WorkingMemoryPackage.empty;
+    }
+    final engine = settings.memoryEngine;
+    final config = MemoryEngineConfig(
+      enabled: engine.enabled,
+      allowMemoryContextInChat: engine.allowMemoryContextInChat,
+      allowExternalMemoryPayloads: engine.allowExternalMemoryPayloads,
+      retrievalMode: engine.retrievalMode,
+      embeddingEnabled: engine.embeddingEnabled,
+      embeddingApiBase: engine.embeddingApiBase,
+      embeddingApiKey: engine.embeddingApiKey,
+      embeddingModel: engine.embeddingModel,
+      embeddingDimension: engine.embeddingDimension,
+      rerankerEnabled: engine.rerankerEnabled,
+      rerankerApiBase: engine.rerankerApiBase,
+      rerankerApiKey: engine.rerankerApiKey,
+      rerankerModel: engine.rerankerModel,
+      fallbackLocalEnabled: engine.fallbackLocalEnabled,
+      memoryPackageTokenBudget: engine.memoryPackageTokenBudget,
+      retrievalTokenBudget: engine.retrievalTokenBudget,
+      vectorTopK: engine.vectorTopK,
+      keywordTopK: engine.keywordTopK,
+      rerankerTopK: engine.rerankerTopK,
+      finalTopK: engine.finalTopK,
+      embeddingTimeoutMs: engine.embeddingTimeoutMs,
+      rerankerTimeoutMs: engine.rerankerTimeoutMs,
+      totalRetrievalTimeoutMs: engine.totalRetrievalTimeoutMs,
+      // profileTokenBudget 在 MemoryEngineSettings 中未暴露，沿用 Config 默认（1200）。
+    );
+    final db = _ref.read(databaseProvider);
+    final memoryEngine = MemoryEngine(db, _llm);
+    final embeddingsService = MemoryEmbeddingsService();
+    final embeddingTasks = MemoryEmbeddingTasksService(db);
+    final profileService = MemoryProfileService(db, _llm);
+    final retrievalService = MemoryRetrievalService(
+      db,
+      memoryEngine,
+      embeddingsService,
+      embeddingTasks,
+      profileService,
+    );
+    try {
+      return await retrievalService.retrieveWorkingMemoryPackage(
+        characterId: characterId,
+        queryText: queryText,
+        settings: settings,
+        config: config,
+      );
+    } catch (error) {
+      // 异常 fallback：空包（mode='local'），不阻塞聊天
+      debugPrint('[chat_provider] retrieveWorkingMemoryPackage failed: $error');
+      return WorkingMemoryPackage.empty;
+    }
+  }
+
+  /// 构建记忆注入元信息（D2）。
+  ///
+  /// 从 [WorkingMemoryPackage] 提取注入统计：
+  /// - count：实际入选注入的回忆条数（`package.selectedMemories.length`）；
+  /// - tokens：记忆上下文文本的 token 估算（`package.tokenCount`，已由
+  ///   retrieveWorkingMemoryPackage 内部 trimByTokenBudget 估算）；
+  /// - mode：注入来源模式（`package.mode`，local/hybrid/vector/full）。
+  MemoryInjectionInfo _buildMemoryInjection(WorkingMemoryPackage package) {
+    return MemoryInjectionInfo(
+      count: package.selectedMemories.length,
+      tokens: package.tokenCount,
+      mode: package.mode,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1395,7 +1618,12 @@ class ChatController extends StateNotifier<ChatState> {
 
     // 入队记忆提取
     final memoryEngine = MemoryEngine(db, _llm);
-    final extractionService = MemoryExtractionService(db, _llm, memoryEngine);
+    final extractionService = MemoryExtractionService(
+      db,
+      _llm,
+      memoryEngine,
+      secretStorage: _ref.read(secretStorageServiceProvider),
+    );
     await extractionService.enqueueExtraction(
       characterId: characterId,
       conversationId: _conversationId,
@@ -1409,32 +1637,24 @@ class ChatController extends StateNotifier<ChatState> {
 
   /// 检查是否应触发自动生图
   ///
-  /// 检测用户消息是否包含 autoGenerateKeywords 中任一关键词。
-  /// autoGenerate 为 false 时跳过。
-  /// 提示词组装：角色 image_tags + 用户消息移除首个匹配关键词后的剩余文本。
+  /// 触发优先级（对照主项目 `src/hooks/chat/useChatImageGeneration.ts`
+  /// 的 `maybeAutoGenerateImageFromMessages` 251-262 行）：
+  /// 1. 当 `imageGen.inlinePrompt` 开启且最后一条 assistant 消息的 metadata
+  ///    `inlineImagePrompt` 非空时，**优先用 inline prompt 触发生图**，
+  ///    跳过慢速的 `generateImagePrompt` 调用。
+  /// 2. 否则若 `imageGen.autoGenerate` 开启，检测用户消息是否包含
+  ///    `autoGenerateKeywords` 中任一关键词，命中则走完整 AI prompt 生成流程。
+  ///
+  /// 状态机（对照主项目 `upsertPlaceholder` + `persistImages` 90-122 行）：
+  /// - 触发生图后**先写 placeholder GeneratedImage(status: 'pending')**，
+  ///   让 UI 立即展示「生成中」占位。
+  /// - 成功更新 `status:'ready'` + path/url；失败更新 `status:'failed'` + error。
   Future<void> _checkAutoImageGen(
     AppSettings settings,
     String characterId,
   ) async {
     final imageGen = settings.imageGen;
-    if (!imageGen.enabled || !imageGen.autoGenerate) return;
-
-    // 检测关键词
-    final keywords = imageGen.autoGenerateKeywords
-        .split(',')
-        .map((k) => k.trim())
-        .where((k) => k.isNotEmpty)
-        .toList();
-
-    String? matchedKeyword;
-    for (final keyword in keywords) {
-      if (_lastUserContent.contains(keyword)) {
-        matchedKeyword = keyword;
-        break;
-      }
-    }
-
-    if (matchedKeyword == null) return;
+    if (!imageGen.enabled) return;
 
     // 对照主项目：找到最后一条 assistant 消息，把图片附加到它上面
     // （而不是创建新的空消息）
@@ -1452,49 +1672,158 @@ class ChatController extends StateNotifier<ChatState> {
 
     if (lastAssistant == null) return;
 
-    // 对照主项目：使用 handleGenerateImage 的完整流程（AI 生成 prompt）
-    // 而不是简单拼接 imageTags + 用户文本
-    try {
-      final promptService = ImagePromptService();
-      final p = await promptService.generateImagePrompt(
-        settings,
-        _conversationId,
-        db,
-        messageId: lastAssistant.id,
-      );
-      promptService.dispose();
+    // 读取 metadata，判断是否有 inline prompt
+    final lastAssistantMeta =
+        MessageMetadata.fromJsonString(lastAssistant.metadata);
+    final inlinePrompt = lastAssistantMeta.inlineImagePrompt;
 
+    // 决定触发路径：
+    // - inlinePrompt 优先：imageGen.inlinePrompt 开 && inlinePrompt 非空
+    //   → 直接用 inlinePrompt 生图，跳过 AI prompt 生成
+    // - 关键词路径：imageGen.autoGenerate 开 && 用户消息命中关键词
+    //   → 走完整 AI prompt 生成流程
+    // - 否则跳过
+    bool useInlinePath = imageGen.inlinePrompt &&
+        inlinePrompt != null &&
+        inlinePrompt.trim().isNotEmpty;
+
+    String? triggerPrompt; // inline 路径用的 prompt
+    if (useInlinePath) {
+      triggerPrompt = inlinePrompt.trim();
+    } else if (imageGen.autoGenerate) {
+      // 关键词检测
+      final keywords = imageGen.autoGenerateKeywords
+          .split(',')
+          .map((k) => k.trim())
+          .where((k) => k.isNotEmpty)
+          .toList();
+
+      String? matchedKeyword;
+      for (final keyword in keywords) {
+        if (_lastUserContent.contains(keyword)) {
+          matchedKeyword = keyword;
+          break;
+        }
+      }
+      if (matchedKeyword == null) return;
+    } else {
+      return;
+    }
+
+    // 已有 generatedImages 时跳过（避免重复触发，对照主项目 existingImgs.length > 0 return）
+    if (lastAssistantMeta.generatedImages.isNotEmpty) return;
+
+    // 状态机：先写 placeholder（pending）
+    final imageId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
+    final placeholderStatus =
+        useInlinePath ? 'pending' : 'pending_prompt';
+    final placeholderMeta = lastAssistantMeta.copyWith(
+      generatedImages: [
+        ...lastAssistantMeta.generatedImages,
+        GeneratedImage(
+          id: imageId,
+          url: '',
+          prompt: triggerPrompt,
+          status: placeholderStatus,
+        ),
+      ],
+    );
+    await (db.update(db.messages)
+          ..where((t) => t.id.equals(lastAssistant.id)))
+        .write(MessagesCompanion(metadata: Value(placeholderMeta.toJsonString())));
+
+    try {
+      String positivePrompt;
+      String negativePrompt = '';
+
+      if (useInlinePath) {
+        // inline 路径：直接复用 inlinePrompt，不调用慢速的 generateImagePrompt
+        positivePrompt = triggerPrompt!;
+      } else {
+        // 关键词路径：调用 AI 生成 prompt
+        final promptService = ImagePromptService();
+        final p = await promptService.generateImagePrompt(
+          settings,
+          _conversationId,
+          db,
+          messageId: lastAssistant.id,
+        );
+        promptService.dispose();
+        positivePrompt = p.positive;
+        negativePrompt = p.negative;
+
+        // prompt 生成完成，更新 placeholder 状态为 pending_image
+        final midMsg = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals(lastAssistant.id))).getSingle();
+        final midMeta = MessageMetadata.fromJsonString(midMsg.metadata);
+        final midImages = midMeta.generatedImages.map((img) {
+          if (img.id == imageId) {
+            return img.copyWith(prompt: positivePrompt, status: 'pending_image');
+          }
+          return img;
+        }).toList();
+        final midNewMeta = midMeta.copyWith(generatedImages: midImages);
+        await (db.update(db.messages)
+              ..where((t) => t.id.equals(lastAssistant.id)))
+            .write(
+          MessagesCompanion(metadata: Value(midNewMeta.toJsonString())),
+        );
+      }
+
+      // 调用生图服务
       final imageService = ImageGenService();
       final imagePath = await imageService.generate(
-        prompt: p.positive,
-        negativePrompt: p.negative,
+        prompt: positivePrompt,
+        negativePrompt: negativePrompt,
         settings: imageGen,
       );
       imageService.dispose();
 
-      // 把图片附加到最后一条 assistant 消息的 metadata
+      // 成功：更新 placeholder 为 ready + path/url
       final msg = await (db.select(
         db.messages,
       )..where((t) => t.id.equals(lastAssistant.id))).getSingle();
       final meta = MessageMetadata.fromJsonString(msg.metadata);
-      final imageId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
-      final newMeta = meta.copyWith(
-        generatedImages: [
-          ...meta.generatedImages,
-          GeneratedImage(
-            id: imageId,
+      final newImages = meta.generatedImages.map((img) {
+        if (img.id == imageId) {
+          return img.copyWith(
             url: imagePath,
             path: imagePath,
-            prompt: p.positive,
+            prompt: positivePrompt,
             status: 'ready',
-          ),
-        ],
-      );
+            error: null,
+          );
+        }
+        return img;
+      }).toList();
+      final newMeta = meta.copyWith(generatedImages: newImages);
       await (db.update(db.messages)
             ..where((t) => t.id.equals(lastAssistant.id)))
           .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
     } catch (e) {
       _logPostReplyProcessingError('_checkAutoImageGen', e);
+      // 失败：更新 placeholder 为 failed + error
+      try {
+        final msg = await (db.select(
+          db.messages,
+        )..where((t) => t.id.equals(lastAssistant.id))).getSingleOrNull();
+        if (msg == null) return;
+        final meta = MessageMetadata.fromJsonString(msg.metadata);
+        final errMsg = e.toString();
+        final newImages = meta.generatedImages.map((img) {
+          if (img.id == imageId) {
+            return img.copyWith(status: 'failed', error: errMsg);
+          }
+          return img;
+        }).toList();
+        final newMeta = meta.copyWith(generatedImages: newImages);
+        await (db.update(db.messages)
+              ..where((t) => t.id.equals(lastAssistant.id)))
+            .write(MessagesCompanion(metadata: Value(newMeta.toJsonString())));
+      } catch (e2) {
+        _logPostReplyProcessingError('_checkAutoImageGen.persistFail', e2);
+      }
       // 自动生图失败不中断对话流程
     }
   }
@@ -1507,4 +1836,79 @@ class ChatController extends StateNotifier<ChatState> {
     _cancelToken?.cancel();
     super.dispose();
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// C2：历史填充预算逻辑 —— 抽出为 @visibleForTesting 顶级纯函数，
+// 与 _assemblePrompt 调用的逻辑保持唯一来源（同 chat_engine.dart 的
+// computeLastSummaryIdx / mergeAdjacentSameRole 模式），便于在不构造
+// 完整 ChatController 的前提下直接断言「时间戳 token 开销」与「当前消息优先」。
+// 对照主项目 src/lib/chat-engine.ts assemblePrompt 的历史填充循环。
+// ═══════════════════════════════════════════════════════════════
+
+/// 格式化时间戳前缀，与主项目 formatChatTimestamp 的本地分支等价。
+String _formatChatTimestamp(DateTime dt) {
+  return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+}
+
+/// 从最新往前填充历史消息，按 token 预算裁剪。
+///
+/// [usedTokens] 为进入填充前已占用的 token（系统提示 + 示例对话）；
+/// [availableBudget] 为可用预算上限。
+///
+/// 与主项目对齐的两点（C2）：
+/// - 每条消息 token = max(tokenCount, estimateTokens(content)) + 时间戳开销
+///   （showTimestamps 开启时 +[_kTimestampTokenOverhead]）。
+/// - 当 history 已非空时才在超预算处 break；history 为空时不 break，
+///   保证最新一条有效消息必进上下文（「当前消息优先」）。
+@visibleForTesting
+List<ChatMessage> fillHistoryWithinBudget({
+  required List<Message> messages,
+  required AppSettings settings,
+  required int usedTokens,
+  required int availableBudget,
+}) {
+  final history = <ChatMessage>[];
+  for (int i = messages.length - 1; i >= 0; i--) {
+    final msg = messages[i];
+    if (msg.content.isEmpty) continue;
+    if (msg.role == 'system') {
+      final meta = MessageMetadata.fromJsonString(msg.metadata);
+      if (!meta.isSummary) continue;
+    }
+
+    // contentForBudget：本波不引入附件 token 计入（属附件 Wave，超范围），保持用
+    // msg.content；主项目此处对 user 消息会追加 appendTextAttachments，差异留待附件 Wave。
+    final contentForBudget = msg.content;
+    final baseTokens = math.max(
+      msg.tokenCount,
+      estimateTokens(contentForBudget),
+    );
+    // 时间戳开销计入预算 —— 对照主项目 messageTokens；Flutter 的 msg.createdAt 非空，只判 showTimestamps
+    final msgTokens =
+        baseTokens + (settings.showTimestamps ? _kTimestampTokenOverhead : 0);
+    // 至少保证最新一条有效消息进入上下文，即使系统提示+记忆已逼近预算
+    // （history 为空时不 break）——否则会丢掉用户当下输入，违反「当前消息优先」。
+    if (history.isNotEmpty && usedTokens + msgTokens > availableBudget) break;
+    usedTokens += msgTokens;
+
+    final meta = MessageMetadata.fromJsonString(msg.metadata);
+    if (meta.isSummary) {
+      history.insert(
+        0,
+        ChatMessage(role: 'assistant', content: '[对话总结]\n${msg.content}'),
+      );
+      continue;
+    }
+
+    String content = msg.content;
+    if (settings.showTimestamps) {
+      final ts = _formatChatTimestamp(msg.createdAt);
+      content = '[$ts] $content';
+    }
+
+    history.insert(0, ChatMessage(role: msg.role, content: content));
+  }
+  return history;
 }

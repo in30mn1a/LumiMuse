@@ -400,6 +400,7 @@ Character _makeCharacter({String exampleDialogue = ''}) {
     basicInfo: '',
     otherInfo: '',
     imageTags: '',
+    userImageTags: '',
     sortOrder: 0,
     createdAt: now,
     updatedAt: now,

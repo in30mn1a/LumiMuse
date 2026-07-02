@@ -39,6 +39,18 @@ class SecretStorageService {
   static const settingsApiKeyRef = '${_prefix}settings/main';
   static const imageGenNaiApiKeyRef = '${_prefix}settings/image-gen/nai';
   static const imageGenCustomApiKeyRef = '${_prefix}settings/image-gen/custom';
+  static const memoryEngineEmbeddingApiKeyRef =
+      '${_prefix}settings/memory-engine/embedding';
+  static const memoryEngineRerankerApiKeyRef =
+      '${_prefix}settings/memory-engine/reranker';
+
+  /// API Key 脱敏掩码，对齐主项目 `API_KEY_MASK`（`src/lib/constants.ts`）。
+  ///
+  /// 语义契约（与主项目 `src/app/api/settings/route.ts` 一致）：
+  /// - 展示侧：已保存的 key 在 UI 显示为本掩码而非明文；
+  /// - 保存侧：字段值 == 本掩码视为「不修改」，保留 DB 旧值，不得用掩码覆盖真实 key；
+  /// - 字段为空串视为显式清空；字段为其它非掩码值视为写入新值。
+  static const String kApiKeyMask = '********';
 
   final SecretStorageBackend _backend;
 

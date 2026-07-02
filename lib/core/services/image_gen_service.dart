@@ -20,6 +20,12 @@ class _NaiZipResult {
   const _NaiZipResult(this.pngBytes, this.compressionMethod);
 }
 
+/// 图片格式枚举 — 对齐主项目 `src/app/api/image-gen/route.ts` 的 `ImageFormat`。
+///
+/// 生图上游（SD WebUI / NovelAI / ComfyUI / 自定义 API）可能返回 PNG / JPEG / WEBP
+/// 三种格式，落地时按真实 magic bytes 选择文件扩展名，避免把 JPEG 存成 `.png`。
+enum ImageFormat { png, jpeg, webp }
+
 /// 图片生成服务 — 支持 SD WebUI / NovelAI / ComfyUI / 自定义 API
 class ImageGenService {
   final Dio _dio;
@@ -78,25 +84,47 @@ class ImageGenService {
   }
 
   /// 保存 base64 图片
+  ///
+  /// 解码后用 [detectImageFormat] 校验 magic bytes，非法格式抛
+  /// `FormatException('invalidImageSignature: ...')`；按真实格式选择扩展名
+  /// （PNG→png / JPEG→jpg / WEBP→webp），避免把 JPEG 存成 `.png`。
+  /// 对照主项目 `src/app/api/image-gen/route.ts` 的 `saveBase64Image` +
+  /// `persistImageBuffer`。
   Future<String> _saveBase64Image(String base64) async {
     final dir = await _ensureOutputDir();
-    final filename = '${_uuid.v4()}.png';
-    final filepath = p.join(dir, filename);
     final bytes = base64Decode(base64);
+    final fmt = detectImageFormat(bytes);
+    if (fmt == null) {
+      throw const FormatException(
+        'invalidImageSignature: 未识别的图片格式（仅支持 PNG / JPEG / WEBP）',
+      );
+    }
+    final filename = '${_uuid.v4()}.${extForFormat(fmt)}';
+    final filepath = p.join(dir, filename);
     await File(filepath).writeAsBytes(bytes);
     return filepath;
   }
 
   /// 保存远程图片
+  ///
+  /// 下载后用 [detectImageFormat] 校验 magic bytes，非法格式抛
+  /// `FormatException('invalidImageSignature: ...')`；按真实格式选择扩展名。
   Future<String> _saveRemoteImage(String imageUrl) async {
     final dir = await _ensureOutputDir();
-    final filename = '${_uuid.v4()}.png';
-    final filepath = p.join(dir, filename);
     final response = await _dio.get<List<int>>(
       imageUrl,
       options: Options(responseType: ResponseType.bytes),
     );
-    await File(filepath).writeAsBytes(response.data!);
+    final bytes = Uint8List.fromList(response.data!);
+    final fmt = detectImageFormat(bytes);
+    if (fmt == null) {
+      throw const FormatException(
+        'invalidImageSignature: 未识别的图片格式（仅支持 PNG / JPEG / WEBP）',
+      );
+    }
+    final filename = '${_uuid.v4()}.${extForFormat(fmt)}';
+    final filepath = p.join(dir, filename);
+    await File(filepath).writeAsBytes(bytes);
     return filepath;
   }
 
@@ -370,9 +398,56 @@ class ImageGenService {
   static Uint8List parseNaiZipForTesting(Uint8List uint8) =>
       _parseNaiZip(uint8).pngBytes;
 
+  /// 校验图片 magic bytes，识别 PNG / JPEG / WEBP。
+  ///
+  /// 与主项目 `src/app/api/image-gen/route.ts` 的 `detectImageFormat` 行为一致：
+  /// - 长度 < 12 → 返回 null（不足以判定任何格式）
+  /// - PNG：前 4 字节为 `89 50 4E 47`
+  /// - JPEG：前 3 字节为 `FF D8 FF`
+  /// - WEBP：前 4 字节为 `52 49 46 46`（RIFF）且 offset 8..11 为 `57 45 42 50`（WEBP）
+  /// - 其它 → 返回 null，调用方应据此拒绝写入
+  @visibleForTesting
+  static ImageFormat? detectImageFormat(Uint8List bytes) {
+    if (bytes.length < 12) return null;
+    // PNG: 89 50 4E 47 0D 0A 1A 0A（仅校验前 4 字节，与主项目一致）
+    if (bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47) {
+      return ImageFormat.png;
+    }
+    // JPEG: FF D8 FF
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
+      return ImageFormat.jpeg;
+    }
+    // WEBP: 'RIFF' .. .. .. .. 'WEBP'
+    if (bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return ImageFormat.webp;
+    }
+    return null;
+  }
+
+  /// 根据 [ImageFormat] 返回对应的文件扩展名（不含 `.`）。
+  ///
+  /// 与主项目 `extForFormat` 一致：JPEG 用 `jpg`，其余直接用枚举名。
+  static String extForFormat(ImageFormat fmt) {
+    return fmt == ImageFormat.jpeg ? 'jpg' : fmt.name;
+  }
+
   /// 校验 PNG 签名 `0x89 0x50 0x4E 0x47`（R1 验收标准 1.6）
   ///
   /// 长度 < 4 或前 4 字节不匹配时抛带 `invalidPngSignature` 字段名的异常。
+  ///
+  /// 保留该方法以兼容现有 PNG 属性测试（`ensurePngSignatureForTesting`）；
+  /// NAI 分支输出固定为 PNG，继续走此路径。SD / ComfyUI / 自定义 API 等可能
+  /// 返回 JPEG / WEBP 的分支改用 [detectImageFormat] 统一判定。
   static void _ensurePngSignature(Uint8List bytes) {
     if (bytes.length < 4 ||
         bytes[0] != 0x89 ||
@@ -431,8 +506,13 @@ class ImageGenService {
     }
 
     // 2. JSON 安全转义后替换占位符（占位符不存在时保留原样）
-    String escape(String raw) =>
-        raw.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+    //    必须转义反斜杠、双引号，以及 JSON 字符串中不允许裸露的控制字符
+    //    （\n \r \t 及其他 U+0000~U+001F），否则第 3 步 jsonDecode 会抛
+    //    FormatException。用 jsonEncode 编码再剥掉外层引号最稳妥，覆盖全部边界。
+    String escape(String raw) {
+      final encoded = jsonEncode(raw);
+      return encoded.substring(1, encoded.length - 1);
+    }
     final replaced = template
         .replaceAll('{{positive_prompt}}', escape(fullPrompt))
         .replaceAll('{{negative_prompt}}', escape(fullNeg));
@@ -538,7 +618,18 @@ class ImageGenService {
         final images = nodeOutput['images'] as List?;
         if (images != null && images.isNotEmpty) {
           final img = images[0] as Map<String, dynamic>;
-          final imgUrl = '$baseUrl/view?filename=${Uri.encodeComponent(img['filename'] as String)}&type=output';
+          // 对齐主项目 image-gen/route.ts:483：从 history 转发 subfolder 与 type。
+          // SaveImage 节点可输出到子目录，部分节点发出 type='temp'；缺这两个参数
+          // 会让 /view 返回 404 / 空，表现为生图"成功"但下载保存失败。
+          final filename =
+              Uri.encodeComponent(img['filename'] as String? ?? '');
+          final type = img['type'] as String? ?? 'output';
+          final subfolder = img['subfolder'] as String? ?? '';
+          final subfolderParam = subfolder.isEmpty
+              ? ''
+              : '&subfolder=${Uri.encodeComponent(subfolder)}';
+          final imgUrl =
+              '$baseUrl/view?filename=$filename&type=$type$subfolderParam';
           return _saveRemoteImage(imgUrl);
         }
       }

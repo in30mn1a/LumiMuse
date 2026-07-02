@@ -17,6 +17,7 @@ class CharacterCardParser {
     'system_prompt',
     'other_info',
     'image_tags',
+    'user_image_tags',
   ];
 
   /// 判断是否为 LumiMuse 备份格式
@@ -56,6 +57,7 @@ class CharacterCardParser {
         'system_prompt': _text(lumimuseCharacter['system_prompt']),
         'other_info': _text(lumimuseCharacter['other_info']),
         'image_tags': _text(lumimuseCharacter['image_tags']),
+        'user_image_tags': _text(lumimuseCharacter['user_image_tags']),
       };
     }
 
@@ -85,6 +87,10 @@ class CharacterCardParser {
         ('作者备注', _text(data['creator_notes'])),
       ]),
       'image_tags': _tagsToText(data['tags']),
+      // Chara Card v2 标准无 user_image_tags（LumiMuse 扩展字段），
+      // 留空串占位以保持 expectedKeys 一致，不臆测取值（对齐主项目
+      // character-card-import.ts 同样写空串）。
+      'user_image_tags': '',
     };
   }
 

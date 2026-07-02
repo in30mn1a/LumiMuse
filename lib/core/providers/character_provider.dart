@@ -60,6 +60,7 @@ class CharacterActions {
     String exampleDialogue = '',
     String systemPrompt = '',
     String imageTags = '',
+    String userImageTags = '',
   }) async {
     // 使用完整 UUID（之前 substring(0, 8) 在大数据量下存在碰撞风险）
     final id = _uuid.v4();
@@ -81,6 +82,7 @@ class CharacterActions {
       exampleDialogue: Value(exampleDialogue),
       systemPrompt: Value(systemPrompt),
       imageTags: Value(imageTags),
+      userImageTags: Value(userImageTags),
       sortOrder: Value(nextSort),
       createdAt: Value(now),
       updatedAt: Value(now),
@@ -99,6 +101,7 @@ class CharacterActions {
     String? exampleDialogue,
     String? systemPrompt,
     String? imageTags,
+    String? userImageTags,
     String? basicInfo,
     String? otherInfo,
   }) async {
@@ -112,6 +115,7 @@ class CharacterActions {
         exampleDialogue: exampleDialogue != null ? Value(exampleDialogue) : const Value.absent(),
         systemPrompt: systemPrompt != null ? Value(systemPrompt) : const Value.absent(),
         imageTags: imageTags != null ? Value(imageTags) : const Value.absent(),
+        userImageTags: userImageTags != null ? Value(userImageTags) : const Value.absent(),
         basicInfo: basicInfo != null ? Value(basicInfo) : const Value.absent(),
         otherInfo: otherInfo != null ? Value(otherInfo) : const Value.absent(),
         updatedAt: Value(DateTime.now()),
@@ -303,6 +307,7 @@ class CharacterActions {
         basicInfo: Value(original.basicInfo),
         otherInfo: Value(original.otherInfo),
         imageTags: Value(original.imageTags),
+        userImageTags: Value(original.userImageTags),
         sortOrder: Value(nextSort),
         createdAt: Value(now),
         updatedAt: Value(now),

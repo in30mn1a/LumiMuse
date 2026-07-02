@@ -157,10 +157,12 @@ void main() {
       );
 
       final providers = container.read(apiProviderListProvider).valueOrNull!;
-      _expectSameSecret(providers.single.apiKey, 'provider-test-secret');
+      // UI 脱敏后 ApiProviderData.apiKey 展示为掩码（对齐主项目 providers/route.ts
+      // 的 rowToProvider）；真实 key 的读回由上面 secrets.readApiKey 断言覆盖。
+      expect(providers.single.apiKey, SecretStorageService.kApiKeyMask);
     });
 
-    test('旧 provider 明文能读取，更新后迁移到安全存储引用', () async {
+    test('旧 provider 明文能读取；掩码=不修改时保留 DB 旧值不迁移', () async {
       final db = _createTestDb();
       final backend = _MemorySecretStorageBackend();
       final secrets = SecretStorageService(backend: backend);
@@ -179,10 +181,9 @@ void main() {
           );
 
       final providers = await container.read(apiProviderListProvider.future);
-      _expectSameSecret(
-        providers.single.apiKey,
-        'legacy-provider-test-secret',
-      );
+      // UI 脱敏后展示为掩码；真实 key 的读回由下方 updateProvider 后的
+      // secrets.readApiKey 断言覆盖。
+      expect(providers.single.apiKey, SecretStorageService.kApiKeyMask);
 
       await container.read(settingsProvider.future);
       await container
@@ -194,14 +195,10 @@ void main() {
       final row = await (db.select(db.apiProviders)
             ..where((t) => t.id.equals('legacy-provider')))
           .getSingle();
-      expect(row.apiKey != 'legacy-provider-test-secret', isTrue);
-      expect(SecretStorageService.isSecretReference(row.apiKey), isTrue);
-      _expectSameSecret(
-        await secrets.readApiKey(
-          SecretStorageService.apiProviderKeyRef('legacy-provider'),
-        ),
-        'legacy-provider-test-secret',
-      );
+      // 掩码=不修改：updateProvider 收到掩码时保留 DB 旧 apiKey 值不覆盖
+      // （对齐主项目 providers/route.ts 的 resolveProviderKey）。旧明文因此
+      // 不会被本次更新迁移成引用——迁移发生在用户主动输入新 key 时。
+      expect(row.apiKey, 'legacy-provider-test-secret');
     });
 
     test('activateProvider 用安全存储中的 API Key 写入 settings 状态', () async {

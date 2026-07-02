@@ -90,12 +90,17 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
     final secretStorage = ref.read(secretStorageServiceProvider);
     final providers = <ApiProviderData>[];
     for (final r in rows) {
+      // UI 脱敏：已保存的 key 展示为掩码（对齐主项目 providers/route.ts 的
+      // rowToProvider）。真实 key 仅在 activateProvider 等业务路径按需解析。
+      final resolvedKey = await secretStorage.resolveApiKey(r.apiKey);
       providers.add(
         ApiProviderData(
           id: r.id,
           name: r.name,
           apiBase: r.apiBase,
-          apiKey: await secretStorage.resolveApiKey(r.apiKey),
+          apiKey: resolvedKey.isEmpty
+              ? ''
+              : SecretStorageService.kApiKeyMask,
           model: r.model,
           temperature: r.temperature,
           maxTokens: r.maxTokens,
@@ -238,19 +243,27 @@ class ApiProviderListNotifier extends AsyncNotifier<List<ApiProviderData>> {
   /// 编辑供应商
   Future<void> updateProvider(ApiProviderData provider) async {
     final db = ref.read(databaseProvider);
-    final apiKeyRef = await ref
-        .read(secretStorageServiceProvider)
-        .storeApiKeyOrEmpty(
-          SecretStorageService.apiProviderKeyRef(provider.id),
-          provider.apiKey,
-        );
+    final secretStorage = ref.read(secretStorageServiceProvider);
+    // 掩码=不修改：apiKey 为掩码时保留 DB 旧引用，不得用掩码覆盖真实 key
+    // （对齐主项目 providers/route.ts 的 resolveProviderKey）。空串=显式清空，
+    // 其它非掩码值=写入新值。
+    final Value<String> apiKeyValue;
+    if (provider.apiKey == SecretStorageService.kApiKeyMask) {
+      apiKeyValue = const Value.absent();
+    } else {
+      final apiKeyRef = await secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.apiProviderKeyRef(provider.id),
+        provider.apiKey,
+      );
+      apiKeyValue = Value(apiKeyRef);
+    }
     await (db.update(
       db.apiProviders,
     )..where((t) => t.id.equals(provider.id))).write(
       ApiProvidersCompanion(
         name: Value(provider.name),
         apiBase: Value(provider.apiBase),
-        apiKey: Value(apiKeyRef),
+        apiKey: apiKeyValue,
         model: Value(provider.model),
         temperature: Value(provider.temperature),
         maxTokens: Value(provider.maxTokens),

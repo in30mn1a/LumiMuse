@@ -149,6 +149,16 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       );
       map['image_gen'] = resolvedImageGen.toJson();
     }
+    if (map['memory_engine'] is Map<String, dynamic>) {
+      final memoryEngine = MemoryEngineSettings.fromJson(
+        map['memory_engine'] as Map<String, dynamic>,
+      );
+      final resolvedMemoryEngine = await _resolveMemoryEngineSecrets(
+        secretStorage,
+        memoryEngine,
+      );
+      map['memory_engine'] = resolvedMemoryEngine.toJson();
+    }
     return _mapToSettings(map);
   }
 
@@ -168,8 +178,16 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       secretStorage,
       nextSettings.imageGen,
     );
+    final storedMemoryEngine = await _storeMemoryEngineSecrets(
+      secretStorage,
+      nextSettings.memoryEngine,
+    );
     final entries = _settingsToMap(
-      nextSettings.copyWith(apiKey: storedApiKey, imageGen: storedImageGen),
+      nextSettings.copyWith(
+        apiKey: storedApiKey,
+        imageGen: storedImageGen,
+        memoryEngine: storedMemoryEngine,
+      ),
     );
 
     await db.batch((batch) {
@@ -220,6 +238,43 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
     );
   }
 
+  /// 把记忆引擎嵌套对象里的 secret 引用解析为明文（用于读后展示）。
+  Future<MemoryEngineSettings> _resolveMemoryEngineSecrets(
+    SecretStorageService secretStorage,
+    MemoryEngineSettings memoryEngine,
+  ) async {
+    return memoryEngine.copyWith(
+      embeddingApiKey:
+          await secretStorage.resolveApiKey(memoryEngine.embeddingApiKey),
+      rerankerApiKey:
+          await secretStorage.resolveApiKey(memoryEngine.rerankerApiKey),
+    );
+  }
+
+  /// 把记忆引擎嵌套对象里的明文 key 写入 SecretStorage，DB 里只保留 secret 引用。
+  /// 若字段值已是 secret 引用（掩码回写场景），先 resolve 出明文再 store。
+  Future<MemoryEngineSettings> _storeMemoryEngineSecrets(
+    SecretStorageService secretStorage,
+    MemoryEngineSettings memoryEngine,
+  ) async {
+    final embeddingApiKey = await secretStorage.resolveApiKey(
+      memoryEngine.embeddingApiKey,
+    );
+    final rerankerApiKey = await secretStorage.resolveApiKey(
+      memoryEngine.rerankerApiKey,
+    );
+    return memoryEngine.copyWith(
+      embeddingApiKey: await secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.memoryEngineEmbeddingApiKeyRef,
+        embeddingApiKey,
+      ),
+      rerankerApiKey: await secretStorage.storeApiKeyOrEmpty(
+        SecretStorageService.memoryEngineRerankerApiKeyRef,
+        rerankerApiKey,
+      ),
+    );
+  }
+
   /// 更新单个设置项
   Future<void> updateSetting(String key, dynamic value) async {
     final db = ref.read(databaseProvider);
@@ -234,6 +289,11 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       storedValue = (await _storeImageGenSecrets(
         secretStorage,
         ImageGenSettings.fromJson(value),
+      )).toJson();
+    } else if (key == 'memory_engine' && value is Map<String, dynamic>) {
+      storedValue = (await _storeMemoryEngineSecrets(
+        secretStorage,
+        MemoryEngineSettings.fromJson(value),
       )).toJson();
     }
     await db
@@ -253,6 +313,14 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
     if (map['image_gen'] is Map<String, dynamic>) {
       imageGen = ImageGenSettings.fromJson(
         map['image_gen'] as Map<String, dynamic>,
+      );
+    }
+
+    // 解析记忆引擎设置（存储为嵌套 JSON 对象，对齐 image_gen 处理）
+    MemoryEngineSettings memoryEngine = const MemoryEngineSettings();
+    if (map['memory_engine'] is Map<String, dynamic>) {
+      memoryEngine = MemoryEngineSettings.fromJson(
+        map['memory_engine'] as Map<String, dynamic>,
       );
     }
 
@@ -309,6 +377,13 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       lastConversationId: map['last_conversation_id'] as String? ?? '',
       activeProviderId: map['active_provider_id'] as String? ?? '',
       imageGen: imageGen,
+      memoryEngine: memoryEngine,
+      memoryBackgroundModel:
+          map['memory_background_model'] as String? ?? '',
+      memoryBackgroundProviderId:
+          map['memory_background_provider_id'] as String? ?? '',
+      disableDeepseekThinkingForBackground:
+          map['disable_deepseek_thinking_for_background'] as bool? ?? false,
       artistStrings: artistStrings,
     );
   }
@@ -343,6 +418,11 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       'last_conversation_id': s.lastConversationId,
       'active_provider_id': s.activeProviderId,
       'image_gen': s.imageGen.toJson(),
+      'memory_engine': s.memoryEngine.toJson(),
+      'memory_background_model': s.memoryBackgroundModel,
+      'memory_background_provider_id': s.memoryBackgroundProviderId,
+      'disable_deepseek_thinking_for_background':
+          s.disableDeepseekThinkingForBackground,
       'artist_strings': s.artistStrings.map((a) => a.toJson()).toList(),
     };
   }

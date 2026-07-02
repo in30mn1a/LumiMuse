@@ -26,6 +26,7 @@ class _ModelsLlmService extends LlmService {
   Future<List<String>> fetchModels({
     required String apiBase,
     required String apiKey,
+    bool forceRefresh = false,
   }) async {
     if (error != null) throw error!;
     return models ?? const <String>[];

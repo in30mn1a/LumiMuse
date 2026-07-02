@@ -20,8 +20,12 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/database/database.dart';
 import '../../core/providers/character_provider.dart';
+import '../../core/providers/database_provider.dart';
+import '../../core/providers/llm_service_provider.dart';
 import '../../core/providers/memory_provider.dart';
 import '../../core/providers/settings_provider.dart';
+import '../../core/services/memory_embedding_tasks_service.dart';
+import '../../core/services/memory_review_service.dart';
 import '../../core/utils/i18n.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_theme.dart';
@@ -189,6 +193,13 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
   String? _batchDeleteError;
   bool _batchDeleteInFlight = false;
 
+  // ── AI 整理状态（对照 src/app/memories/page.tsx 行 31-50）──
+  bool _aiReviewRunning = false;
+  MemoryAiReviewResult? _lastAiReviewResult;
+  bool _showAiReviewChanges = false;
+  // 防过期回调快照（对照 selectedCharIdRef.current）
+  String? _selectedCharIdSnapshot;
+
   bool get _memoryBusy =>
       _addInFlight ||
       _updateInFlight.isNotEmpty ||
@@ -244,6 +255,11 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _buildHeader(lang, charactersAsync),
+                    const SizedBox(height: AppSpacing.lg),
+                    _buildAiReviewChangesPanel(
+                      lang,
+                      Theme.of(context).brightness == Brightness.dark,
+                    ),
                     const SizedBox(height: AppSpacing.lg),
                     _buildFilterPanel(lang),
                     const SizedBox(height: AppSpacing.lg),
@@ -357,6 +373,9 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
       alignment: WrapAlignment.end,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
+        // AI 整理按钮 + 查看变更按钮（对照 page.tsx 行 162-202，置于角色 select 之前）
+        _buildAiReviewButton(lang),
+        _buildViewChangesButton(lang),
         ConstrainedBox(
           constraints: const BoxConstraints(minWidth: 224),
           child: _RichSelect<String>(
@@ -373,6 +392,179 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
           ),
         ),
       ],
+    );
+  }
+
+  // ═════════════════════════════════════════════════════════════
+  // AI 整理按钮 + 变更摘要面板 — 对照 src/app/memories/page.tsx 行 162-243
+  // ═════════════════════════════════════════════════════════════
+
+  /// AI 整理按钮：running 时显示 spinner + 「整理中…」，否则 SparkIcon +「AI 整理」。
+  Widget _buildAiReviewButton(String lang) {
+    return LumiSoftButton(
+      label: _aiReviewRunning
+          ? I18n.t('memory.aiReviewRunning', lang: lang)
+          : I18n.t('memory.aiReview', lang: lang),
+      icon: _aiReviewRunning ? null : Icons.auto_awesome,
+      kind: LumiSoftButtonKind.primary,
+      loading: _aiReviewRunning,
+      // disabled = !selectedCharId || running || _memoryBusy
+      onTap: (widget.characterId.isEmpty || _aiReviewRunning || _memoryBusy)
+          ? null
+          : _handleMemoryAiReview,
+    );
+  }
+
+  /// 「查看本次变更 / 隐藏本次变更」切换按钮：仅在已有结果时显示。
+  Widget _buildViewChangesButton(String lang) {
+    if (_lastAiReviewResult == null) return const SizedBox.shrink();
+    return LumiSoftButton(
+      label: _showAiReviewChanges
+          ? I18n.t('memory.hideLatestAiReviewChanges', lang: lang)
+          : I18n.t('memory.viewLatestAiReviewChanges', lang: lang),
+      icon: null,
+      kind: LumiSoftButtonKind.secondary,
+      onTap: () => setState(() => _showAiReviewChanges = !_showAiReviewChanges),
+    );
+  }
+
+  /// 变更摘要面板 — 对照 page.tsx 行 207-243
+  Widget _buildAiReviewChangesPanel(String lang, bool isDark) {
+    if (_lastAiReviewResult == null || !_showAiReviewChanges) {
+      return const SizedBox.shrink();
+    }
+    final result = _lastAiReviewResult!;
+    return Container(
+      decoration: AppSurfaces.panel(isDark: isDark),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
+            children: [
+              LumiChip(
+                active: true,
+                label: I18n.tArgs(
+                  'memory.aiReviewDone',
+                  {
+                    'reviewed': '${result.reviewed}',
+                    'corrected': '${result.corrected}',
+                  },
+                  lang: lang,
+                ),
+              ),
+              if (result.indexingQueued > 0)
+                LumiChip(
+                  active: false,
+                  label: I18n.tArgs(
+                    'memory.aiReviewIndexQueued',
+                    {'count': '${result.indexingQueued}'},
+                    lang: lang,
+                  ),
+                ),
+              if (result.failedBatches > 0)
+                LumiChip(
+                  active: false,
+                  activeColor: Colors.red,
+                  label: I18n.tArgs(
+                    'memory.aiReviewPartial',
+                    {'failed': '${result.failedBatches}'},
+                    lang: lang,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.md),
+          if (result.changes.isEmpty)
+            Text(
+              I18n.t('memory.aiReviewNoChanges', lang: lang),
+              style: TextStyle(
+                fontSize: 14,
+                color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
+              ),
+            )
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: result.changes
+                  .map((c) => _buildChangeItem(c, lang, isDark))
+                  .toList(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 单条变更行 — 对照 page.tsx 行 224-235：id（break-all）+ fields + 可折叠 content。
+  Widget _buildChangeItem(
+    MemoryReviewChange change,
+    String lang,
+    bool isDark,
+  ) {
+    final borderColor =
+        isDark ? AppTheme.darkBorderLight : AppTheme.borderLight;
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: isDark
+            ? AppTheme.darkSurface.withValues(alpha: 0.6)
+            : Colors.white.withValues(alpha: 0.6),
+        border: Border.all(color: borderColor),
+        borderRadius: AppRadius.mdBorder,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            change.id,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 2,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color:
+                  isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${I18n.t('memory.aiReviewChangedFields', lang: lang)}：${change.fields.join('；')}',
+            style: TextStyle(
+              fontSize: 12,
+              color: isDark ? AppTheme.darkTextMuted : AppTheme.textMuted,
+            ),
+          ),
+          // 可折叠的记忆内容（对照 <details> 元素）
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(top: 4),
+            dense: true,
+            title: Text(
+              I18n.t('memory.aiReviewMemoryContent', lang: lang),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color:
+                    isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+              ),
+            ),
+            children: [
+              Text(
+                change.content,
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.6,
+                  color:
+                      isDark ? AppTheme.darkTextPrimary : AppTheme.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -1023,6 +1215,185 @@ class _MemoryListPageState extends ConsumerState<MemoryListPage> {
         _batchDeleteInFlight = false;
       }
     }
+  }
+
+  // ═════════════════════════════════════════════════════════════
+  // AI 整理 — 对照 src/app/memories/page.tsx 行 53-142 handleMemoryAiReview
+  // ═════════════════════════════════════════════════════════════
+
+  /// 触发 AI 整理：循环翻页 reviewMemories，聚合并防过期回调。
+  Future<void> _handleMemoryAiReview() async {
+    if (widget.characterId.isEmpty || _aiReviewRunning) return;
+    final requestedCharacterId = widget.characterId;
+    _selectedCharIdSnapshot = requestedCharacterId;
+    setState(() {
+      _aiReviewRunning = true;
+      _showAiReviewChanges = false;
+    });
+
+    // 聚合累加器（提到 try 外以便 catch 引用，对照 page.tsx aggregateResult）
+    var aggReviewed = 0;
+    var aggCorrected = 0;
+    var aggFailedBatches = 0;
+    final aggFailedMessages = <String>[];
+    var aggIndexingQueued = 0;
+    var aggIndexingStarted = false;
+    var aggTotalActive = 0;
+    var aggSkippedDueToLimit = 0;
+    var aggHasMore = false;
+    var aggNextOffset = -1; // -1 表示 null
+    final aggChanges = <MemoryReviewChange>[];
+
+    try {
+      var nextOffset = 0;
+      while (nextOffset >= 0) {
+        final pageOffset = nextOffset;
+        final db = ref.read(databaseProvider);
+        final llm = ref.read(llmServiceProvider);
+        final embeddingTasks = MemoryEmbeddingTasksService(db);
+        final service = MemoryReviewService(db, llm, embeddingTasks);
+        final settings = ref.read(settingsProvider).valueOrNull;
+        if (settings == null) {
+          throw Exception('settings not loaded');
+        }
+        // 后台模型回退（对照主项目 resolveBackgroundModel：
+        // memoryBackgroundModel 优先，否则 settings.model）
+        final effectiveSettings = settings.copyWith(
+          model: settings.memoryBackgroundModel.isNotEmpty
+              ? settings.memoryBackgroundModel
+              : settings.model,
+        );
+
+        final result = await service.reviewMemories(
+          characterId: requestedCharacterId,
+          offset: pageOffset,
+          settings: effectiveSettings,
+        );
+        // 防过期回调（对照 selectedCharIdRef.current !== requestedCharacterId）
+        if (_selectedCharIdSnapshot != requestedCharacterId) return;
+
+        // 整页失败抛异常
+        if (!result.ok) {
+          throw Exception(result.error ?? 'AI review failed');
+        }
+
+        aggReviewed += result.reviewed;
+        aggCorrected += result.corrected;
+        aggFailedBatches += result.failedBatches;
+        aggFailedMessages.addAll(result.failedMessages);
+        aggIndexingQueued += result.indexingQueued;
+        aggIndexingStarted = aggIndexingStarted || result.indexingStarted;
+        aggTotalActive = result.totalActive;
+        aggSkippedDueToLimit = result.skippedDueToLimit;
+        aggHasMore = result.hasMore;
+        aggNextOffset = result.nextOffset ?? -1;
+        aggChanges.addAll(result.changes);
+
+        if (!result.hasMore) {
+          nextOffset = -1;
+        } else if (result.nextOffset != null &&
+            result.nextOffset! > pageOffset) {
+          nextOffset = result.nextOffset!;
+        } else {
+          throw Exception('memory-review pagination did not advance');
+        }
+      }
+
+      if (!mounted) return;
+      final finalResult = MemoryAiReviewResult(
+        ok: true,
+        reviewed: aggReviewed,
+        totalActive: aggTotalActive,
+        skippedDueToLimit: aggSkippedDueToLimit,
+        hasMore: aggHasMore,
+        nextOffset: aggHasMore ? aggNextOffset : null,
+        corrected: aggCorrected,
+        failedBatches: aggFailedBatches,
+        failedMessages: aggFailedMessages,
+        indexingQueued: aggIndexingQueued,
+        indexingStarted: aggIndexingStarted,
+        changes: aggChanges,
+      );
+      setState(() {
+        _lastAiReviewResult = finalResult;
+        _showAiReviewChanges = true;
+      });
+      // 刷新记忆列表
+      ref.invalidate(memoryListProvider(_params));
+
+      final lang = ref.read(localeProvider).languageCode;
+      final reviewSummary = I18n.tArgs(
+        'memory.aiReviewDone',
+        {'reviewed': '$aggReviewed', 'corrected': '$aggCorrected'},
+        lang: lang,
+      );
+      if (aggFailedBatches > 0) {
+        _showAiReviewToast(
+          '$reviewSummary（${I18n.tArgs(
+            'memory.aiReviewPartial',
+            {'failed': '$aggFailedBatches'},
+            lang: lang,
+          )}）',
+          isError: true,
+        );
+      } else {
+        _showAiReviewToast(reviewSummary, isError: false);
+      }
+    } catch (err) {
+      // 守卫过期：直接 return，不写 UI
+      if (_selectedCharIdSnapshot != requestedCharacterId) return;
+      if (!mounted) return;
+      final lang = ref.read(localeProvider).languageCode;
+      if (aggReviewed > 0) {
+        // 整页失败但已有进度落库：保留 aggregate + refreshNonce + toast
+        final partialResult = MemoryAiReviewResult(
+          ok: false,
+          reviewed: aggReviewed,
+          totalActive: aggTotalActive,
+          corrected: aggCorrected,
+          failedBatches: aggFailedBatches,
+          failedMessages: aggFailedMessages,
+          indexingQueued: aggIndexingQueued,
+          indexingStarted: aggIndexingStarted,
+          changes: aggChanges,
+        );
+        setState(() {
+          _lastAiReviewResult = partialResult;
+          _showAiReviewChanges = true;
+        });
+        ref.invalidate(memoryListProvider(_params));
+        _showAiReviewToast(
+          '${I18n.tArgs(
+            'memory.aiReviewInterrupted',
+            {'reviewed': '$aggReviewed', 'corrected': '$aggCorrected'},
+            lang: lang,
+          )}：$err',
+          isError: true,
+        );
+      } else {
+        _showAiReviewToast(
+          '${I18n.t('memory.aiReviewFailed', lang: lang)}：$err',
+          isError: true,
+        );
+      }
+    } finally {
+      // 守卫未过期时才解除 running 态
+      if (mounted && _selectedCharIdSnapshot == requestedCharacterId) {
+        setState(() => _aiReviewRunning = false);
+      }
+    }
+  }
+
+  void _showAiReviewToast(String message, {required bool isError}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor:
+            isError ? Colors.red.shade700 : Colors.green.shade700,
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 }
 

@@ -383,6 +383,7 @@ class ExampleDialogueSection extends StatelessWidget {
 class AdvancedSettingsSection extends StatelessWidget {
   final TextEditingController systemPromptController;
   final TextEditingController imageTagsController;
+  final TextEditingController userImageTagsController;
   final bool isExpanded;
   final VoidCallback onToggle;
   final String lang;
@@ -392,6 +393,7 @@ class AdvancedSettingsSection extends StatelessWidget {
     super.key,
     required this.systemPromptController,
     required this.imageTagsController,
+    required this.userImageTagsController,
     required this.isExpanded,
     required this.onToggle,
     required this.lang,
@@ -488,6 +490,30 @@ class AdvancedSettingsSection extends StatelessWidget {
                     controller: imageTagsController,
                     hint:
                         '1girl, 银发, 短发, 橙眼, 纤细...',
+                    rows: 3,
+                    mono: true,
+                    isDark: isDark,
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  _sectionLabel(I18n.t('editor.userImageTags', lang: lang), isDark),
+                  const SizedBox(height: AppSpacing.xs),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm, left: AppSpacing.xs),
+                    child: Text(
+                      I18n.t('editor.userImageTagsHint', lang: lang),
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.65,
+                        color: isDark
+                            ? AppTheme.darkTextMuted
+                            : AppTheme.textMuted,
+                      ),
+                    ),
+                  ),
+                  _richTextarea(
+                    controller: userImageTagsController,
+                    hint:
+                        '1boy, black hair, brown eyes, glasses...',
                     rows: 3,
                     mono: true,
                     isDark: isDark,

@@ -182,7 +182,8 @@
       "name": "advancedSettings",
       "slots": [
         {"order": 1, "anchor": "start", "id": "systemPrompt"},
-        {"order": 2, "anchor": "start", "id": "imageTags"}
+        {"order": 2, "anchor": "start", "id": "imageTags"},
+        {"order": 3, "anchor": "start", "id": "userImageTags"}
       ]
     },
     {

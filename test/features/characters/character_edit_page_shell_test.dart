@@ -24,6 +24,7 @@ Widget _host() {
           basicInfo: '',
           otherInfo: '',
           imageTags: '',
+          userImageTags: '',
           sortOrder: 0,
           createdAt: DateTime(2026, 1, 1),
           updatedAt: DateTime(2026, 1, 1),

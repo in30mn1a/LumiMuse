@@ -21,7 +21,7 @@ import '../../../theme/app_theme.dart';
 import '../../../theme/page_region.dart';
 import '../../../theme/surfaces.dart';
 
-/// 导入选项对话框 — 文件名显示 + 三个 checkbox + 确认/取消按钮
+/// 导入选项对话框 — 文件名显示 + 五个 checkbox + 确认/取消按钮
 class ImportDialog extends ConsumerStatefulWidget {
   /// 槽位基准 —— 与 requirements.md §A7.3 严格对齐，禁止重排或省略。
   ///
@@ -64,7 +64,7 @@ class ImportDialog extends ConsumerStatefulWidget {
             ),
           ],
         ),
-        // §A7.3 三勾选项区，顺序锁定：角色资料 → 角色记忆 → 角色对话
+        // §A7.3 五勾选项区，顺序锁定：角色资料 → 角色记忆 → 角色对话 → 角色画像 → 向量索引
         PageRegion(
           name: 'checkboxes',
           slots: [
@@ -84,6 +84,18 @@ class ImportDialog extends ConsumerStatefulWidget {
               order: 3,
               anchor: SlotAnchor.start,
               id: 'characterConversations',
+              build: (_) => const SizedBox.shrink(),
+            ),
+            PageSlot(
+              order: 4,
+              anchor: SlotAnchor.start,
+              id: 'characterProfiles',
+              build: (_) => const SizedBox.shrink(),
+            ),
+            PageSlot(
+              order: 5,
+              anchor: SlotAnchor.start,
+              id: 'characterEmbeddings',
               build: (_) => const SizedBox.shrink(),
             ),
           ],
@@ -127,9 +139,14 @@ class _ImportDialogState extends ConsumerState<ImportDialog> {
   bool _includeCharacter = true;
   bool _includeMemories = true;
   bool _includeConversations = true;
+  // 角色画像（含版本历史）— 对齐主项目 include_profiles 默认 1
+  bool _includeProfiles = true;
+  // 向量索引（可重建）— 对齐主项目 include_embeddings 默认 0；依赖 memories
+  bool _includeEmbeddings = false;
 
   bool get _hasSelection =>
-      _includeCharacter || _includeMemories || _includeConversations;
+      _includeCharacter || _includeMemories || _includeConversations ||
+      _includeProfiles || _includeEmbeddings;
 
   @override
   Widget build(BuildContext context) {
@@ -209,8 +226,15 @@ class _ImportDialogState extends ConsumerState<ImportDialog> {
             _buildCheckbox(
               label: I18n.t('export.includeMemories', lang: lang),
               value: _includeMemories,
-              onChanged: (v) =>
-                  setState(() => _includeMemories = v ?? false),
+              onChanged: (v) {
+                setState(() {
+                  _includeMemories = v ?? false;
+                  // memories 取消勾选时，依赖它的 embeddings 自动取消勾选
+                  if (!_includeMemories) {
+                    _includeEmbeddings = false;
+                  }
+                });
+              },
               isDark: isDark,
             ),
             const SizedBox(height: 8),
@@ -220,6 +244,38 @@ class _ImportDialogState extends ConsumerState<ImportDialog> {
               onChanged: (v) =>
                   setState(() => _includeConversations = v ?? false),
               isDark: isDark,
+            ),
+            const SizedBox(height: 8),
+            _buildCheckbox(
+              label: I18n.t('import.includeProfiles', lang: lang),
+              value: _includeProfiles,
+              onChanged: (v) =>
+                  setState(() => _includeProfiles = v ?? false),
+              isDark: isDark,
+            ),
+            const SizedBox(height: 8),
+            _buildCheckbox(
+              label: I18n.t('import.includeEmbeddings', lang: lang),
+              value: _includeEmbeddings,
+              // 禁用条件：依赖 memories（memories 未勾选时不可勾选 embeddings）
+              onChanged: !_includeMemories
+                  ? null
+                  : (v) =>
+                      setState(() => _includeEmbeddings = v ?? false),
+              isDark: isDark,
+            ),
+            // embeddings 说明文案：解释默认不导入的原因
+            Padding(
+              padding: const EdgeInsets.only(left: 34, top: 4),
+              child: Text(
+                I18n.t('export.includeEmbeddingsHint', lang: lang),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isDark
+                      ? AppTheme.darkTextMuted
+                      : AppTheme.textMuted,
+                ),
+              ),
             ),
             const SizedBox(height: 24),
 
@@ -240,6 +296,8 @@ class _ImportDialogState extends ConsumerState<ImportDialog> {
                             includeCharacter: _includeCharacter,
                             includeMemories: _includeMemories,
                             includeConversations: _includeConversations,
+                            includeProfiles: _includeProfiles,
+                            includeEmbeddings: _includeEmbeddings,
                           ))
                       : null,
                 ),
@@ -254,12 +312,14 @@ class _ImportDialogState extends ConsumerState<ImportDialog> {
   Widget _buildCheckbox({
     required String label,
     required bool value,
-    required ValueChanged<bool?> onChanged,
+    required ValueChanged<bool?>? onChanged,
     required bool isDark,
   }) {
+    // onChanged 为 null 表示该选项被禁用（如 embeddings 依赖 memories）
+    final disabled = onChanged == null;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: () => onChanged(!value),
+      onTap: disabled ? null : () => onChanged(!value),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
         child: Row(
@@ -269,7 +329,7 @@ class _ImportDialogState extends ConsumerState<ImportDialog> {
               height: 22,
               child: Checkbox(
                 value: value,
-                onChanged: onChanged,
+                onChanged: disabled ? null : onChanged,
                 activeColor: isDark
                     ? AppTheme.darkAccentDark
                     : AppTheme.accentDark,
@@ -289,9 +349,13 @@ class _ImportDialogState extends ConsumerState<ImportDialog> {
               label,
               style: TextStyle(
                 fontSize: 14,
-                color: isDark
-                    ? AppTheme.darkTextPrimary
-                    : AppTheme.textPrimary,
+                color: disabled
+                    ? (isDark
+                        ? AppTheme.darkTextMuted
+                        : AppTheme.textMuted)
+                    : (isDark
+                        ? AppTheme.darkTextPrimary
+                        : AppTheme.textPrimary),
               ),
             ),
           ],

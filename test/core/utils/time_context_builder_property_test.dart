@@ -60,7 +60,8 @@ void main() {
       (year, month, day) {
         final dt = DateTime(year, month, day);
         final result = TimeContextBuilder.buildTimeContext(dt);
-        expect(result, contains('请根据这个时间来回答用户关于现实时间的问题'));
+        // 文案对齐主项目 buildCurrentTimeInstruction（已删去「请根据这个时间来回答…」一句）
+        expect(result, contains('必须严格依据这个时间回答，不要猜测，也不要引用其他日期'));
       },
     );
 

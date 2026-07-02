@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/models/app_settings.dart';
 import '../../../core/providers/settings_provider.dart';
+import '../../../core/services/secret_storage_service.dart';
 import '../../../core/utils/i18n.dart';
 import '../../../theme/app_theme.dart';
 import '../../../theme/surfaces.dart';
@@ -116,17 +117,25 @@ class _ImageGenSettingsSectionState
     }
   }
 
+  /// 把已保存的 API Key 转为展示用掩码（对齐主项目 maskSettings）。
+  /// 非空 key 显示为掩码，空串保持空串。
+  String _maskKey(String key) =>
+      key.isEmpty ? '' : SecretStorageService.kApiKeyMask;
+
   /// 将设置值同步到控制器
   ///
   /// - force=true: 首次加载，无条件赋值
   /// - force=false: 仅在控制器与设置不一致时才更新（避免覆盖正在输入的光标）
   void _syncControllersFromSettings(ImageGenSettings s, {required bool force}) {
+    final naiMasked = _maskKey(s.naiApiKey);
+    final customMasked = _maskKey(s.customApiKey);
     if (force) {
       _sdUrlCtrl.text = s.sdUrl;
       _sdModelCtrl.text = s.sdModel;
       _sdSamplerCtrl.text = s.sdSampler;
       _sdNegativeCtrl.text = s.sdNegativePrompt;
-      _naiApiKeyCtrl.text = s.naiApiKey;
+      // NAI / 自定义 API Key 脱敏展示（对齐主项目 maskSettings）
+      _naiApiKeyCtrl.text = naiMasked;
       _naiModelCtrl.text = s.naiModel;
       _naiSamplerCtrl.text = s.naiSampler;
       _naiNoiseCtrl.text = s.naiNoiseSchedule;
@@ -135,7 +144,7 @@ class _ImageGenSettingsSectionState
       _comfyUrlCtrl.text = s.comfyuiUrl;
       _comfyWorkflowCtrl.text = s.comfyuiWorkflow;
       _customUrlCtrl.text = s.customUrl;
-      _customApiKeyCtrl.text = s.customApiKey;
+      _customApiKeyCtrl.text = customMasked;
       _customModelCtrl.text = s.customModel;
       _customSizeCtrl.text = s.customSize;
       _qualityTagsCtrl.text = s.qualityTags;
@@ -155,7 +164,7 @@ class _ImageGenSettingsSectionState
     _setIfChanged(_sdModelCtrl, s.sdModel);
     _setIfChanged(_sdSamplerCtrl, s.sdSampler);
     _setIfChanged(_sdNegativeCtrl, s.sdNegativePrompt);
-    _setIfChanged(_naiApiKeyCtrl, s.naiApiKey);
+    _setIfChanged(_naiApiKeyCtrl, naiMasked);
     _setIfChanged(_naiModelCtrl, s.naiModel);
     _setIfChanged(_naiSamplerCtrl, s.naiSampler);
     _setIfChanged(_naiNoiseCtrl, s.naiNoiseSchedule);
@@ -164,7 +173,7 @@ class _ImageGenSettingsSectionState
     _setIfChanged(_comfyUrlCtrl, s.comfyuiUrl);
     _setIfChanged(_comfyWorkflowCtrl, s.comfyuiWorkflow);
     _setIfChanged(_customUrlCtrl, s.customUrl);
-    _setIfChanged(_customApiKeyCtrl, s.customApiKey);
+    _setIfChanged(_customApiKeyCtrl, customMasked);
     _setIfChanged(_customModelCtrl, s.customModel);
     _setIfChanged(_customSizeCtrl, s.customSize);
     _setIfChanged(_qualityTagsCtrl, s.qualityTags);
@@ -303,6 +312,17 @@ class _ImageGenSettingsSectionState
                       ),
                     ),
                   ],
+                  // 内联生图提示词开关 — 对照主项目 image_gen.inline_prompt
+                  _buildSwitch(
+                    title: I18n.t('settings.imageGenInlinePrompt', lang: lang),
+                    subtitle: I18n.t(
+                      'settings.imageGenInlinePromptHint',
+                      lang: lang,
+                    ),
+                    value: ig.inlinePrompt,
+                    onChanged: (v) =>
+                        _updateImageGen((s) => s.copyWith(inlinePrompt: v)),
+                  ),
                 ],
               ),
             ],
@@ -522,7 +542,12 @@ class _ImageGenSettingsSectionState
           label: I18n.t('settings.imageGenNAIKey', lang: lang),
           controller: _naiApiKeyCtrl,
           obscure: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(naiApiKey: v)),
+          // 掩码=不修改：值为掩码时跳过更新，保留 DB 旧值（对齐主项目
+          // settings/route.ts 的 image_gen 密钥掩码处理）。空串=清空，其它值=写入。
+          onChanged: (v) {
+            if (v == SecretStorageService.kApiKeyMask) return;
+            _updateImageGen((s) => s.copyWith(naiApiKey: v));
+          },
         ),
         const SizedBox(height: 8),
         _buildTextField(
@@ -816,7 +841,12 @@ class _ImageGenSettingsSectionState
           label: I18n.t('settings.imageGenCustomKey', lang: lang),
           controller: _customApiKeyCtrl,
           obscure: true,
-          onChanged: (v) => _updateImageGen((s) => s.copyWith(customApiKey: v)),
+          // 掩码=不修改：值为掩码时跳过更新，保留 DB 旧值（对齐主项目
+          // settings/route.ts 的 image_gen 密钥掩码处理）。空串=清空，其它值=写入。
+          onChanged: (v) {
+            if (v == SecretStorageService.kApiKeyMask) return;
+            _updateImageGen((s) => s.copyWith(customApiKey: v));
+          },
         ),
         const SizedBox(height: 8),
         _buildTextField(
@@ -880,6 +910,7 @@ class _ImageGenSettingsSectionState
 
   Widget _buildSwitch({
     required String title,
+    String? subtitle,
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
@@ -887,8 +918,26 @@ class _ImageGenSettingsSectionState
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(title, style: Theme.of(context).textTheme.bodyMedium),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.bodyMedium),
+                if (subtitle != null && subtitle.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).hintColor,
+                          ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           Switch(
             value: value,
             onChanged: onChanged,

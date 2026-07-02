@@ -43,6 +43,7 @@ class _FailingModelsLlmService extends LlmService {
   Future<List<String>> fetchModels({
     required String apiBase,
     required String apiKey,
+    bool forceRefresh = false,
   }) async {
     throw const FetchModelsException(
       '模型列表拉取失败: sk-secret-abcdefghijklmnopqrstuvwxyz',

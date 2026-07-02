@@ -2124,6 +2124,19 @@ class _ChatViewState extends ConsumerState<ChatView> {
       await ref
           .read(messageActionsProvider)
           .editContent(message.id, result.trim());
+      // spec Task 11.3：编辑消息后失效源自该消息的记忆
+      // 失败不阻塞主流程，仅记录日志
+      try {
+        final db = ref.read(databaseProvider);
+        final llm = LlmService();
+        final memoryEngine = MemoryEngine(db, llm);
+        await memoryEngine.invalidateMemoriesForSourceMessage(
+          message.id,
+          reason: 'edited',
+        );
+      } catch (e) {
+        debugPrint('[ChatView._showEditDialog] 失效记忆失败: $e');
+      }
     }
   }
 

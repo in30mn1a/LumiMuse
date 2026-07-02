@@ -32,9 +32,10 @@ void main() {
       test('输出包含行为说明', () {
         final dt = DateTime(2026, 5, 15, 14, 30);
         final result = TimeContextBuilder.buildTimeContext(dt);
+        // 文案对齐主项目 buildCurrentTimeInstruction（已删去「请根据这个时间来回答…」一句）
         expect(
           result,
-          contains('请根据这个时间来回答用户关于现实时间的问题'),
+          contains('必须严格依据这个时间回答，不要猜测，也不要引用其他日期'),
         );
       });
 
@@ -54,6 +55,54 @@ void main() {
         final dt = DateTime(2027, 1, 1, 23, 59);
         final result = TimeContextBuilder.buildTimeContext(dt);
         expect(result, contains('2027-01-01 23:59'));
+      });
+    });
+
+    // ─────────────────────────────────────────────
+    // buildTimeContext 时区/偏移参数测试（C3，对齐主项目 chat-time.ts getTimeParts）
+    // ─────────────────────────────────────────────
+
+    group('buildTimeContext 时区/偏移参数', () {
+      test('utcOffsetMinutes 正确换算 + sourceLabel 含「UTC 偏移」', () {
+        // 取一个 UTC 时刻，避免本地时区干扰：2026-05-15 06:30 UTC
+        final dt = DateTime.utc(2026, 5, 15, 6, 30);
+        // 偏移 +480 分钟（UTC+8）→ 2026-05-15 14:30
+        final result = TimeContextBuilder.buildTimeContext(
+          dt,
+          utcOffsetMinutes: 480,
+        );
+        expect(result, contains('2026-05-15 14:30'));
+        expect(result, contains('星期五')); // 2026-05-15 是星期五
+        expect(result, contains('（用户 UTC 偏移：480 分钟）'));
+      });
+
+      test('负偏移正确换算（UTC-5）', () {
+        final dt = DateTime.utc(2026, 5, 15, 6, 30);
+        // 偏移 -300 分钟（UTC-5）→ 2026-05-15 01:30
+        final result = TimeContextBuilder.buildTimeContext(
+          dt,
+          utcOffsetMinutes: -300,
+        );
+        expect(result, contains('2026-05-15 01:30'));
+        expect(result, contains('（用户 UTC 偏移：-300 分钟）'));
+      });
+
+      test('不带参数退化为本地时间字段，无 sourceLabel', () {
+        final dt = DateTime(2026, 5, 15, 14, 30);
+        final result = TimeContextBuilder.buildTimeContext(dt);
+        expect(result, contains('2026-05-15 14:30'));
+        expect(result, isNot(contains('（用户')));
+      });
+
+      test('timeZone 参数回退本地、不报错，sourceLabel 含「用户时区」', () {
+        final dt = DateTime(2026, 5, 15, 14, 30);
+        final result = TimeContextBuilder.buildTimeContext(
+          dt,
+          timeZone: 'Asia/Shanghai',
+        );
+        // Flutter 本地无 IANA 转换，时间字段回退本地（与不带参一致）
+        expect(result, contains('2026-05-15 14:30'));
+        expect(result, contains('（用户时区：Asia/Shanghai）'));
       });
     });
 

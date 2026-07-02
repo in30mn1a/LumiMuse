@@ -29,6 +29,7 @@ Character _character({String id = 'char-1', String name = '测试角色'}) {
     basicInfo: '',
     otherInfo: '',
     imageTags: '',
+    userImageTags: '',
     sortOrder: 0,
     createdAt: now,
     updatedAt: now,
@@ -49,6 +50,7 @@ class _FakeCharacterActions extends Fake implements CharacterActions {
     String exampleDialogue = '',
     String systemPrompt = '',
     String imageTags = '',
+    String userImageTags = '',
   }) async {
     return createdId;
   }

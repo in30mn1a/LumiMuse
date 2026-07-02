@@ -1,11 +1,7 @@
-import 'dart:convert';
-import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../core/database/database.dart';
 import '../../../core/models/attachment_item.dart';
-import '../../../core/providers/database_provider.dart';
 import '../../../core/providers/llm_service_provider.dart';
 import '../../../core/providers/settings_provider.dart';
 import '../../../core/utils/i18n.dart';
@@ -443,39 +439,17 @@ class _ChatInputState extends ConsumerState<ChatInput> {
     if (_fetchedModels.isEmpty && !_modelLoading) {
       setState(() => _modelLoading = true);
       try {
-        final db = ref.read(databaseProvider);
         final settings = await ref.read(settingsProvider.future);
-        if (settings.apiBase.isNotEmpty) {
-          // 先尝试从本地缓存读取
-          final cached =
-              await (db.select(db.modelCache)
-                    ..where((t) => t.apiBase.equals(settings.apiBase)))
-                  .getSingleOrNull();
-          if (cached != null) {
-            final models = (jsonDecode(cached.models) as List).cast<String>();
-            if (models.isNotEmpty) {
-              _fetchedModels = models;
-            }
-          }
-          // 缓存为空，主动调用 API 拉取模型列表
-          if (_fetchedModels.isEmpty && settings.apiKey.isNotEmpty) {
-            final llm = ref.read(llmServiceProvider);
-            final models = await llm.fetchModels(
-              apiBase: settings.apiBase,
-              apiKey: settings.apiKey,
-            );
-            if (models.isNotEmpty) {
-              _fetchedModels = models;
-              // 写入缓存供下次使用
-              await db
-                  .into(db.modelCache)
-                  .insertOnConflictUpdate(
-                    ModelCacheCompanion.insert(
-                      apiBase: settings.apiBase,
-                      models: drift.Value(jsonEncode(models)),
-                    ),
-                  );
-            }
+        if (settings.apiBase.isNotEmpty && settings.apiKey.isNotEmpty) {
+          // LlmService.fetchModels 内部已做 30min TTL 缓存 + 失败回退旧缓存
+          // （对齐主项目 api/models/route.ts），此处不再重复读写 ModelCache 表。
+          final llm = ref.read(llmServiceProvider);
+          final models = await llm.fetchModels(
+            apiBase: settings.apiBase,
+            apiKey: settings.apiKey,
+          );
+          if (models.isNotEmpty) {
+            _fetchedModels = models;
           }
         }
       } catch (e) {

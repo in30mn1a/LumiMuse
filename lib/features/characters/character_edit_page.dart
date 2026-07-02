@@ -230,7 +230,7 @@ class CharacterEditPage extends ConsumerStatefulWidget {
         ),
       ],
     ),
-    // §A3.3.4 高级设置折叠区（系统提示词 + 生图标签）
+    // §A3.3.4 高级设置折叠区（系统提示词 + 生图标签 + 用户外貌标签）
     PageRegion(
       name: 'advancedSettings',
       slots: [
@@ -244,6 +244,12 @@ class CharacterEditPage extends ConsumerStatefulWidget {
           order: 2,
           anchor: SlotAnchor.start,
           id: 'imageTags',
+          build: (_) => const SizedBox.shrink(),
+        ),
+        PageSlot(
+          order: 3,
+          anchor: SlotAnchor.start,
+          id: 'userImageTags',
           build: (_) => const SizedBox.shrink(),
         ),
       ],
@@ -276,6 +282,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
   final _exampleDialogueController = TextEditingController();
   final _systemPromptController = TextEditingController();
   final _imageTagsController = TextEditingController();
+  final _userImageTagsController = TextEditingController();
   bool _loaded = false;
 
   /// 当前头像路径（本地文件路径或网络 URL）
@@ -307,6 +314,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         _otherInfoController.text != snap.otherInfo ||
         _systemPromptController.text != snap.systemPrompt ||
         _imageTagsController.text != snap.imageTags ||
+        _userImageTagsController.text != snap.userImageTags ||
         _avatarPath != snap.avatarUrl;
   }
 
@@ -324,6 +332,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       otherInfo: _otherInfoController.text,
       systemPrompt: _systemPromptController.text,
       imageTags: _imageTagsController.text,
+      userImageTags: _userImageTagsController.text,
       avatarUrl: _avatarPath,
     );
   }
@@ -364,6 +373,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
     _exampleDialogueController.dispose();
     _systemPromptController.dispose();
     _imageTagsController.dispose();
+    _userImageTagsController.dispose();
     _aiRequirementController.dispose();
     super.dispose();
   }
@@ -411,6 +421,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
             _otherInfoController.text = character.otherInfo;
             _systemPromptController.text = character.systemPrompt;
             _imageTagsController.text = character.imageTags;
+            _userImageTagsController.text = character.userImageTags;
             _avatarPath = character.avatarUrl;
             // FIX(Q3)：记录加载时的全字段快照供 _dirty 比较使用。
             _refreshSnapshot();
@@ -858,6 +869,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         AdvancedSettingsSection(
           systemPromptController: _systemPromptController,
           imageTagsController: _imageTagsController,
+          userImageTagsController: _userImageTagsController,
           isExpanded: _advancedExpanded,
           onToggle: () =>
               setState(() => _advancedExpanded = !_advancedExpanded),
@@ -962,6 +974,9 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         if (result['image_tags']?.isNotEmpty == true) {
           _imageTagsController.text = result['image_tags']!;
         }
+        if (result['user_image_tags']?.isNotEmpty == true) {
+          _userImageTagsController.text = result['user_image_tags']!;
+        }
         _showAiGenPanel = false;
       });
       // FIX(Q3)：AI 一键填入相当于"刚加载新值"，刷新 snapshot 让这次填入不计 dirty。
@@ -999,6 +1014,7 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         exampleDialogue: _exampleDialogueController.text,
         systemPrompt: _systemPromptController.text,
         imageTags: _imageTagsController.text,
+        userImageTags: _userImageTagsController.text,
       );
       // FIX(Q3)：保存成功后用最新表单值刷新快照，使 _dirty 立刻回到 false。
       // 这一步必须放在 update 成功之后、return / setState 之前，
@@ -1247,8 +1263,9 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
         }
       }
 
-      // 2) 记忆 / 对话 → 服务层强制 includeCharacter: false，全部挂到当前角色
-      final hasExtras = options.includeMemories || options.includeConversations;
+      // 2) 记忆 / 对话 / 角色画像 / 向量索引 → 服务层强制 includeCharacter: false，全部挂到当前角色
+      final hasExtras = options.includeMemories || options.includeConversations ||
+          options.includeProfiles || options.includeEmbeddings;
       int memoriesImported = 0;
       int conversationsImported = 0;
       if (hasExtras) {
@@ -1259,6 +1276,10 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
             includeCharacter: false,
             includeMemories: options.includeMemories,
             includeConversations: options.includeConversations,
+            includeProfiles: options.includeProfiles,
+            // embeddings 依赖 memories：memories 未勾选时强制不导入 embeddings
+            includeEmbeddings:
+                options.includeMemories && options.includeEmbeddings,
           ),
           targetCharacterId: widget.characterId,
         );
@@ -1352,6 +1373,9 @@ class _CharacterEditPageState extends ConsumerState<CharacterEditPage> {
       if (fields['image_tags']?.isNotEmpty == true) {
         _imageTagsController.text = fields['image_tags']!;
       }
+      if (fields['user_image_tags']?.isNotEmpty == true) {
+        _userImageTagsController.text = fields['user_image_tags']!;
+      }
       if (fields['avatar_url'] != null) {
         _avatarPath = fields['avatar_url']!.isEmpty
             ? null
@@ -1383,6 +1407,7 @@ class _CharacterEditSnapshot {
   final String otherInfo;
   final String systemPrompt;
   final String imageTags;
+  final String userImageTags;
   final String? avatarUrl;
 
   const _CharacterEditSnapshot({
@@ -1395,6 +1420,7 @@ class _CharacterEditSnapshot {
     required this.otherInfo,
     required this.systemPrompt,
     required this.imageTags,
+    required this.userImageTags,
     required this.avatarUrl,
   });
 }

@@ -373,6 +373,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                                       crossAxisAlignment:
                                           CrossAxisAlignment.stretch,
                                       children: [
+                                        MemoryEngineSection(),
+                                        SizedBox(height: AppSpacing.lg),
                                         MemorySection(),
                                         SizedBox(height: AppSpacing.lg),
                                         DisplaySection(),
@@ -566,6 +568,9 @@ class _ImportExportSectionState extends ConsumerState<_ImportExportSection> {
     try {
       final db = ref.read(databaseProvider);
       final service = BackupService(db);
+      // 全量导出不传 options：使用 ExportOptions 默认值（includeProfiles=true,
+      // includeEmbeddings=false），与主项目 include_profiles=1 / include_embeddings=0
+      // 默认一致（角色画像默认含；向量索引可重建且体积大，默认不含）
       final jsonStr = await service.exportToJson(includeSecrets: includeSecrets);
       final isMobileExport = Platform.isAndroid || Platform.isIOS;
       final exportBytes = Uint8List.fromList(utf8.encode(jsonStr));
@@ -706,6 +711,8 @@ class _ImportExportSectionState extends ConsumerState<_ImportExportSection> {
 
       final db = ref.read(databaseProvider);
       final service = BackupService(db);
+      // 全量导入不传 options：使用 ImportOptions 默认值（includeProfiles=true,
+      // includeEmbeddings=false），与主项目默认一致
       final importResult = await service.importFromJson(jsonStr);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

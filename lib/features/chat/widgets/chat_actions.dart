@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:drift/drift.dart' show Value;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
@@ -17,6 +18,8 @@ import '../../../core/providers/selection_provider.dart';
 import '../../../core/providers/settings_provider.dart';
 import '../../../core/services/image_gen_service.dart';
 import '../../../core/services/image_prompt_service.dart';
+import '../../../core/services/llm_service.dart';
+import '../../../core/services/memory_engine.dart';
 import '../../../core/services/summarize_service.dart';
 import '../../../core/utils/i18n.dart';
 import '../utils/image_delete_paths.dart' as img_del;
@@ -381,6 +384,20 @@ class ChatActions {
   }
 
   Future<void> deleteMessage(String messageId) async {
+    // spec Task 11.2：删除消息前先失效源自该消息的记忆
+    // 时序：先失效记忆再删消息，避免删除后关联丢失；
+    // 失败不阻塞删除主流程，仅记录日志
+    try {
+      final db = ref.read(databaseProvider);
+      final llm = LlmService();
+      final memoryEngine = MemoryEngine(db, llm);
+      await memoryEngine.invalidateMemoriesForSourceMessage(
+        messageId,
+        reason: 'deleted',
+      );
+    } catch (e) {
+      debugPrint('[ChatActions.deleteMessage] 失效记忆失败: $e');
+    }
     final actions = ref.read(messageActionsProvider);
     await actions.delete(messageId);
   }

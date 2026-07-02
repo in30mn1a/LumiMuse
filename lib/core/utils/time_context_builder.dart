@@ -40,17 +40,73 @@ class TimeContextBuilder {
   /// 与主项目 src/lib/chat-time.ts buildCurrentTimeInstruction 严格对齐。
   ///
   /// [dateTime] 通常为 `DateTime.now()`，重新生成时使用消息的 `created_at`。
-  static String buildTimeContext(DateTime dateTime) {
-    final year = dateTime.year.toString().padLeft(4, '0');
-    final month = dateTime.month.toString().padLeft(2, '0');
-    final day = dateTime.day.toString().padLeft(2, '0');
-    final hour = dateTime.hour.toString().padLeft(2, '0');
-    final minute = dateTime.minute.toString().padLeft(2, '0');
-    final weekday = weekdayName(dateTime.weekday);
+  ///
+  /// [timeZone]（IANA 时区名）/[utcOffsetMinutes]（UTC 偏移分钟数）用于对齐主项目
+  /// getTimeParts：
+  /// - 传入 [utcOffsetMinutes] 时，按「UTC 时刻 - 偏移」取 UTC 字段换算（对齐
+  ///   formatPartsWithOffset）。
+  /// - 传入 [timeZone] 时，Flutter 本地无 IANA 时区转换且无上报源，timeZone 暂回退本地，
+  ///   保留参数以对齐主项目 API。
+  /// - 两者都不传时使用本地时间字段。
+  ///
+  /// sourceLabel 逻辑对齐主项目 buildCurrentTimeInstruction：timeZone 优先，其次
+  /// utcOffsetMinutes；当前 Flutter 本地无上报源，两者通常为 null、sourceLabel 为空。
+  static String buildTimeContext(
+    DateTime dateTime, {
+    String? timeZone,
+    int? utcOffsetMinutes,
+  }) {
+    final String year;
+    final String month;
+    final String day;
+    final String hour;
+    final String minute;
+    final String weekday;
+
+    if (timeZone != null) {
+      // Flutter 本地无 IANA 时区转换且无上报源，timeZone 暂回退本地，保留参数以对齐主项目 API
+      year = dateTime.year.toString().padLeft(4, '0');
+      month = dateTime.month.toString().padLeft(2, '0');
+      day = dateTime.day.toString().padLeft(2, '0');
+      hour = dateTime.hour.toString().padLeft(2, '0');
+      minute = dateTime.minute.toString().padLeft(2, '0');
+      weekday = weekdayName(dateTime.weekday);
+    } else if (utcOffsetMinutes != null) {
+      // 时区偏移换算。注意符号约定的坑：
+      // 主项目 chat-time.ts formatPartsWithOffset 用「getTime() - offset*60000」(减法)，
+      // 但其 offset 来自 JS `getTimezoneOffset()`，语义是「UTC - 本地」(UTC+8 → -480)，
+      // 减去负数等于加，最终得到正确的本地时间。
+      // Flutter 端目前无上报源、本参数恒为 null（见 _buildSystemPrompt 调用处），
+      // 此分支仅供未来接入时使用；为避免符号约定与主项目不一致导致结果反向，
+      // 这里沿用「偏移量」语义(offset 为 UTC+8 → +480)并用加法，与下方现有测试
+      // (test/core/utils/time_context_builder_test.dart) 约定一致。真正接入上报源时
+      // 须连符号约定一起对齐主项目（ getTimezoneOffset 语义 + 减法）。
+      final shifted = dateTime.toUtc().add(
+        Duration(minutes: utcOffsetMinutes),
+      );
+      year = shifted.year.toString().padLeft(4, '0');
+      month = shifted.month.toString().padLeft(2, '0');
+      day = shifted.day.toString().padLeft(2, '0');
+      hour = shifted.hour.toString().padLeft(2, '0');
+      minute = shifted.minute.toString().padLeft(2, '0');
+      weekday = weekdayName(shifted.weekday);
+    } else {
+      year = dateTime.year.toString().padLeft(4, '0');
+      month = dateTime.month.toString().padLeft(2, '0');
+      day = dateTime.day.toString().padLeft(2, '0');
+      hour = dateTime.hour.toString().padLeft(2, '0');
+      minute = dateTime.minute.toString().padLeft(2, '0');
+      weekday = weekdayName(dateTime.weekday);
+    }
+
+    final sourceLabel = timeZone != null
+        ? '（用户时区：$timeZone）'
+        : utcOffsetMinutes != null
+        ? '（用户 UTC 偏移：$utcOffsetMinutes 分钟）'
+        : '';
 
     return '## Current Time\n'
-        '当前用户本地时间是 $year-$month-$day $hour:$minute，$weekday。'
-        '请根据这个时间来回答用户关于现实时间的问题，'
+        '当前用户本地时间是 $year-$month-$day $hour:$minute，$weekday$sourceLabel。'
         '如果用户询问现在几点、今天几号、星期几等现实时间问题，'
         '必须严格依据这个时间回答，不要猜测，也不要引用其他日期。';
   }

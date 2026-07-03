@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Character, Message, Settings } from '@/types';
+import { Character, Message, ReasoningEffort, Settings } from '@/types';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
 import ChatHeader from './ChatHeader';
@@ -57,6 +57,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const { showToast } = useToast();
   const [showTimestamps, setShowTimestamps] = useState(true);
   const [currentModel, setCurrentModel] = useState('');
+  // 思考强度：'default' 时请求体不发送 reasoning_effort 字段
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('default');
   // 记忆包 token 预算（后端 trimByTokenBudget 的裁剪上限）与记忆注入开关，用于前端估算实际注入量
   const [memoryPackageBudget, setMemoryPackageBudget] = useState(12000);
   const [memoryInjectEnabled, setMemoryInjectEnabled] = useState(true);
@@ -335,6 +337,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       .then(s => {
         setShowTimestamps(s.show_timestamps ?? true);
         setCurrentModel(s.model || '');
+        setReasoningEffort(s.reasoning_effort ?? 'default');
         setMemoryPackageBudget(s.memory_engine?.memory_package_token_budget ?? 12000);
         setMemoryInjectEnabled(s.memory_inject ?? true);
         setLimitInject(s.limit_inject ?? false);
@@ -1028,6 +1031,21 @@ export default function ChatView({ character, conversationId, targetMessageId, o
                 }));
               } catch (err) {
                 setCurrentModel(previousModel);
+                showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
+              }
+            }}
+            reasoningEffort={reasoningEffort}
+            onReasoningEffortChange={async (effort: ReasoningEffort) => {
+              const previousEffort = reasoningEffort;
+              setReasoningEffort(effort);
+              try {
+                await parseJsonResponse<void>(await fetch('/api/settings', {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ reasoning_effort: effort }),
+                }));
+              } catch (err) {
+                setReasoningEffort(previousEffort);
                 showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
               }
             }}

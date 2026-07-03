@@ -7,6 +7,9 @@ import { parseJsonResponse } from '@/lib/http';
 import { prepareAttachmentPayload } from '@/lib/attachment-payload';
 import { SparkIcon, StopIcon } from '@/components/ui/icons';
 import type { AttachmentItem } from '@/lib/chat-engine';
+import type { ReasoningEffort } from '@/types';
+
+const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['default', 'low', 'medium', 'high', 'max'];
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png'];
 const ACCEPTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/xml', 'text/xml', 'text/html'];
@@ -22,6 +25,8 @@ interface Props {
   currentModel?: string;
   onModelChange?: (model: string) => void;
   modelList?: string[];
+  reasoningEffort?: ReasoningEffort;
+  onReasoningEffortChange?: (effort: ReasoningEffort) => void;
 }
 
 function PaperclipIcon({ className }: { className?: string }) {
@@ -56,7 +61,7 @@ function genAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList, reasoningEffort = 'default', onReasoningEffortChange }: Props) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<LocalAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
@@ -71,6 +76,11 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
   // 触发按钮引用，关闭后把焦点还回去，保持键盘用户操作连续
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  // 思考强度下拉
+  const [effortPickerOpen, setEffortPickerOpen] = useState(false);
+  const effortPickerRef = useRef<HTMLDivElement>(null);
+  const effortTriggerRef = useRef<HTMLButtonElement>(null);
+  const effortOptionRefs = useRef<Array<HTMLDivElement | null>>([]);
   const { t } = useTranslation();
 
   const modelList = externalModelList && externalModelList.length > 0 ? externalModelList : fetchedModels;
@@ -91,6 +101,27 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [modelPickerOpen]);
+
+  useEffect(() => {
+    if (!effortPickerOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (effortPickerRef.current && !effortPickerRef.current.contains(e.target as Node)) {
+        setEffortPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [effortPickerOpen]);
+
+  // 下拉打开后把焦点移到当前选中项，方便键盘用户立即用方向键导航
+  useEffect(() => {
+    if (!effortPickerOpen) return;
+    const raf = requestAnimationFrame(() => {
+      const selectedIdx = REASONING_EFFORT_OPTIONS.indexOf(reasoningEffort);
+      effortOptionRefs.current[selectedIdx >= 0 ? selectedIdx : 0]?.focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [effortPickerOpen, reasoningEffort]);
 
   // 下拉打开后把焦点移到当前选中项（或首项），方便键盘用户立即用方向键导航
   useEffect(() => {
@@ -155,6 +186,30 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     } else if (e.key === 'End') {
       e.preventDefault();
       optionRefs.current[modelList.length - 1]?.focus();
+    }
+  };
+
+  const handleSelectEffort = (effort: ReasoningEffort) => {
+    onReasoningEffortChange?.(effort);
+    setEffortPickerOpen(false);
+    effortTriggerRef.current?.focus();
+  };
+
+  // 思考强度选项键盘导航：方向键移动焦点、Enter 选中、Esc 关闭
+  const handleEffortOptionKeyDown = (e: React.KeyboardEvent<HTMLDivElement>, index: number, effort: ReasoningEffort) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      effortOptionRefs.current[Math.min(index + 1, REASONING_EFFORT_OPTIONS.length - 1)]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      effortOptionRefs.current[Math.max(index - 1, 0)]?.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleSelectEffort(effort);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setEffortPickerOpen(false);
+      effortTriggerRef.current?.focus();
     }
   };
 
@@ -320,61 +375,118 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           )}
         </div>
 
-        {/* 模型切换栏 */}
-        <div className="relative mt-1 flex items-center justify-between px-1" ref={modelPickerRef}>
-          <button
-            ref={modelTriggerRef}
-            onClick={handleOpenModelPicker}
-            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
-            aria-haspopup="listbox"
-            aria-expanded={modelPickerOpen}
-          >
-            <span className="max-w-[12rem] truncate">{currentModel || t('settings.modelPlaceholder')}</span>
-            <ChevronDownIcon className="h-3 w-3" />
-          </button>
-
-          {modelPickerOpen && (
-            <div
-              role="listbox"
-              tabIndex={-1}
-              aria-label={t('input.modelSelect')}
-              aria-activedescendant={currentModel ? `model-option-${currentModel}` : undefined}
-              className="absolute bottom-full left-0 z-50 mb-1 max-h-60 w-72 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+        {/* 模型切换栏 + 思考强度 */}
+        <div className="mt-1 flex items-center gap-1 px-1">
+          <div className="relative" ref={modelPickerRef}>
+            <button
+              ref={modelTriggerRef}
+              onClick={handleOpenModelPicker}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
+              aria-haspopup="listbox"
+              aria-expanded={modelPickerOpen}
             >
-              <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
-                {modelLoading ? t('common.loading') : t('input.modelSelect')}
+              <span className="max-w-[12rem] truncate">{currentModel || t('settings.modelPlaceholder')}</span>
+              <ChevronDownIcon className="h-3 w-3" />
+            </button>
+
+            {modelPickerOpen && (
+              <div
+                role="listbox"
+                tabIndex={-1}
+                aria-label={t('input.modelSelect')}
+                aria-activedescendant={currentModel ? `model-option-${currentModel}` : undefined}
+                className="absolute bottom-full left-0 z-50 mb-1 max-h-60 w-72 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+              >
+                <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  {modelLoading ? t('common.loading') : t('input.modelSelect')}
+                </div>
+                {modelList.length === 0 && !modelLoading && (
+                  <div className="px-3 py-2 text-xs text-text-muted">{modelError || t('input.noModels')}</div>
+                )}
+                {modelList.map((model, index) => {
+                  const isSelected = model === currentModel;
+                  return (
+                    // role="option" + aria-selected：屏幕阅读器会朗读"选项 X，已选中"
+                    // tabIndex=0 让方向键导航时能 focus 到具体选项
+                    <div
+                      key={model}
+                      id={`model-option-${model}`}
+                      ref={(el) => {
+                        optionRefs.current[index] = el;
+                      }}
+                      role="option"
+                      aria-selected={isSelected}
+                      tabIndex={0}
+                      onClick={() => handleSelectModel(model)}
+                      onKeyDown={(e) => handleOptionKeyDown(e, index, model)}
+                      className={`w-full cursor-pointer px-3 py-1.5 text-left text-xs transition-colors outline-none focus:bg-accent/10 ${
+                        isSelected
+                          ? 'bg-accent/10 text-accent-dark font-medium'
+                          : 'text-text-secondary hover:bg-accent/5'
+                      }`}
+                    >
+                      <span className="block truncate">{model}</span>
+                    </div>
+                  );
+                })}
               </div>
-              {modelList.length === 0 && !modelLoading && (
-                <div className="px-3 py-2 text-xs text-text-muted">{modelError || t('input.noModels')}</div>
-              )}
-              {modelList.map((model, index) => {
-                const isSelected = model === currentModel;
-                return (
-                  // role="option" + aria-selected：屏幕阅读器会朗读"选项 X，已选中"
-                  // tabIndex=0 让方向键导航时能 focus 到具体选项
-                  <div
-                    key={model}
-                    id={`model-option-${model}`}
-                    ref={(el) => {
-                      optionRefs.current[index] = el;
-                    }}
-                    role="option"
-                    aria-selected={isSelected}
-                    tabIndex={0}
-                    onClick={() => handleSelectModel(model)}
-                    onKeyDown={(e) => handleOptionKeyDown(e, index, model)}
-                    className={`w-full cursor-pointer px-3 py-1.5 text-left text-xs transition-colors outline-none focus:bg-accent/10 ${
-                      isSelected
-                        ? 'bg-accent/10 text-accent-dark font-medium'
-                        : 'text-text-secondary hover:bg-accent/5'
-                    }`}
-                  >
-                    <span className="block truncate">{model}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+            )}
+          </div>
+
+          {/* 思考强度选择：default 不发送 reasoning_effort 字段 */}
+          <div className="relative" ref={effortPickerRef}>
+            <button
+              ref={effortTriggerRef}
+              onClick={() => setEffortPickerOpen(open => !open)}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
+              title={t('input.reasoningEffortHint')}
+              aria-haspopup="listbox"
+              aria-expanded={effortPickerOpen}
+            >
+              <span className="truncate">
+                {t('input.reasoningEffort')}: {reasoningEffort === 'default' ? t('input.reasoningEffortDefault') : reasoningEffort}
+              </span>
+              <ChevronDownIcon className="h-3 w-3" />
+            </button>
+
+            {effortPickerOpen && (
+              <div
+                role="listbox"
+                tabIndex={-1}
+                aria-label={t('input.reasoningEffort')}
+                aria-activedescendant={`effort-option-${reasoningEffort}`}
+                className="absolute bottom-full left-0 z-50 mb-1 w-44 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+              >
+                <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  {t('input.reasoningEffort')}
+                </div>
+                {REASONING_EFFORT_OPTIONS.map((effort, index) => {
+                  const isSelected = effort === reasoningEffort;
+                  return (
+                    <div
+                      key={effort}
+                      id={`effort-option-${effort}`}
+                      ref={(el) => {
+                        effortOptionRefs.current[index] = el;
+                      }}
+                      role="option"
+                      aria-selected={isSelected}
+                      tabIndex={0}
+                      onClick={() => handleSelectEffort(effort)}
+                      onKeyDown={(e) => handleEffortOptionKeyDown(e, index, effort)}
+                      className={`w-full cursor-pointer px-3 py-1.5 text-left text-xs transition-colors outline-none focus:bg-accent/10 ${
+                        isSelected
+                          ? 'bg-accent/10 text-accent-dark font-medium'
+                          : 'text-text-secondary hover:bg-accent/5'
+                      }`}
+                    >
+                      {effort === 'default' ? t('input.reasoningEffortDefault') : effort}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

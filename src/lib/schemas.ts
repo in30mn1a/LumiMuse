@@ -127,6 +127,8 @@ export const settingsUpdateSchema = z.looseObject({
   top_k: z.union([z.null(), settingPositiveIntegerSchema.max(1000)]).optional(),
   repetition_penalty: z.union([z.null(), settingFiniteNumberSchema.min(0).max(10)]).optional(),
   seed: z.union([z.null(), z.number().int().min(0).max(2_147_483_647)]).optional(),
+  // 思考强度：'default' 表示不发送 reasoning_effort 字段
+  reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'max']).optional(),
   streaming: z.boolean().optional(),
   example_dialogue: z.boolean().optional(),
   memory_inject: z.boolean().optional(),

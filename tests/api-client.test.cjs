@@ -131,6 +131,47 @@ test('chatCompletion omits null/undefined sampling params and includes set ones'
   assert.equal('seed' in capturedBody, false, 'seed should be absent');
 });
 
+test('chatCompletion sends reasoning_effort only when not default', async () => {
+  let capturedBody = null;
+
+  const { chatCompletion } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': {
+      safeFetch: async (_url, init) => {
+        capturedBody = JSON.parse(init.body);
+        return {
+          ok: true,
+          async json() {
+            return { choices: [{ message: { content: 'ok' } }] };
+          },
+        };
+      },
+    },
+  });
+
+  const baseSettings = {
+    api_base: 'https://llm.example/v1',
+    api_key: 'secret',
+    model: 'gemini-3.1-pro-preview',
+    max_tokens: 2048,
+    temperature: 0.9,
+    json_mode: false,
+  };
+
+  // default：请求体不包含 reasoning_effort
+  await chatCompletion({ ...baseSettings, reasoning_effort: 'default' }, [{ role: 'user', content: 'hi' }]);
+  assert.equal('reasoning_effort' in capturedBody, false, 'reasoning_effort should be absent when default');
+
+  // 未设置（旧数据无该字段）：同样不发送
+  await chatCompletion(baseSettings, [{ role: 'user', content: 'hi' }]);
+  assert.equal('reasoning_effort' in capturedBody, false, 'reasoning_effort should be absent when unset');
+
+  // 显式档位：原样发送
+  for (const effort of ['low', 'medium', 'high', 'max']) {
+    await chatCompletion({ ...baseSettings, reasoning_effort: effort }, [{ role: 'user', content: 'hi' }]);
+    assert.equal(capturedBody.reasoning_effort, effort);
+  }
+});
+
 test('chatCompletion with all-null sampling params produces clean body', async () => {
   let capturedBody = null;
 

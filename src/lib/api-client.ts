@@ -101,6 +101,10 @@ function appendOptionalSamplingParams(body: Record<string, unknown>, settings: S
   if (settings.top_k != null) body.top_k = settings.top_k;
   if (settings.repetition_penalty != null) body.repetition_penalty = settings.repetition_penalty;
   if (settings.seed != null) body.seed = settings.seed;
+  // 思考强度：'default' 表示不发送该字段，交给上游默认行为（部分模型不支持 reasoning_effort）。
+  if (settings.reasoning_effort && settings.reasoning_effort !== 'default') {
+    body.reasoning_effort = settings.reasoning_effort;
+  }
 }
 
 export async function chatCompletionStream(

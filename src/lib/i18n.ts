@@ -64,6 +64,9 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.modelSelect': '选择模型',
     'input.noModels': '暂无可用模型，请先在设置中配置 API',
     'input.modelLoadFail': '模型列表加载失败，请检查 API 设置',
+    'input.reasoningEffort': '思考强度',
+    'input.reasoningEffortDefault': '默认',
+    'input.reasoningEffortHint': '思考强度（reasoning effort）：默认时不在请求体里发送该字段，交给模型自身默认行为',
 
     'status.tokens': 'token',
     'status.streaming': '正在生成',
@@ -799,6 +802,9 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.modelSelect': 'Select Model',
     'input.noModels': 'No models available. Please configure API in settings first.',
     'input.modelLoadFail': 'Failed to load models. Please check API settings.',
+    'input.reasoningEffort': 'Reasoning',
+    'input.reasoningEffortDefault': 'Default',
+    'input.reasoningEffortHint': 'Reasoning effort. Default sends no reasoning_effort field, keeping the model\'s own behavior.',
 
     'status.tokens': 'tokens',
     'status.streaming': 'Generating',

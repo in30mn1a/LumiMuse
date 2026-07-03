@@ -238,6 +238,9 @@ export interface ArtistString {
 
 export type FontStyle = 'wenkai' | 'system' | 'serif';
 
+// 思考强度（reasoning effort）：'default' 表示不在请求体里发送该字段，交给上游默认行为。
+export type ReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'max';
+
 export interface ApiProvider {
   id: string;
   name: string;
@@ -342,6 +345,8 @@ export interface Settings {
   top_k: number | null;
   repetition_penalty: number | null;
   seed: number | null;
+  // 思考强度：'default' 时请求体不包含 reasoning_effort 字段（部分模型不支持）。
+  reasoning_effort: ReasoningEffort;
   // 生图设置
   image_gen: ImageGenSettings;
   memory_engine: MemoryEngineSettings;
@@ -382,6 +387,7 @@ export const DEFAULT_SETTINGS: Settings = {
   top_k: null,
   repetition_penalty: null,
   seed: null,
+  reasoning_effort: 'default',
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
   memory_engine: { ...DEFAULT_MEMORY_ENGINE_SETTINGS },
   artist_strings: [],

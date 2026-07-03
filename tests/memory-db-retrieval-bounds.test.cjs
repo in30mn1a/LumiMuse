@@ -478,7 +478,7 @@ test('retrieveRelevantMemories 在 500 和 2000 条 active memories 下只读取
   }
 });
 
-test('legacy fallback 在 limit_inject=false 时有界读取，并优先保留 pinned/high-importance/recent', async () => {
+test('legacy fallback 在 limit_inject=false 时读取全部 active 记忆，并优先保留 pinned/high-importance/recent', async () => {
   const db = createCoreDb();
   seedManyMemories(db, 2000, 'legacy-pinned');
   const tracked = createTrackedDb(db);
@@ -509,9 +509,10 @@ test('legacy fallback 在 limit_inject=false 时有界读取，并优先保留 p
     },
   });
 
+  // 全量注入路径不再有 300 条候选上限:全部 active 记忆进入候选池,由 token 预算裁剪
   assert.ok(
-    tracked.stats.memorySelectRows.every(count => count <= 300),
-    `legacy fallback should not load more than 300 candidates, got ${tracked.stats.memorySelectRows.join(', ')}`,
+    tracked.stats.memorySelectRows.some(count => count === 2001),
+    `legacy full injection should load all active candidates, got ${tracked.stats.memorySelectRows.join(', ')}`,
   );
   assert.ok(result.selectedMemories.some(memory => memory.id === 'legacy-pinned'));
 });

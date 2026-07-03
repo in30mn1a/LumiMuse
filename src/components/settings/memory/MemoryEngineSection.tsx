@@ -173,12 +173,14 @@ export function MemoryEngineSection({
             <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryPackageTokenBudget')}</label>
             <input
               type="number"
-              min="1000"
-              max="32000"
+              min="1"
               step="500"
               value={settings.memory_engine.memory_package_token_budget}
               onChange={e => updateMemoryEngine('memory_package_token_budget', parseNumber(e.target.value))}
-              onBlur={e => updateMemoryEngine('memory_package_token_budget', Math.min(32000, Math.max(1000, Math.round(parseNumber(e.target.value) || 12000))))}
+              onBlur={e => {
+                const parsed = Math.round(parseNumber(e.target.value) || 0);
+                updateMemoryEngine('memory_package_token_budget', parsed > 0 ? parsed : 12000);
+              }}
               className="input-rich"
             />
             <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryPackageTokenBudgetHint')}</p>

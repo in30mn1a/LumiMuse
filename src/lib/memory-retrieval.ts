@@ -124,9 +124,6 @@ const MEMORY_USAGE_PRINCIPLES = `### 记忆使用原则
 记忆上下文用于帮助你保持长期连续性，但不得覆盖用户当前消息。
 如果旧记忆和当前消息冲突，以当前消息为准。`;
 
-// 记忆工作包 token 上限的硬上界(与设置页 UI 的 max 一致):防止越界配置架空「token 预算是硬上限」的设计。
-const MEMORY_PACKAGE_TOKEN_BUDGET_MAX = 32000;
-const LEGACY_MEMORY_CANDIDATE_LIMIT = 300;
 
 function finiteNumber(value: unknown, fallback: number): number {
   const n = Number(value);
@@ -149,12 +146,8 @@ export function resolveMemoryEngineConfig(settings: Settings): MemoryEngineConfi
       : 'local',
     embedding_enabled: engineEnabled && allowExternalMemoryPayloads && merged.embedding_enabled,
     reranker_enabled: engineEnabled && allowExternalMemoryPayloads && merged.reranker_enabled,
-    // 钳上界:即便绕过 UI(直接改 API/DB)写入超大值,也不允许架空「token 预算是硬上限」的设计,
-    // 否则会退化为近似全量召回。下界由 finiteNumber 的 >0 判断兜底回默认值。
-    memory_package_token_budget: Math.min(
-      finiteNumber(merged.memory_package_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.memory_package_token_budget),
-      MEMORY_PACKAGE_TOKEN_BUDGET_MAX,
-    ),
+    // 不设上界:预算大小由用户自行决定。下界由 finiteNumber 的 >0 判断兜底回默认值。
+    memory_package_token_budget: finiteNumber(merged.memory_package_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.memory_package_token_budget),
     retrieval_token_budget: finiteNumber(merged.retrieval_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.retrieval_token_budget),
     vector_top_k: Math.floor(finiteNumber(merged.vector_top_k, DEFAULT_MEMORY_ENGINE_CONFIG.vector_top_k)),
     keyword_top_k: Math.floor(finiteNumber(merged.keyword_top_k, DEFAULT_MEMORY_ENGINE_CONFIG.keyword_top_k)),
@@ -194,6 +187,7 @@ function loadDefaultPriorityMemories(characterId: string): Memory[] {
 
 function loadDefaultLegacyMemories(characterId: string): Memory[] {
   const db = getDb();
+  // 全量注入路径不设条数上限:裁剪统一交给 trimByTokenBudget 的 token 预算兜底
   const rows = db.prepare(
     `SELECT * FROM memories
      WHERE character_id = ?
@@ -201,9 +195,8 @@ function loadDefaultLegacyMemories(characterId: string): Memory[] {
       ORDER BY
         COALESCE(pinned, 0) DESC,
         COALESCE(importance, 0) DESC,
-        updated_at DESC
-      LIMIT ?`,
-  ).all(characterId, LEGACY_MEMORY_CANDIDATE_LIMIT) as Memory[];
+        updated_at DESC`,
+  ).all(characterId) as Memory[];
 
   return rows.map(normalizeMemoryRecord);
 }

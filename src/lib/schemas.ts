@@ -94,7 +94,7 @@ const memoryEngineSettingsSchema = z.looseObject({
   reranker_api_key: settingApiKeySchema.optional(),
   reranker_model: settingModelSchema.optional(),
   fallback_local_enabled: z.boolean().optional(),
-  memory_package_token_budget: settingPositiveIntegerSchema.max(32_000).optional(),
+  memory_package_token_budget: settingPositiveIntegerSchema.optional(),
   retrieval_token_budget: settingPositiveIntegerSchema.optional(),
   vector_top_k: settingPositiveIntegerSchema.optional(),
   keyword_top_k: settingPositiveIntegerSchema.optional(),

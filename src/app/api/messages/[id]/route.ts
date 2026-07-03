@@ -7,7 +7,6 @@ import {
   deleteLocalAssetUrls,
   filterUnreferencedLocalAssetUrls,
 } from '@/lib/character-file-utils';
-import { invalidateMemoriesForSourceMessage } from '@/lib/memory-source-tracking';
 import { messageUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 type MessageRecord = Record<string, unknown>;
@@ -140,7 +139,8 @@ export async function PUT(
           .run(body.content, tokenCount, JSON.stringify(meta), id);
       }
 
-      invalidateMemoriesForSourceMessage({ db, messageId: id, reason: 'edited' });
+      // 注：不再自动 invalidate 消息编辑触发的记忆。编辑原因多样（改错别字/调语气/补内容），
+      // 自动 supersede 会误伤有效记忆；用户可在记忆管理页手动标记失效。
     }
 
     const shouldMergeIncomingMetadata = body.metadata !== undefined && body.activeVersion === undefined;
@@ -188,7 +188,6 @@ export async function DELETE(
     const updated = db.transaction(() => {
       db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
         .run(target.content, target.token_count, JSON.stringify(meta), id);
-      invalidateMemoriesForSourceMessage({ db, messageId: id, reason: 'deleted' });
       return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
     })();
     await deleteUnreferencedLocalAssets(db, previousFileUrls);
@@ -196,8 +195,9 @@ export async function DELETE(
   }
 
   // 只有一个版本（或无版本信息）：删整条消息
+  // 注：不自动 invalidate 该消息支撑的记忆。删除消息可能只是清理对话历史，
+  // 记忆事实仍然有效；用户可在记忆管理页手动标记失效。
   const result = db.transaction(() => {
-    invalidateMemoriesForSourceMessage({ db, messageId: id, reason: 'deleted' });
     return db.prepare('DELETE FROM messages WHERE id = ?').run(id);
   })();
   if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });

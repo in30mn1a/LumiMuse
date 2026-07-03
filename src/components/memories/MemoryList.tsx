@@ -119,7 +119,9 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
     params.set('sort', sortOrder);
     params.set('limit', String(PAGE_SIZE));
     params.set('offset', String((targetPage - 1) * PAGE_SIZE));
-    if (showArchived) params.set('hide_archived', '0');
+    // 「显示已归档」开启时只展示非 active 状态（archived/summarized/superseded），
+    // 不与 active 混在一起，避免视觉混乱。复用 status 多值过滤，后端命中 statusFilter 时跳过默认过滤。
+    if (showArchived) params.set('status', 'archived,summarized,superseded');
 
     try {
       const data = await parseJsonResponse<MemoriesResponse>(await fetch(`/api/memories?${params}`, { signal }));

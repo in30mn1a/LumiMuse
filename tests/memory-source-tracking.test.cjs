@@ -175,19 +175,12 @@ test('来源消息反向标记不会误伤相似 message id 的记忆', () => {
   assert.equal(db.prepare('SELECT status FROM memories WHERE id = ?').get('mem-similar').status, 'active');
 });
 
-test('消息编辑和重新生成会标记相关记忆为 superseded，避免静默沿用旧事实', () => {
+test('消息编辑会标记相关记忆为 superseded，避免静默沿用旧事实', () => {
   const db = createDb();
   insertMemory(db, {
     id: 'mem-edit',
     content: '主人喜欢咖啡。',
     source_msg_ids: ['msg-user-edit'],
-  });
-  insertMemory(db, {
-    id: 'mem-regen',
-    category: '关系动态',
-    content: '角色承诺明天提醒主人休息。',
-    source_msg_ids: ['msg-assistant-old'],
-    memory_kind: 'character_promise',
   });
 
   const { invalidateMemoriesForSourceMessage } = require('../src/lib/memory-source-tracking.ts');
@@ -196,68 +189,13 @@ test('消息编辑和重新生成会标记相关记忆为 superseded，避免静
     messageId: 'msg-user-edit',
     reason: 'edited',
   });
-  invalidateMemoriesForSourceMessage({
-    db,
-    messageId: 'msg-assistant-old',
-    reason: 'regenerated',
-    replacementMessageId: 'msg-assistant-old',
-  });
 
   const edited = JSON.parse(db.prepare('SELECT metadata FROM memories WHERE id = ?').get('mem-edit').metadata);
-  const regenerated = JSON.parse(db.prepare('SELECT metadata FROM memories WHERE id = ?').get('mem-regen').metadata);
 
   assert.equal(db.prepare('SELECT status FROM memories WHERE id = ?').get('mem-edit').status, 'superseded');
   assert.equal(edited.sourceInvalidation.reason, 'edited');
-  assert.equal(db.prepare('SELECT status FROM memories WHERE id = ?').get('mem-regen').status, 'superseded');
-  assert.equal(regenerated.sourceInvalidation.reason, 'regenerated');
-  assert.equal(regenerated.sourceInvalidation.replacementMessageId, 'msg-assistant-old');
-});
-
-test('多版本消息删除和记忆失效在同一事务内提交', async () => {
-  const db = createMessageDb();
-  const originalMetadata = {
-    versions: [
-      { content: '旧版本', token_count: 3 },
-      { content: '当前版本', token_count: 4 },
-    ],
-    activeVersion: 1,
-  };
-  db.prepare(`
-    INSERT INTO messages (id, content, token_count, metadata)
-    VALUES ('msg-versioned', '当前版本', 4, ?)
-  `).run(JSON.stringify(originalMetadata));
-
-  const route = requireFreshWithMocks('../src/app/api/messages/[id]/route.ts', {
-    'next/server': {
-      NextResponse: {
-        json(body, init = {}) {
-          return { status: init.status ?? 200, body, async json() { return body; } };
-        },
-      },
-    },
-    '@/lib/db': { getDb: () => db },
-    '@/lib/character-file-utils': {
-      collectLocalAssetUrlsFromContent: () => new Set(),
-      collectLocalAssetUrlsFromMetadata: () => new Set(),
-      deleteLocalAssetUrls: async () => {},
-      filterUnreferencedLocalAssetUrls: () => new Set(),
-    },
-    '@/lib/memory-source-tracking': {
-      invalidateMemoriesForSourceMessage: () => {
-        throw new Error('invalidation failed');
-      },
-    },
-  });
-
-  await assert.rejects(
-    () => route.DELETE({}, { params: Promise.resolve({ id: 'msg-versioned' }) }),
-    /invalidation failed/,
-  );
-
-  const row = db.prepare('SELECT content, token_count, metadata FROM messages WHERE id = ?').get('msg-versioned');
-  assert.equal(row.content, '当前版本');
-  assert.equal(row.token_count, 4);
-  assert.deepEqual(JSON.parse(row.metadata), originalMetadata);
+  // 重新生成 assistant 消息不再调用 invalidateMemoriesForSourceMessage：
+  // 用户事实不会因 assistant 回复变化而失效，之前在此处 supersede 是错误设计。
 });
 
 test('本地记忆检索不会返回已失效的来源记忆', () => {

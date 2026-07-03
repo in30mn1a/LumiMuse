@@ -122,10 +122,11 @@ export async function GET(request: NextRequest) {
   if (excludeArchiveSummary) {
     sql += ` AND COALESCE(json_extract(metadata, '$.archiveRole'), '') != 'summary'`;
   }
-  // 默认隐藏已归档/已总结的记忆；若调用方明确指定状态过滤则不覆盖
+  // 默认隐藏已归档/已总结/已被取代的记忆，与后端注入逻辑（仅注入 active）对齐；
+  // 若调用方明确指定状态过滤则不覆盖。
   const hideArchived = request.nextUrl.searchParams.get('hide_archived');
   if (hideArchived !== '0' && statusFilter.length === 0) {
-    sql += " AND status NOT IN ('archived', 'summarized')";
+    sql += " AND status NOT IN ('archived', 'summarized', 'superseded')";
   }
 
   const total = db.prepare(`SELECT COUNT(*) as count FROM (${sql})`).get(...params) as { count: number };

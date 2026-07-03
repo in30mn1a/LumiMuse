@@ -7,7 +7,6 @@ import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion, 
 import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
-import { invalidateMemoriesForSourceMessage } from '@/lib/memory-source-tracking';
 import { buildCurrentTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
 import { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } from '@/lib/inline-image-prompt';
@@ -645,13 +644,10 @@ export async function runChat(
       }
 
       // 用事务包裹两条 UPDATE，保持与新建分支对称、避免半成功状态
+      // 注：重新生成 assistant 消息时不调用 invalidateMemoriesForSourceMessage。
+      // 记忆内容来自「用户事实 + assistant 回复」，重新生成只改变回复内容，
+      // 用户事实仍然有效；之前在此处让记忆 superseded 是错误设计，会让正常记忆被误标。
       db.transaction(() => {
-        invalidateMemoriesForSourceMessage({
-          db,
-          messageId: options.regenerateAssistantId!,
-          reason: 'regenerated',
-          replacementMessageId: options.regenerateAssistantId,
-        });
         db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
           .run(fullText, tokenCount, JSON.stringify(meta), options.regenerateAssistantId);
         db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);

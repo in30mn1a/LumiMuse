@@ -276,3 +276,38 @@ test('/api/memories GET keyword search treats percent and underscore as literal 
   assert.equal(underscoreResponse.status, 200);
   assert.deepEqual(underscorePayload.memories.map(memory => memory.id), ['literal-underscore']);
 });
+
+test('/api/memories GET 默认排除 superseded，与后端仅注入 active 对齐', async () => {
+  const db = createMemoryDb();
+
+  insertMemory(db, { id: 'active-1', content: '活跃记忆', status: 'active' });
+  insertMemory(db, { id: 'superseded-1', content: '被取代记忆', status: 'superseded' });
+  insertMemory(db, { id: 'archived-1', content: '已归档记忆', status: 'archived' });
+  insertMemory(db, { id: 'summarized-1', content: '已总结记忆', status: 'summarized' });
+
+  const route = requireFreshWithMocks('../src/app/api/memories/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+  });
+
+  // 默认（无 status 参数）：只返回 active，排除 archived/summarized/superseded
+  const defaultResponse = await route.GET(requestFor(
+    'http://test.local/api/memories?character_id=char-a',
+  ));
+  const defaultPayload = await defaultResponse.json();
+  assert.equal(defaultResponse.status, 200);
+  assert.deepEqual(defaultPayload.map(memory => memory.id), ['active-1']);
+
+  // 「显示已归档」开关：status=archived,summarized,superseded 只返回非 active 状态
+  const archivedOnlyResponse = await route.GET(requestFor(
+    'http://test.local/api/memories?character_id=char-a&status=archived,summarized,superseded',
+  ));
+  const archivedOnlyPayload = await archivedOnlyResponse.json();
+  assert.equal(archivedOnlyResponse.status, 200);
+  assert.equal(archivedOnlyPayload.length, 3);
+  assert.ok(archivedOnlyPayload.every(memory => memory.status !== 'active'));
+  assert.deepEqual(
+    archivedOnlyPayload.map(memory => memory.id).sort(),
+    ['archived-1', 'summarized-1', 'superseded-1'],
+  );
+});

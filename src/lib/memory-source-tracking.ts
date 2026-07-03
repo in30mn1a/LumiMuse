@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { getDb } from '@/lib/db';
 
-export type MemorySourceInvalidationReason = 'deleted' | 'edited' | 'regenerated';
+export type MemorySourceInvalidationReason = 'deleted' | 'edited';
 
 interface MemorySourceInvalidationParams {
   db?: Database.Database;

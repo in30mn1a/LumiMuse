@@ -310,7 +310,7 @@ test('/api/auth DELETE with a valid cookie bumps min_iat and clears the response
   assert.match(cookie, /Max-Age=0/i);
 });
 
-test('/api/auth POST does not trust X-Forwarded-For by default or share an unknown-IP bucket', async () => {
+test('/api/auth POST rate limits spoofed X-Forwarded-For via shared untrusted bucket', async () => {
   setAuthEnv();
   const route = loadAuthRoute();
   let response = null;
@@ -321,7 +321,7 @@ test('/api/auth POST does not trust X-Forwarded-For by default or share an unkno
     }));
   }
 
-  assert.equal(response.status, 401);
+  assert.equal(response.status, 429);
 
   response = await route.POST(jsonAuthRequest('POST', { password: 'wrong-password' }));
   assert.equal(response.status, 401);

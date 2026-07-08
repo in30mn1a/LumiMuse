@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
+import { backgroundTaskStaleCutoffIso } from '@/lib/background-task-recovery';
 import { getDb } from '@/lib/db';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { Memory } from '@/types';
@@ -598,12 +599,12 @@ export function stopCurrentMemoryIndexTasks(
 export function recoverStaleMemoryEmbeddingTasks(db: Database.Database = getDb()): number {
   ensureMemoryEmbeddingTables(db);
   const now = new Date().toISOString();
-  // 崩溃/重启会把已 claim 但未完成的任务遗留在 status='processing'(claim_token 已随进程失效)。
-  // 这类孤儿既不会被 drain 重新领取(只取 pending),又会因唯一活跃索引阻断 rebuild/重新入队,
-  // 且 embedding 任务没有租约可自愈——必须靠启动恢复重置为 pending(与提取队列、画像队列对称)。
+  const staleBefore = backgroundTaskStaleCutoffIso();
+  // 仅回收 updated_at 已超过租约窗口的 processing（崩溃孤儿）；另一实例刚 claim 的任务不抢。
   const result = db.prepare(
-    "UPDATE memory_embedding_tasks SET status = 'pending', claim_token = NULL, updated_at = ? WHERE status = 'processing'",
-  ).run(now);
+    `UPDATE memory_embedding_tasks SET status = 'pending', claim_token = NULL, updated_at = ?
+     WHERE status = 'processing' AND updated_at <= ?`,
+  ).run(now, staleBefore);
   return result.changes;
 }
 

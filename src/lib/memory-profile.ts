@@ -847,13 +847,17 @@ export function triggerMemoryProfileQueue(): void {
   })();
 }
 
-/** 服务启动时调用：把上次崩溃遗留的 processing 画像任务重置为 pending，并清除认领租约。 */
+/** 服务启动时调用：仅回收租约已过期或缺失的 processing 画像任务，不抢另一实例 in-flight 任务。 */
 export function recoverStaleMemoryProfileTasks(db: Database.Database = getDb()): void {
   ensureMemoryProfileTables(db);
   db.prepare(`
     UPDATE character_memory_profile_update_tasks
     SET status = 'pending', claim_token = NULL, lease_expires_at = NULL, updated_at = datetime('now')
     WHERE status = 'processing'
+      AND (
+        lease_expires_at IS NULL
+        OR lease_expires_at <= datetime('now')
+      )
   `).run();
 }
 

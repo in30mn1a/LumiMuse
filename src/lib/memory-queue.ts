@@ -4,6 +4,7 @@
  * 任务写入 memory_tasks 表，服务重启后自动恢复 pending/processing 任务，
  * 不再因热重载或进程崩溃而丢失。
  */
+import { backgroundTaskStaleCutoffIso } from '@/lib/background-task-recovery';
 import { extractMemories } from '@/lib/memory-engine';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
@@ -119,14 +120,17 @@ export function enqueueExtraction(
   if (!processing) void processQueue();
 }
 
-/** 服务启动时调用，把上次崩溃遗留的 processing 任务重置为 pending */
+/** 服务启动时调用：仅回收 processing 且已超过租约窗口的任务（崩溃孤儿），不抢另一实例 in-flight 任务 */
 export function recoverStaleTasks(): void {
   const db = getDb();
   const now = new Date().toISOString();
+  const staleBefore = backgroundTaskStaleCutoffIso();
   if (hasColumn(db, 'memory_tasks', 'started_at')) {
     db.prepare(
-      "UPDATE memory_tasks SET status = 'pending', started_at = NULL, updated_at = ? WHERE status = 'processing'"
-    ).run(now);
+      `UPDATE memory_tasks SET status = 'pending', started_at = NULL, updated_at = ?
+       WHERE status = 'processing'
+         AND (started_at IS NULL OR started_at <= ?)`
+    ).run(now, staleBefore);
   } else {
     db.prepare(
       "UPDATE memory_tasks SET status = 'pending', updated_at = ? WHERE status = 'processing'"

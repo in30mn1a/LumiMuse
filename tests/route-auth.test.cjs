@@ -77,6 +77,7 @@ function resetModules(extra = []) {
     'src/lib/auth-token.ts',
     'src/lib/route-auth.ts',
     'src/lib/settings.ts',
+    'src/app/api/auth/route.ts',
     'src/app/api/providers/route.ts',
     'src/app/api/providers/activate/route.ts',
     'src/app/api/maintenance/route.ts',
@@ -208,6 +209,22 @@ test('/api/auth POST rate limits direct bad password attempts without TRUST_PROX
 
   for (let i = 0; i < 11; i += 1) {
     response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }));
+  }
+
+  const payload = await response.json();
+  assert.equal(response.status, 429);
+  assert.equal(payload.error, '尝试次数过多，请稍后再试');
+});
+
+test('/api/auth POST rate limits untrusted x-forwarded-for with shared bucket', async () => {
+  setAuthEnv();
+  const route = loadAuthRoute();
+  let response = null;
+
+  for (let i = 0; i < 11; i += 1) {
+    response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
+      'x-forwarded-for': `203.0.113.${i}`,
+    }));
   }
 
   const payload = await response.json();

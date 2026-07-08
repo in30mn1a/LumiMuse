@@ -95,9 +95,7 @@ export function getDb(): Database.Database {
 
   // 服务启动时把上次崩溃遗留的 processing 任务重置为 pending
   // 延迟 import 避免循环依赖（memory-queue → db → memory-queue）
-  // 注意:下面的 recoverStale* 无条件把 processing→pending,假设「单写入实例」(项目默认单容器部署)。
-  // 若未来支持多副本共享同一 SQLite,必须改为基于租约(lease_expires_at)只回收过期任务,
-  // 否则一个实例重启会把另一实例正在处理的 in-flight 任务抢回 pending,导致重复处理。
+  // recoverStale* 仅回收已超过租约窗口的 processing（崩溃孤儿）；另一实例 in-flight 任务不会被抢回。
   setImmediate(() => {
     import('@/lib/memory-queue').then(({ recoverStaleTasks, triggerQueue }) => {
       recoverStaleTasks();

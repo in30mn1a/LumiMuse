@@ -9,6 +9,8 @@ const RATE_LIMIT_MAX = 10;
 // 跟踪的 IP 上限，防止大量不同 IP 的失败尝试导致 Map 无界增长而 OOM
 const MAX_TRACKED_IPS = 10000;
 const DIRECT_RATE_LIMIT_BUCKET = '__direct__';
+/** 未启用 TRUST_PROXY 却携带转发头时，所有此类请求共享同一限流桶（防止逐请求伪造 IP 绕过限流） */
+const FORWARDED_UNTRUSTED_BUCKET = '__forwarded_untrusted__';
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
 function isTrustProxyEnabled(): boolean {
@@ -34,9 +36,10 @@ function getClientIp(request: NextRequest): string | null {
     }
   }
   // NextRequest 在当前部署目标中没有稳定的直连 IP 字段。没有转发头时使用
-  // direct bucket 修复默认直连场景不限流；出现未信任转发头时保持 unknown，
-  // 避免攻击者用伪造头把所有未知来源合并锁死到同一个 bucket。
-  return hasUntrustedForwardingHeaders(request) ? null : DIRECT_RATE_LIMIT_BUCKET;
+  // direct bucket；出现未信任转发头时使用共享桶，避免攻击者每请求换一个伪造 IP 绕过限流。
+  return hasUntrustedForwardingHeaders(request)
+    ? FORWARDED_UNTRUSTED_BUCKET
+    : DIRECT_RATE_LIMIT_BUCKET;
 }
 
 function touchAttempt(ip: string, entry: { count: number; resetAt: number }): void {

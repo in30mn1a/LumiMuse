@@ -10,6 +10,7 @@ const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
   'memory_trigger_time_enabled',
   'memory_trigger_keyword_enabled',
   'disable_deepseek_thinking_for_background',
+  'memory_background_reasoning_effort_enabled',
   'show_timestamps',
   'limit_inject',
 ];
@@ -127,11 +128,43 @@ export function resolveBackgroundConfig(settings: Settings): { api_base: string;
   };
 }
 
-export function buildBackgroundChatExtraBody(settings: Pick<Settings, 'disable_deepseek_thinking_for_background'>, model: string): Record<string, unknown> | undefined {
-  if (!settings.disable_deepseek_thinking_for_background || !/deepseek/i.test(model)) {
-    return undefined;
+export function buildBackgroundChatExtraBody(
+  settings: Pick<
+    Settings,
+    | 'disable_deepseek_thinking_for_background'
+    | 'memory_background_reasoning_effort_enabled'
+    | 'memory_background_reasoning_effort'
+  >,
+  model: string,
+): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {};
+  if (settings.disable_deepseek_thinking_for_background && /deepseek/i.test(model)) {
+    extra.thinking = { type: 'disabled' };
   }
-  return { thinking: { type: 'disabled' } };
+  if (
+    settings.memory_background_reasoning_effort_enabled
+    && settings.memory_background_reasoning_effort
+    && settings.memory_background_reasoning_effort !== 'default'
+  ) {
+    extra.reasoning_effort = settings.memory_background_reasoning_effort;
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
+/** 后台 chatCompletion 用：覆盖供应商字段，且绝不继承主聊天的 reasoning_effort。 */
+export function mergeSettingsForBackgroundLlm(
+  base: Settings,
+  bg: { api_base: string; api_key: string; model: string },
+  patch: Partial<Settings> = {},
+): Settings {
+  return {
+    ...base,
+    ...patch,
+    api_base: bg.api_base,
+    api_key: bg.api_key,
+    model: bg.model,
+    reasoning_effort: 'default',
+  };
 }
 
 // ─── 认证 token 撤销机制（M2） ─────────────────────────────────

@@ -169,6 +169,30 @@ export function MemoryEngineSection({
               <span className="mt-1 block text-xs leading-relaxed text-text-muted">{t('settings.disableDeepseekThinkingForBackgroundHint')}</span>
             </span>
           </label>
+          <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <input
+              type="checkbox"
+              checked={settings.memory_background_reasoning_effort_enabled}
+              onChange={e => update('memory_background_reasoning_effort_enabled', e.target.checked)}
+              className="mt-1"
+            />
+            <span className="flex-1">
+              <span className="block font-medium text-text-primary">{t('settings.memoryBackgroundReasoningEffortEnabled')}</span>
+              <span className="mt-1 block text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundReasoningEffortEnabledHint')}</span>
+              {settings.memory_background_reasoning_effort_enabled && (
+                <select
+                  value={settings.memory_background_reasoning_effort === 'default' ? 'medium' : settings.memory_background_reasoning_effort}
+                  onChange={e => update('memory_background_reasoning_effort', e.target.value as Settings['memory_background_reasoning_effort'])}
+                  className="select-rich mt-3 w-full max-w-xs"
+                >
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="max">max</option>
+                </select>
+              )}
+            </span>
+          </label>
           <div>
             <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryPackageTokenBudget')}</label>
             <input

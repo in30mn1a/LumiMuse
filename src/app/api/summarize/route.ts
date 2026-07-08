@@ -118,14 +118,12 @@ ${convText}`;
         Authorization: `Bearer ${bgConfig.api_key}`,
       },
       body: JSON.stringify({
-        // 总结属后台任务，可使用独立的后台供应商/模型；留空则回退主接口。
         model: bgConfig.model,
         messages: [{ role: 'user', content: summaryPrompt }],
-        // 后台模型可能是推理模型，沿用聊天的小 max_tokens 会在思考阶段耗尽导致正文被截断，故取安全下限。
         max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
         temperature: settings.temperature,
         stream: true,
-        ...backgroundExtraBody,
+        ...(backgroundExtraBody ?? {}),
       }),
       signal: request.signal,
     });

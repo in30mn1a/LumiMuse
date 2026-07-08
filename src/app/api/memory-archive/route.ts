@@ -7,7 +7,7 @@ import {
   undoMemorySummaryArchiveBatch,
   type MemoryArchiveSourceMemory,
 } from '@/lib/memory-archive';
-import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
+import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
@@ -259,16 +259,11 @@ export async function POST(request: NextRequest) {
     // 调用 LLM
     const settings = loadSettings();
     const bgConfig = resolveBackgroundConfig(settings);
-    const llmSettings = {
-      ...settings,
-      api_base: bgConfig.api_base,
-      api_key: bgConfig.api_key,
-      model: bgConfig.model,
+    const llmSettings = mergeSettingsForBackgroundLlm(settings, bgConfig, {
       json_mode: true,
       streaming: false,
-      // AI 归档需审阅全量记忆，prompt 较长，推理模型思考阶段消耗更大
       max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS * 2),
-    };
+    });
 
     if (!llmSettings.api_base.trim() || !llmSettings.model.trim()) {
       return NextResponse.json({ ok: false, error: 'LLM provider is not configured' }, { status: 400 });

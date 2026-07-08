@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
-import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
+import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
 
@@ -124,7 +124,10 @@ export async function POST(request: NextRequest) {
     const db = getDb();
     const loadedSettings = loadSettings();
     const backgroundConfig = resolveBackgroundConfig(loadedSettings);
-    const settings = { ...loadedSettings, ...backgroundConfig, json_mode: false, max_tokens: 16384 };
+    const settings = mergeSettingsForBackgroundLlm(loadedSettings, backgroundConfig, {
+      json_mode: false,
+      max_tokens: 16384,
+    });
     const backgroundExtraBody = buildBackgroundChatExtraBody(loadedSettings, settings.model);
 
     if (!settings.api_base || !settings.model) {

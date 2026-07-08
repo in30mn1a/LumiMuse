@@ -72,6 +72,68 @@ test('buildBackgroundChatExtraBody disables thinking only for DeepSeek backgroun
   );
 });
 
+test('buildBackgroundChatExtraBody adds reasoning_effort only when background toggle is on', () => {
+  const { buildBackgroundChatExtraBody } = requireFreshWithMocks('../src/lib/settings.ts', {
+    '@/lib/db': {
+      getDb: () => {
+        throw new Error('db should not be used');
+      },
+    },
+  });
+
+  assert.equal(
+    buildBackgroundChatExtraBody(
+      {
+        disable_deepseek_thinking_for_background: false,
+        memory_background_reasoning_effort_enabled: false,
+        memory_background_reasoning_effort: 'high',
+      },
+      'gpt-4o',
+    ),
+    undefined,
+  );
+
+  assert.deepEqual(
+    buildBackgroundChatExtraBody(
+      {
+        disable_deepseek_thinking_for_background: false,
+        memory_background_reasoning_effort_enabled: true,
+        memory_background_reasoning_effort: 'high',
+      },
+      'gpt-4o',
+    ),
+    { reasoning_effort: 'high' },
+  );
+});
+
+test('mergeSettingsForBackgroundLlm clears chat reasoning_effort from background requests', () => {
+  const { mergeSettingsForBackgroundLlm } = requireFreshWithMocks('../src/lib/settings.ts', {
+    '@/lib/db': {
+      getDb: () => {
+        throw new Error('db should not be used');
+      },
+    },
+  });
+
+  const base = {
+    api_base: 'https://main/v1',
+    api_key: 'k',
+    model: 'main-model',
+    reasoning_effort: 'max',
+    max_tokens: 4096,
+    temperature: 1,
+  };
+
+  const merged = mergeSettingsForBackgroundLlm(base, {
+    api_base: 'https://bg/v1',
+    api_key: 'bk',
+    model: 'bg-model',
+  });
+
+  assert.equal(merged.model, 'bg-model');
+  assert.equal(merged.reasoning_effort, 'default');
+});
+
 test('resolveBackgroundConfig lets explicit background model override provider model', () => {
   const { resolveBackgroundConfig } = requireFreshWithMocks('../src/lib/settings.ts', {
     '@/lib/db': {
@@ -147,6 +209,5 @@ test('image prompt route resolves background provider and model before chat comp
   const route = fs.readFileSync(path.join(root, 'src/app/api/image-gen/prompt/route.ts'), 'utf8');
 
   assert.ok(route.includes('resolveBackgroundConfig'));
-  assert.ok(route.includes('const backgroundConfig = resolveBackgroundConfig(loadedSettings);'));
-  assert.ok(route.includes('...backgroundConfig'));
+  assert.ok(route.includes('mergeSettingsForBackgroundLlm'));
 });

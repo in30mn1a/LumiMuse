@@ -222,6 +222,14 @@ test('/api/memory-archive ai_archive passes request signal to LLM call', async (
         model: 'chat-model',
       }),
       buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
     },
     '@/lib/api-client': {
       REASONING_SAFE_MAX_TOKENS: 4096,
@@ -273,6 +281,14 @@ test('/api/memory-archive ai_archive deduplicates valid LLM archive IDs before e
         model: 'chat-model',
       }),
       buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
     },
     '@/lib/api-client': {
       REASONING_SAFE_MAX_TOKENS: 4096,

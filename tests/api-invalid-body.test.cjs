@@ -408,6 +408,7 @@ test('/api/image-gen/prompt POST returns 400 for invalid JSON', async () => {
       loadSettings: failIfCalled('loadSettings'),
       resolveBackgroundConfig: failIfCalled('resolveBackgroundConfig'),
       buildBackgroundChatExtraBody: failIfCalled('buildBackgroundChatExtraBody'),
+      mergeSettingsForBackgroundLlm: failIfCalled('mergeSettingsForBackgroundLlm'),
     },
     '@/lib/api-client': { chatCompletion: failIfCalled('chatCompletion') },
   });
@@ -425,6 +426,7 @@ test('/api/image-gen/prompt POST schema rejects missing conversation_id before l
       loadSettings: failIfCalled('loadSettings'),
       resolveBackgroundConfig: failIfCalled('resolveBackgroundConfig'),
       buildBackgroundChatExtraBody: failIfCalled('buildBackgroundChatExtraBody'),
+      mergeSettingsForBackgroundLlm: failIfCalled('mergeSettingsForBackgroundLlm'),
     },
     '@/lib/api-client': { chatCompletion: failIfCalled('chatCompletion') },
   });

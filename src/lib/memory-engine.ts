@@ -6,7 +6,7 @@ import { normalizeTags as canonicalizeTags } from '@/lib/memory-tag-spec';
 import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-category';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
-import { buildBackgroundChatExtraBody, resolveBackgroundConfig } from '@/lib/settings';
+import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
 
@@ -572,14 +572,9 @@ export async function extractMemories(
     .replace('{conversation_text}', () => conversationText);
 
   const bgConfig = resolveBackgroundConfig(settings);
-  const extractionSettings: Settings = {
-    ...settings,
-    // 后台提取可使用独立供应商/模型（通常更快/更便宜）；留空则回退主接口。提取自解析输出，不需要 json_mode。
-    api_base: bgConfig.api_base,
-    api_key: bgConfig.api_key,
-    model: bgConfig.model,
+  const extractionSettings = mergeSettingsForBackgroundLlm(settings, bgConfig, {
     max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
-  };
+  });
   const backgroundExtraBody = buildBackgroundChatExtraBody(settings, extractionSettings.model);
   const response = await chatCompletion(extractionSettings, [{ role: 'user', content: prompt }], undefined, backgroundExtraBody);
   const rawData = parseExtractionResponse(response);

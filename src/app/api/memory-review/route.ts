@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
+import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
@@ -236,15 +236,11 @@ export async function POST(request: NextRequest) {
   // 调用 LLM
   const settings = loadSettings();
   const bgConfig = resolveBackgroundConfig(settings);
-  const llmSettings = {
-    ...settings,
-    api_base: bgConfig.api_base,
-    api_key: bgConfig.api_key,
-    model: bgConfig.model,
+  const llmSettings = mergeSettingsForBackgroundLlm(settings, bgConfig, {
     json_mode: true,
     streaming: false,
     max_tokens: MEMORY_REVIEW_OUTPUT_MAX_TOKENS,
-  };
+  });
 
   if (!llmSettings.api_base.trim() || !llmSettings.model.trim()) {
     return NextResponse.json({ ok: false, error: 'LLM provider is not configured' }, { status: 400 });

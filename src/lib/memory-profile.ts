@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { ensureMemoryProfileTables, getDb } from '@/lib/db';
-import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
+import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 
 export interface CharacterMemoryProfile {
   character_id: string;
@@ -399,16 +399,11 @@ async function generateMemoryProfilePatchWithLlm(
     }
   } catch { /* 角色信息读取失败不阻塞画像更新 */ }
 
-  const settings = {
-    ...loaded,
-    // 后台画像 patch 可使用独立供应商/模型；留空则回退主接口。画像 patch 需要结构化 JSON，故强制 json_mode。
-    api_base: bgConfig.api_base,
-    api_key: bgConfig.api_key,
-    model: bgConfig.model,
+  const settings = mergeSettingsForBackgroundLlm(loaded, bgConfig, {
     json_mode: true,
     streaming: false,
     max_tokens: Math.max(loaded.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
-  };
+  });
   if (!settings.api_base.trim() || !settings.model.trim()) {
     throw new Error('LLM provider is not configured for memory profile patch generation');
   }

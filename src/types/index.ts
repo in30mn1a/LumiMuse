@@ -332,6 +332,9 @@ export interface Settings {
   memory_background_provider_id: string;
   // 后台任务使用 DeepSeek 模型时关闭 thinking，避免思考内容耗尽输出 token。正常聊天不受影响。
   disable_deepseek_thinking_for_background: boolean;
+  // 为后台 LLM 请求单独发送 reasoning_effort（默认关闭，不继承聊天框选择）。
+  memory_background_reasoning_effort_enabled: boolean;
+  memory_background_reasoning_effort: ReasoningEffort;
   theme: 'light' | 'dark';
   show_timestamps: boolean;
   limit_inject: boolean;
@@ -375,6 +378,8 @@ export const DEFAULT_SETTINGS: Settings = {
   memory_background_model: '',
   memory_background_provider_id: '',
   disable_deepseek_thinking_for_background: false,
+  memory_background_reasoning_effort_enabled: false,
+  memory_background_reasoning_effort: 'medium',
   theme: 'light',
   show_timestamps: true,
   limit_inject: false,

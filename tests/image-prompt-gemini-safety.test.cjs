@@ -112,8 +112,20 @@ test('Gemini image prompt generation strips kindergarten tags before the AI call
         api_key: 'secret',
         model: 'gemini-3.1-pro-preview',
       }),
-      resolveBackgroundConfig: () => ({}),
+      resolveBackgroundConfig: (s) => ({
+        api_base: s.api_base,
+        api_key: s.api_key,
+        model: s.model,
+      }),
       buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
     },
     '@/lib/api-client': {
       chatCompletion: async (_settings, messages) => {

@@ -142,6 +142,8 @@ export const settingsUpdateSchema = z.looseObject({
   memory_background_model: settingModelSchema.optional(),
   memory_background_provider_id: z.string().max(64).optional(),
   disable_deepseek_thinking_for_background: z.boolean().optional(),
+  memory_background_reasoning_effort_enabled: z.boolean().optional(),
+  memory_background_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'max']).optional(),
   theme: z.enum(['light', 'dark']).optional(),
   show_timestamps: z.boolean().optional(),
   limit_inject: z.boolean().optional(),

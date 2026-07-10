@@ -183,8 +183,8 @@ export interface ImageGenSettings {
   // 通用
   quality_tags: string;
   /**
-   * 出图请求超时（毫秒）。适用于 SD WebUI 与自定义 API 这两条直接 fetch 上游的路径，
-   * 避免慢/半挂上游让请求无限挂起。默认 120000（与 ComfyUI 轮询上限一致）。
+   * 出图请求总时限（毫秒）。适用于所有生图引擎的提交、等待、轮询与下载阶段，
+   * 避免慢/半挂上游让请求无限挂起。默认 120000。
    * 用户可按上游性能调大/调小。≤0 视为未设置，由路由层兜底为默认值。
    */
   generate_timeout_ms: number;
@@ -330,6 +330,8 @@ export interface Settings {
   memory_background_model: string;
   // 后台任务专用供应商 ID；留空则使用主接口的 api_base/api_key。设置后后台任务将使用该供应商的接口和模型。
   memory_background_provider_id: string;
+  // 后台 LLM 任务总时限（毫秒）；0 表示显式关闭。普通聊天不使用该设置。
+  memory_background_timeout_ms: number;
   // 后台任务使用 DeepSeek 模型时关闭 thinking，避免思考内容耗尽输出 token。正常聊天不受影响。
   disable_deepseek_thinking_for_background: boolean;
   // 为后台 LLM 请求单独发送 reasoning_effort（默认关闭，不继承聊天框选择）。
@@ -377,6 +379,7 @@ export const DEFAULT_SETTINGS: Settings = {
   memory_max_inject: 30,
   memory_background_model: '',
   memory_background_provider_id: '',
+  memory_background_timeout_ms: 1_800_000,
   disable_deepseek_thinking_for_background: false,
   memory_background_reasoning_effort_enabled: false,
   memory_background_reasoning_effort: 'medium',

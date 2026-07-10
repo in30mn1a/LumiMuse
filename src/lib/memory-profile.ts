@@ -3,6 +3,8 @@ import { randomUUID } from 'crypto';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { ensureMemoryProfileTables, getDb } from '@/lib/db';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
+import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
+import { structuredLog } from '@/lib/structured-log';
 
 export interface CharacterMemoryProfile {
   character_id: string;
@@ -410,7 +412,10 @@ async function generateMemoryProfilePatchWithLlm(
 
   const prompt = buildMemoryProfilePatchPrompt(task, currentProfile, rawSourceText, characterInfo);
   const backgroundExtraBody = buildBackgroundChatExtraBody(loaded, settings.model);
-  const response = await chatCompletion(settings, [{ role: 'user', content: prompt }], undefined, backgroundExtraBody);
+  const response = await runWithBackgroundLlmDeadline(
+    loaded.memory_background_timeout_ms,
+    signal => chatCompletion(settings, [{ role: 'user', content: prompt }], signal, backgroundExtraBody),
+  );
   return parseMemoryProfilePatchResponse(response);
 }
 
@@ -789,6 +794,12 @@ export async function processMemoryProfileUpdateTasks(options: {
     } catch (error) {
       failed += 1;
       const message = error instanceof Error ? error.message : String(error);
+      structuredLog('error', 'memory.profile.task_failed', {
+        taskId: task.id,
+        characterId: task.character_id,
+        operation: task.reason,
+        status: 'failed',
+      }, error);
       db.prepare(`
         UPDATE character_memory_profile_update_tasks
         SET status = 'failed',
@@ -835,7 +846,10 @@ export function triggerMemoryProfileQueue(): void {
         if (result.claimed === 0) break;
       }
     } catch (err) {
-      console.error('[memory-profile] profile queue processing failed:', err);
+      structuredLog('error', 'memory.profile.queue_failed', {
+        operation: 'drain',
+        status: 'failed',
+      }, err);
     } finally {
       profileQueueProcessing = false;
     }

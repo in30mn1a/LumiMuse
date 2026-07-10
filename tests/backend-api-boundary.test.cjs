@@ -179,6 +179,18 @@ function loadRoute(modulePath, db) {
   });
 }
 
+function loadHealthRoute(mocks = {}) {
+  try {
+    delete require.cache[require.resolve('../src/lib/readiness.ts')];
+  } catch {
+    // RED 阶段 readiness helper 尚不存在时，路由仍应可被加载并暴露缺失行为。
+  }
+  return requireFreshWithMocks('../src/app/api/health/route.ts', {
+    'next/server': jsonResponseMock(),
+    ...mocks,
+  });
+}
+
 test('/api/conversations GET returns a bounded first page by default', async () => {
   const route = loadRoute('../src/app/api/conversations/route.ts', createConversationDb());
 
@@ -416,16 +428,121 @@ test('/api/memory-profile init_from_memories batches sampled messages instead of
 });
 
 test('/api/health GET returns non-sensitive service liveness metadata', async () => {
-  const route = requireFreshWithMocks('../src/app/api/health/route.ts', {
-    'next/server': jsonResponseMock(),
+  let readinessCalls = 0;
+  const route = loadHealthRoute({
+    '@/lib/readiness': {
+      async checkReadiness() {
+        readinessCalls += 1;
+        throw new Error('liveness must not run readiness checks');
+      },
+    },
   });
 
-  const response = await route.GET();
+  const response = await route.GET(requestFor('http://test.local/api/health'));
   const payload = await response.json();
 
   assert.equal(response.status, 200);
   assert.equal(payload.ok, true);
+  assert.equal(readinessCalls, 0);
   assert.equal(typeof payload.version, 'string');
   assert.ok(!('api_key' in payload));
   assert.ok(!('ACCESS_PASSWORD' in payload));
+});
+
+test('/api/health?ready=1 checks SQLite and all persistent directories for writability', async () => {
+  const preparedSql = [];
+  const accessed = [];
+  const route = loadHealthRoute({
+    '@/lib/db': {
+      getDb() {
+        return {
+          prepare(sql) {
+            preparedSql.push(sql);
+            return { get: () => ({ value: 1 }) };
+          },
+        };
+      },
+    },
+    'node:fs/promises': {
+      async access(target, mode) {
+        accessed.push({ target, mode });
+      },
+    },
+  });
+
+  const response = await route.GET(requestFor('http://test.local/api/health?ready=1'));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.ready, true);
+  assert.deepEqual(payload.checks, {
+    database: true,
+    data: true,
+    generated: true,
+    avatars: true,
+    attachments: true,
+  });
+  assert.deepEqual(preparedSql, ['SELECT 1']);
+  assert.equal(accessed.length, 4);
+  assert.deepEqual(
+    accessed.map(entry => path.relative(root, entry.target).split(path.sep).join('/')),
+    ['data', 'public/generated', 'public/avatars', 'public/attachments'],
+  );
+  assert.ok(accessed.every(entry => entry.mode === fs.constants.W_OK));
+});
+
+test('/api/health?ready=1 returns a safe 503 when SQLite is unavailable', async () => {
+  const secret = 'SQLITE_CANTOPEN: E:\\private\\lumimuse.db?token=secret';
+  const route = loadHealthRoute({
+    '@/lib/db': {
+      getDb() {
+        throw new Error(secret);
+      },
+    },
+    'node:fs/promises': { access: async () => {} },
+  });
+
+  const response = await route.GET(requestFor('http://test.local/api/health?ready=1'));
+  const payload = await response.json();
+  const serialized = JSON.stringify(payload);
+
+  assert.equal(response.status, 503);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.checks.database, false);
+  assert.doesNotMatch(serialized, /private|lumimuse\.db|token|secret|SQLITE_CANTOPEN/i);
+});
+
+test('/api/health?ready=1 returns a safe 503 when a persistent directory is not writable', async () => {
+  const secret = 'EACCES: permission denied, access E:\\private\\generated';
+  const route = loadHealthRoute({
+    '@/lib/db': {
+      getDb() {
+        return { prepare: () => ({ get: () => ({ value: 1 }) }) };
+      },
+    },
+    'node:fs/promises': {
+      async access(target) {
+        if (target.endsWith(path.join('public', 'generated'))) throw new Error(secret);
+      },
+    },
+  });
+
+  const response = await route.GET(requestFor('http://test.local/api/health?ready=1'));
+  const payload = await response.json();
+  const serialized = JSON.stringify(payload);
+
+  assert.equal(response.status, 503);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.checks.generated, false);
+  assert.equal(payload.checks.database, true);
+  assert.doesNotMatch(serialized, /private|permission denied|EACCES/i);
+});
+
+test('Docker HEALTHCHECK uses readiness rather than liveness', () => {
+  const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
+
+  assert.match(dockerfile, /\/api\/health\?ready=1/);
 });

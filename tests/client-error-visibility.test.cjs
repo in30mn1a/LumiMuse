@@ -50,7 +50,7 @@ test('ChatView surfaces /api/messages and /api/settings failures to users', () =
   const pagingCall = sliceBetween(source, 'useMessagePaging({', '  clearMessagesRef.current = clearMessages;');
   assert.match(pagingCall, /onError: message => showToast\(`\$\{t\('chat\.messageLoadFailed'\)\}: \$\{message\}`, 'error'\),/);
 
-  const initialSettingsEffect = sliceBetween(source, "fetch('/api/settings')", '}, []);');
+  const initialSettingsEffect = sliceBetween(source, "fetch('/api/settings')", '  }, [showToast, t]);');
   assert.match(initialSettingsEffect, /parseJsonResponse<Partial<Settings>>/);
   assert.match(initialSettingsEffect, /showToast\(`\$\{t\('settings.loadFailed'\)\}: \$\{[^}]+\}`, 'error'\)/);
 
@@ -65,6 +65,7 @@ test('ChatView surfaces /api/messages and /api/settings failures to users', () =
 
 test('ChatView write handlers validate failed responses before local mutation or refresh', () => {
   const source = readProjectFile('src/components/chat/ChatView.tsx');
+  const messageActionsHook = readProjectFile('src/hooks/chat/useChatMessageActions.ts');
 
   const renameBlock = sliceBetween(source, 'const handleRenameConv = async', '  const handleDeleteConv');
   const renameValidationIndex = firstResponseValidationIndex(renameBlock);
@@ -75,7 +76,7 @@ test('ChatView write handlers validate failed responses before local mutation or
   );
   assert.match(renameBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);
 
-  const editBlock = sliceBetween(source, 'const handleEditMessage = useCallback', '  const handleDeleteMessage');
+  const editBlock = sliceBetween(messageActionsHook, 'const handleEditMessage = useCallback', '  const handleDeleteMessage');
   const editValidationIndex = firstResponseValidationIndex(editBlock);
   assert.notEqual(editValidationIndex, -1, 'message edit should validate the write response');
   assert.ok(
@@ -84,7 +85,7 @@ test('ChatView write handlers validate failed responses before local mutation or
   );
   assert.match(editBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);
 
-  const switchBlock = sliceBetween(source, 'const handleSwitchVersion = useCallback', '  const handleSummarize');
+  const switchBlock = sliceBetween(messageActionsHook, 'const handleSwitchVersion = useCallback', '  return {');
   const switchValidationIndex = firstResponseValidationIndex(switchBlock);
   assert.notEqual(switchValidationIndex, -1, 'version switch should validate the write response');
   assert.ok(
@@ -132,7 +133,7 @@ test('maintenance preview and cleanup failures show inline errors and do not rep
 
 test('settings page initial /api/settings failure has a visible error path', () => {
   const source = readProjectFile('src/app/settings/page.tsx');
-  const loadEffect = sliceBetween(source, "fetch('/api/settings')", '  const handleLogout = async');
+  const loadEffect = sliceBetween(source, "fetch('/api/settings')", '  const loadMemoryPanelState');
 
   assert.match(loadEffect, /parseJsonResponse<Partial<SettingsWithMemoryEngine>>/);
   assert.match(loadEffect, /showToast\(`\$\{tRef\.current\('settings.loadFailed'\)\}: \$\{getErrorMessage\(err\)\}`, 'error'\)/);

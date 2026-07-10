@@ -2,6 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { AUTH_COOKIE_NAME, verifyAuthToken } from './lib/auth-token';
 import { getAuthMinIat } from './lib/settings';
 
+const REQUEST_ID_HEADER = 'x-request-id';
+
+function resolveRequestId(request: NextRequest): string {
+  const incoming = request.headers.get(REQUEST_ID_HEADER)?.trim();
+  return incoming && /^[A-Za-z0-9._-]{1,128}$/.test(incoming) ? incoming : crypto.randomUUID();
+}
+
+function attachRequestId(response: NextResponse, requestId: string): NextResponse {
+  response.headers.set(REQUEST_ID_HEADER, requestId);
+  return response;
+}
+
 // ⚠️ Next.js 16 约定：中间件入口文件名为 `proxy.ts`，导出函数名为 `proxy`。
 // 这是 Next.js 16 官方重命名（从旧版的 `middleware.ts` / `middleware` 改来），
 // 目的是与后端语境中的 "middleware" 概念区分。
@@ -47,13 +59,20 @@ function isWriteRequestBlockedByCsrf(request: NextRequest, pathname: string): Ne
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const requestId = resolveRequestId(request);
+  const forwardedHeaders = new Headers(request.headers);
+  forwardedHeaders.set(REQUEST_ID_HEADER, requestId);
+  const nextWithRequestId = () => attachRequestId(
+    NextResponse.next({ request: { headers: forwardedHeaders } }),
+    requestId,
+  );
 
   // 没有设置访问密码时，直接放行（本地开发模式）
   // 注意：本地模式下我们也跳过 CSRF 拦截。原因是无认证场景本就没有"跨域窃取"价值，
   // 强行拦截反而会阻止开发者用普通 form 调试接口。
   const password = process.env.ACCESS_PASSWORD;
   if (!password) {
-    return NextResponse.next();
+    return nextWithRequestId();
   }
 
   // 公开路径只做精确匹配，避免 `/api/health/*`、`/api/auth/*` 这类子命名空间被误放行。
@@ -62,10 +81,10 @@ export async function proxy(request: NextRequest) {
 
   // ── M3 CSRF 拦截（先于鉴权，避免 401 错误把请求性质暴露） ──
   const csrfBlock = isWriteRequestBlockedByCsrf(request, pathname);
-  if (csrfBlock) return csrfBlock;
+  if (csrfBlock) return attachRequestId(csrfBlock, requestId);
 
   if (isPublic) {
-    return NextResponse.next();
+    return nextWithRequestId();
   }
 
   // 静态资源直接放行（只放行明确的固定路径前缀，不再按扩展名通配，
@@ -79,7 +98,7 @@ export async function proxy(request: NextRequest) {
     pathname === '/sw.js' ||
     pathname === '/robots.txt'
   ) {
-    return NextResponse.next();
+    return nextWithRequestId();
   }
 
   // 读取服务端撤销点。getAuthMinIat 失败时回落到 0 = 不做撤销检查，
@@ -99,21 +118,21 @@ export async function proxy(request: NextRequest) {
     // 该兼容入口必须在认证通过后执行，避免旧静态资源路径绕过访问密码。
     if (pathname.startsWith('/avatars/') || pathname.startsWith('/generated/') || pathname.startsWith('/attachments/')) {
       const rewriteUrl = new URL(`/api/files${pathname}`, request.url);
-      return NextResponse.rewrite(rewriteUrl);
+      return attachRequestId(NextResponse.rewrite(rewriteUrl, { request: { headers: forwardedHeaders } }), requestId);
     }
 
-    return NextResponse.next();
+    return nextWithRequestId();
   }
 
   // API 请求未认证时返回 401，而不是重定向
   if (pathname.startsWith('/api/')) {
-    return NextResponse.json({ error: '未授权，请先登录' }, { status: 401 });
+    return attachRequestId(NextResponse.json({ error: '未授权，请先登录' }, { status: 401 }), requestId);
   }
 
   // 页面请求重定向到登录页
   const loginUrl = new URL('/login', request.url);
   loginUrl.searchParams.set('from', pathname);
-  return NextResponse.redirect(loginUrl);
+  return attachRequestId(NextResponse.redirect(loginUrl), requestId);
 }
 
 export const config = {

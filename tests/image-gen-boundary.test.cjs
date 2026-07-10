@@ -71,9 +71,9 @@ function jsonResponseMock() {
   };
 }
 
-function jsonRequest(body) {
+function jsonRequest(body, signal = new AbortController().signal) {
   return {
-    signal: new AbortController().signal,
+    signal,
     async json() {
       return body;
     },
@@ -149,6 +149,22 @@ function customSettings(extra = {}) {
   };
 }
 
+function sdSettings(extra = {}) {
+  return {
+    enabled: true,
+    engine: 'sd',
+    sd_url: 'https://sd.example',
+    quality_tags: '',
+    sd_negative_prompt: '',
+    sd_steps: 20,
+    sd_cfg_scale: 7,
+    sd_width: 512,
+    sd_height: 768,
+    sd_sampler: 'Euler',
+    ...extra,
+  };
+}
+
 function naiSettings(extra = {}) {
   return {
     enabled: true,
@@ -217,6 +233,97 @@ async function withSilencedConsoleError(callback) {
   } finally {
     console.error = originalError;
   }
+}
+
+async function withCapturedConsoleError(callback) {
+  const originalError = console.error;
+  const calls = [];
+  console.error = (...args) => {
+    calls.push(args.map(arg => arg instanceof Error ? `${arg.name}: ${arg.message}` : String(arg)).join(' '));
+  };
+  try {
+    return { result: await callback(), calls };
+  } finally {
+    console.error = originalError;
+  }
+}
+
+async function withImmediateComfyPollDelay(callback) {
+  const originalSetTimeout = global.setTimeout;
+  global.setTimeout = (handler, delay, ...args) => (
+    originalSetTimeout(handler, delay === 2000 ? 0 : delay, ...args)
+  );
+  try {
+    return await callback();
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+}
+
+function rejectWhenAborted(signal, label) {
+  if (!signal) {
+    return Promise.reject(new Error(`${label} signal missing`));
+  }
+  return new Promise((resolve, reject) => {
+    const rejectAbort = () => {
+      const error = new Error(`${label} aborted`);
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) rejectAbort();
+    else signal.addEventListener('abort', rejectAbort, { once: true });
+  });
+}
+
+for (const scenario of [
+  {
+    name: 'SD WebUI',
+    settings: sdSettings(),
+    expectedUrl: 'https://sd.example/sdapi/v1/txt2img',
+    expectedError: 'SD WebUI 请求失败（HTTP 502）',
+  },
+  {
+    name: 'NovelAI',
+    settings: naiSettings(),
+    expectedUrl: 'https://image.novelai.net/ai/generate-image',
+    expectedError: 'NovelAI 请求失败（HTTP 502）',
+  },
+  {
+    name: 'ComfyUI',
+    settings: comfySettings(),
+    expectedUrl: 'https://comfy.example/prompt',
+    expectedError: 'ComfyUI 请求失败（HTTP 502）',
+  },
+  {
+    name: '自定义 API',
+    settings: customSettings(),
+    expectedUrl: 'https://images.example/v1/images',
+    expectedError: '自定义 API 请求失败（HTTP 502）',
+  },
+]) {
+  test(`/api/image-gen redacts ${scenario.name} upstream error bodies from responses and console output`, async () => {
+    const upstreamBody = 'debug Bearer sk-upstream-secret http://10.0.0.8/internal';
+    const harness = createImageGenHarness({
+      imageGenSettings: scenario.settings,
+      safeFetchImpl: async url => {
+        assert.equal(url, scenario.expectedUrl);
+        return new Response(upstreamBody, { status: 502 });
+      },
+    });
+
+    const { result: response, calls } = await withCapturedConsoleError(
+      () => harness.route.POST(jsonRequest({ prompt: 'cat' })),
+    );
+    const body = await response.json();
+    const observableOutput = `${JSON.stringify(body)}\n${calls.join('\n')}`;
+
+    assert.equal(response.status, 500);
+    assert.equal(body.error, scenario.expectedError);
+    assert.doesNotMatch(observableOutput, /sk-upstream-secret/);
+    assert.doesNotMatch(observableOutput, /Bearer/);
+    assert.doesNotMatch(observableOutput, /10\.0\.0\.8/);
+    assert.doesNotMatch(observableOutput, /\/internal/);
+  });
 }
 
 test('/api/image-gen rejects disabled saved settings before override can re-enable or call upstream', async () => {
@@ -416,4 +523,209 @@ test('/api/image-gen writes ComfyUI prompt placeholders through parsed JSON valu
   assert.equal(body.url, '/api/files/generated/11111111-1111-4111-8111-111111111111.png');
   assert.equal(queuedWorkflow['6'].inputs.text, 'line one\nline two \\ slash "quote"');
   assert.equal(queuedWorkflow['7'].inputs.text, 'bad\nline \\ slash "quote"');
+});
+
+test('/api/image-gen applies generate_timeout_ms to NovelAI through an abort signal', async () => {
+  const clientController = new AbortController();
+  let upstreamSignal = null;
+  const harness = createImageGenHarness({
+    imageGenSettings: naiSettings({ generate_timeout_ms: 40 }),
+    safeFetchImpl: async (url, init) => {
+      assert.equal(url, 'https://image.novelai.net/ai/generate-image');
+      upstreamSignal = init?.signal ?? null;
+      return rejectWhenAborted(upstreamSignal, 'NovelAI');
+    },
+  });
+
+  const response = await withSilencedConsoleError(() => harness.route.POST(jsonRequest(
+    { prompt: 'cat' },
+    clientController.signal,
+  )));
+  const body = await response.json();
+
+  assert.equal(response.status, 500);
+  assert.match(body.error, /NovelAI 出图超时/);
+  assert.ok(upstreamSignal instanceof AbortSignal);
+  assert.equal(upstreamSignal.aborted, true);
+});
+
+test('/api/image-gen reuses the custom engine deadline signal for a returned image URL download', async () => {
+  const signals = [];
+  const harness = createImageGenHarness({
+    imageGenSettings: customSettings({ generate_timeout_ms: 5000 }),
+    safeFetchImpl: async (url, init) => {
+      signals.push(init?.signal ?? null);
+      if (url === 'https://images.example/v1/images') {
+        return new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/image.png' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === 'https://cdn.example/image.png') {
+        return streamResponse([pngBytes()]).response;
+      }
+      throw new Error(`unexpected url: ${url}`);
+    },
+  });
+
+  const response = await harness.route.POST(jsonRequest({ prompt: 'cat' }));
+  assert.equal(response.status, 200);
+  assert.ok(signals[0] instanceof AbortSignal);
+  assert.equal(signals[1], signals[0]);
+});
+
+test('/api/image-gen aborts a stalled NovelAI response body at the configured deadline', async () => {
+  let responseBodyCancelled = false;
+  const stalledBody = new ReadableStream({
+    cancel() {
+      responseBodyCancelled = true;
+    },
+  });
+  const harness = createImageGenHarness({
+    imageGenSettings: naiSettings({ generate_timeout_ms: 40 }),
+    safeFetchImpl: async url => {
+      assert.equal(url, 'https://image.novelai.net/ai/generate-image');
+      return new Response(stalledBody, {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    },
+  });
+
+  const originalError = console.error;
+  console.error = () => {};
+  let result;
+  try {
+    const routePromise = harness.route.POST(jsonRequest({ prompt: 'cat' }));
+    result = await Promise.race([
+      routePromise,
+      new Promise(resolve => setTimeout(() => resolve('still-reading'), 250)),
+    ]);
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.notEqual(result, 'still-reading');
+  const body = await result.json();
+  assert.equal(result.status, 500);
+  assert.match(body.error, /NovelAI 出图超时/);
+  assert.equal(responseBodyCancelled, true);
+});
+
+test('/api/image-gen reuses one ComfyUI deadline signal for prompt, history, and view requests', async () => {
+  const signals = new Map();
+  const smallImage = streamResponse([pngBytes()]);
+  const harness = createImageGenHarness({
+    imageGenSettings: comfySettings({ generate_timeout_ms: 5000 }),
+    safeFetchImpl: async (url, init) => {
+      if (url === 'https://comfy.example/prompt') {
+        signals.set('prompt', init?.signal ?? null);
+        return new Response(JSON.stringify({ prompt_id: 'prompt-signal' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === 'https://comfy.example/history/prompt-signal') {
+        signals.set('history', init?.signal ?? null);
+        return new Response(JSON.stringify({
+          'prompt-signal': {
+            outputs: {
+              '9': {
+                images: [{ filename: 'signal.png', subfolder: '', type: 'output' }],
+              },
+            },
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === 'https://comfy.example/view?filename=signal.png&subfolder=&type=output') {
+        signals.set('view', init?.signal ?? null);
+        return smallImage.response;
+      }
+      throw new Error(`unexpected url: ${url}`);
+    },
+  });
+
+  const response = await withImmediateComfyPollDelay(
+    () => harness.route.POST(jsonRequest({ prompt: 'cat' })),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.url, '/api/files/generated/11111111-1111-4111-8111-111111111111.png');
+  assert.ok(signals.get('prompt') instanceof AbortSignal);
+  assert.equal(signals.get('history'), signals.get('prompt'));
+  assert.equal(signals.get('view'), signals.get('prompt'));
+});
+
+test('/api/image-gen aborts the ComfyUI wait stage when the configured deadline expires', async () => {
+  const harness = createImageGenHarness({
+    imageGenSettings: comfySettings({ generate_timeout_ms: 40 }),
+    safeFetchImpl: async url => {
+      if (url === 'https://comfy.example/prompt') {
+        return new Response(JSON.stringify({ prompt_id: 'prompt-timeout' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`wait should have been aborted before requesting ${url}`);
+    },
+  });
+
+  const routePromise = withSilencedConsoleError(
+    () => harness.route.POST(jsonRequest({ prompt: 'cat' })),
+  );
+  const result = await Promise.race([
+    routePromise,
+    new Promise(resolve => setTimeout(() => resolve('still-waiting'), 250)),
+  ]);
+
+  assert.notEqual(result, 'still-waiting');
+  const body = await result.json();
+  assert.equal(result.status, 500);
+  assert.match(body.error, /ComfyUI 出图超时/);
+  assert.deepEqual(harness.safeFetchCalls.map(call => call.url), ['https://comfy.example/prompt']);
+});
+
+test('/api/image-gen aborts the ComfyUI wait stage immediately when the client disconnects', async () => {
+  const clientController = new AbortController();
+  const harness = createImageGenHarness({
+    imageGenSettings: comfySettings({ generate_timeout_ms: 5000 }),
+    safeFetchImpl: async url => {
+      if (url === 'https://comfy.example/prompt') {
+        setTimeout(() => clientController.abort(), 25);
+        return new Response(JSON.stringify({ prompt_id: 'prompt-client-abort' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`wait should have been aborted before requesting ${url}`);
+    },
+  });
+
+  const routePromise = withSilencedConsoleError(() => harness.route.POST(jsonRequest(
+    { prompt: 'cat' },
+    clientController.signal,
+  )));
+  const result = await Promise.race([
+    routePromise,
+    new Promise(resolve => setTimeout(() => resolve('still-waiting'), 250)),
+  ]);
+
+  assert.notEqual(result, 'still-waiting');
+  const body = await result.json();
+  assert.equal(result.status, 500);
+  assert.match(body.error, /ComfyUI 出图超时/);
+  assert.deepEqual(harness.safeFetchCalls.map(call => call.url), ['https://comfy.example/prompt']);
+});
+
+test('image generation timeout settings describe the full pipeline for every engine', () => {
+  const translations = fs.readFileSync(path.join(root, 'src/lib/i18n.ts'), 'utf8');
+  const types = fs.readFileSync(path.join(root, 'src/types/index.ts'), 'utf8');
+
+  assert.match(translations, /'settings\.imageGenTimeoutHint': '所有生图引擎/);
+  assert.match(translations, /'settings\.imageGenTimeoutHint': 'Maximum total wait for all image generation engines/);
+  assert.match(types, /适用于所有生图引擎/);
 });

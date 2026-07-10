@@ -1,7 +1,6 @@
 'use client';
 
 import { memo, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -10,6 +9,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { sanitizeGeneratedImages, type GeneratedImage, type GeneratedImageVersion } from '@/lib/generated-image-assets';
 import { CheckIcon, ClockIcon, CopyIcon, PencilIcon, RefreshIcon, TrashIcon, ReplyIcon, SummaryIcon, ImageIcon } from '@/components/ui/icons';
+import Modal from '@/components/ui/Modal';
 
 interface VersionInfo {
   total: number;
@@ -647,11 +647,8 @@ function ImageLightbox({
     right: 'calc(env(safe-area-inset-right, 0px) + 1rem)',
   };
 
-  // 仅在客户端 portal，避免 SSR 报 document undefined
-  if (typeof document === 'undefined') return null;
-
   const content = (
-    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm" onClick={onClose}>
+    <>
       {/* 顶部工具栏：在 portal body 下不再被 surface-panel 的 backdrop-filter 困住，absolute 即可 */}
       <div
         className="pointer-events-none absolute z-[120] flex justify-end"
@@ -734,10 +731,21 @@ function ImageLightbox({
           draggable={false}
         />
       </div>
-    </div>
+    </>
   );
 
-  return createPortal(content, document.body);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      ariaLabel={t('message.imageCloseTitle')}
+      padded={false}
+      overlayClassName="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm"
+      dialogClassName="relative flex h-full w-full flex-col items-center justify-center bg-transparent outline-none"
+    >
+      {content}
+    </Modal>
+  );
 }
 
 /** 单张生成图片卡片 */
@@ -854,16 +862,22 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
             </button>
           </div>
         )}
-        <img
-          src={img.url}
-          alt=""
-          className="max-w-[20rem] cursor-pointer rounded-xl"
-          loading="lazy"
+        <button
+          type="button"
           onClick={(e) => {
             e.stopPropagation();
             openLightbox();
           }}
-        />
+          className="block rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          aria-label={t('message.imageOpenTitle') || t('message.imageCloseTitle')}
+        >
+          <img
+            src={img.url}
+            alt=""
+            className="max-w-[20rem] cursor-pointer rounded-xl"
+            loading="lazy"
+          />
+        </button>
         {/* 操作按钮：PC hover 显示，移动端点击切换 */}
         <div
           className={`absolute right-2 top-2 flex gap-1 transition-opacity ${showImgActions ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0 group-hover/img:pointer-events-auto group-hover/img:opacity-100 group-focus-within/img:pointer-events-auto group-focus-within/img:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100'}`}

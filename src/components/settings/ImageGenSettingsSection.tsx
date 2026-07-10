@@ -341,7 +341,7 @@ export function ImageGenSettingsSection({
               <input value={imgGen.quality_tags} onChange={e => updateImg('quality_tags', e.target.value)} className="input-rich" />
             </div>
 
-            {/* 出图超时：适用于 SD WebUI 与自定义 API，避免慢上游无限挂起 */}
+            {/* 出图总时限：适用于所有引擎的提交、等待与下载阶段 */}
             <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
               <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenTimeout')}</label>
               <input
@@ -396,4 +396,3 @@ export function ImageGenSettingsSection({
     </section>
   );
 }
-

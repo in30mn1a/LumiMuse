@@ -6,17 +6,17 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         node-version: [20.18, 24]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -35,3 +35,71 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  docker-smoke:
+    needs: verify
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE_NAME: lumimuse-ci:${{ github.sha }}
+      CONTAINER_NAME: lumimuse-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DATA_VOLUME: lumimuse-data-${{ github.run_id }}-${{ github.run_attempt }}
+      GENERATED_VOLUME: lumimuse-generated-${{ github.run_id }}-${{ github.run_attempt }}
+      AVATARS_VOLUME: lumimuse-avatars-${{ github.run_id }}-${{ github.run_attempt }}
+      ATTACHMENTS_VOLUME: lumimuse-attachments-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Build Docker image
+        run: docker build --tag "$IMAGE_NAME" .
+
+      - name: Create temporary persistent volumes
+        run: |
+          docker volume create "$DATA_VOLUME"
+          docker volume create "$GENERATED_VOLUME"
+          docker volume create "$AVATARS_VOLUME"
+          docker volume create "$ATTACHMENTS_VOLUME"
+
+      - name: Start Docker image
+        run: |
+          docker run --detach \
+            --name "$CONTAINER_NAME" \
+            --publish 127.0.0.1:3000:3000 \
+            --env ACCESS_PASSWORD=ci-smoke-password-7f1c91 \
+            --env AUTH_SECRET=ci-smoke-auth-secret-72c4d859 \
+            -v "$DATA_VOLUME:/app/data" \
+            -v "$GENERATED_VOLUME:/app/public/generated" \
+            -v "$AVATARS_VOLUME:/app/public/avatars" \
+            -v "$ATTACHMENTS_VOLUME:/app/public/attachments" \
+            "$IMAGE_NAME"
+
+      - name: Wait for readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error 'http://127.0.0.1:3000/api/health?ready=1'; then
+              exit 0
+            fi
+            if [ "$(docker inspect --format='{{.State.Running}}' "$CONTAINER_NAME")" != "true" ]; then
+              exit 1
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Assert container runs as non-root
+        run: |
+          docker exec "$CONTAINER_NAME" node -e "if (process.getuid() !== 1001) process.exit(1); console.log(process.getuid())"
+
+      - name: Print Docker logs on failure
+        if: failure()
+        run: docker logs "$CONTAINER_NAME" || true
+
+      - name: Clean up Docker smoke resources
+        if: always()
+        run: |
+          docker rm --force "$CONTAINER_NAME" || true
+          docker volume rm --force "$DATA_VOLUME" || true
+          docker volume rm --force "$GENERATED_VOLUME" || true
+          docker volume rm --force "$AVATARS_VOLUME" || true
+          docker volume rm --force "$ATTACHMENTS_VOLUME" || true

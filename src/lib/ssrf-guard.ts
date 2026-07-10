@@ -23,16 +23,35 @@ import type { Dispatcher } from 'undici';
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
 
+type Ipv4Range = { net: number; mask: number };
+type Ipv6Range = { network: string; prefixLength: number };
+
 // 永不允许的特殊地址（即使开启了 ALLOW_LOCAL_NETWORK 也禁止）
-const BLOCKED_IPV4_ALWAYS = [
+const BLOCKED_IPV4_ALWAYS: Ipv4Range[] = [
   // 0.0.0.0/8 — "this network"
   { net: 0x00000000, mask: 0xff000000 },
   // 169.254.0.0/16 — 链路本地（含 AWS/GCP/Azure metadata 169.254.169.254）
   { net: 0xa9fe0000, mask: 0xffff0000 },
+  // 192.0.0.0/24 — IETF 协议分配（下方单独放行两个 globally reachable anycast）
+  { net: 0xc0000000, mask: 0xffffff00 },
+  // 192.0.2.0/24 — TEST-NET-1
+  { net: 0xc0000200, mask: 0xffffff00 },
+  // 192.88.99.0/24 — 已弃用的 6to4 relay anycast
+  { net: 0xc0586300, mask: 0xffffff00 },
+  // 198.18.0.0/15 — benchmark
+  { net: 0xc6120000, mask: 0xfffe0000 },
+  // 198.51.100.0/24 — TEST-NET-2
+  { net: 0xc6336400, mask: 0xffffff00 },
+  // 203.0.113.0/24 — TEST-NET-3
+  { net: 0xcb007100, mask: 0xffffff00 },
+  // 224.0.0.0/4 — multicast
+  { net: 0xe0000000, mask: 0xf0000000 },
+  // 240.0.0.0/4 — reserved（含 limited broadcast）
+  { net: 0xf0000000, mask: 0xf0000000 },
 ];
 
 // 普通内网地址（默认禁止，开启 ALLOW_LOCAL_NETWORK 可放行）
-const PRIVATE_IPV4_RANGES = [
+const LOCAL_IPV4_RANGES: Ipv4Range[] = [
   // 127.0.0.0/8 — loopback
   { net: 0x7f000000, mask: 0xff000000 },
   // 10.0.0.0/8
@@ -41,7 +60,33 @@ const PRIVATE_IPV4_RANGES = [
   { net: 0xac100000, mask: 0xfff00000 },
   // 192.168.0.0/16
   { net: 0xc0a80000, mask: 0xffff0000 },
+  // 100.64.0.0/10 — shared address space（CGNAT / overlay）
+  { net: 0x64400000, mask: 0xffc00000 },
 ];
+
+const BLOCKED_IPV6_ALWAYS: Ipv6Range[] = [
+  { network: '::', prefixLength: 128 }, // unspecified
+  { network: '100::', prefixLength: 64 }, // discard-only
+  { network: '2001:2::', prefixLength: 48 }, // benchmark
+  { network: '2001:10::', prefixLength: 28 }, // deprecated ORCHIDv1
+  { network: '2001:20::', prefixLength: 28 }, // ORCHIDv2
+  { network: '2001:db8::', prefixLength: 32 }, // documentation
+  { network: '3fff::', prefixLength: 20 }, // documentation
+  { network: '5f00::', prefixLength: 16 }, // segment-routing SIDs, limited domain
+  { network: 'fe80::', prefixLength: 10 }, // link-local
+  { network: 'ff00::', prefixLength: 8 }, // multicast
+];
+
+const LOCAL_IPV6_RANGES: Ipv6Range[] = [
+  { network: '::1', prefixLength: 128 }, // loopback
+  { network: 'fc00::', prefixLength: 7 }, // unique local
+  { network: 'fec0::', prefixLength: 10 }, // deprecated site-local
+];
+
+const PUBLIC_IPV4_EXCEPTIONS = new Set([
+  ipv4ToInt('192.0.0.9'), // Port Control Protocol anycast
+  ipv4ToInt('192.0.0.10'), // TURN anycast
+]);
 
 function ipv4ToInt(ip: string): number | null {
   const parts = ip.split('.');
@@ -56,16 +101,21 @@ function ipv4ToInt(ip: string): number | null {
   return result >>> 0;
 }
 
+function isInIpv4Ranges(ip: string, ranges: Ipv4Range[]): boolean {
+  const intIp = ipv4ToInt(ip);
+  if (intIp === null) return false;
+  return ranges.some(({ net: n, mask }) => ((intIp & mask) >>> 0) === n);
+}
+
 function isAlwaysBlockedIPv4(ip: string): boolean {
   const intIp = ipv4ToInt(ip);
   if (intIp === null) return false;
-  return BLOCKED_IPV4_ALWAYS.some(({ net: n, mask }) => ((intIp & mask) >>> 0) === n);
+  if (PUBLIC_IPV4_EXCEPTIONS.has(intIp)) return false;
+  return isInIpv4Ranges(ip, BLOCKED_IPV4_ALWAYS);
 }
 
-function isPrivateIPv4(ip: string): boolean {
-  const intIp = ipv4ToInt(ip);
-  if (intIp === null) return false;
-  return PRIVATE_IPV4_RANGES.some(({ net: n, mask }) => ((intIp & mask) >>> 0) === n);
+function isLocalIPv4(ip: string): boolean {
+  return isInIpv4Ranges(ip, LOCAL_IPV4_RANGES);
 }
 
 function parseIPv6Words(ip: string): number[] | null {
@@ -122,32 +172,38 @@ function extractIPv4MappedIPv6(ip: string): string | null {
   ].join('.');
 }
 
-function isAlwaysBlockedIPv6(ip: string): boolean {
-  // IPv6 unspecified
-  if (ip === '::' || ip === '0:0:0:0:0:0:0:0') return true;
-  // IPv4-mapped 中嵌入的危险地址
-  const mappedIPv4 = extractIPv4MappedIPv6(ip);
-  if (mappedIPv4 && isAlwaysBlockedIPv4(mappedIPv4)) return true;
-  return false;
+function isInIpv6Range(ip: string, range: Ipv6Range): boolean {
+  const words = parseIPv6Words(ip);
+  const networkWords = parseIPv6Words(range.network);
+  if (!words || !networkWords) return false;
+
+  const fullWords = Math.floor(range.prefixLength / 16);
+  for (let index = 0; index < fullWords; index += 1) {
+    if (words[index] !== networkWords[index]) return false;
+  }
+
+  const remainingBits = range.prefixLength % 16;
+  if (remainingBits === 0) return true;
+  const mask = (0xffff << (16 - remainingBits)) & 0xffff;
+  return (words[fullWords] & mask) === (networkWords[fullWords] & mask);
 }
 
-function isPrivateIPv6(ip: string): boolean {
-  if (ip === '::1') return true; // loopback
-  const lower = ip.toLowerCase();
-  // fc00::/7 — unique local
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-  // fe80::/10 — link-local
-  if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) {
-    return true;
-  }
-  // fec0::/10 — deprecated site-local addresses
-  if (lower.startsWith('fec') || lower.startsWith('fed') || lower.startsWith('fee') || lower.startsWith('fef')) {
-    return true;
-  }
-  // IPv4-mapped 中嵌入的私有地址
+function classifyIpv4(ip: string, allowLocal: boolean): string | null {
+  if (isAlwaysBlockedIPv4(ip)) return '目标地址属于禁用的特殊用途地址段';
+  if (!allowLocal && isLocalIPv4(ip)) return '目标地址属于内网，未启用 ALLOW_LOCAL_NETWORK';
+  return null;
+}
+
+function classifyIpv6(ip: string, allowLocal: boolean): string | null {
   const mappedIPv4 = extractIPv4MappedIPv6(ip);
-  if (mappedIPv4 && isPrivateIPv4(mappedIPv4)) return true;
-  return false;
+  if (mappedIPv4) return classifyIpv4(mappedIPv4, allowLocal);
+  if (BLOCKED_IPV6_ALWAYS.some(range => isInIpv6Range(ip, range))) {
+    return '目标地址属于禁用的 IPv6 特殊用途地址段';
+  }
+  if (!allowLocal && LOCAL_IPV6_RANGES.some(range => isInIpv6Range(ip, range))) {
+    return '目标地址属于内网（IPv6），未启用 ALLOW_LOCAL_NETWORK';
+  }
+  return null;
 }
 
 /**
@@ -157,14 +213,10 @@ function isPrivateIPv6(ip: string): boolean {
 function classifyIp(ip: string, allowLocal: boolean): string | null {
   const family = net.isIP(ip);
   if (family === 4) {
-    if (isAlwaysBlockedIPv4(ip)) return '目标地址属于禁用范围（链路本地 / 0.0.0.0）';
-    if (!allowLocal && isPrivateIPv4(ip)) return '目标地址属于内网，未启用 ALLOW_LOCAL_NETWORK';
-    return null;
+    return classifyIpv4(ip, allowLocal);
   }
   if (family === 6) {
-    if (isAlwaysBlockedIPv6(ip)) return '目标地址属于禁用范围（IPv6 链路本地 / 未指定地址）';
-    if (!allowLocal && isPrivateIPv6(ip)) return '目标地址属于内网（IPv6），未启用 ALLOW_LOCAL_NETWORK';
-    return null;
+    return classifyIpv6(ip, allowLocal);
   }
   return '目标地址不是合法 IP';
 }
@@ -308,6 +360,13 @@ export async function safeFetch(
   const maxRedirects = 5;
   const allowLocal = process.env.ALLOW_LOCAL_NETWORK === '1';
   const dispatcher = getGuardedAgent(allowLocal);
+  const currentHeaders = new Headers(init?.headers);
+
+  const stripCredentialHeaders = () => {
+    for (const name of ['authorization', 'proxy-authorization', 'cookie', 'cookie2']) {
+      currentHeaders.delete(name);
+    }
+  };
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     // 使用 undici fetch，附带带 socket 层校验的 dispatcher
@@ -315,6 +374,7 @@ export async function safeFetch(
     // 但运行时兼容（Node 18+ 的全局 fetch 即基于 undici）
     const response = (await undiciFetch(currentUrl.toString(), {
       ...(init as Parameters<typeof undiciFetch>[1]),
+      headers: currentHeaders,
       redirect: 'manual',
       dispatcher,
     })) as unknown as Response;
@@ -332,7 +392,11 @@ export async function safeFetch(
       throw new Error('重定向次数过多');
     }
 
-    currentUrl = await assertSafeUrl(new URL(location, currentUrl).toString());
+    const nextUrl = await assertSafeUrl(new URL(location, currentUrl).toString());
+    if (nextUrl.origin !== currentUrl.origin) {
+      stripCredentialHeaders();
+    }
+    currentUrl = nextUrl;
   }
 
   throw new Error('重定向处理异常');

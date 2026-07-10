@@ -10,6 +10,7 @@ import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { enqueueMemoryProfilePatchExtraction, triggerMemoryProfileQueue } from '@/lib/memory-profile';
+import { structuredLog } from '@/lib/structured-log';
 
 let processing = false;
 // 正在处理中的 conversationId，防止同一对话并发重复提取
@@ -226,7 +227,13 @@ async function processQueue(): Promise<void> {
             enqueueMemoryProfilePatchExtraction(task.character_id, convText, 'memory_extraction', db);
             triggerMemoryProfileQueue();
           } catch (profileErr) {
-            console.error('[memory-queue] enqueue memory profile update failed:', profileErr);
+            structuredLog('error', 'memory.profile.enqueue_failed', {
+              taskId: task.id,
+              characterId: task.character_id,
+              conversationId: task.conversation_id,
+              operation: 'enqueue_profile_update',
+              status: 'failed',
+            }, profileErr);
           }
         } else {
           markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds, new Date().toISOString());
@@ -245,7 +252,13 @@ async function processQueue(): Promise<void> {
           .run(new Date().toISOString(), task.id);
       }
     } catch (err) {
-      console.error('Memory extraction failed:', err);
+      structuredLog('error', 'memory.extraction.failed', {
+        taskId: task.id,
+        characterId: task.character_id,
+        conversationId: task.conversation_id,
+        operation: 'extract',
+        status: 'failed',
+      }, err);
       // 标记失败，不阻塞后续任务
       const errorMessage = err instanceof Error ? err.message : String(err);
       const taskColumns = db.prepare("PRAGMA table_info(memory_tasks)").all() as { name: string }[];

@@ -146,9 +146,9 @@ English · [中文](README.md)
 - Setting a password is strongly recommended when deploying to the public internet
 - After login, the app issues an HMAC-SHA256 signed token (the password is no longer stored in the cookie). Set `AUTH_SECRET` to keep tokens valid across multiple replicas
 - Password verification uses constant-time comparison to prevent timing attacks
-- `X-Forwarded-For` is not trusted by default; set `TRUST_PROXY=1` only behind a trusted reverse proxy that overwrites forwarded headers
+- `X-Forwarded-For` is not trusted by default; set `TRUST_PROXY=1` only when a trusted reverse proxy overwrites forwarded headers and the application port must not be reachable directly. One nearest proxy hop is trusted by default; set positive `TRUST_PROXY_HOPS` for a longer chain, parsed from the right of XFF
 - Outbound requests (image generation, model list, summarization, chat completion) go through an SSRF guard with DNS resolution and per-redirect re-validation, so external URLs cannot be redirected toward your internal network
-- Self-hosting local LLM / SD WebUI? Set `ALLOW_LOCAL_NETWORK=1` to explicitly opt into private network addresses
+- Self-hosting local LLM / SD WebUI? Set `ALLOW_LOCAL_NETWORK=1` to allow loopback, RFC1918, IPv6 ULA/site-local, and `100.64.0.0/10` (CGNAT/overlay). Metadata/link-local, multicast, documentation, benchmark, and reserved ranges remain blocked
 
 ---
 
@@ -277,6 +277,10 @@ ACCESS_PASSWORD=your_password_here
 # Optional: enable only when a trusted reverse proxy overwrites X-Forwarded-For
 # TRUST_PROXY=1
 
+# Optional: TRUST_PROXY=1 trusts the nearest proxy by default; use a positive value for more hops
+# The application port must not be reachable directly around the trusted proxy
+# TRUST_PROXY_HOPS=2
+
 # Optional: explicitly allow private network addresses for self-hosted local LLM / SD WebUI
 # ALLOW_LOCAL_NETWORK=1
 ```
@@ -394,7 +398,7 @@ When deploying to the public internet, be sure to:
 - Set `ACCESS_PASSWORD`
 - Make sure `ACCESS_PASSWORD` is not empty and not an example placeholder; production Docker startup refuses those values
 - Use HTTPS — preferably behind a reverse proxy
-- Set `TRUST_PROXY=1` only when your trusted reverse proxy overwrites forwarded headers
+- Set `TRUST_PROXY=1` only when your trusted reverse proxy overwrites forwarded headers and the application port must not be reachable directly; configure multiple trusted hops with `TRUST_PROXY_HOPS`
 - Regularly back up `data/`, `public/generated/`, `public/avatars/`, and `public/attachments/`
 - Never commit `.env.local`, database files, or personal backups to a public repository
 

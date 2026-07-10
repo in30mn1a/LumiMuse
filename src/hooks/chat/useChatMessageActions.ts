@@ -1,0 +1,231 @@
+import { useCallback, type MutableRefObject } from 'react';
+import type { Message } from '@/types';
+import type { ToastType } from '@/components/ui/Toast';
+import { expectOkResponse, parseJsonResponse } from '@/lib/http';
+import {
+  buildClientTimePayload,
+  readChatSseStream,
+} from '@/lib/chat-stream-client';
+
+type UpdateMessagesForConversation = (
+  conversationIdToUpdate: string,
+  updater: (messages: Message[]) => Message[],
+) => void;
+
+type StreamingUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+type UseChatMessageActionsOptions = {
+  activeConvIdRef: MutableRefObject<string | null>;
+  activeStreamsRef: MutableRefObject<Set<string>>;
+  activeStreamConvRef: MutableRefObject<string | null>;
+  messagesRef: MutableRefObject<Message[]>;
+  beginStream: (convId: string, options?: { regenerateAssistantId?: string }) => AbortController;
+  finishStream: (convId: string, options?: { clearRegenerationState?: boolean }) => void;
+  scheduleStreamingText: (text: string) => void;
+  setStreamingUsage: (usage: { convId: string; usage: StreamingUsage } | null) => void;
+  pollMemoryTask: (convId: string) => void | Promise<void>;
+  refreshMessages: () => Promise<void>;
+  refreshConversationState: (preferredActiveId?: string | null) => Promise<void>;
+  updateMessagesForConversation: UpdateMessagesForConversation;
+  markSkipNextScroll: () => void;
+  showToast: (message: string, type?: ToastType) => void;
+  t: (key: string) => string;
+};
+
+export function useChatMessageActions({
+  activeConvIdRef,
+  activeStreamsRef,
+  activeStreamConvRef,
+  messagesRef,
+  beginStream,
+  finishStream,
+  scheduleStreamingText,
+  setStreamingUsage,
+  pollMemoryTask,
+  refreshMessages,
+  refreshConversationState,
+  updateMessagesForConversation,
+  markSkipNextScroll,
+  showToast,
+  t,
+}: UseChatMessageActionsOptions) {
+  const handleEditMessage = useCallback(async (
+    id: string,
+    content: string,
+    attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>,
+  ) => {
+    try {
+      await expectOkResponse(await fetch(`/api/messages/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, attachments: attachments ?? [] }),
+      }));
+      await refreshMessages();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
+    }
+  }, [refreshMessages, showToast, t]);
+
+  const handleDeleteMessage = useCallback(async (id: string) => {
+    const res = await fetch(`/api/messages/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await parseJsonResponse<{ ok: boolean; deleted: 'message' | 'version'; message?: Message }>(res);
+    if (!data.ok) throw new Error(t('message.deleteFailed'));
+    const convId = data.message?.conversation_id || activeConvIdRef.current;
+    if (!convId) return;
+    if (data.deleted === 'version' && data.message) {
+      updateMessagesForConversation(convId, messages => messages.map(message => (
+        message.id === id ? data.message! : message
+      )));
+    } else {
+      updateMessagesForConversation(convId, messages => messages.filter(message => message.id !== id));
+    }
+  }, [activeConvIdRef, t, updateMessagesForConversation]);
+
+  const callChatStream = useCallback(async (
+    convId: string,
+    userContent: string,
+    regenerateAssistantId?: string,
+    skipUserInsert?: boolean,
+  ) => {
+    const controller = beginStream(convId, { regenerateAssistantId });
+    const streamConversationId = convId;
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: convId,
+          content: userContent,
+          ...buildClientTimePayload(),
+          ...(regenerateAssistantId ? { regenerate_assistant_id: regenerateAssistantId } : {}),
+          ...(skipUserInsert ? { skip_user_insert: true } : {}),
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        let errorMessage = `HTTP ${response.status}`;
+        try {
+          const errorBody = await response.json();
+          if (errorBody.error || errorBody.message) {
+            errorMessage = errorBody.error || errorBody.message || errorMessage;
+          }
+        } catch {
+          // 响应体不是 JSON 时保留状态码信息。
+        }
+        throw new Error(errorMessage);
+      }
+
+      let fullText = '';
+      await readChatSseStream(response.body, {
+        onChunk: text => {
+          fullText += text;
+          if (
+            activeStreamConvRef.current === streamConversationId
+            && activeConvIdRef.current === streamConversationId
+          ) {
+            scheduleStreamingText(fullText);
+          }
+        },
+        onUsage: usage => {
+          if (activeConvIdRef.current === streamConversationId) {
+            setStreamingUsage({ convId: streamConversationId, usage });
+          }
+        },
+        onMemoryExtracting: () => {
+          void pollMemoryTask(streamConversationId);
+        },
+        getErrorMessage: () => t('chat.errorGeneral'),
+      });
+
+      if (regenerateAssistantId) markSkipNextScroll();
+      await refreshMessages();
+      void refreshConversationState(undefined);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        await refreshMessages();
+      } else if (error instanceof TypeError) {
+        showToast(t('chat.errorNetwork'));
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        showToast(message || t('chat.errorGeneral'));
+      }
+    } finally {
+      finishStream(streamConversationId, { clearRegenerationState: true });
+    }
+  }, [
+    activeConvIdRef,
+    activeStreamConvRef,
+    beginStream,
+    finishStream,
+    markSkipNextScroll,
+    pollMemoryTask,
+    refreshConversationState,
+    refreshMessages,
+    scheduleStreamingText,
+    setStreamingUsage,
+    showToast,
+    t,
+  ]);
+
+  const handleRegenerate = useCallback(async (messageId: string) => {
+    const convId = activeConvIdRef.current;
+    if (!convId || activeStreamsRef.current.has(convId)) return;
+
+    const currentMessages = messagesRef.current;
+    const targetIndex = currentMessages.findIndex(message => message.id === messageId);
+    if (targetIndex === -1) return;
+    const userMessage = [...currentMessages.slice(0, targetIndex)]
+      .reverse()
+      .find(message => message.role === 'user');
+    if (!userMessage) return;
+
+    await callChatStream(convId, userMessage.content, messageId, true);
+  }, [activeConvIdRef, activeStreamsRef, callChatStream, messagesRef]);
+
+  const handleRegenerateFromHere = useCallback(async (userMessageId: string) => {
+    const convId = activeConvIdRef.current;
+    if (!convId || activeStreamsRef.current.has(convId)) return;
+
+    const currentMessages = messagesRef.current;
+    const userMessageIndex = currentMessages.findIndex(message => message.id === userMessageId);
+    if (userMessageIndex === -1) return;
+    const userContent = currentMessages[userMessageIndex].content;
+    const nextAssistant = currentMessages
+      .slice(userMessageIndex + 1)
+      .find(message => message.role === 'assistant');
+
+    await callChatStream(convId, userContent, nextAssistant?.id, true);
+  }, [activeConvIdRef, activeStreamsRef, callChatStream, messagesRef]);
+
+  const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {
+    try {
+      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activeVersion: versionIndex }),
+      }));
+      await refreshMessages();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
+    }
+  }, [refreshMessages, showToast, t]);
+
+  return {
+    handleEditMessage,
+    handleDeleteMessage,
+    handleRegenerate,
+    handleRegenerateFromHere,
+    handleSwitchVersion,
+  };
+}
+
+export type UseChatMessageActionsResult = ReturnType<typeof useChatMessageActions>;

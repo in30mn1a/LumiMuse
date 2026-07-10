@@ -6,9 +6,11 @@ import { normalizeTags as canonicalizeTags } from '@/lib/memory-tag-spec';
 import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-category';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
+import { structuredLog } from '@/lib/structured-log';
 import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
+import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 
 const CJK_STOPWORDS = new Set([
   // 原有
@@ -576,7 +578,10 @@ export async function extractMemories(
     max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
   });
   const backgroundExtraBody = buildBackgroundChatExtraBody(settings, extractionSettings.model);
-  const response = await chatCompletion(extractionSettings, [{ role: 'user', content: prompt }], undefined, backgroundExtraBody);
+  const response = await runWithBackgroundLlmDeadline(
+    settings.memory_background_timeout_ms,
+    signal => chatCompletion(extractionSettings, [{ role: 'user', content: prompt }], signal, backgroundExtraBody),
+  );
   const rawData = parseExtractionResponse(response);
   if (rawData.length === 0) {
     if (response.trim()) {
@@ -766,7 +771,12 @@ export async function extractMemories(
         queuedEmbeddingTasks++;
       }
     } catch (err) {
-      console.error('Failed to enqueue memory embedding task:', err);
+      structuredLog('error', 'memory.embedding.enqueue_failed', {
+        taskId: task.memoryId,
+        characterId: task.characterId,
+        operation: task.reason,
+        status: 'failed',
+      }, err);
     }
   }
   if (queuedEmbeddingTasks > 0) {

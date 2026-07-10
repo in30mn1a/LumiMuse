@@ -19,6 +19,7 @@ import { useMessagePaging } from '@/hooks/chat/useMessagePaging';
 import { useChatScrollController, type UseChatScrollControllerResult } from '@/hooks/chat/useChatScrollController';
 import { useMemoryTaskPolling } from '@/hooks/chat/useMemoryTaskPolling';
 import { useChatImageGeneration } from '@/hooks/chat/useChatImageGeneration';
+import { useChatMessageActions } from '@/hooks/chat/useChatMessageActions';
 import { formatTemplate } from '@/lib/i18n';
 import { estimateClientTokens } from '@/lib/token-counter-client';
 import { getVersionInfo } from '@/lib/chat-view-utils';
@@ -207,6 +208,30 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     activeConvIdRef,
     characterRef,
     messagesRef,
+    updateMessagesForConversation,
+    markSkipNextScroll,
+    showToast,
+    t,
+  });
+
+  const {
+    handleEditMessage,
+    handleDeleteMessage,
+    handleRegenerate,
+    handleRegenerateFromHere,
+    handleSwitchVersion,
+  } = useChatMessageActions({
+    activeConvIdRef,
+    activeStreamsRef,
+    activeStreamConvRef,
+    messagesRef,
+    beginStream,
+    finishStream,
+    scheduleStreamingText,
+    setStreamingUsage,
+    pollMemoryTask,
+    refreshMessages,
+    refreshConversationState,
     updateMessagesForConversation,
     markSkipNextScroll,
     showToast,
@@ -468,167 +493,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       showToast(err instanceof Error ? err.message : t('chat.deleteError'), 'error');
     }
   };
-
-  const handleEditMessage = useCallback(async (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => {
-    try {
-      await expectOkResponse(await fetch(`/api/messages/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        // attachments 始终传（空数组表示清除所有附件）
-        body: JSON.stringify({ content, attachments: attachments ?? [] }),
-      }));
-      await refreshMessages();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
-    }
-  }, [refreshMessages, showToast, t]);
-
-  const handleDeleteMessage = useCallback(async (id: string) => {
-    // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
-    const res = await fetch(`/api/messages/${id}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    const data = await parseJsonResponse<{ ok: boolean; deleted: 'message' | 'version'; message?: Message }>(res);
-    if (!data.ok) throw new Error(t('message.deleteFailed'));
-    const convId = data.message?.conversation_id || activeConvIdRef.current;
-    if (!convId) return;
-    if (data.deleted === 'version' && data.message) {
-      // 只删了一个版本，用返回的更新后消息替换
-      updateMessagesForConversation(convId, messages => messages.map(m => m.id === id ? data.message! : m));
-    } else {
-      // 整条消息被删除
-      updateMessagesForConversation(convId, messages => messages.filter(m => m.id !== id));
-    }
-  }, [activeConvIdRef, t, updateMessagesForConversation]);
-
-  // ref-only helper: stable callback deps stay intentionally empty in regenerate handlers.
-  // This function must read current conversation/stream ownership through refs before UI writes.
-  const callChatStream = async (convId: string, userContent: string, regenerateAssistantId?: string, skipUserInsert?: boolean) => {
-    // ref-only helper: call sites rely on the latest refs instead of callback identity.
-    const ctl = beginStream(convId, { regenerateAssistantId });
-    // 闭包内捕获本次流的 convId，用于判断是否仍是活跃流
-    const myConvId = convId;
-
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversation_id: convId,
-          content: userContent,
-          ...buildClientTimePayload(),
-          ...(regenerateAssistantId ? { regenerate_assistant_id: regenerateAssistantId } : {}),
-          ...(skipUserInsert ? { skip_user_insert: true } : {}),
-        }),
-        signal: ctl.signal,
-      });
-
-      if (!response.ok || !response.body) {
-        let errMsg = `HTTP ${response.status}`;
-        try {
-          // 尝试读取服务端返回的具体错误信息
-          const errBody = await response.json();
-          if (errBody.error || errBody.message) errMsg = errBody.error || errBody.message || errMsg;
-        } catch { /* 响应体不是 JSON，保留状态码信息 */ }
-        throw new Error(errMsg);
-      }
-
-      let fullText = '';
-      await readChatSseStream(response.body, {
-        onChunk: text => {
-          fullText += text;
-          // 竞态保护：仅当本流仍是「最后启动的流」且「用户当前正在看本对话」时才更新 UI 文本。
-          // 用户切到别的对话后，本流剩余 chunk 不再写入 streamingText（避免在错误的对话上残留文字）。
-          // fullText 在闭包内继续累积，保证后端持久化的内容完整。
-          if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
-            scheduleStreamingText(fullText);
-          }
-        },
-        onUsage: (usage) => {
-          // 仅当本流仍属于当前对话时更新，避免切走后残留
-          if (activeConvIdRef.current === myConvId) {
-            setStreamingUsage({ convId: myConvId, usage });
-          }
-        },
-        onMemoryExtracting: () => {
-          void pollMemoryTask(myConvId);
-        },
-        getErrorMessage: () => t('chat.errorGeneral'),
-      });
-
-      if (regenerateAssistantId) markSkipNextScroll();
-      await refreshMessages();
-      // 刷新列表但不重置 active
-      void refreshConversationState(undefined);
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        // 用户主动停止，刷新消息（服务端可能已写入部分内容）
-        await refreshMessages();
-      } else {
-        const isNetwork = error instanceof TypeError;
-        if (isNetwork) {
-          showToast(t('chat.errorNetwork'));
-        } else {
-          const msg = error instanceof Error ? error.message : String(error);
-          showToast(msg || t('chat.errorGeneral'));
-        }
-      }
-    } finally {
-      finishStream(myConvId, { clearRegenerationState: true });
-    }
-  };
-
-  const handleRegenerate = useCallback(async (messageId: string) => {
-    const convId = activeConvIdRef.current;
-    if (!convId || activeStreamsRef.current.has(convId)) return;
-
-    // 找到该 assistant 消息前方最近的 user 消息，而不是全局最后一条
-    const currentMessages = messagesRef.current;
-    const idx = currentMessages.findIndex(m => m.id === messageId);
-    if (idx === -1) return;
-    const userMsg = [...currentMessages.slice(0, idx)].reverse().find(m => m.role === 'user');
-    if (!userMsg) return;
-
-    // skipUserInsert=true：user 消息已在数据库，不重复插入
-    await callChatStream(convId, userMsg.content, messageId, true);
-    // callChatStream 在外层闭包内捕获引用，但本身没用 useCallback —— 用 ref 模式无需把它放进依赖
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleRegenerateFromHere = useCallback(async (userMessageId: string) => {
-    const convId = activeConvIdRef.current;
-    if (!convId || activeStreamsRef.current.has(convId)) return;
-
-    const currentMessages = messagesRef.current;
-    const userMsgIndex = currentMessages.findIndex(m => m.id === userMessageId);
-    if (userMsgIndex === -1) return;
-    const userContent = currentMessages[userMsgIndex].content;
-
-    const nextAssistant = currentMessages.slice(userMsgIndex + 1).find(m => m.role === 'assistant');
-
-    if (nextAssistant) {
-      // 有后续 assistant 消息：替换它，同时跳过重新插入用户消息
-      await callChatStream(convId, userContent, nextAssistant.id, true);
-    } else {
-      // 没有后续 assistant 消息：直接生成新回复，但用户消息已在数据库里，跳过插入
-      await callChatStream(convId, userContent, undefined, true);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {
-    try {
-      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ activeVersion: versionIndex }),
-      }));
-      await refreshMessages();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
-    }
-  }, [refreshMessages, showToast, t]);
 
   const handleSummarize = async () => {
     if (!activeConvId || activeStreams.has(activeConvId) || summarizing) return;

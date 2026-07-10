@@ -4,6 +4,8 @@ import { Message } from '@/types';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
+import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
+import { structuredLog } from '@/lib/structured-log';
 
 /**
  * AI 生成图片 prompt — 根据对话上下文和角色信息生成适合文生图的英文标签
@@ -212,10 +214,13 @@ export async function POST(request: NextRequest) {
 
     context += `\n请根据以上信息生成一张插图的 Tag。必须优先以最新一条消息为准来决定画面主体、动作、表情和场景；更早的对话只作为角色设定和上下文补充，不要让旧消息覆盖最新消息。`;
 
-    const result = await chatCompletion(settings, [
-      { role: 'system', content: PROMPT_GENERATION_SYSTEM },
-      { role: 'user', content: context },
-    ], undefined, backgroundExtraBody);
+    const result = await runWithBackgroundLlmDeadline(
+      loadedSettings.memory_background_timeout_ms,
+      signal => chatCompletion(settings, [
+        { role: 'system', content: PROMPT_GENERATION_SYSTEM },
+        { role: 'user', content: context },
+      ], signal, backgroundExtraBody),
+    );
 
     // 解析输出
     let positive = '';
@@ -242,7 +247,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ prompt: positive, negative_prompt: negative });
   } catch (err) {
-    console.error('[image-gen/prompt] 生成 prompt 失败:', err);
+    structuredLog('error', 'image.prompt.failed', {
+      requestId: request.headers?.get('x-request-id') ?? undefined,
+      operation: 'generate_prompt',
+      status: 'failed',
+    }, err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : '生成 prompt 失败' },
       { status: 500 }

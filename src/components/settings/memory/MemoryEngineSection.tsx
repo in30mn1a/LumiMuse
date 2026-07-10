@@ -157,6 +157,21 @@ export function MemoryEngineSection({
             {bgModelError && <p className="mt-2 text-xs text-red-500">{bgModelError}</p>}
             <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundModelHint')}</p>
           </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundTimeout')}</label>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={Math.round(settings.memory_background_timeout_ms / 60_000)}
+              onChange={e => {
+                const minutes = Math.max(0, Math.round(parseNumber(e.target.value) || 0));
+                update('memory_background_timeout_ms', minutes * 60_000);
+              }}
+              className="input-rich"
+            />
+            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundTimeoutHint')}</p>
+          </div>
           <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
             <input
               type="checkbox"

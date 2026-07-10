@@ -156,13 +156,14 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
       <div className="flex gap-3">
         {selectMode && (
           <div className="flex shrink-0 items-start pt-0.5">
-            <div className={`flex h-5 w-5 items-center justify-center rounded-md border-2 transition-colors ${selected ? 'border-accent-dark bg-accent-dark' : 'border-border-heavy bg-surface-panel'}`}>
-              {selected && (
-                <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-              )}
-            </div>
+            <input
+              type="checkbox"
+              checked={selected}
+              aria-label={memory.content}
+              onClick={e => e.stopPropagation()}
+              onChange={() => onSelect?.(memory.id)}
+              className="h-5 w-5 rounded-md border-2 border-border-heavy accent-accent-dark"
+            />
           </div>
         )}
         <div className="min-w-0 flex-1">

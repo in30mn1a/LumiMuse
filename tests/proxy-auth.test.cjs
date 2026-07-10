@@ -14,6 +14,7 @@ const originalEnv = {
   AUTH_SECRET: process.env.AUTH_SECRET,
   NODE_ENV: process.env.NODE_ENV,
   TRUST_PROXY: process.env.TRUST_PROXY,
+  TRUST_PROXY_HOPS: process.env.TRUST_PROXY_HOPS,
 };
 
 Module._resolveFilename = function resolveFilename(request, parent, isMain, options) {
@@ -54,6 +55,7 @@ function setAuthEnv() {
   process.env.AUTH_SECRET = 'proxy-auth-test-secret';
   process.env.NODE_ENV = 'test';
   delete process.env.TRUST_PROXY;
+  delete process.env.TRUST_PROXY_HOPS;
 }
 
 function clearAuthEnv() {
@@ -61,6 +63,7 @@ function clearAuthEnv() {
   process.env.AUTH_SECRET = 'proxy-auth-test-secret';
   process.env.NODE_ENV = 'test';
   delete process.env.TRUST_PROXY;
+  delete process.env.TRUST_PROXY_HOPS;
 }
 
 function deleteModuleCache(relativePath) {
@@ -164,6 +167,29 @@ test('proxy allows all requests when access password is not configured', async (
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('x-middleware-next'), '1');
+});
+
+test('proxy preserves a valid request id for API routes and forwards it to the route handler', async () => {
+  clearAuthEnv();
+  const { proxy } = loadProxy();
+  const response = await proxy(authRequest('/api/messages', {
+    headers: { 'x-request-id': 'client-request-123' },
+  }));
+
+  assert.equal(response.headers.get('x-request-id'), 'client-request-123');
+  assert.equal(response.headers.get('x-middleware-request-x-request-id'), 'client-request-123');
+});
+
+test('proxy replaces malformed request ids before echoing or forwarding them', async () => {
+  clearAuthEnv();
+  const { proxy } = loadProxy();
+  const response = await proxy(authRequest('/api/messages', {
+    headers: { 'x-request-id': 'bad request id with spaces' },
+  }));
+
+  const requestId = response.headers.get('x-request-id');
+  assert.match(requestId, /^[0-9a-f-]{36}$/i);
+  assert.equal(response.headers.get('x-middleware-request-x-request-id'), requestId);
 });
 
 test('proxy returns 401 for protected API requests without a cookie', async () => {
@@ -342,4 +368,19 @@ test('/api/auth POST rate limits the same forwarded IP when TRUST_PROXY is enabl
   const payload = await jsonPayload(response);
   assert.equal(response.status, 429);
   assert.equal(payload.error, '尝试次数过多，请稍后再试');
+});
+
+test('/api/auth POST ignores forged XFF prefixes when one trusted proxy hop is configured', async () => {
+  setAuthEnv();
+  process.env.TRUST_PROXY = '1';
+  const route = loadAuthRoute();
+  let response = null;
+
+  for (let i = 0; i < 11; i += 1) {
+    response = await route.POST(jsonAuthRequest('POST', { password: 'wrong-password' }, {
+      'x-forwarded-for': `203.0.113.${i}, 198.51.100.20`,
+    }));
+  }
+
+  assert.equal(response.status, 429);
 });

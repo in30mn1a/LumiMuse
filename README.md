@@ -146,9 +146,9 @@
 - 部署到公网时建议一定设置访问密码
 - 登录后下发 HMAC-SHA256 签名 token（不再把密码原文写入 cookie），可选配 `AUTH_SECRET` 让 token 在多副本部署时通用
 - 密码校验使用常量时间比较，避免通过响应耗时差推测密码
-- 默认不信任 `X-Forwarded-For`；只有部署在可信反向代理后面时才设置 `TRUST_PROXY=1`
+- 默认不信任 `X-Forwarded-For`；只有可信反向代理会覆盖转发头且应用端口不得绕过代理直连时才设置 `TRUST_PROXY=1`。默认信任离应用最近的 1 个代理 hop，多级代理用正整数 `TRUST_PROXY_HOPS` 配置，系统从 XFF 右侧解析客户端地址
 - 出站请求（生图、模型列表、总结、对话补全）经过 SSRF 防护，会做 DNS 解析与重定向逐跳校验，避免被外部地址引导到内网
-- 自部署本地 LLM / SD WebUI 时可设置 `ALLOW_LOCAL_NETWORK=1` 显式放开内网地址
+- 自部署本地 LLM / SD WebUI 时可设置 `ALLOW_LOCAL_NETWORK=1`，显式放开 loopback、RFC1918、IPv6 ULA/site-local 与 `100.64.0.0/10`（CGNAT/overlay）；metadata/link-local、multicast、documentation、benchmark 和 reserved 地址仍会拒绝
 
 ---
 
@@ -277,6 +277,10 @@ ACCESS_PASSWORD=your_password_here
 # 可选：仅在可信反向代理覆盖 X-Forwarded-For 时启用
 # TRUST_PROXY=1
 
+# 可选：TRUST_PROXY=1 时默认信任最近的 1 个代理；多级代理设为正整数
+# 应用端口不得绕过可信代理直接暴露到公网
+# TRUST_PROXY_HOPS=2
+
 # 可选：自部署本地 LLM / SD WebUI 时显式允许内网地址
 # ALLOW_LOCAL_NETWORK=1
 ```
@@ -394,7 +398,7 @@ LumiMuse 的核心数据保存在你自己的本机或服务器中：
 - 设置 `ACCESS_PASSWORD`
 - 确认 `ACCESS_PASSWORD` 不是空值或示例占位值；Docker 生产启动会直接拒绝这类配置
 - 使用 HTTPS（加密访问协议），建议放在反向代理后面
-- 只有可信反向代理会覆盖客户端转发头时，才设置 `TRUST_PROXY=1`
+- 只有可信反向代理会覆盖客户端转发头且应用端口不得绕过代理直连时，才设置 `TRUST_PROXY=1`；多级代理用 `TRUST_PROXY_HOPS` 配置可信 hop 数
 - 定期备份 `data/`、`public/generated/`、`public/avatars/` 和 `public/attachments/`
 - 不要把 `.env.local`、数据库文件或个人备份提交到公开仓库
 

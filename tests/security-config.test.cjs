@@ -141,6 +141,211 @@ test('SSRF guard rejects redirects from a public URL to an internal URL', async 
   assert.deepEqual(fetchCalls, ['https://8.8.8.8/start']);
 });
 
+test('safeFetch retains credentials across same-origin redirects', async () => {
+  delete process.env.ALLOW_LOCAL_NETWORK;
+  const fetchCalls = [];
+  const { safeFetch } = requireFreshWithMocks('../src/lib/ssrf-guard.ts', {
+    undici: {
+      Agent: class Agent {
+        constructor(options) {
+          this.options = options;
+        }
+      },
+      buildConnector: () => () => {
+        throw new Error('mock connector should not be used by mocked fetch');
+      },
+      fetch: async (url, init) => {
+        fetchCalls.push({ url, headers: new Headers(init.headers) });
+        if (fetchCalls.length === 1) {
+          return new Response('', { status: 302, headers: { location: '/finish' } });
+        }
+        return new Response('ok');
+      },
+    },
+  });
+
+  const response = await safeFetch('https://8.8.8.8/start', {
+    headers: {
+      Authorization: 'Bearer secret-token',
+      Cookie: 'session=secret-cookie',
+      'X-Trace-Id': 'trace-1',
+    },
+  });
+
+  assert.equal(await response.text(), 'ok');
+  assert.deepEqual(fetchCalls.map(call => call.url), [
+    'https://8.8.8.8/start',
+    'https://8.8.8.8/finish',
+  ]);
+  for (const call of fetchCalls) {
+    assert.equal(call.headers.get('authorization'), 'Bearer secret-token');
+    assert.equal(call.headers.get('cookie'), 'session=secret-cookie');
+    assert.equal(call.headers.get('x-trace-id'), 'trace-1');
+  }
+});
+
+test('safeFetch permanently strips credential headers after a cross-origin redirect', async () => {
+  delete process.env.ALLOW_LOCAL_NETWORK;
+  const fetchCalls = [];
+  const { safeFetch } = requireFreshWithMocks('../src/lib/ssrf-guard.ts', {
+    undici: {
+      Agent: class Agent {
+        constructor(options) {
+          this.options = options;
+        }
+      },
+      buildConnector: () => () => {
+        throw new Error('mock connector should not be used by mocked fetch');
+      },
+      fetch: async (url, init) => {
+        fetchCalls.push({ url, headers: new Headers(init.headers) });
+        if (fetchCalls.length === 1) {
+          return new Response('', { status: 302, headers: { location: 'https://1.1.1.1/away' } });
+        }
+        if (fetchCalls.length === 2) {
+          return new Response('', { status: 302, headers: { location: 'https://8.8.8.8/back' } });
+        }
+        return new Response('ok');
+      },
+    },
+  });
+
+  await safeFetch('https://8.8.8.8/start', {
+    headers: {
+      Authorization: 'Bearer secret-token',
+      'Proxy-Authorization': 'Basic proxy-secret',
+      Cookie: 'session=secret-cookie',
+      Cookie2: 'legacy=secret-cookie',
+      'X-Trace-Id': 'trace-2',
+    },
+  });
+
+  assert.deepEqual(fetchCalls.map(call => call.url), [
+    'https://8.8.8.8/start',
+    'https://1.1.1.1/away',
+    'https://8.8.8.8/back',
+  ]);
+  assert.equal(fetchCalls[0].headers.get('authorization'), 'Bearer secret-token');
+  for (const call of fetchCalls.slice(1)) {
+    assert.equal(call.headers.get('authorization'), null);
+    assert.equal(call.headers.get('proxy-authorization'), null);
+    assert.equal(call.headers.get('cookie'), null);
+    assert.equal(call.headers.get('cookie2'), null);
+    assert.equal(call.headers.get('x-trace-id'), 'trace-2');
+  }
+});
+
+test('safeFetch treats protocol and port changes as cross-origin redirects', async () => {
+  delete process.env.ALLOW_LOCAL_NETWORK;
+  const cases = [
+    ['https://8.8.8.8/start', 'http://8.8.8.8/finish'],
+    ['https://8.8.8.8/start', 'https://8.8.8.8:444/finish'],
+  ];
+
+  for (const [startUrl, redirectUrl] of cases) {
+    const fetchCalls = [];
+    const { safeFetch } = requireFreshWithMocks('../src/lib/ssrf-guard.ts', {
+      undici: {
+        Agent: class Agent {
+          constructor(options) {
+            this.options = options;
+          }
+        },
+        buildConnector: () => () => {
+          throw new Error('mock connector should not be used by mocked fetch');
+        },
+        fetch: async (url, init) => {
+          fetchCalls.push({ url, headers: new Headers(init.headers) });
+          return fetchCalls.length === 1
+            ? new Response('', { status: 302, headers: { location: redirectUrl } })
+            : new Response('ok');
+        },
+      },
+    });
+
+    await safeFetch(startUrl, { headers: { Authorization: 'Bearer secret-token' } });
+
+    assert.equal(fetchCalls[1].headers.get('authorization'), null, redirectUrl);
+    deleteIfCached('src/lib/ssrf-guard.ts');
+  }
+});
+
+test('SSRF guard classifies local and special IPv4, IPv6, and mapped ranges consistently', async () => {
+  const localUrls = [
+    'http://127.0.0.1/service',
+    'http://10.0.0.1/service',
+    'http://172.31.255.255/service',
+    'http://192.168.0.1/service',
+    'http://100.64.0.1/service',
+    'http://100.127.255.254/service',
+    'http://[::1]/service',
+    'http://[fc00::1]/service',
+    'http://[fdff::1]/service',
+    'http://[fec0::1]/service',
+    'http://[::ffff:100.64.0.1]/service',
+  ];
+  const alwaysBlockedUrls = [
+    'http://0.0.0.1/service',
+    'http://169.254.169.254/service',
+    'http://192.0.0.1/service',
+    'http://192.0.2.1/service',
+    'http://192.88.99.1/service',
+    'http://198.18.0.1/service',
+    'http://198.51.100.1/service',
+    'http://203.0.113.1/service',
+    'http://224.0.0.1/service',
+    'http://240.0.0.1/service',
+    'http://255.255.255.255/service',
+    'http://[::]/service',
+    'http://[100::1]/service',
+    'http://[2001:2::1]/service',
+    'http://[2001:db8::1]/service',
+    'http://[3fff::1]/service',
+    'http://[fe80::1]/service',
+    'http://[ff02::1]/service',
+    'http://[::ffff:192.0.2.1]/service',
+  ];
+
+  for (const allowLocal of [false, true]) {
+    if (allowLocal) process.env.ALLOW_LOCAL_NETWORK = '1';
+    else delete process.env.ALLOW_LOCAL_NETWORK;
+    deleteIfCached('src/lib/ssrf-guard.ts');
+    const { assertSafeUrl } = require('../src/lib/ssrf-guard.ts');
+
+    for (const rawUrl of alwaysBlockedUrls) {
+      await assert.rejects(() => assertSafeUrl(rawUrl), /SSRF 防护拒绝/, `${rawUrl} should always be rejected`);
+    }
+    for (const rawUrl of localUrls) {
+      if (allowLocal) {
+        await assert.doesNotReject(() => assertSafeUrl(rawUrl), rawUrl);
+      } else {
+        await assert.rejects(() => assertSafeUrl(rawUrl), /SSRF 防护拒绝/, rawUrl);
+      }
+    }
+  }
+});
+
+test('SSRF guard does not reject public addresses adjacent to special ranges', async () => {
+  delete process.env.ALLOW_LOCAL_NETWORK;
+  const { assertSafeUrl } = require('../src/lib/ssrf-guard.ts');
+  const publicUrls = [
+    'http://100.63.255.255/service',
+    'http://100.128.0.1/service',
+    'http://192.0.0.9/service',
+    'http://192.0.0.10/service',
+    'http://192.0.1.1/service',
+    'http://192.0.3.1/service',
+    'http://198.17.255.255/service',
+    'http://198.20.0.1/service',
+    'http://223.255.255.254/service',
+    'http://[2606:4700:4700::1111]/service',
+  ];
+
+  for (const rawUrl of publicUrls) {
+    await assert.doesNotReject(() => assertSafeUrl(rawUrl), rawUrl);
+  }
+});
+
 test('SSRF socket guard rejects IPv4-mapped IPv6 loopback in hexadecimal form', async () => {
   delete process.env.ALLOW_LOCAL_NETWORK;
   const socket = {
@@ -204,8 +409,12 @@ test('release docs structure contract describes proxy trust, env file override, 
   const docs = `${claude}\n${readmeZh}\n${readmeEn}`;
 
   assert.match(envExample, /TRUST_PROXY/);
+  assert.match(envExample, /TRUST_PROXY_HOPS/);
   assert.match(envExample, /X-Forwarded-For|反向代理|reverse proxy/i);
+  assert.match(envExample, /100\.64\.0\.0\/10|CGNAT|overlay/i);
   assert.match(docs, /TRUST_PROXY/);
+  assert.match(docs, /TRUST_PROXY_HOPS/);
+  assert.match(docs, /不得.*直连|must not be reachable directly|must not expose.*direct/i);
   assert.match(docs, /LUMIMUSE_ENV_FILE/);
   assert.match(docs, /20\.18/);
   assert.match(docs, /Node 24/);

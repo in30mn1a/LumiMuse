@@ -512,26 +512,41 @@ export async function runChat(
     })();
   }
 
+  const regenerateTargetMessage = options?.regenerateAssistantId
+    ? db.prepare('SELECT created_at, seq FROM messages WHERE id = ? AND conversation_id = ?')
+        .get(options.regenerateAssistantId, conversationId) as { created_at: string; seq: number } | undefined
+    : undefined;
+
+  // 正常聊天定位全局最后一条 summary；重新生成则只定位目标消息之前的最后 summary。
+  // 这样既保持有界读取，也不会把目标之后的“未来消息”错误送入重新生成上下文。
+  const summarySql = `
+    SELECT seq
+    FROM messages
+    WHERE conversation_id = ?
+      ${regenerateTargetMessage ? 'AND seq < ?' : ''}
+      AND CASE WHEN json_valid(metadata)
+               THEN json_extract(metadata, '$.isSummary') = 1
+               ELSE 0 END
+    ORDER BY seq DESC
+    LIMIT 1
+  `;
+  const lastSummary = (regenerateTargetMessage
+    ? db.prepare(summarySql).get(conversationId, regenerateTargetMessage.seq)
+    : db.prepare(summarySql).get(conversationId)) as { seq: number } | undefined;
+  const historySql = [
+    'SELECT * FROM messages WHERE conversation_id = ?',
+    lastSummary ? 'AND seq >= ?' : '',
+    regenerateTargetMessage ? 'AND seq < ?' : '',
+    'ORDER BY created_at ASC, seq ASC',
+  ].filter(Boolean).join(' ');
+  const historyParams: Array<string | number> = [conversationId];
+  if (lastSummary) historyParams.push(lastSummary.seq);
+  if (regenerateTargetMessage) historyParams.push(regenerateTargetMessage.seq);
   const history = serializeTypedMessages(
-    db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC').all(conversationId) as Message[]
+    db.prepare(historySql).all(...historyParams) as Message[]
   );
 
-  // 总结截断：找到最后一条 summary 消息（metadata.isSummary），只把它（含）之后的消息作为上下文
-  // summary 消息本身会以 assistant 身份注入，让 AI 知道之前发生了什么
-  const lastSummaryIdx = history.findLastIndex(m => m.metadata.isSummary === true);
-  const historyAfterSummary = lastSummaryIdx >= 0 ? history.slice(lastSummaryIdx) : history;
-
-  // 重新生成模式：从上下文中排除要被替换的 assistant 消息，以及它之后的所有消息
-  const contextMessages = options?.regenerateAssistantId
-    ? (() => {
-        const targetIndex = historyAfterSummary.findIndex(m => m.id === options.regenerateAssistantId);
-        return targetIndex >= 0 ? historyAfterSummary.slice(0, targetIndex) : historyAfterSummary;
-      })()
-    : historyAfterSummary;
-
-  const regenerateTargetMessage = options?.regenerateAssistantId
-    ? history.find(m => m.id === options.regenerateAssistantId)
-    : undefined;
+  const contextMessages = history;
 
   const effectiveTimeContext = resolveCurrentTimeContext(
     options?.timeContext,

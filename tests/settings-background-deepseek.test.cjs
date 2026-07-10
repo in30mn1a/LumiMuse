@@ -211,3 +211,28 @@ test('image prompt route resolves background provider and model before chat comp
   assert.ok(route.includes('resolveBackgroundConfig'));
   assert.ok(route.includes('mergeSettingsForBackgroundLlm'));
 });
+
+test('background LLM watchdog is wired only into background call sites', () => {
+  const memoryEngine = fs.readFileSync(path.join(root, 'src/lib/memory-engine.ts'), 'utf8');
+  const memoryProfile = fs.readFileSync(path.join(root, 'src/lib/memory-profile.ts'), 'utf8');
+  const imagePrompt = fs.readFileSync(path.join(root, 'src/app/api/image-gen/prompt/route.ts'), 'utf8');
+  const chatEngine = fs.readFileSync(path.join(root, 'src/lib/chat-engine.ts'), 'utf8');
+
+  for (const source of [memoryEngine, memoryProfile, imagePrompt]) {
+    assert.match(source, /runWithBackgroundLlmDeadline/);
+    assert.match(source, /memory_background_timeout_ms/);
+  }
+  assert.doesNotMatch(chatEngine, /runWithBackgroundLlmDeadline/);
+});
+
+test('memory settings exposes the configurable background timeout with explicit zero semantics', () => {
+  const section = fs.readFileSync(path.join(root, 'src/components/settings/memory/MemoryEngineSection.tsx'), 'utf8');
+  const translations = fs.readFileSync(path.join(root, 'src/lib/i18n.ts'), 'utf8');
+
+  assert.match(section, /memory_background_timeout_ms/);
+  assert.match(section, /settings\.memoryBackgroundTimeout/);
+  assert.match(translations, /'settings\.memoryBackgroundTimeout'/);
+  assert.match(translations, /30 分钟/);
+  assert.match(translations, /0[^\n]+关闭/);
+  assert.match(translations, /30 minutes/i);
+});

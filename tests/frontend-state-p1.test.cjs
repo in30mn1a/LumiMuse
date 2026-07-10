@@ -252,8 +252,9 @@ function jsonResponse(body, init = {}) {
 
 // 架构契约测试：当前 Node runner 没有 React DOM / Next page render infra，
 // 所以这里只固定 Settings 初始化 effect 的依赖边界；不是完整的语言切换行为覆盖。
-test('architecture contract: settings initial settings/auth load is isolated from translation-driven memory panel reloads', () => {
+test('architecture contract: settings and auth initialization stay isolated from translation-driven memory panel reloads', () => {
   const source = readProjectFile('src/app/settings/page.tsx');
+  const authHook = readProjectFile('src/hooks/settings/useSettingsAuth.ts');
   const settingsLoadBlock = sourceBlock(
     source,
     'const loadInitialSettingsAndAuth = useCallback',
@@ -262,7 +263,8 @@ test('architecture contract: settings initial settings/auth load is isolated fro
 
   assert.match(settingsLoadBlock, /useCallback\(\(\) => \{/);
   assert.match(settingsLoadBlock, /fetch\('\/api\/settings'\)/);
-  assert.match(settingsLoadBlock, /fetch\('\/api\/auth'\)/);
+  assert.match(source, /useSettingsAuth\(\{/);
+  assert.match(authHook, /fetch\('\/api\/auth'\)/);
   assert.doesNotMatch(
     settingsLoadBlock,
     /\],\s*\[[^\]]*\bt\b[^\]]*\]\);/,

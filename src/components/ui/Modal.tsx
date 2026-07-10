@@ -23,6 +23,10 @@ interface ModalProps {
    * 或追加诸如 flex flex-col、max-h-* 等布局类。
    */
   dialogClassName?: string;
+  /** title 为空时提供无障碍名称。 */
+  ariaLabel?: string;
+  /** backdrop/overlay 容器额外或替代布局类。 */
+  overlayClassName?: string;
 }
 
 /**
@@ -45,6 +49,8 @@ export default function Modal({
   closeOnBackdrop = true,
   padded = true,
   dialogClassName,
+  ariaLabel,
+  overlayClassName,
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // 保存打开 modal 之前的焦点元素，用于关闭后恢复
@@ -132,7 +138,7 @@ export default function Modal({
 
   const modalNode = (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm"
+      className={overlayClassName ?? 'fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm'}
       onClick={() => {
         if (closeOnBackdrop) onClose();
       }}
@@ -143,6 +149,7 @@ export default function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-label={title ? undefined : ariaLabel}
         tabIndex={-1}
         className={
           dialogClassName ??

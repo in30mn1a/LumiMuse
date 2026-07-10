@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import { SearchIcon, ClockIcon } from '@/components/ui/icons';
 import { useMessageSearch } from '@/hooks/use-message-search';
+import Modal from '@/components/ui/Modal';
 
 interface SearchResult {
   id: string;
@@ -25,9 +26,6 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  // 打开搜索弹窗前的活跃元素（通常是触发 Cmd+K 的按钮或 body）
-  // 关闭后将焦点还回去，保持键盘用户的操作连续性，避免焦点跳到 body 顶部
-  const triggerRef = useRef<HTMLElement | null>(null);
   const { results: messageResults, loading, loadingMore, hasMore, loadMore, clearSearch } = useMessageSearch(open ? query : '', { limit: 30, debounceMs: 200 });
   const results = useMemo<SearchResult[]>(() => messageResults.map(m => ({
       id: m.messageId,
@@ -39,20 +37,14 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
     })), [messageResults]);
   const safeActiveIndex = results.length > 0 ? Math.min(activeIndex, results.length - 1) : 0;
 
-  // 打开时聚焦输入框；同时记录原焦点元素以便关闭时恢复
+  // 打开时重置搜索；Modal 统一负责初始焦点、焦点陷阱与焦点恢复。
   useEffect(() => {
     if (open) {
-      // 在打开瞬间捕获原焦点（如 Cmd+K 触发按钮），后面 close 时再 .focus() 还回去
-      triggerRef.current = (document.activeElement as HTMLElement) || null;
       queueMicrotask(() => {
         setQuery('');
         clearSearch();
         setActiveIndex(0);
       });
-      setTimeout(() => inputRef.current?.focus(), 50);
-    } else {
-      // 关闭后焦点回到触发元素，符合 WAI-ARIA 对话框最佳实践
-      triggerRef.current?.focus?.();
     }
   }, [clearSearch, open]);
 
@@ -71,18 +63,15 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[70] flex items-start justify-center bg-black/35 px-4 pt-[12vh] backdrop-blur-sm"
-      onClick={onClose}
-      // role="dialog" + aria-modal 让屏幕阅读器把这块视为模态对话框，
-      // 阅读时会暂停背景 DOM 的朗读，专注于搜索界面
-      role="dialog"
-      aria-modal="true"
-      aria-label={t('search.placeholder') || t('search.dialogLabel')}
+    <Modal
+      open={open}
+      onClose={onClose}
+      ariaLabel={t('search.placeholder') || t('search.dialogLabel')}
+      padded={false}
+      dialogClassName="surface-panel w-full max-w-xl overflow-hidden outline-none"
+      overlayClassName="fixed inset-0 z-[70] flex items-start justify-center bg-black/35 px-4 pt-[12vh] backdrop-blur-sm"
     >
       <div
-        className="surface-panel w-full max-w-xl overflow-hidden"
-        onClick={e => e.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
         {/* 搜索输入框 */}
@@ -141,6 +130,6 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

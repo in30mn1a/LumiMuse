@@ -77,6 +77,7 @@ const imageGenSettingsSchema = z.looseObject({
   auto_generate: z.boolean().optional(),
   auto_generate_keywords: settingMediumTextSchema.optional(),
   inline_prompt: z.boolean().optional(),
+  generate_timeout_ms: settingNonNegativeIntegerSchema.optional(),
 });
 
 const memoryEngineSettingsSchema = z.looseObject({
@@ -141,6 +142,7 @@ export const settingsUpdateSchema = z.looseObject({
   memory_max_inject: settingNonNegativeNumberSchema.optional(),
   memory_background_model: settingModelSchema.optional(),
   memory_background_provider_id: z.string().max(64).optional(),
+  memory_background_timeout_ms: settingNonNegativeIntegerSchema.optional(),
   disable_deepseek_thinking_for_background: z.boolean().optional(),
   memory_background_reasoning_effort_enabled: z.boolean().optional(),
   memory_background_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'max']).optional(),

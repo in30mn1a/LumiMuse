@@ -1,5 +1,5 @@
 # ── 阶段一：安装依赖 ──────────────────────────────────────────
-FROM node:20-slim AS deps
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS deps
 
 # better-sqlite3 需要编译原生模块，安装必要的构建工具
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +12,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --frozen-lockfile
 
 # ── 阶段二：构建 ──────────────────────────────────────────────
-FROM node:20-slim AS builder
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ \
@@ -31,7 +31,7 @@ RUN npm run build
 RUN mkdir -p /app/public
 
 # ── 阶段三：运行时镜像（最小化） ─────────────────────────────
-FROM node:20-slim AS runner
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS runner
 
 WORKDIR /app
 
@@ -69,7 +69,7 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health?ready=1').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["node", "server.js"]

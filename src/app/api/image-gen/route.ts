@@ -6,6 +6,8 @@ import { safeFetch } from '@/lib/ssrf-guard';
 import { formatZodFieldErrors, imageGenBodySchema } from '@/lib/schemas';
 import { writeFile, mkdir } from 'fs/promises';
 import JSZip from 'jszip';
+import { structuredLog } from '@/lib/structured-log';
+import { scheduleLongTimeout } from '@/lib/long-timeout';
 import path from 'path';
 
 /**
@@ -23,8 +25,8 @@ const MAX_COMFYUI_WORKFLOW_SIZE = 64 * 1024; // 64KB
 type ImageFormat = 'png' | 'jpeg' | 'webp';
 
 /**
- * 出图请求默认超时（毫秒）。SD WebUI / 自定义 API 在用户未配置 generate_timeout_ms
- * 或配置非法（≤0）时使用此兜底值，与 ComfyUI 轮询上限保持一致。
+ * 出图请求默认总超时（毫秒）。所有引擎在用户未配置 generate_timeout_ms
+ * 或配置非法（≤0）时使用此兜底值。
  */
 const DEFAULT_GENERATE_TIMEOUT_MS = 120_000;
 
@@ -46,12 +48,12 @@ function withTimeoutSignal(timeoutMs: number, clientSignal?: AbortSignal): {
   clear: () => void;
 } {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const clearTimer = scheduleLongTimeout(() => controller.abort(), timeoutMs);
   if (clientSignal) {
     if (clientSignal.aborted) controller.abort();
     else clientSignal.addEventListener('abort', () => controller.abort(), { once: true });
   }
-  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+  return { signal: controller.signal, clear: clearTimer };
 }
 
 /**
@@ -60,9 +62,32 @@ function withTimeoutSignal(timeoutMs: number, clientSignal?: AbortSignal): {
  */
 function wrapTimeoutError(err: unknown, engine: string): Error {
   if (err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message))) {
-    return new Error(`${engine} 出图超时（${engine === 'SD WebUI' ? 'SD' : '自定义'} 上游响应过慢或已断开）`);
+    return new Error(`${engine} 出图超时或已取消（上游响应过慢、达到设置时限或客户端已断开）`);
   }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('The operation was aborted', 'AbortError'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', handleAbort);
+      resolve();
+    }, ms);
+    const handleAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', handleAbort);
+      reject(new DOMException('The operation was aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', handleAbort, { once: true });
+  });
+}
+
+function upstreamHttpError(engine: string, status: number): Error {
+  return new Error(`${engine} 请求失败（HTTP ${status}）`);
 }
 
 /**
@@ -133,6 +158,7 @@ async function readBoundedResponseBuffer(
   maxSize: number,
   errorPrefix = '响应体',
   controller?: AbortController,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const contentLengthHeader = response.headers.get('content-length');
   if (contentLengthHeader) {
@@ -149,9 +175,24 @@ async function readBoundedResponseBuffer(
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let aborted = signal?.aborted ?? false;
+  const handleAbort = () => {
+    aborted = true;
+    void reader.cancel().catch(() => {});
+  };
+  if (signal && !aborted) {
+    signal.addEventListener('abort', handleAbort, { once: true });
+  }
   try {
+    if (aborted) {
+      await reader.cancel();
+      throw new DOMException('The operation was aborted', 'AbortError');
+    }
     while (true) {
       const { done, value } = await reader.read();
+      if (aborted) {
+        throw new DOMException('The operation was aborted', 'AbortError');
+      }
       if (done) break;
       total += value.byteLength;
       if (total > maxSize) {
@@ -162,6 +203,7 @@ async function readBoundedResponseBuffer(
       chunks.push(value);
     }
   } finally {
+    signal?.removeEventListener('abort', handleAbort);
     reader.releaseLock();
   }
 
@@ -178,13 +220,14 @@ async function safeFetchImage(
   maxSize: number,
   init?: Parameters<typeof safeFetch>[1],
 ): Promise<{ buffer: Buffer; contentType: string; response: Response }> {
-  const controller = new AbortController();
-  const response = await safeFetch(url, { ...init, signal: controller.signal });
+  const controller = init?.signal ? undefined : new AbortController();
+  const signal = init?.signal ?? controller?.signal;
+  const response = await safeFetch(url, { ...init, signal });
   if (!response.ok) {
     throw new Error(`下载图片失败: ${response.status}`);
   }
   return {
-    buffer: await readBoundedResponseBuffer(response, maxSize, '响应体', controller),
+    buffer: await readBoundedResponseBuffer(response, maxSize, '响应体', controller, init?.signal ?? undefined),
     contentType: response.headers.get('content-type') || '',
     response,
   };
@@ -263,8 +306,7 @@ async function generateSD(
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`SD WebUI 错误 ${response.status}: ${text.slice(0, 200)}`);
+      throw upstreamHttpError('SD WebUI', response.status);
     }
 
     const data = await response.json();
@@ -280,7 +322,12 @@ async function generateSD(
 }
 
 // ========== NovelAI ==========
-async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGenSettings): Promise<string> {
+async function generateNAI(
+  prompt: string,
+  negativePrompt: string,
+  cfg: ImageGenSettings,
+  clientSignal?: AbortSignal,
+): Promise<string> {
   // 画师串放在最前面
   let fullPrompt = '';
   if (cfg.nai_artist_tags) {
@@ -348,54 +395,61 @@ async function generateNAI(prompt: string, negativePrompt: string, cfg: ImageGen
     parameters,
   };
 
-  const response = await safeFetch('https://image.novelai.net/ai/generate-image', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${cfg.nai_api_key}`,
-    },
-    body: JSON.stringify(body),
-  });
+  const { signal, clear } = withTimeoutSignal(resolveGenerateTimeout(cfg), clientSignal);
+  try {
+    const response = await safeFetch('https://image.novelai.net/ai/generate-image', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.nai_api_key}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`NovelAI 错误 ${response.status}: ${text.slice(0, 300)}`);
-  }
-
-  // 大小预检：NAI 可能返回 zip（多张图）或单张 png，zip 体积通常 < 10MB，
-  // 这里仍然按 MAX_IMAGE_SIZE 限制响应体本身，避免恶意/异常上游打爆内存
-  const buffer = await readBoundedResponseBuffer(response, MAX_IMAGE_SIZE, 'NovelAI 响应');
-  const contentType = response.headers.get('content-type') || '';
-
-  if (contentType.includes('application/json')) {
-    const data = JSON.parse(buffer.toString('utf8'));
-    if (data.output?.[0]) {
-      return saveBase64Image(data.output[0]);
+    if (!response.ok) {
+      throw upstreamHttpError('NovelAI', response.status);
     }
-  }
 
-  const uint8 = new Uint8Array(buffer);
+    // 大小预检：NAI 可能返回 zip（多张图）或单张 png，zip 体积通常 < 10MB，
+    // 这里仍然按 MAX_IMAGE_SIZE 限制响应体本身，避免恶意/异常上游打爆内存
+    const buffer = await readBoundedResponseBuffer(response, MAX_IMAGE_SIZE, 'NovelAI 响应', undefined, signal);
+    const contentType = response.headers.get('content-type') || '';
 
-  // 检查是否是 zip 格式（PK 签名: 50 4B 03 04）
-  const isZip = uint8[0] === 0x50 && uint8[1] === 0x4B && uint8[2] === 0x03 && uint8[3] === 0x04;
-
-  if (isZip) {
-    // 用 jszip 解析（替代手写 Local File Header 解析）：自动处理多文件、ZIP64、不同压缩方式等边界情况
-    const zip = await JSZip.loadAsync(buffer);
-    // NAI 返回的 zip 通常只含一张 png；取第一个非目录条目
-    const firstEntry = Object.values(zip.files).find(f => !f.dir);
-    if (!firstEntry) {
-      throw new Error('NovelAI zip 中未找到图片文件');
+    if (contentType.includes('application/json')) {
+      const data = JSON.parse(buffer.toString('utf8'));
+      if (data.output?.[0]) {
+        return saveBase64Image(data.output[0]);
+      }
     }
-    const fileData = await firstEntry.async('nodebuffer');
-    console.log('[image-gen/nai] 从 zip 解压成功, 文件名:', firstEntry.name, '解压后大小:', fileData.length);
-    // persistImageBuffer 会做 magic bytes + 大小校验
-    return persistImageBuffer(fileData);
-  }
 
-  // 非 zip：直接当作图片二进制处理，由 persistImageBuffer 识别 PNG / JPEG / WEBP
-  // 无法识别时抛出明确错误，不再静默兜底写入未知二进制（防止把错误页/HTML 当图片落地）
-  return persistImageBuffer(buffer);
+    const uint8 = new Uint8Array(buffer);
+
+    // 检查是否是 zip 格式（PK 签名: 50 4B 03 04）
+    const isZip = uint8[0] === 0x50 && uint8[1] === 0x4B && uint8[2] === 0x03 && uint8[3] === 0x04;
+
+    if (isZip) {
+      // 用 jszip 解析（替代手写 Local File Header 解析）：自动处理多文件、ZIP64、不同压缩方式等边界情况
+      const zip = await JSZip.loadAsync(buffer);
+      // NAI 返回的 zip 通常只含一张 png；取第一个非目录条目
+      const firstEntry = Object.values(zip.files).find(f => !f.dir);
+      if (!firstEntry) {
+        throw new Error('NovelAI zip 中未找到图片文件');
+      }
+      const fileData = await firstEntry.async('nodebuffer');
+      console.log('[image-gen/nai] 从 zip 解压成功, 文件名:', firstEntry.name, '解压后大小:', fileData.length);
+      // persistImageBuffer 会做 magic bytes + 大小校验
+      return persistImageBuffer(fileData);
+    }
+
+    // 非 zip：直接当作图片二进制处理，由 persistImageBuffer 识别 PNG / JPEG / WEBP
+    // 无法识别时抛出明确错误，不再静默兜底写入未知二进制（防止把错误页/HTML 当图片落地）
+    return persistImageBuffer(buffer);
+  } catch (err) {
+    throw wrapTimeoutError(err, 'NovelAI');
+  } finally {
+    clear();
+  }
 }
 
 // ========== ComfyUI ==========
@@ -403,7 +457,7 @@ async function generateComfyUI(
   prompt: string,
   negativePrompt: string,
   cfg: ImageGenSettings,
-  signal?: AbortSignal,
+  clientSignal?: AbortSignal,
 ): Promise<string> {
   const fullPrompt = cfg.quality_tags ? `${cfg.quality_tags}, ${prompt}` : prompt;
 
@@ -426,62 +480,53 @@ async function generateComfyUI(
 
   const baseUrl = cfg.comfyui_url.replace(/\/$/, '');
 
-  // 提交任务
-  const queueRes = await safeFetch(`${baseUrl}/prompt`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: workflow }),
-  });
+  const { signal, clear } = withTimeoutSignal(resolveGenerateTimeout(cfg), clientSignal);
+  try {
+    // 提交任务
+    const queueRes = await safeFetch(`${baseUrl}/prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: workflow }),
+      signal,
+    });
 
-  if (!queueRes.ok) {
-    const text = await queueRes.text();
-    throw new Error(`ComfyUI 提交失败 ${queueRes.status}: ${text.slice(0, 200)}`);
-  }
-
-  const { prompt_id } = await queueRes.json();
-
-  // 轮询等待完成（最多 120 秒）
-  const maxWait = 120_000;
-  const start = Date.now();
-  let outputImages: { filename: string; subfolder: string; type: string }[] = [];
-
-  while (Date.now() - start < maxWait) {
-    // 客户端断连时立即中止轮询，避免继续 hammer ComfyUI
-    if (signal?.aborted) {
-      throw new Error('ComfyUI 轮询被客户端中止');
+    if (!queueRes.ok) {
+      throw upstreamHttpError('ComfyUI', queueRes.status);
     }
-    await new Promise(r => setTimeout(r, 2000));
-    if (signal?.aborted) {
-      throw new Error('ComfyUI 轮询被客户端中止');
-    }
-    const historyRes = await safeFetch(`${baseUrl}/history/${prompt_id}`);
-    if (!historyRes.ok) continue;
-    const history = await historyRes.json();
-    const result = history[prompt_id];
-    if (!result) continue;
-    if (result.status?.status_str === 'error') {
-      throw new Error('ComfyUI 生成失败');
-    }
-    // 查找输出图片
-    const outputs = result.outputs || {};
-    for (const nodeId of Object.keys(outputs)) {
-      const nodeOutput = outputs[nodeId];
-      if (nodeOutput.images && nodeOutput.images.length > 0) {
-        outputImages = nodeOutput.images;
-        break;
+
+    const { prompt_id } = await queueRes.json();
+    let outputImages: { filename: string; subfolder: string; type: string }[] = [];
+
+    while (outputImages.length === 0) {
+      await abortableDelay(2000, signal);
+      const historyRes = await safeFetch(`${baseUrl}/history/${prompt_id}`, { signal });
+      if (!historyRes.ok) continue;
+      const history = await historyRes.json();
+      const result = history[prompt_id];
+      if (!result) continue;
+      if (result.status?.status_str === 'error') {
+        throw new Error('ComfyUI 生成失败');
+      }
+      // 查找输出图片
+      const outputs = result.outputs || {};
+      for (const nodeId of Object.keys(outputs)) {
+        const nodeOutput = outputs[nodeId];
+        if (nodeOutput.images && nodeOutput.images.length > 0) {
+          outputImages = nodeOutput.images;
+          break;
+        }
       }
     }
-    if (outputImages.length > 0) break;
-  }
 
-  if (outputImages.length === 0) {
-    throw new Error('ComfyUI 生成超时或无输出');
+    // 下载第一张图片（saveRemoteImage 已内置大小 + magic bytes 校验）
+    const img = outputImages[0];
+    const imgUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
+    return saveRemoteImage(imgUrl, { signal });
+  } catch (err) {
+    throw wrapTimeoutError(err, 'ComfyUI');
+  } finally {
+    clear();
   }
-
-  // 下载第一张图片（saveRemoteImage 已内置大小 + magic bytes 校验）
-  const img = outputImages[0];
-  const imgUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
-  return saveRemoteImage(imgUrl);
 }
 
 function buildDefaultComfyWorkflow(prompt: string, negPrompt: string, cfg: ImageGenSettings): Record<string, unknown> {
@@ -538,8 +583,7 @@ async function generateCustom(prompt: string, cfg: ImageGenSettings, clientSigna
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`自定义 API 错误 ${response.status}: ${text.slice(0, 200)}`);
+      throw upstreamHttpError('自定义 API', response.status);
     }
 
     const data = await response.json();
@@ -549,7 +593,7 @@ async function generateCustom(prompt: string, cfg: ImageGenSettings, clientSigna
       return saveBase64Image(data.data[0].b64_json);
     }
     if (data.data?.[0]?.url) {
-      return saveRemoteImage(data.data[0].url);
+      return saveRemoteImage(data.data[0].url, { signal });
     }
     // 兼容直接返回 base64 的格式
     if (data.images?.[0]) {
@@ -597,6 +641,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { prompt = '', negative_prompt, override } = parsed.data;
+  let logEngine: ImageGenSettings['engine'] | undefined;
 
   try {
     if (!prompt) {
@@ -604,6 +649,7 @@ export async function POST(request: NextRequest) {
     }
 
     const imgCfg: ImageGenSettings = { ...DEFAULT_IMAGE_GEN_SETTINGS, ...settings.image_gen, ...override };
+    logEngine = imgCfg.engine;
 
     if (!imgCfg.enabled) {
       return NextResponse.json({ error: '生图功能未启用，请先在设置中开启' }, { status: 400 });
@@ -630,7 +676,7 @@ export async function POST(request: NextRequest) {
         url = await generateSD(prompt, negative_prompt || '', imgCfg, request.signal);
         break;
       case 'nai':
-        url = await generateNAI(prompt, negative_prompt || '', imgCfg);
+        url = await generateNAI(prompt, negative_prompt || '', imgCfg, request.signal);
         break;
       case 'comfyui':
         url = await generateComfyUI(prompt, negative_prompt || '', imgCfg, request.signal);
@@ -644,7 +690,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ url });
   } catch (err) {
-    console.error('[image-gen] 生图失败:', err);
+    structuredLog('error', 'image.generation.failed', {
+      requestId: request.headers?.get('x-request-id') ?? undefined,
+      engine: logEngine,
+      operation: 'generate',
+      status: 'failed',
+    }, err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : '生图失败' },
       { status: 500 }

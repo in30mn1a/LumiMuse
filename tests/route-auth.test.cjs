@@ -14,6 +14,7 @@ const originalEnv = {
   AUTH_SECRET: process.env.AUTH_SECRET,
   NODE_ENV: process.env.NODE_ENV,
   TRUST_PROXY: process.env.TRUST_PROXY,
+  TRUST_PROXY_HOPS: process.env.TRUST_PROXY_HOPS,
 };
 
 Module._resolveFilename = function resolveFilename(request, parent, isMain, options) {
@@ -54,6 +55,7 @@ function setAuthEnv() {
   process.env.AUTH_SECRET = 'route-auth-test-secret';
   process.env.NODE_ENV = 'test';
   delete process.env.TRUST_PROXY;
+  delete process.env.TRUST_PROXY_HOPS;
 }
 
 function clearAuthEnv() {
@@ -61,6 +63,7 @@ function clearAuthEnv() {
   process.env.AUTH_SECRET = 'route-auth-test-secret';
   process.env.NODE_ENV = 'test';
   delete process.env.TRUST_PROXY;
+  delete process.env.TRUST_PROXY_HOPS;
 }
 
 function deleteIfCached(relativePath) {
@@ -232,7 +235,7 @@ test('/api/auth POST rate limits untrusted x-forwarded-for with shared bucket', 
   assert.equal(payload.error, '尝试次数过多，请稍后再试');
 });
 
-test('/api/auth POST keeps separate forwarded IP buckets when TRUST_PROXY is enabled', async () => {
+test('/api/auth POST selects the client from the right when TRUST_PROXY is enabled', async () => {
   setAuthEnv();
   process.env.TRUST_PROXY = '1';
   const route = loadAuthRoute();
@@ -240,19 +243,77 @@ test('/api/auth POST keeps separate forwarded IP buckets when TRUST_PROXY is ena
 
   for (let i = 0; i < 10; i += 1) {
     response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
-      'x-forwarded-for': '203.0.113.10, 198.51.100.20',
+      'x-forwarded-for': `203.0.113.${i}, 198.51.100.20`,
     }));
     assert.equal(response.status, 401);
   }
 
-  const otherIpResponse = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
-    'x-forwarded-for': '203.0.113.11',
-  }));
-  assert.equal(otherIpResponse.status, 401);
-
   response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
-    'x-forwarded-for': '203.0.113.10',
+    'x-forwarded-for': '203.0.113.250, 198.51.100.20',
   }));
+
+  assert.equal(response.status, 429);
+});
+
+test('/api/auth POST supports multiple trusted proxy hops', async () => {
+  setAuthEnv();
+  process.env.TRUST_PROXY = '1';
+  process.env.TRUST_PROXY_HOPS = '2';
+  const route = loadAuthRoute();
+  let response = null;
+
+  for (let i = 0; i < 11; i += 1) {
+    response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
+      'x-forwarded-for': `192.0.2.${i}, 203.0.113.30, 198.51.100.40`,
+    }));
+  }
+
+  assert.equal(response.status, 429);
+});
+
+test('/api/auth POST uses the shared untrusted bucket for short trusted proxy chains', async () => {
+  setAuthEnv();
+  process.env.TRUST_PROXY = '1';
+  process.env.TRUST_PROXY_HOPS = '2';
+  const route = loadAuthRoute();
+  let response = null;
+
+  for (let i = 0; i < 11; i += 1) {
+    response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
+      'x-forwarded-for': `203.0.113.${i}`,
+    }));
+  }
+
+  assert.equal(response.status, 429);
+});
+
+test('/api/auth POST uses the shared untrusted bucket for malformed XFF chains', async () => {
+  setAuthEnv();
+  process.env.TRUST_PROXY = '1';
+  const route = loadAuthRoute();
+  let response = null;
+
+  for (let i = 0; i < 11; i += 1) {
+    response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
+      'x-forwarded-for': `203.0.113.${i}, invalid-${i}`,
+    }));
+  }
+
+  assert.equal(response.status, 429);
+});
+
+test('/api/auth POST uses the shared untrusted bucket for invalid TRUST_PROXY_HOPS', async () => {
+  setAuthEnv();
+  process.env.TRUST_PROXY = '1';
+  process.env.TRUST_PROXY_HOPS = '0';
+  const route = loadAuthRoute();
+  let response = null;
+
+  for (let i = 0; i < 11; i += 1) {
+    response = await route.POST(jsonRequest('/api/auth', '', { password: 'wrong-password' }, {
+      'x-forwarded-for': `203.0.113.${i}`,
+    }));
+  }
 
   assert.equal(response.status, 429);
 });

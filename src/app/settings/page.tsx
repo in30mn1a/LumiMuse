@@ -6,7 +6,6 @@ import {
   DEFAULT_SETTINGS,
   Settings,
   FontStyle,
-  ApiProvider,
   MemoryEngineSettings,
 } from '@/types';
 import { applyFontStyle } from '@/lib/font-stacks';
@@ -30,6 +29,8 @@ import { MemoryProfilePanel } from '@/components/settings/memory/MemoryProfilePa
 import { MemoryArchivePanel } from '@/components/settings/memory/MemoryArchivePanel';
 import { MemoryCandidatesPanel } from '@/components/settings/memory/MemoryCandidatesPanel';
 import { ImageGenSettingsSection } from '@/components/settings/ImageGenSettingsSection';
+import { useSettingsAuth } from '@/hooks/settings/useSettingsAuth';
+import { useSettingsProviders } from '@/hooks/settings/useSettingsProviders';
 
 type MemoryModePreset = 'local' | 'balanced' | 'continuity';
 type ModelCredentialSource = 'chat' | 'embedding' | 'reranker';
@@ -131,14 +132,37 @@ export default function SettingsPage() {
   const [rerankerModelList, setRerankerModelList] = useState<string[]>([]);
   const [rerankerModelLoading, setRerankerModelLoading] = useState(false);
   const [rerankerModelError, setRerankerModelError] = useState<string | null>(null);
-  const [authEnabled, setAuthEnabled] = useState(false);
-  const [providers, setProviders] = useState<ApiProvider[]>([]);
-  const [activeProviderId, setActiveProviderId] = useState('');
-  const [editingProvider, setEditingProvider] = useState<Partial<ApiProvider> | null>(null);
   const [activeTab, setActiveTab] = useState<'api' | 'generation' | 'memory' | 'advanced'>('api');
   const { t, setLang } = useTranslation();
   const tRef = useRef(t);
   const { showToast } = useToast();
+  const { authEnabled, handleLogout } = useSettingsAuth({
+    t,
+    showToast,
+    replaceRoute: router.replace,
+  });
+  const resetProviderModels = useCallback(() => {
+    setModelList([]);
+    setModelError(null);
+  }, []);
+  const {
+    providers,
+    activeProviderId,
+    editingProvider,
+    setEditingProvider,
+    handleActivateProvider,
+    handleDeleteProvider,
+    handleSaveProvider,
+    handleSaveCurrentAsProvider,
+    handleUpdateCurrentProvider,
+  } = useSettingsProviders({
+    settings,
+    setSettings,
+    mergeSettings: mergeSettingsWithMemoryEngine,
+    t,
+    showToast,
+    resetModels: resetProviderModels,
+  });
   const memoryManagementPanel = useMemoryManagementCharacters();
   const memoryIndexPanel = useMemoryIndexPanel({
     active: activeTab === 'memory',
@@ -179,16 +203,6 @@ export default function SettingsPage() {
   useEffect(() => {
     tRef.current = t;
   }, [t]);
-
-  const loadProviders = useCallback(async () => {
-    try {
-      const data = await parseJsonResponse<{ providers?: ApiProvider[]; active_provider_id?: string }>(await fetch('/api/providers'));
-      setProviders(data.providers || []);
-      setActiveProviderId(data.active_provider_id || '');
-    } catch (err) {
-      showToast(`${tRef.current('common.loadFailed')}: ${getErrorMessage(err)}`, 'error');
-    }
-  }, [showToast]);
 
   const update = <K extends keyof SettingsWithMemoryEngine>(key: K, value: SettingsWithMemoryEngine[K]) => {
     if (typeof value === 'number' && !Number.isFinite(value)) return;
@@ -370,7 +384,6 @@ export default function SettingsPage() {
       .catch(err => {
         showToast(`${tRef.current('settings.loadFailed')}: ${getErrorMessage(err)}`, 'error');
     });
-    void fetch('/api/auth').then(r => r.json()).then(d => setAuthEnabled(d.authEnabled)).catch(() => {});
   }, [showToast]);
 
   const loadMemoryPanelState = useCallback(async () => {
@@ -398,134 +411,12 @@ export default function SettingsPage() {
   }, [loadInitialSettingsAndAuth]);
 
   useEffect(() => {
-    queueMicrotask(() => void loadProviders());
-  }, [loadProviders]);
-
-  useEffect(() => {
     if (activeTab !== 'memory') return;
     void loadMemoryPanelState();
   }, [
     activeTab,
     loadMemoryPanelState,
   ]);
-
-  const handleLogout = async () => {
-    if (!window.confirm(t('auth.logoutConfirm'))) return;
-    try {
-      // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头，
-      // 否则会被 415 拦截，登出表面上"点了没反应"
-      await expectOkResponse(await fetch('/api/auth', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      }));
-      router.replace('/login');
-    } catch (err) {
-      showToast(`${t('auth.logoutFailed')}: ${getErrorMessage(err)}`, 'error');
-    }
-  };
-
-  const handleActivateProvider = async (id: string) => {
-    try {
-      await expectOkResponse(await fetch('/api/providers/activate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      }));
-      const s = await parseJsonResponse<Partial<SettingsWithMemoryEngine>>(await fetch('/api/settings'));
-      setSettings(mergeSettingsWithMemoryEngine(s));
-      setActiveProviderId(id);
-      setModelList([]);
-      setModelError(null);
-    } catch (err) {
-      showToast(`${t('common.operationFailed')}: ${getErrorMessage(err)}`, 'error');
-    }
-  };
-
-  const handleDeleteProvider = async (id: string) => {
-    if (!window.confirm(t('settings.providerDeleteConfirm'))) return;
-    try {
-      // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
-      await expectOkResponse(await fetch(`/api/providers?id=${id}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      }));
-      void loadProviders();
-    } catch (err) {
-      showToast(`${t('common.operationFailed')}: ${getErrorMessage(err)}`, 'error');
-    }
-  };
-
-  const handleSaveProvider = async () => {
-    if (!editingProvider) return;
-    const isEdit = !!editingProvider.id;
-    const method = isEdit ? 'PUT' : 'POST';
-    try {
-      await expectOkResponse(await fetch('/api/providers', {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...editingProvider, save_as_current: true }),
-      }));
-      setEditingProvider(null);
-      void loadProviders();
-      const s = await parseJsonResponse<Partial<SettingsWithMemoryEngine>>(await fetch('/api/settings'));
-      setSettings(mergeSettingsWithMemoryEngine(s));
-    } catch (err) {
-      showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
-    }
-  };
-
-  const handleSaveCurrentAsProvider = async () => {
-    const name = window.prompt(t('settings.providerNamePrompt'));
-    if (!name) return;
-    try {
-      const res = await fetch('/api/providers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          api_base: settings.api_base,
-          api_key: settings.api_key,
-          model: settings.model,
-          temperature: settings.temperature,
-          max_tokens: settings.max_tokens,
-          context_window: settings.context_window,
-          json_mode: settings.json_mode,
-          save_as_current: true,
-        }),
-      });
-      await expectOkResponse(res);
-      void loadProviders();
-      showToast(t('settings.saveSuccess'), 'success');
-    } catch (err) {
-      showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
-    }
-  };
-
-  const handleUpdateCurrentProvider = async () => {
-    if (!activeProviderId) return;
-    try {
-      const res = await fetch('/api/providers', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: activeProviderId,
-          api_base: settings.api_base,
-          api_key: settings.api_key,
-          model: settings.model,
-          temperature: settings.temperature,
-          max_tokens: settings.max_tokens,
-          context_window: settings.context_window,
-          json_mode: settings.json_mode,
-          save_as_current: true,
-        }),
-      });
-      await expectOkResponse(res);
-      void loadProviders();
-      showToast(t('settings.saveSuccess'), 'success');
-    } catch (err) {
-      showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
-    }
-  };
 
   return (
     <div className="app-shell min-h-screen px-4 py-4">

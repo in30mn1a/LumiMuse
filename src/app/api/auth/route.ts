@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import net from 'net';
 import { AUTH_COOKIE_NAME, issueAuthToken, timingSafeEqualString, TOKEN_TTL_MS, verifyAuthToken } from '@/lib/auth-token';
 import { bumpAuthMinIat, getAuthMinIat } from '@/lib/settings';
 
@@ -18,6 +19,24 @@ function isTrustProxyEnabled(): boolean {
   return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
+function resolveTrustedProxyHops(): number | null {
+  if (!isTrustProxyEnabled()) return 0;
+
+  const rawHops = process.env.TRUST_PROXY_HOPS?.trim();
+  if (rawHops === undefined || rawHops === '') return 1;
+  if (!/^[1-9]\d*$/.test(rawHops)) return null;
+
+  const hops = Number(rawHops);
+  return Number.isSafeInteger(hops) ? hops : null;
+}
+
+function parseForwardedClientIp(forwarded: string | null, trustedHops: number): string | null {
+  if (!forwarded) return null;
+  const chain = forwarded.split(',').map(value => value.trim());
+  if (chain.length < trustedHops || chain.some(value => net.isIP(value) === 0)) return null;
+  return chain[chain.length - trustedHops] ?? null;
+}
+
 function hasUntrustedForwardingHeaders(request: NextRequest): boolean {
   return (
     request.headers.has('x-forwarded-for') ||
@@ -27,13 +46,13 @@ function hasUntrustedForwardingHeaders(request: NextRequest): boolean {
 }
 
 function getClientIp(request: NextRequest): string | null {
-  if (isTrustProxyEnabled()) {
-    // 取 x-forwarded-for 的第一个 IP（可信反代场景）
-    const forwarded = request.headers.get('x-forwarded-for');
-    if (forwarded) {
-      const first = forwarded.split(',')[0]?.trim();
-      if (first) return first;
-    }
+  const trustedHops = resolveTrustedProxyHops();
+  if (trustedHops === null) {
+    return FORWARDED_UNTRUSTED_BUCKET;
+  }
+  if (trustedHops > 0) {
+    return parseForwardedClientIp(request.headers.get('x-forwarded-for'), trustedHops)
+      ?? FORWARDED_UNTRUSTED_BUCKET;
   }
   // NextRequest 在当前部署目标中没有稳定的直连 IP 字段。没有转发头时使用
   // direct bucket；出现未信任转发头时使用共享桶，避免攻击者每请求换一个伪造 IP 绕过限流。

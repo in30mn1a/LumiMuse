@@ -5,8 +5,8 @@ import {
   applyMessagesResponseToState,
   readCachedMessages,
   uniqueMessagesById,
+  updateCachedMessages,
   updateMessagesForConversationState,
-  writeCachedMessages,
 } from '@/lib/chat-message-cache';
 
 type UseMessagePagingOptions = {
@@ -36,8 +36,8 @@ export function useMessagePaging({
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [messagePagingError, setMessagePagingError] = useState<string | null>(null);
   // 服务端返回的真实未提取消息数量（不受前端分页限制）
-  const [serverUnextractedCount, setServerUnextractedCount] = useState<number>(0);
-  const serverUnextractedCountRef = useRef(serverUnextractedCount);
+  const [serverUnextractedCountState, setServerUnextractedCountState] = useState<{ convId: string; value: number } | null>(null);
+  const serverUnextractedCountRef = useRef(serverUnextractedCountState);
   // 服务端返回的整对话 token 总和（自最后一条 summary 起，无 summary 则全量），用于分页未加载完时正确显示。
   // 带 convId 是为了切换对话时能识别"旧值过期"，避免新对话短暂显示旧对话的 token 数。
   const [serverTotalTokens, setServerTotalTokens] = useState<{ convId: string; value: number } | null>(null);
@@ -57,22 +57,27 @@ export function useMessagePaging({
   }, [onError, onInitialMessagesLoaded, onTargetMessageLoaded]);
 
   useEffect(() => {
-    serverUnextractedCountRef.current = serverUnextractedCount;
-  }, [serverUnextractedCount]);
+    serverUnextractedCountRef.current = serverUnextractedCountState;
+  }, [serverUnextractedCountState]);
+
+  const serverUnextractedCount = activeConvId && serverUnextractedCountState?.convId === activeConvId
+    ? serverUnextractedCountState.value
+    : 0;
 
   const visibleMessages = useMemo(
     () => activeConvId ? messages.filter(message => message.conversation_id === activeConvId) : [],
     [activeConvId, messages],
   );
 
-  const setServerUnextractedCountValue = useCallback((count: number) => {
-    serverUnextractedCountRef.current = count;
-    setServerUnextractedCount(count);
+  const setServerUnextractedCountValue = useCallback((convId: string, count: number) => {
+    const next = { convId, value: count };
+    serverUnextractedCountRef.current = next;
+    setServerUnextractedCountState(next);
   }, []);
 
   const updateServerCounts = useCallback((convId: string, unextractedCount?: number, totalTokens?: number) => {
     if (unextractedCount !== undefined) {
-      setServerUnextractedCountValue(unextractedCount);
+      setServerUnextractedCountValue(convId, unextractedCount);
     }
     if (totalTokens !== undefined) {
       setServerTotalTokens({ convId, value: totalTokens });
@@ -96,7 +101,7 @@ export function useMessagePaging({
       replaceMessages: setMessages,
       setHasOlderMessages,
       setOldestLoadedSeq,
-      setServerUnextractedCount: setServerUnextractedCountValue,
+      setServerUnextractedCount: count => setServerUnextractedCountValue(conversationIdToApply, count),
       setServerTotalTokens,
     });
   }, [activeConvIdRef, setServerUnextractedCountValue]);
@@ -201,15 +206,15 @@ export function useMessagePaging({
       });
       if (activeConvIdRef.current !== loadingConvId) return;
       setMessagePagingError(null);
-      setMessages(prev => {
-        const nextMessages = uniqueMessagesById([...olderMessages, ...prev]);
-        writeCachedMessages(loadingConvId, {
-          messages: nextMessages,
-          hasMore,
-          oldestSeq,
-        });
-        return nextMessages;
+      const mergeOlderMessages = (currentMessages: Message[]) => uniqueMessagesById([
+        ...olderMessages,
+        ...currentMessages,
+      ]);
+      updateCachedMessages(loadingConvId, mergeOlderMessages, {
+        hasMore,
+        oldestSeq,
       });
+      setMessages(currentMessages => mergeOlderMessages(currentMessages));
       setHasOlderMessages(hasMore);
       setOldestLoadedSeq(oldestSeq);
     } catch (error) {

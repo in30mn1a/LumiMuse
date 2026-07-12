@@ -38,6 +38,7 @@ interface Props {
   onRegenerateFromHere: (id: string) => void;
   onSwitchVersion: (id: string, versionIndex: number) => void;
   onGenerateImage: (id: string, existingPrompt?: string, replaceImageId?: string) => void;
+  generatingImageMessageIds: ReadonlySet<string>;
   onDeleteImage: (messageId: string, imgId: string, versionId?: string) => void;
   onEditImagePrompt: (messageId: string, imgId: string, newPrompt: string) => void;
   onSetPrimaryImage: (messageId: string, imgId: string, versionId: string) => void;
@@ -85,6 +86,7 @@ function ChatMessageList(
     onRegenerateFromHere,
     onSwitchVersion,
     onGenerateImage,
+    generatingImageMessageIds,
     onDeleteImage,
     onEditImagePrompt,
     onSetPrimaryImage,
@@ -269,6 +271,7 @@ function ChatMessageList(
                       onRegenerateFromHere={onRegenerateFromHere}
                       onSwitchVersion={onSwitchVersion}
                       onGenerateImage={onGenerateImage}
+                      isGeneratingImage={generatingImageMessageIds.has(message.id)}
                       onDeleteImage={onDeleteImage}
                       onEditImagePrompt={onEditImagePrompt}
                       onSetPrimaryImage={onSetPrimaryImage}

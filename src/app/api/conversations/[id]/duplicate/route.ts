@@ -31,11 +31,10 @@ export async function POST(
   const now = new Date().toISOString();
   const newTitle = `${original.title} (副本)`;
 
-  // 创建新对话
-  db.prepare(`
+  const insertConversation = db.prepare(`
     INSERT INTO conversations (id, character_id, title, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run(newId, original.character_id, newTitle, now, now);
+  `);
 
   // 复制全部消息，保持顺序，重新分配 id 和 seq
   const messages = db.prepare(
@@ -48,6 +47,8 @@ export async function POST(
   `);
 
   const copyAll = db.transaction(() => {
+    insertConversation.run(newId, original.character_id, newTitle, now, now);
+
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const newMsgId = crypto.randomUUID().slice(0, 12);

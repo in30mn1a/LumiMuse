@@ -16,6 +16,13 @@ export function MemoryDiagnosticsPanel({
   error,
   onRefresh,
 }: MemoryDiagnosticsPanelProps) {
+  const extractionQueue = diagnostics?.queues?.extraction;
+  const profileQueue = diagnostics?.queues?.profile;
+  const embeddingQueue = diagnostics?.queues?.embedding ?? diagnostics?.tasks;
+  const queueSummary = (queue?: Record<string, number>) => (
+    `${queue?.pending ?? 0}/${queue?.processing ?? 0}/${queue?.failed ?? 0}`
+  );
+
   return (
     <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -36,7 +43,7 @@ export function MemoryDiagnosticsPanel({
           </button>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
         <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryDiagnosticsIndex')}</span>
           <span className="text-sm font-medium text-text-primary">
@@ -44,9 +51,21 @@ export function MemoryDiagnosticsPanel({
           </span>
         </div>
         <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
-          <span className="block text-text-muted">{t('settings.memoryDiagnosticsTasks')}</span>
+          <span className="block text-text-muted">{t('settings.memoryDiagnosticsExtractionQueue')}</span>
           <span className="text-sm font-medium text-text-primary">
-            {loading ? '...' : `${diagnostics?.tasks.pending ?? 0}/${diagnostics?.tasks.processing ?? 0}/${diagnostics?.tasks.failed ?? 0}`}
+            {loading ? '...' : queueSummary(extractionQueue)}
+          </span>
+        </div>
+        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+          <span className="block text-text-muted">{t('settings.memoryDiagnosticsProfileQueue')}</span>
+          <span className="text-sm font-medium text-text-primary">
+            {loading ? '...' : queueSummary(profileQueue)}
+          </span>
+        </div>
+        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+          <span className="block text-text-muted">{t('settings.memoryDiagnosticsEmbeddingQueue')}</span>
+          <span className="text-sm font-medium text-text-primary">
+            {loading ? '...' : queueSummary(embeddingQueue)}
           </span>
         </div>
         <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">

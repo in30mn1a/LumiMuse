@@ -55,6 +55,25 @@ function requireFreshWithMocks(modulePath, mocks) {
   }
 }
 
+function loadMemoryRetrievalBudgetInternals() {
+  const filename = path.join(root, 'src/lib/memory-retrieval.ts');
+  const source = `${fs.readFileSync(filename, 'utf8')}\nexport { applyReranker, trimByTokenBudget, renderPackage };\n`;
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      esModuleInterop: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: filename,
+  });
+  const testModule = new Module(filename, module);
+  testModule.filename = filename;
+  testModule.paths = Module._nodeModulePaths(path.dirname(filename));
+  testModule._compile(output.outputText, filename);
+  return testModule.exports;
+}
+
 function jsonResponseMock() {
   return {
     NextResponse: {
@@ -100,12 +119,16 @@ const {
   enqueueUnindexedMemoryEmbeddings,
   ensureMemoryEmbeddingTables,
   getMemoryIndexStatus,
+  loadReadyMemoryEmbeddings,
   normalizeEmbedding,
   processMemoryEmbeddingTasks,
   rankEmbeddingRows,
   retryFailedMemoryEmbeddings,
   stopCurrentMemoryIndexTasks,
 } = require('../src/lib/memory-embeddings.ts');
+const {
+  undoMemorySummaryArchiveBatch,
+} = require('../src/lib/memory-archive.ts');
 
 function baseSettings(overrides = {}) {
   return {
@@ -142,6 +165,15 @@ function memory(overrides) {
     created_at: overrides.created_at || '2026-01-01T00:00:00.000Z',
     updated_at: overrides.updated_at || '2026-01-01T00:00:00.000Z',
     ...overrides,
+  };
+}
+
+function rankedMemory(memoryValue, index) {
+  return {
+    memory: memoryValue,
+    relevance: 1,
+    finalScore: 1 - index / 100_000,
+    source: 'local',
   };
 }
 
@@ -531,7 +563,7 @@ test('/api/models 用已保存的 memory_engine 密钥获取 embedding/reranker 
   ]);
 });
 
-test('/api/memory-diagnostics 返回记忆索引、任务、候选、画像与归档概览', async () => {
+test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应兼容性', async () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE memories (
@@ -547,7 +579,23 @@ test('/api/memory-diagnostics 返回记忆索引、任务、候选、画像与�
     CREATE TABLE memory_embedding_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       character_id TEXT NOT NULL,
-      status TEXT NOT NULL
+      status TEXT NOT NULL,
+      error_message TEXT
+    );
+    CREATE TABLE memory_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      message_ids TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error_message TEXT
+    );
+    CREATE TABLE character_memory_profile_update_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id TEXT NOT NULL,
+      patch_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error_message TEXT
     );
     CREATE TABLE memory_extraction_candidates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -574,11 +622,19 @@ test('/api/memory-diagnostics 返回记忆索引、任务、候选、画像与�
       ('mem-a', 'char-a', 'ready'),
       ('mem-b', 'char-a', 'failed'),
       ('mem-other', 'char-b', 'ready');
-    INSERT INTO memory_embedding_tasks (character_id, status) VALUES
-      ('char-a', 'pending'),
-      ('char-a', 'processing'),
-      ('char-a', 'failed'),
-      ('char-b', 'pending');
+    INSERT INTO memory_embedding_tasks (character_id, status, error_message) VALUES
+      ('char-a', 'pending', NULL),
+      ('char-a', 'processing', NULL),
+      ('char-a', 'failed', 'embedding secret response body'),
+      ('char-b', 'pending', NULL);
+    INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, error_message) VALUES
+      ('char-a', 'conv-a', '["private-message-a"]', 'pending', NULL),
+      ('char-a', 'conv-a', '["private-message-b"]', 'failed', 'extraction private payload'),
+      ('char-b', 'conv-b', '["private-message-c"]', 'processing', NULL);
+    INSERT INTO character_memory_profile_update_tasks (character_id, patch_json, status, error_message) VALUES
+      ('char-a', '{"relationship_state":"private-profile-a"}', 'processing', NULL),
+      ('char-a', '{"relationship_state":"private-profile-b"}', 'failed', 'profile private payload'),
+      ('char-b', '{"relationship_state":"private-profile-c"}', 'pending', NULL);
     INSERT INTO memory_extraction_candidates (character_id, status) VALUES
       ('char-a', 'repairable'),
       ('char-a', 'ignored'),
@@ -592,16 +648,43 @@ test('/api/memory-diagnostics 返回记忆索引、任务、候选、画像与�
     '@/lib/db': { getDb: () => db },
   });
 
-  const payload = await route.GET(jsonRequest(null, 'http://test.local/api/memory-diagnostics?character_id=char-a'))
+  const filteredPayload = await route.GET(jsonRequest(null, 'http://test.local/api/memory-diagnostics?character_id=char-a'))
     .then(response => response.json());
 
-  assert.equal(payload.ok, true);
-  assert.equal(payload.character_id, 'char-a');
-  assert.deepEqual(payload.index, { total: 2, ready: 1, failed: 1 });
-  assert.deepEqual(payload.tasks, { pending: 1, processing: 1, failed: 1 });
-  assert.deepEqual(payload.candidates, { repairable: 1, ignored: 1 });
-  assert.deepEqual(payload.profile, { exists: true, filled_fields: 1 });
-  assert.deepEqual(payload.archive, { archived: 1, summarized: 1 });
+  assert.equal(filteredPayload.ok, true);
+  assert.equal(filteredPayload.character_id, 'char-a');
+  assert.deepEqual(filteredPayload.index, { total: 2, ready: 1, failed: 1 });
+  assert.deepEqual(filteredPayload.tasks, { pending: 1, processing: 1, failed: 1 });
+  assert.deepEqual(filteredPayload.queues, {
+    extraction: { pending: 1, processing: 0, failed: 1 },
+    profile: { pending: 0, processing: 1, failed: 1 },
+    embedding: { pending: 1, processing: 1, failed: 1 },
+  });
+  assert.deepEqual(filteredPayload.candidates, { repairable: 1, ignored: 1 });
+  assert.deepEqual(filteredPayload.profile, { exists: true, filled_fields: 1 });
+  assert.deepEqual(filteredPayload.archive, { archived: 1, summarized: 1 });
+
+  const globalPayload = await route.GET(jsonRequest(null, 'http://test.local/api/memory-diagnostics'))
+    .then(response => response.json());
+
+  assert.equal(globalPayload.character_id, null);
+  assert.deepEqual(globalPayload.tasks, { pending: 2, processing: 1, failed: 1 });
+  assert.deepEqual(globalPayload.queues, {
+    extraction: { pending: 1, processing: 1, failed: 1 },
+    profile: { pending: 1, processing: 1, failed: 1 },
+    embedding: { pending: 2, processing: 1, failed: 1 },
+  });
+
+  const serialized = JSON.stringify({ filteredPayload, globalPayload });
+  for (const secret of [
+    'private-message-a',
+    'extraction private payload',
+    'private-profile-a',
+    'profile private payload',
+    'embedding secret response body',
+  ]) {
+    assert.equal(serialized.includes(secret), false, `diagnostics must not expose ${secret}`);
+  }
 });
 
 test('triggerMemoryIndexProcessing 返回 false 时可读取配置阻塞原因', () => {
@@ -689,7 +772,7 @@ test('/api/memory-index 入队但配置阻塞时返回 processing_blocked_reason
   const cases = [
     {
       action: 'rebuild',
-      body: {},
+      body: { action: 'rebuild' },
       url: 'http://test.local/api/memory-index?character_id=char-a',
       reason: 'external_memory_payloads_disabled',
     },
@@ -809,7 +892,10 @@ test('/api/memory-index 重建入队后触发非阻塞 drain，并连续处理�
       },
     });
 
-    const response = await route.POST(jsonRequest({}, 'http://test.local/api/memory-index?character_id=char-a'));
+    const response = await route.POST(jsonRequest(
+      { action: 'rebuild' },
+      'http://test.local/api/memory-index?character_id=char-a',
+    ));
     const payload = await response.json();
 
     assert.deepEqual(payload, {
@@ -888,7 +974,10 @@ test('/api/memory-index 重复触发不会启动重叠 drain loop', async () => 
       },
     });
 
-    const firstResponse = await route.POST(jsonRequest({}, 'http://test.local/api/memory-index?character_id=char-a'));
+    const firstResponse = await route.POST(jsonRequest(
+      { action: 'rebuild' },
+      'http://test.local/api/memory-index?character_id=char-a',
+    ));
     const firstPayload = await firstResponse.json();
 
     assert.equal(firstPayload.processing_started, true);
@@ -899,7 +988,10 @@ test('/api/memory-index 重复触发不会启动重叠 drain loop', async () => 
     await Promise.resolve();
     assert.equal(processCalls, 1);
 
-    const secondResponse = await route.POST(jsonRequest({}, 'http://test.local/api/memory-index?character_id=char-a'));
+    const secondResponse = await route.POST(jsonRequest(
+      { action: 'rebuild' },
+      'http://test.local/api/memory-index?character_id=char-a',
+    ));
     const secondPayload = await secondResponse.json();
 
     assert.equal(secondPayload.processing_started, true);
@@ -965,7 +1057,10 @@ test('/api/memory-index drain 达到批次上限后仍有 pending 会自动续�
       },
     });
 
-    const response = await route.POST(jsonRequest({}, 'http://test.local/api/memory-index?character_id=char-a'));
+    const response = await route.POST(jsonRequest(
+      { action: 'rebuild' },
+      'http://test.local/api/memory-index?character_id=char-a',
+    ));
     const payload = await response.json();
 
     assert.equal(payload.processing_started, true);
@@ -1033,7 +1128,10 @@ test('/api/memory-index drain 没有可处理任务但仍有 pending 时延迟�
       },
     });
 
-    const response = await route.POST(jsonRequest({}, 'http://test.local/api/memory-index?character_id=char-a'));
+    const response = await route.POST(jsonRequest(
+      { action: 'rebuild' },
+      'http://test.local/api/memory-index?character_id=char-a',
+    ));
     const payload = await response.json();
 
     assert.equal(payload.processing_started, true);
@@ -1045,6 +1143,65 @@ test('/api/memory-index drain 没有可处理任务但仍有 pending 时延迟�
 
     assert.equal(scheduled.length, 2);
     assert.ok(scheduled[1].delay > 0);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
+test('stale retry callback cannot clear ownership of a new memory-index drain', async () => {
+  const originalSetTimeout = global.setTimeout;
+  const scheduled = [];
+  let processCalls = 0;
+  global.setTimeout = (fn, delay) => {
+    scheduled.push({ fn, delay });
+    return scheduled.length;
+  };
+
+  try {
+    const trigger = requireFreshWithMocks('../src/lib/memory-index-trigger.ts', {
+      '@/lib/db': { getDb: () => ({}) },
+      '@/lib/settings': {
+        loadSettings: () => ({
+          memory_engine: {
+            enabled: true,
+            allow_external_memory_payloads: true,
+            embedding_enabled: true,
+            embedding_api_base: 'https://embedding.example/v1',
+            embedding_api_key: 'embedding-secret',
+            embedding_model: 'embedding-model',
+            embedding_dimension: 1024,
+            embedding_timeout_ms: 1500,
+          },
+        }),
+      },
+      '@/lib/memory-embeddings': {
+        ensureMemoryEmbeddingTables: () => {},
+        getMemoryIndexStatus: () => ({ pending: 0 }),
+        processMemoryEmbeddingTasks: async () => {
+          processCalls += 1;
+          return { processed: 0, failed: 0 };
+        },
+      },
+    });
+
+    assert.equal(trigger.triggerMemoryIndexProcessing(30_000), true);
+    assert.equal(scheduled.length, 1);
+    trigger.stopMemoryIndexProcessing();
+    assert.equal(trigger.triggerMemoryIndexProcessing(0), true);
+    assert.equal(scheduled.length, 2);
+
+    scheduled[0].fn();
+    assert.equal(trigger.triggerMemoryIndexProcessing(0), true);
+    assert.equal(
+      scheduled.length,
+      2,
+      'the stale callback must not mark the newer scheduled drain inactive',
+    );
+
+    scheduled[1].fn();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(processCalls, 1);
   } finally {
     global.setTimeout = originalSetTimeout;
   }
@@ -1089,6 +1246,79 @@ test('重建索引会重试已有 failed 任务而不是为同一记忆重复堆
     retry_count: 0,
     error_message: null,
   });
+});
+
+test('重建索引只为 active 记忆入队，并保留归档撤销后可复用的向量', () => {
+  const db = createMemoryDb();
+  ensureMemoryEmbeddingTables(db);
+  db.exec(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+      usage_count, metadata, created_at, updated_at
+    )
+    VALUES
+      (
+        'mem-active', 'char-a', '话题历史', '当前 active 记忆。', 0.9, '[]', '[]',
+        'general', 0.5, 0, 'active', 0, NULL, 0, '{}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      ),
+      (
+        'mem-archived', 'char-a', '话题历史', '可撤销的归档记忆。', 0.9, '[]', '[]',
+        'general', 0.5, 0, 'summarized', 0, NULL, 0,
+        '{"archiveBatchId":"batch-a","summarizedBy":"summary-a","previousStatus":"active"}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      ),
+      (
+        'summary-a', 'char-a', '摘要归档', '归档摘要。', 0.9, '[]', '[]',
+        'summary', 0.5, 0, 'active', 0, NULL, 0,
+        '{"archiveBatchId":"batch-a","archiveRole":"summary"}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      );
+
+    INSERT INTO memory_embeddings (
+      memory_id, character_id, provider, model, dimension, embedding_blob,
+      normalized, embedding_text_hash, status, created_at, updated_at
+    )
+    VALUES (
+      'mem-archived', 'char-a', 'openai-compatible', 'embedding-model', 2,
+      X'000000000000803F', 1, 'archived-ready-hash', 'ready',
+      '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+    );
+  `);
+
+  const queued = enqueueRebuildMemoryEmbeddings('char-a', db);
+  const queuedIds = db.prepare(`
+    SELECT memory_id
+    FROM memory_embedding_tasks
+    ORDER BY memory_id ASC
+  `).all().map(row => row.memory_id);
+
+  assert.equal(queued, 2);
+  assert.deepEqual(queuedIds, ['mem-active', 'summary-a']);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS count FROM memory_embeddings WHERE memory_id = 'mem-archived'").get().count,
+    1,
+  );
+
+  const undo = undoMemorySummaryArchiveBatch(db, {
+    batchId: 'batch-a',
+    characterId: 'char-a',
+    now: '2026-01-02T00:00:00.000Z',
+  });
+  const restored = db.prepare("SELECT status FROM memories WHERE id = 'mem-archived'").get();
+  const retainedEmbedding = db.prepare(`
+    SELECT status
+    FROM memory_embeddings
+    WHERE memory_id = 'mem-archived'
+      AND provider = 'openai-compatible'
+      AND model = 'embedding-model'
+      AND dimension = 2
+  `).get();
+
+  assert.deepEqual(undo.restoredMemoryIds, ['mem-archived']);
+  assert.equal(restored.status, 'active');
+  assert.equal(retainedEmbedding.status, 'ready');
 });
 
 test('retryFailedMemoryEmbeddings 只重试当前未解决的 failed 任务', () => {
@@ -1684,7 +1914,7 @@ test('/api/memory-index stop_current 停止当前范围队列且不污染失败�
     });
 
     const rebuildResponse = await route.POST(jsonRequest(
-      {},
+      { action: 'rebuild' },
       'http://test.local/api/memory-index?character_id=char-a',
     ));
     const rebuildPayload = await rebuildResponse.json();
@@ -2813,6 +3043,147 @@ test('legacy full injection 遇到超长普通记忆会 skip 后继续扫描短�
   assert.ok(result.tokenCount <= 70);
 });
 
+test('trimByTokenBudget 两种 ordinary skip 模式保持 profile、预算边界与高优先级截断的 golden 输出', () => {
+  const { trimByTokenBudget, renderPackage } = loadMemoryRetrievalBudgetInternals();
+  const profileText = '关系状态：主人和角色保持稳定陪伴。';
+  const first = memory({
+    id: 'golden-first',
+    content: '第一条普通记忆。',
+    importance: 0.4,
+    memory_kind: 'general',
+    pinned: false,
+  });
+  const oversizedOrdinary = memory({
+    id: 'golden-huge-ordinary',
+    content: `超大普通记忆-${'很长'.repeat(160)}`,
+    importance: 0.3,
+    memory_kind: 'general',
+    pinned: false,
+  });
+  const laterOrdinary = memory({
+    id: 'golden-later-ordinary',
+    content: '后续短普通记忆。',
+    importance: 0.2,
+    memory_kind: 'general',
+    pinned: false,
+  });
+  const oversizedPromise = memory({
+    id: 'golden-promise',
+    category: '关系动态',
+    content: `必须兑现的高优先级承诺-${'认真记住'.repeat(120)}`,
+    importance: 0.95,
+    memory_kind: 'character_promise',
+    pinned: true,
+  });
+  const ranked = [first, oversizedOrdinary, laterOrdinary, oversizedPromise].map(rankedMemory);
+  const budget = renderPackage([first], profileText).length + 92;
+  const config = {
+    ...baseSettings().memory_engine,
+    memory_package_token_budget: budget,
+    final_top_k: ranked.length,
+  };
+
+  const snapshots = [false, true].map(skipOversizedOrdinary => {
+    let tokenCounterCalls = 0;
+    const result = trimByTokenBudget(
+      ranked,
+      config,
+      text => {
+        tokenCounterCalls += 1;
+        return text.length;
+      },
+      profileText,
+      ranked.length,
+      { skipOversizedOrdinary },
+    );
+    return {
+      skipOversizedOrdinary,
+      selected: result.selected.map(item => ({ id: item.id, content: item.content })),
+      text: result.text,
+      tokenCount: result.tokenCount,
+      tokenCounterCalls,
+    };
+  });
+
+  const expectedFalsePromise = { ...oversizedPromise, content: `${oversizedPromise.content.slice(0, 76)}…` };
+  const expectedTruePromise = { ...oversizedPromise, content: `${oversizedPromise.content.slice(0, 65)}…` };
+  assert.deepEqual(snapshots.map(snapshot => ({
+    skipOversizedOrdinary: snapshot.skipOversizedOrdinary,
+    selected: snapshot.selected,
+    text: snapshot.text,
+    tokenCount: snapshot.tokenCount,
+  })), [
+    {
+      skipOversizedOrdinary: false,
+      selected: [
+        { id: first.id, content: first.content },
+        { id: expectedFalsePromise.id, content: expectedFalsePromise.content },
+      ],
+      text: renderPackage([first, expectedFalsePromise], profileText),
+      tokenCount: budget,
+    },
+    {
+      skipOversizedOrdinary: true,
+      selected: [
+        { id: first.id, content: first.content },
+        { id: laterOrdinary.id, content: laterOrdinary.content },
+        { id: expectedTruePromise.id, content: expectedTruePromise.content },
+      ],
+      text: renderPackage([first, laterOrdinary, expectedTruePromise], profileText),
+      tokenCount: budget,
+    },
+  ]);
+  assert.equal(snapshots[0].tokenCounterCalls, 13, 'false 模式应复用最终整包的精确 token 结果');
+  assert.ok(snapshots[1].tokenCounterCalls <= 15, `true 模式应复用完全相同文本的精确 token 结果，actual=${snapshots[1].tokenCounterCalls}`);
+});
+
+test('trimByTokenBudget skipOversizedOrdinary=false 不应 tokenize 行为上必定跳过的 ordinary 尾项', () => {
+  const { trimByTokenBudget, renderPackage } = loadMemoryRetrievalBudgetInternals();
+  const profileText = '关系状态：稳定陪伴。';
+  const first = memory({ id: 'calls-first', content: '第一条普通记忆。', importance: 0.4, pinned: false });
+  const oversizedOrdinary = memory({
+    id: 'calls-huge-ordinary',
+    content: `无效调用超大普通-${'很长'.repeat(160)}`,
+    importance: 0.3,
+    pinned: false,
+  });
+  const laterOrdinary = memory({
+    id: 'calls-later-ordinary',
+    content: '无效调用后续短普通。',
+    importance: 0.2,
+    pinned: false,
+  });
+  const promise = memory({
+    id: 'calls-promise',
+    category: '关系动态',
+    content: `高优先级承诺-${'继续陪伴'.repeat(100)}`,
+    memory_kind: 'character_promise',
+    importance: 0.95,
+    pinned: true,
+  });
+  const ranked = [first, oversizedOrdinary, laterOrdinary, promise].map(rankedMemory);
+  const budget = renderPackage([first], profileText).length + 88;
+  const calls = [];
+
+  const result = trimByTokenBudget(
+    ranked,
+    { ...baseSettings().memory_engine, memory_package_token_budget: budget, final_top_k: ranked.length },
+    text => {
+      calls.push(text);
+      return text.length;
+    },
+    profileText,
+    ranked.length,
+    { skipOversizedOrdinary: false },
+  );
+
+  const hugeProbe = renderPackage([first, oversizedOrdinary], profileText);
+  const laterProbe = renderPackage([first, laterOrdinary], profileText);
+  assert.deepEqual(result.selected.map(item => item.id), ['calls-first', 'calls-promise']);
+  assert.equal(calls.filter(text => text === hugeProbe).length, 1, `calls=${calls.length}`);
+  assert.equal(calls.filter(text => text === laterProbe).length, 0, `calls=${calls.length}`);
+});
+
 test('全量注入不受历史 300 条候选上限截断（回归）', async () => {
   const db = createMemoryDb();
   const insert = db.prepare(`
@@ -3166,6 +3537,187 @@ test('reranker 前优先传入召回相关性最高的候选，而不是业务�
   assert.deepEqual(rerankedDocs, ['vector-relevant']);
 });
 
+test('reranker adapter 规范化 endpoint/payload 并解析 scores/results/data 响应', async t => {
+  const cases = [
+    {
+      name: 'scores 数组按文档顺序映射',
+      apiBase: 'https://reranker.example/v1///',
+      expectedEndpoint: 'https://reranker.example/v1/rerank',
+      responseBody: { scores: [0.9, '0.4', null] },
+      expected: [
+        { id: 'doc-a', score: 0.9 },
+        { id: 'doc-b', score: 0.4 },
+        { id: 'doc-c', score: 0 },
+      ],
+    },
+    {
+      name: 'results 支持 index/document_index 与 relevance_score/score',
+      apiBase: 'https://reranker.example/rerank',
+      expectedEndpoint: 'https://reranker.example/rerank',
+      responseBody: {
+        results: [
+          { index: 1, relevance_score: 0.75 },
+          { document_index: 0, score: '0.25' },
+          { index: 99, score: 1 },
+        ],
+      },
+      expected: [
+        { id: 'doc-b', score: 0.75 },
+        { id: 'doc-a', score: 0.25 },
+      ],
+    },
+    {
+      name: 'data 支持直接 id 并忽略非有限分数',
+      apiBase: 'https://reranker.example/v2',
+      expectedEndpoint: 'https://reranker.example/v2/rerank',
+      responseBody: {
+        data: [
+          { id: 'doc-c', score: 3 },
+          { id: 'doc-a', relevance_score: 'not-a-number' },
+          null,
+        ],
+      },
+      expected: [{ id: 'doc-c', score: 3 }],
+    },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const requests = [];
+      const { rerankDocuments } = requireFreshWithMocks('../src/lib/memory-reranker.ts', {
+        '@/lib/ssrf-guard': {
+          safeFetch: async (url, init) => {
+            requests.push({ url, init });
+            return new Response(JSON.stringify(fixture.responseBody), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          },
+        },
+      });
+      const documents = [
+        { id: 'doc-a', text: '第一条记忆' },
+        { id: 'doc-b', text: '第二条记忆' },
+        { id: 'doc-c', text: '第三条记忆' },
+      ];
+
+      const result = await rerankDocuments('主人问了什么', documents, {
+        api_base: fixture.apiBase,
+        api_key: 'reranker-secret',
+        model: 'reranker-model',
+        timeout_ms: 100,
+      });
+
+      assert.deepEqual(result, fixture.expected);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].url, fixture.expectedEndpoint);
+      assert.equal(requests[0].init.method, 'POST');
+      assert.equal(requests[0].init.headers.Authorization, 'Bearer reranker-secret');
+      assert.deepEqual(JSON.parse(requests[0].init.body), {
+        model: 'reranker-model',
+        query: '主人问了什么',
+        documents: ['第一条记忆', '第二条记忆', '第三条记忆'],
+      });
+      assert.equal(requests[0].init.signal.aborted, false);
+    });
+  }
+});
+
+test('未送 reranker 的尾部相关性严格压到最低重排分以下', async () => {
+  const { applyReranker } = loadMemoryRetrievalBudgetInternals();
+  const candidates = new Map([
+    ['reranked-high', { memory: memory({ id: 'reranked-high', content: '重排后最高' }), relevance: 0.55, finalScore: 0, source: 'local' }],
+    ['reranked-low', { memory: memory({ id: 'reranked-low', content: '重排后最低' }), relevance: 0.54, finalScore: 0, source: 'local' }],
+    ['unreranked-tail', { memory: memory({ id: 'unreranked-tail', content: '未送重排的尾部' }), relevance: 0.53, finalScore: 0, source: 'local' }],
+  ]);
+  const diagnostics = { candidateCount: 0 };
+
+  await applyReranker('需要重排的三条候选', candidates, {
+    reranker_enabled: true,
+    reranker_api_base: 'https://example.com/rerank',
+    reranker_api_key: 'test-rerank-key',
+    reranker_model: 'fake-reranker',
+    reranker_timeout_ms: 50,
+    reranker_top_k: 2,
+  }, {
+    rerank: async (_query, docs) => {
+      assert.deepEqual(docs.map(doc => doc.id), ['reranked-high', 'reranked-low']);
+      return [
+        { id: 'reranked-high', score: 0.8 },
+        { id: 'reranked-low', score: 0.2 },
+      ];
+    },
+  }, diagnostics);
+
+  assert.equal(candidates.get('reranked-high').relevance, 0.8);
+  assert.equal(candidates.get('reranked-low').relevance, 0.2);
+  assert.ok(candidates.get('unreranked-tail').relevance < candidates.get('reranked-low').relevance);
+  assert.equal(diagnostics.rerankerFailed, undefined);
+});
+
+test('reranker 超范围分数归一到 0..1 后保持相对排序', async () => {
+  const result = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: '归一化排序',
+    settings: baseSettings({
+      memory_engine: {
+        reranker_enabled: true,
+        reranker_api_base: 'https://example.com/rerank',
+        reranker_model: 'fake-reranker',
+        reranker_top_k: 3,
+        final_top_k: 3,
+        memory_package_token_budget: 1000,
+      },
+    }),
+    deps: {
+      localRetrieve: () => [
+        memory({ id: 'score-low', content: '低分', updated_at: '2026-01-01T00:00:00.000Z' }),
+        memory({ id: 'score-high', content: '高分', updated_at: '2026-01-01T00:00:00.000Z' }),
+        memory({ id: 'score-mid', content: '中分', updated_at: '2026-01-01T00:00:00.000Z' }),
+      ],
+      rerank: async () => [
+        { id: 'score-low', score: -10 },
+        { id: 'score-high', score: 30 },
+        { id: 'score-mid', score: 10 },
+      ],
+      tokenCounter: text => Math.ceil(text.length / 50),
+    },
+  });
+
+  assert.deepEqual(result.selectedMemories.map(item => item.id), ['score-high', 'score-mid', 'score-low']);
+});
+
+test('reranker 失败保留原本候选并写入可诊断失败信息', async () => {
+  const result = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: '重排失败也要保留记忆',
+    settings: baseSettings({
+      memory_engine: {
+        reranker_enabled: true,
+        reranker_api_base: 'https://example.com/rerank',
+        reranker_model: 'fake-reranker',
+        memory_package_token_budget: 1000,
+      },
+    }),
+    deps: {
+      localRetrieve: () => [
+        memory({ id: 'fallback-a', content: '失败后仍保留的第一条记忆' }),
+        memory({ id: 'fallback-b', content: '失败后仍保留的第二条记忆' }),
+      ],
+      rerank: async () => {
+        throw new Error('reranker upstream unavailable');
+      },
+      tokenCounter: text => Math.ceil(text.length / 50),
+    },
+  });
+
+  assert.deepEqual(result.selectedMemories.map(item => item.id), ['fallback-a', 'fallback-b']);
+  assert.match(result.diagnostics.rerankerFailed, /upstream unavailable/);
+  assert.equal(result.usedFallback, false);
+  assert.match(result.text, /失败后仍保留的第一条记忆/);
+  assert.match(result.text, /失败后仍保留的第二条记忆/);
+});
+
 test('ready embedding 维度与配置不符时给出诊断并回退本地检索', async () => {
   const loadOptions = [];
   const result = await retrieveWorkingMemoryPackage({
@@ -3224,6 +3776,137 @@ test('embedding BLOB 可读写，并按归一化点积排序', () => {
 
   const ranked = rankEmbeddingRows(query, [rowA, rowB], 2);
   assert.deepEqual(ranked.map(item => item.row.memory_id), ['b', 'a']);
+});
+
+test('向量候选单次 LIMIT 查询与旧 OFFSET 分批结果、顺序和 scanLimit 等价', () => {
+  const db = createMemoryDb();
+  ensureMemoryEmbeddingTables(db);
+  const insertMemory = db.prepare(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned,
+      last_used_at, usage_count, metadata, created_at, updated_at
+    ) VALUES (?, 'char-a', '话题历史', ?, 0.9, '[]', '[]', 'fact', ?, 0, 'active', ?, NULL, 0, '{}', ?, ?)
+  `);
+  const insertEmbedding = db.prepare(`
+    INSERT INTO memory_embeddings (
+      memory_id, character_id, provider, model, dimension, embedding_blob,
+      normalized, embedding_text_hash, status, error_message, created_at, updated_at
+    ) VALUES (?, 'char-a', 'provider-a', 'model-a', 2, ?, 1, ?, 'ready', NULL, ?, ?)
+  `);
+  const insertRows = db.transaction(() => {
+    for (let index = 0; index < 520; index += 1) {
+      const id = `vector-${String(index).padStart(4, '0')}`;
+      const importance = (index % 17) / 20;
+      const pinned = index % 101 === 0 ? 1 : 0;
+      const updatedAt = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
+      insertMemory.run(id, `memory ${index}`, importance, pinned, updatedAt, updatedAt);
+      insertEmbedding.run(id, embeddingToBlob(normalizeEmbedding([index + 1, 1])), `hash-${index}`, updatedAt, updatedAt);
+    }
+  });
+  insertRows();
+
+  const legacySql = `
+    SELECT e.*
+    FROM memory_embeddings e
+    JOIN memories m ON m.id = e.memory_id
+    WHERE e.character_id = ?
+      AND e.status = 'ready'
+      AND m.status = 'active'
+      AND e.provider = ?
+      AND e.model = ?
+      AND e.dimension = ?
+    ORDER BY
+      COALESCE(m.pinned, 0) DESC,
+      COALESCE(m.importance, 0) DESC,
+      e.updated_at DESC,
+      e.memory_id ASC
+    LIMIT ? OFFSET ?
+  `;
+  const legacyStmt = db.prepare(legacySql);
+  const legacyRows = [];
+  const scanLimit = 501;
+  for (let offset = 0; offset < scanLimit; offset += 500) {
+    const batchLimit = Math.min(500, scanLimit - offset);
+    legacyRows.push(...legacyStmt.all('char-a', 'provider-a', 'model-a', 2, batchLimit, offset));
+  }
+
+  let candidateQueryCalls = 0;
+  const countingDb = new Proxy(db, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return sql => {
+          const statement = target.prepare(sql);
+          if (!sql.includes('FROM memory_embeddings e') || !sql.includes('JOIN memories m')) return statement;
+          return new Proxy(statement, {
+            get(statementTarget, statementProperty) {
+              if (statementProperty === 'all') {
+                return (...args) => {
+                  candidateQueryCalls += 1;
+                  return statementTarget.all(...args);
+                };
+              }
+              const value = Reflect.get(statementTarget, statementProperty);
+              return typeof value === 'function' ? value.bind(statementTarget) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const rows = loadReadyMemoryEmbeddings('char-a', {
+    provider: 'provider-a',
+    model: 'model-a',
+    dimension: 2,
+    limit: scanLimit,
+    db: countingDb,
+  });
+
+  assert.equal(candidateQueryCalls, 1);
+  assert.equal(rows.length, scanLimit);
+  assert.deepEqual(rows.map(row => row.memory_id), legacyRows.map(row => row.memory_id));
+
+  const query = normalizeEmbedding([1, 0]);
+  assert.deepEqual(
+    rankEmbeddingRows(query, rows, 25).map(item => [item.row.memory_id, item.similarity]),
+    rankEmbeddingRows(query, legacyRows, 25).map(item => [item.row.memory_id, item.similarity]),
+  );
+});
+
+test('embedding BLOB 仅对齐且小端时零拷贝，坏值与维度错误不进入排名', () => {
+  const littleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+  const aligned = embeddingToBlob([0.25, -0.5]);
+  const alignedVector = blobToEmbedding(aligned);
+  assert.deepEqual(Array.from(alignedVector), [0.25, -0.5]);
+  aligned.writeFloatLE(0.75, 0);
+  assert.equal(alignedVector[0], littleEndian ? 0.75 : 0.25);
+
+  const unalignedBacking = Buffer.alloc(9);
+  unalignedBacking.writeFloatLE(0.25, 1);
+  unalignedBacking.writeFloatLE(-0.5, 5);
+  const unaligned = unalignedBacking.subarray(1);
+  const unalignedVector = blobToEmbedding(unaligned);
+  unaligned.writeFloatLE(0.75, 0);
+  assert.deepEqual(Array.from(unalignedVector), [0.25, -0.5]);
+
+  assert.throws(
+    () => blobToEmbedding(Buffer.alloc(3)),
+    /byte length must be divisible by 4/,
+  );
+
+  const nanBlob = embeddingToBlob([Number.NaN, 1]);
+  const ranked = rankEmbeddingRows(normalizeEmbedding([1, 0]), [
+    { memory_id: 'valid-low', embedding_blob: embeddingToBlob(normalizeEmbedding([0.5, 1])) },
+    { memory_id: 'bad-length', embedding_blob: Buffer.alloc(3) },
+    { memory_id: 'nan', embedding_blob: nanBlob },
+    { memory_id: 'wrong-dimension', embedding_blob: embeddingToBlob([1, 0, 0]) },
+    { memory_id: 'valid-high', embedding_blob: embeddingToBlob([1, 0]) },
+  ], 10);
+
+  assert.deepEqual(ranked.map(item => item.row.memory_id), ['valid-high', 'valid-low']);
 });
 
 test('后续超预算的高优先级记忆也会截断注入', async () => {

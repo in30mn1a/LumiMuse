@@ -319,7 +319,9 @@ git pull
 docker compose up -d --build
 ```
 
-更新前建议先在应用内导出备份，或手动备份 `data/`、`public/generated/` 和 `public/avatars/`。
+更新前建议先在应用内导出备份，或手动备份 `data/`、`public/generated/`、`public/avatars/` 和 `public/attachments/`。
+
+容器健康检查分为两个入口：`/api/health` 只报告进程存活；`/api/health?ready=1` 还会检查 SQLite 与四个持久化目录是否可写。CI 镜像会把完整 commit SHA 写入健康响应的 `build` 字段；直接运行标准 Compose 命令时该字段默认为 `local`。若希望自建镜像也可追溯，请在构建前设置 `LUMIMUSE_BUILD_SHA` 为 `git rev-parse HEAD` 的完整输出。若容器反复不就绪，先查看 `docker compose logs lumimuse`，再检查 UID/GID 1001 的挂载权限、磁盘空间与四个挂载目录。Compose 默认将容器日志轮转为最多 3 个 10MB 文件。
 
 ---
 
@@ -423,6 +425,8 @@ public/avatars/
 public/attachments/
 ```
 
+数据库迁移会写入 SQLite `user_version`。降级到旧版前必须先停止应用并完整备份上述目录；包含 schema 版本门禁的版本遇到更高 schema 会直接拒绝启动，但引入该门禁之前的历史版本没有这项保护。不能靠手工降低 `user_version` 回滚；需要回退时，应恢复与旧版匹配的整份数据库和文件备份。
+
 ---
 
 ## 常见问题
@@ -495,10 +499,14 @@ LumiMuse/
 
 ## 开发
 
-如果你想修改代码，提交或部署前建议运行：
+`Start.bat` 是 Windows 本地开发快捷入口，不是生产服务管理器。提交或部署前运行与 CI 一致的完整验证序列：
+
+`package.json` 中针对 Next.js 的 PostCSS override 是有意的安全覆盖：它只替换 Next 的传递依赖，直到上游版本自带同等或更新修复。升级 Next 后可用 `npm explain postcss` 检查依赖树，并用 `npm prune --dry-run` 验证不会产生额外清理；不要通过删除 `node_modules` 来掩盖 lockfile 问题。
 
 ```bash
 npm run lint
+npm test
+npm run regression
 npm run build
 ```
 

@@ -327,7 +327,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={disabled}
-            className="shrink-0 self-end mb-1.5 rounded-xl p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex min-h-11 min-w-11 shrink-0 self-end mb-1.5 items-center justify-center rounded-xl p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40"
             title={t('input.attachFileTitle')}
             aria-label={t('input.attachFileLabel')}
           >
@@ -356,16 +356,21 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           </div>
 
           {isGenerating ? (
-            <button
-              onClick={onStop}
-              className="soft-button soft-button-secondary shrink-0 self-end mb-1 border-accent/20 px-3 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:min-w-[6.6rem] md:px-4"
-            >
-              <StopIcon className="h-4 w-4" />
-              <span className="hidden md:inline">{t('input.stop')}</span>
-            </button>
+            <>
+              <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{t('status.streaming')}</span>
+              <button
+                onClick={onStop}
+                aria-label={t('input.stop')}
+                className="soft-button soft-button-secondary shrink-0 self-end mb-1 border-accent/20 px-3 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:min-w-[6.6rem] md:px-4"
+              >
+                <StopIcon className="h-4 w-4" />
+                <span className="hidden md:inline">{t('input.stop')}</span>
+              </button>
+            </>
           ) : (
             <button
               onClick={handleSubmit}
+              aria-label={t('input.send')}
               disabled={!canSend}
               className="soft-button soft-button-primary shrink-0 self-end mb-1 px-3 md:min-w-[6.6rem] md:px-4"
             >
@@ -488,6 +493,9 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             )}
           </div>
         </div>
+        <p className="mt-1 px-1 text-[10px] leading-relaxed text-text-muted" role="note">
+          {t('input.remoteMarkdownImagePrivacy')}
+        </p>
       </div>
     </div>
   );

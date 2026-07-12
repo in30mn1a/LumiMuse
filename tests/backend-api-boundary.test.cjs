@@ -71,6 +71,15 @@ function requestFor(url) {
   return { nextUrl: new URL(url) };
 }
 
+function jsonRequest(body) {
+  return {
+    signal: new AbortController().signal,
+    async json() {
+      return body;
+    },
+  };
+}
+
 function createConversationDb(options = {}) {
   const { count = 40, includeOtherCharacter = false } = options;
   const db = new Database(':memory:');
@@ -129,6 +138,36 @@ function createConversationTieBreakerDb() {
   return db;
 }
 
+function createConversationMessagesDb() {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      ignore_memory INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      token_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      seq INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL DEFAULT '{}'
+    );
+  `);
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, title, created_at, updated_at)
+    VALUES ('conv-a', 'char-a', '消息边界测试', '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z')
+  `).run();
+  return db;
+}
+
 function createSearchDb() {
   const db = new Database(':memory:');
   db.exec(`
@@ -158,6 +197,16 @@ function createSearchDb() {
       created_at UNINDEXED,
       seq UNINDEXED
     );
+    CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+      id UNINDEXED,
+      content,
+      role UNINDEXED,
+      conversation_id UNINDEXED,
+      created_at UNINDEXED,
+      seq UNINDEXED,
+      tokenize = 'trigram'
+    );
+    CREATE INDEX idx_messages_created_at ON messages(created_at);
   `);
   db.prepare("INSERT INTO characters (id, name, avatar_url) VALUES ('char-a', '艾莉丝', NULL)").run();
   db.prepare("INSERT INTO conversations (id, character_id, title) VALUES ('conv-a', 'char-a', '搜索测试')").run();
@@ -169,6 +218,18 @@ function createSearchDb() {
   insert.run('msg-expanded-percent', '这里是 100X，被通配符误伤才会命中', '2026-06-07T00:01:00.000Z', 2);
   insert.run('msg-literal-underscore', '订单编号 A_B 是字面下划线', '2026-06-07T00:02:00.000Z', 3);
   insert.run('msg-expanded-underscore', '订单编号 AXB 不应被下划线通配符命中', '2026-06-07T00:03:00.000Z', 4);
+  insert.run('msg-cjk-newest', '主人今天想吃拉面', '2026-06-07T00:07:00.000Z', 7);
+  insert.run('msg-cjk-middle', '艾莉丝问主人今天开心吗', '2026-06-07T00:06:00.000Z', 6);
+  insert.run('msg-cjk-oldest', '昨晚梦见主人今天来看我', '2026-06-07T00:06:00.000Z', 5);
+  insert.run('msg-cjk-short-only', '主人明天再见', '2026-06-07T00:04:00.000Z', 8);
+  insert.run('msg-system-cjk', '主人今天的系统备注', '2026-06-07T00:08:00.000Z', 9);
+  db.prepare("UPDATE messages SET role = 'system' WHERE id = 'msg-system-cjk'").run();
+  db.exec(`
+    INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
+    SELECT id, content, role, conversation_id, created_at, seq FROM messages;
+    INSERT INTO messages_fts_trigram(id, content, role, conversation_id, created_at, seq)
+    SELECT id, content, role, conversation_id, created_at, seq FROM messages;
+  `);
   return db;
 }
 
@@ -292,6 +353,248 @@ test('/api/conversations GET with character_id clamps limit to the maximum page 
   assert.equal(payload.at(-1).id, 'conv-25');
 });
 
+test('/api/conversations/[id] PUT writes ISO updated_at for title and ignore_memory changes', async () => {
+  const db = createConversationDb({ count: 1 });
+  const route = loadRoute('../src/app/api/conversations/[id]/route.ts', db);
+
+  const titleResponse = await route.PUT(
+    jsonRequest({ title: '重命名后的对话' }),
+    { params: Promise.resolve({ id: 'conv-00' }) },
+  );
+  const titlePayload = await titleResponse.json();
+  assert.equal(titleResponse.status, 200);
+  assert.equal(titlePayload.title, '重命名后的对话');
+  assert.match(titlePayload.updated_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+  const ignoreResponse = await route.PUT(
+    jsonRequest({ ignore_memory: true }),
+    { params: Promise.resolve({ id: 'conv-00' }) },
+  );
+  const ignorePayload = await ignoreResponse.json();
+  assert.equal(ignoreResponse.status, 200);
+  assert.equal(ignorePayload.ignore_memory, 1);
+  assert.match(ignorePayload.updated_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+test('/api/conversations/[id]/messages POST returns 404 without inserting for a missing conversation', async () => {
+  const db = createConversationMessagesDb();
+  const route = loadRoute('../src/app/api/conversations/[id]/messages/route.ts', db);
+
+  const response = await route.POST(
+    jsonRequest({ role: 'user', content: '不应写入', token_count: 3, metadata: { source: 'test' } }),
+    { params: Promise.resolve({ id: 'missing-conversation' }) },
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(typeof payload.error, 'string');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM messages').get().count, 0);
+});
+
+test('/api/conversations/[id]/messages POST preserves the existing 201 response for a valid conversation', async () => {
+  const db = createConversationMessagesDb();
+  const route = loadRoute('../src/app/api/conversations/[id]/messages/route.ts', db);
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+
+  const response = await route.POST(
+    jsonRequest({ role: 'assistant', content: '有效回复', token_count: 5, metadata: { tone: 'warm' } }),
+    { params: Promise.resolve({ id: 'conv-a' }) },
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(payload.conversation_id, 'conv-a');
+  assert.equal(payload.role, 'assistant');
+  assert.equal(payload.content, '有效回复');
+  assert.equal(payload.token_count, estimateTokens('有效回复'));
+  assert.equal(payload.seq, 1);
+  assert.equal(payload.metadata.tone, 'warm');
+  assert.equal(payload.metadata.token_count_provenance.source, 'server');
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?').get('conv-a').count, 1);
+  assert.match(
+    db.prepare('SELECT updated_at FROM conversations WHERE id = ?').get('conv-a').updated_at,
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+  );
+});
+
+test('/api/conversations/[id]/messages POST ignores external token provenance and stores a server count', async () => {
+  const db = createConversationMessagesDb();
+  const route = loadRoute('../src/app/api/conversations/[id]/messages/route.ts', db);
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+
+  const response = await route.POST(
+    jsonRequest({
+      role: 'user',
+      content: 'short external message',
+      token_count: 5000,
+      metadata: {
+        source: 'external',
+        token_count_provenance: {
+          source: 'server',
+          version: 1,
+          algorithm: 'forged',
+          fingerprint: 'forged',
+        },
+      },
+    }),
+    { params: Promise.resolve({ id: 'conv-a' }) },
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(payload.token_count, estimateTokens('short external message'));
+  assert.equal(payload.metadata.source, 'external');
+  assert.equal(payload.metadata.token_count_provenance.source, 'server');
+  assert.notEqual(payload.metadata.token_count_provenance.algorithm, 'forged');
+});
+
+test('/api/messages/[id] PUT refreshes token provenance after content and attachment edits', async () => {
+  const db = createConversationMessagesDb();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES ('msg-edit', 'conv-a', 'user', 'old content', 5000, '2026-07-11T00:00:01.000Z', 1, '{}')
+  `).run();
+  const route = loadRoute('../src/app/api/messages/[id]/route.ts', db);
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+  const attachment = {
+    type: 'text',
+    name: 'note.txt',
+    data: 'attachment text',
+    mimeType: 'text/plain',
+  };
+
+  const response = await route.PUT(
+    jsonRequest({ content: 'edited content', attachments: [attachment] }),
+    { params: Promise.resolve({ id: 'msg-edit' }) },
+  );
+  const payload = await response.json();
+  const expectedText = 'edited content\n\n[附件: note.txt]\nattachment text';
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.token_count, estimateTokens(expectedText));
+  assert.deepEqual(payload.metadata.attachments, [attachment]);
+  assert.equal(payload.metadata.token_count_provenance.source, 'server');
+});
+
+test('/api/messages/[id] DELETE returns the owning conversation id for precise cache invalidation', async () => {
+  const db = createConversationMessagesDb();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES ('msg-delete', 'conv-a', 'assistant', 'delete me', 2, '2026-07-11T00:00:01.000Z', 1, '{}')
+  `).run();
+  const route = loadRoute('../src/app/api/messages/[id]/route.ts', db);
+
+  const response = await route.DELETE(
+    jsonRequest({}),
+    { params: Promise.resolve({ id: 'msg-delete' }) },
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, {
+    ok: true,
+    deleted: 'message',
+    conversation_id: 'conv-a',
+  });
+});
+
+test('/api/summarize uses one ISO timestamp for the summary message and conversation updated_at', async () => {
+  let insertedAt;
+  let updatedAt;
+  let insertedSummary;
+  const db = {
+    prepare(sql) {
+      if (sql.includes('SELECT * FROM conversations WHERE id = ?')) {
+        return { get: () => ({ character_id: 'char-a', title: '测试对话' }) };
+      }
+      if (sql.includes('SELECT * FROM characters WHERE id = ?')) {
+        return {
+          get: () => ({
+            id: 'char-a',
+            name: '艾莉丝',
+            basic_info: '',
+            personality: '',
+            scenario: '',
+            other_info: '',
+          }),
+        };
+      }
+      if (sql.includes('SELECT * FROM messages WHERE conversation_id = ?')) {
+        return {
+          all: () => [
+            { id: 'u-1', conversation_id: 'conv-a', role: 'user', content: '你好', token_count: 1, created_at: '2026-07-11T00:00:00.000Z', seq: 1, metadata: '{}' },
+            { id: 'a-1', conversation_id: 'conv-a', role: 'assistant', content: '主人好', token_count: 1, created_at: '2026-07-11T00:00:01.000Z', seq: 2, metadata: '{}' },
+          ],
+        };
+      }
+      if (sql.includes('SELECT MAX(seq)')) {
+        return { get: () => ({ m: 2 }) };
+      }
+      if (sql.includes('INSERT INTO messages')) {
+        return {
+          run(id, conversationId, content, tokenCount, createdAt, seq, metadata) {
+            insertedAt = createdAt;
+            insertedSummary = { id, conversationId, content, tokenCount, createdAt, seq, metadata };
+          },
+        };
+      }
+      if (sql.includes('UPDATE conversations SET updated_at')) {
+        return {
+          run(value, conversationId) {
+            updatedAt = value;
+            assert.equal(conversationId, 'conv-a');
+          },
+        };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    },
+  };
+  const route = requireFreshWithMocks('../src/app/api/summarize/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ max_tokens: 1024, temperature: 0.7 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'model-a' }),
+      buildBackgroundChatExtraBody: () => undefined,
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 1024,
+      sanitizeUpstreamError: value => value,
+    },
+    '@/lib/ssrf-guard': {
+      safeFetch: async () => ({ ok: true, body: { getReader: () => ({ cancel: async () => {} }) } }),
+    },
+    '@/lib/sse-parser': {
+      parseSseStream: async (_reader, onEvent) => onEvent({ text: '这是总结。' }),
+    },
+    '@/lib/memory-profile': {
+      readMemoryProfile: () => null,
+      renderMemoryProfile: () => '',
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ conversation_id: 'conv-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200, payload.error);
+  assert.equal(payload.ok, true);
+  assert.match(insertedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.equal(updatedAt, insertedAt);
+  assert.equal(payload.summarizedCount, 2);
+  assert.equal(payload.message.role, 'system');
+  assert.equal(payload.message.content, '这是总结。');
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+  assert.equal(payload.message.token_count, estimateTokens('这是总结。'));
+  assert.deepEqual(payload.message.metadata.summarizedIds, ['u-1', 'a-1']);
+  assert.equal(payload.message.metadata.isSummary, true);
+  assert.equal(payload.message.metadata.token_count_provenance.source, 'server');
+  assert.equal(insertedSummary.conversationId, 'conv-a');
+  assert.equal(insertedSummary.content, '这是总结。');
+  assert.equal(insertedSummary.tokenCount, estimateTokens('这是总结。'));
+  assert.equal(insertedSummary.seq, 3);
+  assert.deepEqual(JSON.parse(insertedSummary.metadata), payload.message.metadata);
+});
+
 test('/api/messages/search LIKE fallback treats percent and underscore as literal characters', async () => {
   const route = loadRoute('../src/app/api/messages/search/route.ts', createSearchDb());
 
@@ -304,6 +607,158 @@ test('/api/messages/search LIKE fallback treats percent and underscore as litera
   assert.deepEqual(percentPayload.results.map(result => result.messageId), ['msg-literal-percent']);
   assert.equal(underscoreResponse.status, 200);
   assert.deepEqual(underscorePayload.results.map(result => result.messageId), ['msg-literal-underscore']);
+});
+
+test('/api/messages/search keeps 1-2 code point Chinese queries on LIKE', async () => {
+  const db = createSearchDb();
+  const preparedSql = [];
+  const route = loadRoute('../src/app/api/messages/search/route.ts', {
+    prepare(sql) {
+      preparedSql.push(sql);
+      return db.prepare(sql);
+    },
+  });
+
+  const response = await route.GET(requestFor(
+    'http://test.local/api/messages/search?q=%E4%B8%BB%E4%BA%BA&limit=10',
+  ));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    payload.results.map(result => result.messageId),
+    ['msg-cjk-newest', 'msg-cjk-middle', 'msg-cjk-oldest', 'msg-cjk-short-only'],
+  );
+  assert.equal(preparedSql.some(sql => sql.includes('messages_fts_trigram MATCH')), false);
+  assert.ok(preparedSql.some(sql => sql.includes('m.content LIKE ?')));
+});
+
+test('/api/messages/search uses trigram for 3+ code point Chinese with LIKE-equivalent ordering and pagination', async () => {
+  const db = createSearchDb();
+  const preparedSql = [];
+  const route = loadRoute('../src/app/api/messages/search/route.ts', {
+    prepare(sql) {
+      preparedSql.push(sql);
+      return db.prepare(sql);
+    },
+  });
+  const baseline = db.prepare(`
+    SELECT m.id
+    FROM messages m
+    WHERE m.content LIKE ? ESCAPE '\\' AND m.role IN ('user', 'assistant')
+    ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
+    LIMIT ? OFFSET ?
+  `);
+
+  for (const offset of [0, 1]) {
+    const response = await route.GET(requestFor(
+      `http://test.local/api/messages/search?q=%E4%B8%BB%E4%BA%BA%E4%BB%8A%E5%A4%A9&limit=2&offset=${offset}`,
+    ));
+    const payload = await response.json();
+    const likeRows = baseline.all('%主人今天%', 3, offset);
+    const expectedHasMore = likeRows.length > 2;
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      payload.results.map(result => result.messageId),
+      likeRows.slice(0, 2).map(row => row.id),
+    );
+    assert.equal(payload.hasMore, expectedHasMore);
+  }
+
+  assert.ok(preparedSql.some(sql => sql.includes('messages_fts_trigram MATCH')));
+  assert.equal(preparedSql.some(sql => sql.includes('m.content LIKE ?')), false);
+});
+
+test('/api/messages/search indexed paths are visible to SQLite query planning', () => {
+  const db = createSearchDb();
+  const trigramPlan = db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT m.id
+    FROM messages_fts_trigram fts
+    JOIN messages m ON m.id = fts.id
+    WHERE messages_fts_trigram MATCH ? AND m.role IN ('user', 'assistant')
+    ORDER BY m.created_at DESC
+    LIMIT ? OFFSET ?
+  `).all('"主人今天"', 3, 0);
+  const datePlan = db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT m.id
+    FROM messages m
+    WHERE m.created_at >= ? AND m.created_at <= ?
+      AND m.role IN ('user', 'assistant')
+    ORDER BY m.created_at ASC
+    LIMIT ? OFFSET ?
+  `).all('2026-06-07T00:00:00.000Z', '2026-06-07T23:59:59.999Z', 3, 0);
+
+  assert.ok(trigramPlan.some(row => /SCAN fts VIRTUAL TABLE INDEX/.test(String(row.detail))));
+  assert.ok(datePlan.some(row => String(row.detail).includes('idx_messages_created_at')));
+  assert.equal(datePlan.some(row => String(row.detail).includes('USE TEMP B-TREE FOR ORDER BY')), false);
+});
+
+test('/api/messages GET floors a fractional page limit before binding it to SQLite', async () => {
+  const db = createConversationMessagesDb();
+  const insert = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, 'conv-a', 'user', ?, 1, ?, ?, '{}')
+  `);
+  insert.run('msg-1', '第一条', '2026-07-11T00:00:01.000Z', 1);
+  insert.run('msg-2', '第二条', '2026-07-11T00:00:02.000Z', 2);
+  insert.run('msg-3', '第三条', '2026-07-11T00:00:03.000Z', 3);
+  const route = loadRoute('../src/app/api/messages/route.ts', db);
+
+  const response = await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-a&limit=1.9',
+  ));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.messages.map(message => message.id), ['msg-3']);
+  assert.equal(payload.hasMore, true);
+});
+
+test('/api/messages older-page GET skips conversation-wide aggregates', async () => {
+  const db = createConversationMessagesDb();
+  const insert = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, 'conv-a', 'user', ?, ?, ?, ?, '{}')
+  `);
+  insert.run('msg-1', '第一条', 1, '2026-07-11T00:00:01.000Z', 1);
+  insert.run('msg-2', '第二条', 2, '2026-07-11T00:00:02.000Z', 2);
+  insert.run('msg-3', '第三条', 3, '2026-07-11T00:00:03.000Z', 3);
+  const preparedSql = [];
+  const trackedDb = {
+    prepare(sql) {
+      preparedSql.push(sql);
+      return db.prepare(sql);
+    },
+  };
+  const route = loadRoute('../src/app/api/messages/route.ts', trackedDb);
+
+  const response = await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-a&limit=1&before_seq=3',
+  ));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.messages.map(message => message.id), ['msg-2']);
+  assert.equal(payload.hasMore, true);
+  assert.equal(Object.hasOwn(payload, 'unextractedCount'), false);
+  assert.equal(Object.hasOwn(payload, 'totalTokens'), false);
+  assert.equal(preparedSql.some(sql => /COUNT\(\*\)|SUM\(token_count\)|isSummary/.test(sql)), false);
+});
+
+test('/api/messages/search floors fractional limit and offset before SQLite pagination', async () => {
+  const route = loadRoute('../src/app/api/messages/search/route.ts', createSearchDb());
+
+  const response = await route.GET(requestFor(
+    'http://test.local/api/messages/search?q=%E8%AE%A2%E5%8D%95&limit=1.9&offset=0.9',
+  ));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.results.length, 1);
+  assert.equal(payload.hasMore, true);
 });
 
 test('/api/memory-profile init_from_memories batches sampled messages instead of querying assistant replies per user message', async () => {
@@ -428,6 +883,8 @@ test('/api/memory-profile init_from_memories batches sampled messages instead of
 });
 
 test('/api/health GET returns non-sensitive service liveness metadata', async () => {
+  const previousBuildSha = process.env.LUMIMUSE_BUILD_SHA;
+  delete process.env.LUMIMUSE_BUILD_SHA;
   let readinessCalls = 0;
   const route = loadHealthRoute({
     '@/lib/readiness': {
@@ -438,15 +895,49 @@ test('/api/health GET returns non-sensitive service liveness metadata', async ()
     },
   });
 
-  const response = await route.GET(requestFor('http://test.local/api/health'));
-  const payload = await response.json();
+  try {
+    const response = await route.GET(requestFor('http://test.local/api/health'));
+    const payload = await response.json();
 
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.equal(readinessCalls, 0);
-  assert.equal(typeof payload.version, 'string');
-  assert.ok(!('api_key' in payload));
-  assert.ok(!('ACCESS_PASSWORD' in payload));
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(readinessCalls, 0);
+    assert.equal(payload.build, 'local');
+    assert.equal(Object.hasOwn(payload, 'version'), false);
+    assert.ok(!('api_key' in payload));
+    assert.ok(!('ACCESS_PASSWORD' in payload));
+  } finally {
+    if (previousBuildSha === undefined) delete process.env.LUMIMUSE_BUILD_SHA;
+    else process.env.LUMIMUSE_BUILD_SHA = previousBuildSha;
+  }
+});
+
+test('/api/health returns the same explicit safe build SHA for liveness and readiness', async () => {
+  const previousBuildSha = process.env.LUMIMUSE_BUILD_SHA;
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  process.env.LUMIMUSE_BUILD_SHA = sha.toUpperCase();
+  const route = loadHealthRoute({
+    '@/lib/readiness': {
+      async checkReadiness() {
+        return { database: true, data: true, generated: true, avatars: true, attachments: true };
+      },
+      isReady: checks => Object.values(checks).every(Boolean),
+    },
+  });
+
+  try {
+    const liveness = await route.GET(requestFor('http://test.local/api/health'));
+    const readiness = await route.GET(requestFor('http://test.local/api/health?ready=1'));
+    const livePayload = await liveness.json();
+    const readyPayload = await readiness.json();
+
+    assert.equal(livePayload.build, sha);
+    assert.equal(readyPayload.build, sha);
+    assert.equal(readyPayload.ready, true);
+  } finally {
+    if (previousBuildSha === undefined) delete process.env.LUMIMUSE_BUILD_SHA;
+    else process.env.LUMIMUSE_BUILD_SHA = previousBuildSha;
+  }
 });
 
 test('/api/health?ready=1 checks SQLite and all persistent directories for writability', async () => {

@@ -112,6 +112,14 @@ export default function TokenBreakdownModal({ open, onClose, items, lastRealUsag
                     {lastMemoryInjection.mode && lastMemoryInjection.mode !== 'failed' && (
                       <span className="ml-1.5">· {t(`token.mode.${lastMemoryInjection.mode}`)}</span>
                     )}
+                    {lastMemoryInjection.mode === 'failed' && (
+                      <span
+                        role="status"
+                        className="ml-1.5 inline-flex rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 font-medium text-red-600 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300"
+                      >
+                        {t('token.mode.failed')}
+                      </span>
+                    )}
                   </div>
                 )}
               </li>

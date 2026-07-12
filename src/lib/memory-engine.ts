@@ -7,6 +7,7 @@ import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-categ
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { structuredLog } from '@/lib/structured-log';
+import { extractBalancedJsonAt } from '@/lib/balanced-json';
 import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
@@ -458,40 +459,6 @@ function parseMemoryPayload(value: unknown): RawMemoryData[] {
   return [];
 }
 
-function findBalancedJsonSnippet(text: string, startIdx: number): string | null {
-  const first = text[startIdx];
-  if (first !== '{' && first !== '[') return null;
-
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-
-  for (let i = startIdx; i < text.length; i += 1) {
-    const ch = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escape = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-
-    if (ch === '{' || ch === '[') depth += 1;
-    if (ch === '}' || ch === ']') {
-      depth -= 1;
-      if (depth === 0) return text.slice(startIdx, i + 1);
-    }
-  }
-
-  return null;
-}
-
 function parseExtractionResponse(response: string): RawMemoryData[] {
   let text = response.trim();
   if (text.startsWith('```')) {
@@ -527,7 +494,7 @@ function parseExtractionResponse(response: string): RawMemoryData[] {
     if (objectIdx !== -1) candidates.push(objectIdx);
 
     for (const startIdx of candidates) {
-      const snippet = findBalancedJsonSnippet(text, startIdx);
+      const snippet = extractBalancedJsonAt(text, startIdx);
       if (!snippet) continue;
       try {
         const parsed = parseMemoryPayload(JSON.parse(snippet));

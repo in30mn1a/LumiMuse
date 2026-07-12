@@ -64,7 +64,7 @@ test('structured logger emits one JSON object with safe correlation fields and s
   assert.equal(entry.taskId, 'task-2');
   assert.equal(entry.characterId, 'char-3');
   assert.equal(entry.error.name, 'TypeError');
-  assert.deepEqual(entry.error, { name: 'TypeError' });
+  assert.deepEqual(entry.error, { name: 'TypeError', message: 'Error details redacted' });
   assert.equal(typeof entry.timestamp, 'string');
 });
 
@@ -113,7 +113,37 @@ test('structured logger never exposes sensitive Error messages', () => {
   }
   const serialized = lines[0];
   assert.doesNotMatch(serialized, /private conversation|Authorization|Bearer|sk-secret|10\.0\.0\.8|internal/);
-  assert.deepEqual(JSON.parse(serialized).error, { name: 'Error' });
+  assert.deepEqual(JSON.parse(serialized).error, { name: 'Error', message: 'Error details redacted' });
+});
+
+test('structured logger keeps actionable operational messages and redacts sensitive fixtures', () => {
+  const { structuredLog } = loadLogger();
+  const fixtures = [
+    new Error('prompt=private conversation Authorization: Bearer sk-secret'),
+    new Error('upstream response body: {"message":"private chat content"}'),
+    new Error('request to http://10.0.0.8/internal?api_key=secret failed'),
+  ];
+  const lines = [];
+  const original = console.error;
+  console.error = line => lines.push(line);
+  try {
+    structuredLog('error', 'memory.index.process_failed', {
+      operation: 'drain',
+      status: 'failed',
+    }, new Error('SQLITE_BUSY: database is locked'));
+    for (const error of fixtures) {
+      structuredLog('error', 'memory.index.process_failed', {}, error);
+    }
+  } finally {
+    console.error = original;
+  }
+
+  assert.equal(JSON.parse(lines[0]).error.message, 'SQLITE_BUSY: database is locked');
+  for (const line of lines.slice(1)) {
+    const entry = JSON.parse(line);
+    assert.equal(entry.error.message, 'Error details redacted');
+    assert.doesNotMatch(line, /private|Authorization|Bearer|sk-secret|10\.0\.0\.8|api_key|chat content/);
+  }
 });
 
 test('request and background failure paths use structured correlation logging', () => {
@@ -122,6 +152,8 @@ test('request and background failure paths use structured correlation logging', 
   const promptRoute = fs.readFileSync(path.join(root, 'src/app/api/image-gen/prompt/route.ts'), 'utf8');
   const memoryQueue = fs.readFileSync(path.join(root, 'src/lib/memory-queue.ts'), 'utf8');
   const memoryProfile = fs.readFileSync(path.join(root, 'src/lib/memory-profile.ts'), 'utf8');
+  const memoryIndexTrigger = fs.readFileSync(path.join(root, 'src/lib/memory-index-trigger.ts'), 'utf8');
+  const db = fs.readFileSync(path.join(root, 'src/lib/db.ts'), 'utf8');
 
   assert.match(proxy, /forwardedHeaders\.set\(REQUEST_ID_HEADER, requestId\)/);
   assert.match(proxy, /response\.headers\.set\(REQUEST_ID_HEADER, requestId\)/);
@@ -131,4 +163,9 @@ test('request and background failure paths use structured correlation logging', 
   assert.match(memoryQueue, /taskId: task\.id/);
   assert.match(memoryQueue, /characterId: task\.character_id/);
   assert.match(memoryProfile, /structuredLog\('error', 'memory\.profile\.task_failed'/);
+  assert.match(memoryIndexTrigger, /structuredLog\('error', 'memory\.index\.process_failed'/);
+  assert.doesNotMatch(memoryIndexTrigger, /console\.error/);
+  assert.match(db, /structuredLog\('error', 'memory\.queue\.boot_failed'/);
+  assert.match(db, /structuredLog\('error', 'memory\.profile\.boot_failed'/);
+  assert.match(db, /structuredLog\('error', 'memory\.embedding\.recovery_failed'/);
 });

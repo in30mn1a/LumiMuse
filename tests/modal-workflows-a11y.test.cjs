@@ -12,7 +12,7 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 1 });
 Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 1 });
 
-const { cleanup, render, waitFor, within } = require('@testing-library/react');
+const { cleanup, fireEvent, render, waitFor, within } = require('@testing-library/react');
 const userEvent = require('@testing-library/user-event').default;
 
 const root = path.resolve(__dirname, '..');
@@ -114,6 +114,9 @@ const searchResults = [
   },
 ];
 
+const clearSearch = () => {};
+const loadMore = () => {};
+
 function loadGlobalSearch() {
   return loadComponent('../src/components/search/GlobalSearch.tsx', {
     '@/hooks/use-message-search': {
@@ -122,8 +125,8 @@ function loadGlobalSearch() {
         loading: false,
         loadingMore: false,
         hasMore: false,
-        loadMore() {},
-        clearSearch() {},
+        loadMore,
+        clearSearch,
       }),
     },
   });
@@ -208,4 +211,36 @@ test('GlobalSearch closes with Escape and restores focus to its trigger', async 
 
   await waitFor(() => assert.equal(within(document.body).queryByRole('dialog'), null));
   assert.equal(document.activeElement, trigger);
+});
+
+test('GlobalSearch scrolls the keyboard-active result into view', async () => {
+  const GlobalSearch = loadGlobalSearch();
+  const view = render(React.createElement(SearchHarness, { GlobalSearch }));
+  const trigger = within(view.container).getByRole('button', { name: 'open search' });
+  const scrollCalls = [];
+  const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = function scrollIntoView(options) {
+    scrollCalls.push({ element: this, options });
+  };
+
+  try {
+    fireEvent.click(trigger);
+    const dialog = within(document.body).getByRole('dialog');
+    const input = within(dialog).getByRole('textbox');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+    const resultButtons = within(dialog).getAllByRole('button');
+    await waitFor(() => {
+      assert.equal(scrollCalls.at(-1)?.element, resultButtons[1]);
+      assert.deepEqual(scrollCalls.at(-1)?.options, { block: 'nearest' });
+    });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => assert.equal(within(document.body).queryByRole('dialog'), null));
+  } finally {
+    if (originalScrollIntoView) {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    } else {
+      delete HTMLElement.prototype.scrollIntoView;
+    }
+  }
 });

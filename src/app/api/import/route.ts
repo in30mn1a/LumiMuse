@@ -3,8 +3,12 @@ import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { inferMemoryDefaults, normalizeMemoryCategory } from '@/lib/memory-category';
 import { normalizeCharacterCard, type CharacterDraft } from '@/lib/character-card-import';
+import { requireAuth } from '@/lib/route-auth';
 import { remapJsonStringIds } from '@/lib/character-file-utils';
 import { EXPORT_VERSION } from '@/lib/export-version';
+import { MEMORY_KINDS, MEMORY_STATUSES } from '@/types';
+import { parseMessageMetadata } from '@/lib/messages';
+import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
 
 interface ImportPayload {
   version?: number;
@@ -33,6 +37,15 @@ interface ConversationWithMessages {
   messages?: Record<string, unknown>[];
 }
 
+const MESSAGE_ROLES = ['user', 'assistant', 'system'] as const;
+
+interface ImportEnumValidationError {
+  collection: string;
+  index: number;
+  field: 'role' | 'status' | 'memory_kind';
+  value: unknown;
+}
+
 /**
  * 安全提取字符串字段：拒绝非字符串值，避免 JSON 中注入对象 / 数组导致后续
  * 直接绑定到 SQLite 参数时抛出 TypeError 或写入异常数据。
@@ -56,6 +69,50 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
 
 function asNumber(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+function invalidEnumValue(
+  record: Record<string, unknown>,
+  field: ImportEnumValidationError['field'],
+  allowed: readonly string[],
+): unknown | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, field)) return undefined;
+  const value = record[field];
+  return typeof value === 'string' && allowed.includes(value) ? undefined : value;
+}
+
+function findImportEnumValidationError(
+  conversations: ConversationWithMessages[],
+  memories: Record<string, unknown>[],
+): ImportEnumValidationError | undefined {
+  for (let conversationIndex = 0; conversationIndex < conversations.length; conversationIndex++) {
+    const messages = asArray<Record<string, unknown>>(conversations[conversationIndex].messages);
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+      const value = invalidEnumValue(messages[messageIndex], 'role', MESSAGE_ROLES);
+      if (value !== undefined) {
+        return {
+          collection: `conversations[${conversationIndex}].messages`,
+          index: messageIndex,
+          field: 'role',
+          value,
+        };
+      }
+    }
+  }
+
+  for (let memoryIndex = 0; memoryIndex < memories.length; memoryIndex++) {
+    const memory = memories[memoryIndex];
+    const status = invalidEnumValue(memory, 'status', MEMORY_STATUSES);
+    if (status !== undefined) {
+      return { collection: 'memories', index: memoryIndex, field: 'status', value: status };
+    }
+    const memoryKind = invalidEnumValue(memory, 'memory_kind', MEMORY_KINDS);
+    if (memoryKind !== undefined) {
+      return { collection: 'memories', index: memoryIndex, field: 'memory_kind', value: memoryKind };
+    }
+  }
+
+  return undefined;
 }
 
 function asFlag(v: unknown): number {
@@ -196,6 +253,9 @@ function createEmptyResults() {
 const MAX_IMPORT_BYTES = 200 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   // 提前用 Content-Length 拒绝超大请求，避免先把整个 body 读进内存才发现超限。
   // 注：恶意 client 可能伪造 / 省略 Content-Length，因此这只是第一道闸门。
   const contentLength = Number(request.headers.get('content-length') || '0');
@@ -270,6 +330,14 @@ export async function POST(request: NextRequest) {
     ? asArray<Record<string, unknown>>(payload.memory_embeddings)
     : [];
 
+  const enumValidationError = findImportEnumValidationError(conversationsToImport, memoriesToImport);
+  if (enumValidationError) {
+    return NextResponse.json(
+      { error: '导入数据包含非法枚举值', ...enumValidationError },
+      { status: 400 },
+    );
+  }
+
   if (
     target_character_id &&
     !characterDraft &&
@@ -283,12 +351,17 @@ export async function POST(request: NextRequest) {
   }
 
   const db = getDb();
+  const findCharacterById = db.prepare('SELECT id FROM characters WHERE id = ?');
+  const characterExists = (id: string) => Boolean(findCharacterById.get(id));
   if (target_character_id) {
-    const targetExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(target_character_id);
-    if (!targetExists) return NextResponse.json({ error: '目标角色不存在' }, { status: 404 });
+    if (!characterExists(target_character_id)) {
+      return NextResponse.json({ error: '目标角色不存在' }, { status: 404 });
+    }
   }
 
   const results = importPayload({
+    db,
+    characterExists,
     charactersToImport,
     memoriesToImport,
     conversationsToImport,
@@ -309,16 +382,17 @@ export async function POST(request: NextRequest) {
  * 同名角色追加后缀，确保导入不会把不同来源的同名角色静默合并到同一目标。
  * 例：「艾莉丝」存在时，导入新角色会变成「艾莉丝（导入-1717000000000）」。
  */
-function makeUniqueCharacterName(db: ReturnType<typeof getDb>, baseName: string): string {
+function makeUniqueCharacterName(characterExistsByName: (name: string) => boolean, baseName: string): string {
   const safeBase = baseName || '导入角色';
   const candidate = `${safeBase}（导入-${Date.now()}）`;
   // 极端情况下时间戳碰撞，附加短随机串兜底
-  const existing = db.prepare('SELECT id FROM characters WHERE name = ?').get(candidate);
-  if (!existing) return candidate;
+  if (!characterExistsByName(candidate)) return candidate;
   return `${candidate}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
 function importPayload({
+  db,
+  characterExists,
   charactersToImport,
   memoriesToImport,
   conversationsToImport,
@@ -327,6 +401,8 @@ function importPayload({
   embeddingsToImport,
   target_character_id,
 }: {
+  db: ReturnType<typeof getDb>;
+  characterExists: (id: string) => boolean;
   charactersToImport: Record<string, unknown>[];
   memoriesToImport: Record<string, unknown>[];
   conversationsToImport: ConversationWithMessages[];
@@ -335,12 +411,73 @@ function importPayload({
   embeddingsToImport: Record<string, unknown>[];
   target_character_id?: string;
 }) {
-  const db = getDb();
   const now = new Date().toISOString();
   const results = createEmptyResults();
   const idMap = new Map<string, string>(); // 原 character id → 新 id
   const messageIdMap = new Map<string, string>(); // 原消息 id → 新消息 id
   const memoryIdMap = new Map<string, string>(); // 原记忆 id → 新记忆 id（embedding 导入需要）
+
+  const findCharacterByName = db.prepare('SELECT id FROM characters WHERE name = ?');
+  const characterExistsByName = (name: string) => Boolean(findCharacterByName.get(name));
+  const insertCharacter = db.prepare(`
+    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertConversation = db.prepare(`
+    INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insertMessage = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, metadata, seq)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertMemory = db.prepare(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+      usage_count, metadata, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const upsertProfile = db.prepare(`
+    INSERT INTO character_memory_profiles (
+      character_id, profile_name, relationship_state, recent_story_state,
+      emotional_baseline, open_threads, user_profile_summary, pinned_summary, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(character_id) DO UPDATE SET
+      profile_name = excluded.profile_name,
+      relationship_state = excluded.relationship_state,
+      recent_story_state = excluded.recent_story_state,
+      emotional_baseline = excluded.emotional_baseline,
+      open_threads = excluded.open_threads,
+      user_profile_summary = excluded.user_profile_summary,
+      pinned_summary = excluded.pinned_summary,
+      updated_at = excluded.updated_at
+  `);
+  const findProfileVersion = db.prepare(
+    'SELECT id FROM character_memory_profile_versions WHERE character_id = ? AND version_number = ?',
+  );
+  const insertProfileVersion = db.prepare(`
+    INSERT INTO character_memory_profile_versions (
+      character_id, version_number, snapshot_json, reason, task_id, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const upsertEmbedding = db.prepare(`
+    INSERT INTO memory_embeddings (
+      memory_id, character_id, provider, model, dimension, embedding_blob,
+      normalized, embedding_text_hash, status, error_message, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(memory_id, provider, model, dimension) DO UPDATE SET
+      embedding_blob = excluded.embedding_blob,
+      normalized = excluded.normalized,
+      embedding_text_hash = excluded.embedding_text_hash,
+      status = excluded.status,
+      error_message = excluded.error_message,
+      updated_at = excluded.updated_at
+  `);
 
   const importAll = db.transaction(() => {
     // ── 导入角色 ────────────────────────────────────────────────
@@ -354,11 +491,11 @@ function importPayload({
       // 导致后续记忆 / 对话被错误地挂到不属于它们的角色上。
       // 现在改为：检测到同名时，给新导入的角色追加后缀创建独立记录，并在 warnings 里告知调用方。
       const existingByName = charName
-        ? db.prepare('SELECT id FROM characters WHERE name = ?').get(charName) as { id: string } | undefined
+        ? findCharacterByName.get(charName) as { id: string } | undefined
         : undefined;
 
       const finalName = existingByName
-        ? makeUniqueCharacterName(db, charName)
+        ? makeUniqueCharacterName(characterExistsByName, charName)
         : (charName || '导入角色');
 
       if (existingByName) {
@@ -372,10 +509,7 @@ function importPayload({
       const newId = crypto.randomUUID().slice(0, 12);
       if (charId) idMap.set(charId, newId);
 
-      db.prepare(`
-        INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      insertCharacter.run(
         newId,
         finalName,
         asString(char.avatar_url) || null,
@@ -401,18 +535,14 @@ function importPayload({
       const newCharId = target_character_id || idMap.get(convCharId) || convCharId;
 
       // 确认角色存在
-      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
-      if (!charExists) {
+      if (!characterExists(newCharId)) {
         results.conversationsSkipped++;
         continue;
       }
 
       const newConvId = crypto.randomUUID().slice(0, 12);
 
-      db.prepare(`
-        INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
+      insertConversation.run(
         newConvId,
         newCharId,
         asString(conv.title) || '导入的对话',
@@ -430,20 +560,20 @@ function importPayload({
         const originalMsgId = asString(msg.id);
         if (originalMsgId) messageIdMap.set(originalMsgId, newMsgId);
 
-        // metadata 可能是对象或字符串，统一序列化为字符串存储
-        const metaStr = typeof msg.metadata === 'string'
-          ? msg.metadata
-          : JSON.stringify(msg.metadata ?? {});
+        // 导入包属于外部信任边界：不复用其中的 token_count/provenance，按当前
+        // 服务端算法和实际 content/attachments 重新生成可信计数。
+        const role = (asString(msg.role) || 'user') as (typeof MESSAGE_ROLES)[number];
+        const content = asString(msg.content);
+        const metadata = parseMessageMetadata(msg.metadata);
+        const tokenResult = createMessageTokenCount(content, role, metadata.attachments);
+        const metaStr = JSON.stringify(metadataWithTokenCountProvenance(metadata, tokenResult.provenance));
 
-        db.prepare(`
-          INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, metadata, seq)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
+        insertMessage.run(
           newMsgId,
           newConvId,
-          asString(msg.role),
-          asString(msg.content),
-          asNumber(msg.token_count) ?? 0,
+          role,
+          content,
+          tokenResult.tokenCount,
           asString(msg.created_at) || now,
           metaStr,
           asNumber(msg.seq) ?? fallbackSeq++,
@@ -458,8 +588,7 @@ function importPayload({
       const originalCharId = asString(mem.character_id);
       const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
 
-      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
-      if (!charExists) continue;
+      if (!characterExists(newCharId)) continue;
 
       const newMemId = crypto.randomUUID().slice(0, 12);
       const originalMemId = asString(mem.id);
@@ -467,14 +596,7 @@ function importPayload({
 
       const category = normalizeMemoryCategory(asString(mem.category) || '话题历史');
       const defaults = inferMemoryDefaults(category);
-      db.prepare(`
-        INSERT INTO memories (
-          id, character_id, category, content, confidence, tags, source_msg_ids,
-          memory_kind, importance, emotional_weight, status, pinned, last_used_at,
-          usage_count, metadata, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      insertMemory.run(
         newMemId,
         newCharId,
         category,
@@ -503,26 +625,10 @@ function importPayload({
       const originalCharId = asString(profile.character_id);
       const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
 
-      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
-      if (!charExists) continue;
+      if (!characterExists(newCharId)) continue;
 
       // 用 UPSERT 避免重复导入时主键冲突
-      db.prepare(`
-        INSERT INTO character_memory_profiles (
-          character_id, profile_name, relationship_state, recent_story_state,
-          emotional_baseline, open_threads, user_profile_summary, pinned_summary, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(character_id) DO UPDATE SET
-          profile_name = excluded.profile_name,
-          relationship_state = excluded.relationship_state,
-          recent_story_state = excluded.recent_story_state,
-          emotional_baseline = excluded.emotional_baseline,
-          open_threads = excluded.open_threads,
-          user_profile_summary = excluded.user_profile_summary,
-          pinned_summary = excluded.pinned_summary,
-          updated_at = excluded.updated_at
-      `).run(
+      upsertProfile.run(
         newCharId,
         asString(profile.profile_name),
         asString(profile.relationship_state),
@@ -545,24 +651,16 @@ function importPayload({
       const originalCharId = asString(version.character_id);
       const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
 
-      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
-      if (!charExists) continue;
+      if (!characterExists(newCharId)) continue;
 
       const versionNumber = asNumber(version.version_number);
       if (versionNumber === undefined) continue;
 
       // 检查是否已存在同版本号，避免重复导入
-      const existing = db.prepare(
-        'SELECT id FROM character_memory_profile_versions WHERE character_id = ? AND version_number = ?',
-      ).get(newCharId, versionNumber);
+      const existing = findProfileVersion.get(newCharId, versionNumber);
       if (existing) continue;
 
-      db.prepare(`
-        INSERT INTO character_memory_profile_versions (
-          character_id, version_number, snapshot_json, reason, task_id, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
+      insertProfileVersion.run(
         newCharId,
         versionNumber,
         asString(version.snapshot_json) || '{}',
@@ -584,27 +682,13 @@ function importPayload({
       const originalCharId = asString(embedding.character_id);
       const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
 
-      const charExists = db.prepare('SELECT id FROM characters WHERE id = ?').get(newCharId);
-      if (!charExists) continue;
+      if (!characterExists(newCharId)) continue;
 
       const embeddingBlob = bufferFromSerialized(embedding.embedding_blob);
       if (!embeddingBlob) continue;
 
       // 用 UPSERT 避免重复导入时唯一索引冲突
-      db.prepare(`
-        INSERT INTO memory_embeddings (
-          memory_id, character_id, provider, model, dimension, embedding_blob,
-          normalized, embedding_text_hash, status, error_message, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(memory_id, provider, model, dimension) DO UPDATE SET
-          embedding_blob = excluded.embedding_blob,
-          normalized = excluded.normalized,
-          embedding_text_hash = excluded.embedding_text_hash,
-          status = excluded.status,
-          error_message = excluded.error_message,
-          updated_at = excluded.updated_at
-      `).run(
+      upsertEmbedding.run(
         newMemId,
         newCharId,
         asString(embedding.provider) || 'openai-compatible',

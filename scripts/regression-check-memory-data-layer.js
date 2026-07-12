@@ -24,6 +24,8 @@ const dbSchemaFiles = `${dbFile}\n${memoryEmbeddingSchemaFile}`;
 const typesFile = read('src/types/index.ts');
 const settingsFile = read('src/lib/settings.ts');
 const schemasFile = read('src/lib/schemas.ts');
+const memoryPromptContractFile = read('src/lib/memory-prompt-contract.ts');
+const memoryNormalizationFile = read('src/lib/memory-normalization.ts');
 const memoriesRoute = read('src/app/api/memories/route.ts');
 const memoryDetailRoute = read('src/app/api/memories/[id]/route.ts');
 
@@ -71,19 +73,29 @@ assert(typesFile.includes("retrieval_mode: 'local'"), '默认 memory_engine.retr
 assert(typesFile.includes('embedding_enabled: false'), '默认 memory_engine 关闭 embedding');
 assert(typesFile.includes('reranker_enabled: false'), '默认 memory_engine 关闭 reranker');
 assert(typesFile.includes('fallback_local_enabled: true'), '默认 memory_engine 开启本地 fallback');
-assert(typesFile.includes('memory_package_token_budget: 12000'), '默认 memory_engine 包含 token 硬预算');
+assert(
+  typesFile.includes('memory_package_token_budget: DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET')
+    && memoryPromptContractFile.includes('DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET = 12000'),
+  '默认 memory_engine 包含 token 硬预算',
+);
 
 assert(settingsFile.includes('map.memory_engine'), 'loadSettings 深合并 memory_engine');
 assert(schemasFile.includes('memory_kind'), 'memoryCreateSchema 接受 memory_kind');
 assert(schemasFile.includes('emotional_weight'), 'memoryCreateSchema 接受 emotional_weight');
 assert(schemasFile.includes('pinned'), 'memoryCreateSchema 接受 pinned');
 
-assert(memoriesRoute.includes('normalizeMemoryRecord'), 'memories 列表/创建统一规范化返回新字段');
+assert(
+  memoriesRoute.includes('normalizeMemoryRow') && memoryNormalizationFile.includes('export function normalizeMemoryRow'),
+  'memories 列表/创建统一规范化返回新字段',
+);
 assert(memoriesRoute.includes('inferMemoryDefaults'), '旧格式创建记忆会推断默认 memory_kind/importance/emotional_weight');
 assert(memoriesRoute.includes('INSERT INTO memories') && memoriesRoute.includes('memory_kind'), 'POST /api/memories 写入新字段');
 
 assert(memoryDetailRoute.includes('memoryUpdateSchema'), 'PUT /api/memories/[id] 使用更新 schema 校验');
-assert(memoryDetailRoute.includes('normalizeMemoryRecord'), 'PUT /api/memories/[id] 返回规范化新字段');
+assert(
+  memoryDetailRoute.includes('normalizeMemoryRow') && memoryNormalizationFile.includes('export function normalizeMemoryRow'),
+  'PUT /api/memories/[id] 返回规范化新字段',
+);
 assert(memoryDetailRoute.includes('memory_kind = ?'), 'PUT /api/memories/[id] 可更新 memory_kind');
 
 if (process.exitCode) process.exit(process.exitCode);

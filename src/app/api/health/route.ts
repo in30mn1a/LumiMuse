@@ -2,11 +2,18 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { checkReadiness, isReady } from '@/lib/readiness';
 
+function resolveBuildIdentifier(): string {
+  const configured = process.env.LUMIMUSE_BUILD_SHA?.trim();
+  return configured && /^[0-9a-f]{7,40}$/i.test(configured)
+    ? configured.toLowerCase()
+    : 'local';
+}
+
 export async function GET(request?: NextRequest) {
   const metadata = {
     ok: true,
     service: 'lumimuse',
-    version: process.env.npm_package_version || '0.1.0',
+    build: resolveBuildIdentifier(),
     time: new Date().toISOString(),
   };
 

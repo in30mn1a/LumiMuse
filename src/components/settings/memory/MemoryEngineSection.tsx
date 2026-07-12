@@ -86,8 +86,9 @@ export function MemoryEngineSection({
 
         {memoryEngineEnabled && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-            <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.memoryRetrievalMode')}</label>
+            <label htmlFor="settings-memory-retrieval-mode" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.memoryRetrievalMode')}</label>
             <select
+              id="settings-memory-retrieval-mode"
               value={memoryModePreset}
               onChange={e => onMemoryModeChange(e.target.value as MemoryModePreset)}
               className="select-rich"
@@ -101,8 +102,9 @@ export function MemoryEngineSection({
 
         <div className="space-y-4 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundProvider')}</label>
+            <label htmlFor="settings-memory-background-provider" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundProvider')}</label>
             <select
+              id="settings-memory-background-provider"
               value={settings.memory_background_provider_id}
               onChange={e => {
                 update('memory_background_provider_id', e.target.value);
@@ -124,10 +126,11 @@ export function MemoryEngineSection({
             <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundProviderHint')}</p>
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundModel')}</label>
+            <label htmlFor="settings-memory-background-model" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundModel')}</label>
             <div className="flex flex-col gap-2 lg:flex-row">
               {bgModelList.length > 0 ? (
                 <select
+                  id="settings-memory-background-model"
                   value={settings.memory_background_model}
                   onChange={e => update('memory_background_model', e.target.value)}
                   className="select-rich flex-1"
@@ -139,6 +142,7 @@ export function MemoryEngineSection({
                 </select>
               ) : (
                 <input
+                  id="settings-memory-background-model"
                   value={settings.memory_background_model}
                   onChange={e => update('memory_background_model', e.target.value)}
                   className="input-rich flex-1"
@@ -158,8 +162,9 @@ export function MemoryEngineSection({
             <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundModelHint')}</p>
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundTimeout')}</label>
+            <label htmlFor="settings-memory-background-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundTimeout')}</label>
             <input
+              id="settings-memory-background-timeout"
               type="number"
               min="0"
               step="1"
@@ -209,8 +214,9 @@ export function MemoryEngineSection({
             </span>
           </label>
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryPackageTokenBudget')}</label>
+            <label htmlFor="settings-memory-package-token-budget" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryPackageTokenBudget')}</label>
             <input
+              id="settings-memory-package-token-budget"
               type="number"
               min="1"
               step="500"
@@ -230,8 +236,9 @@ export function MemoryEngineSection({
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryEmbedding')}</h3>
           <div className="grid gap-3 md:grid-cols-2">
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingApiBase')}</label>
+              <label htmlFor="settings-memory-embedding-api-base" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingApiBase')}</label>
               <input
+                id="settings-memory-embedding-api-base"
                 value={settings.memory_engine.embedding_api_base}
                 onChange={e => { updateMemoryEngine('embedding_api_base', e.target.value); onClearEmbeddingModelList(); }}
                 className="input-rich"
@@ -239,8 +246,9 @@ export function MemoryEngineSection({
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingApiKey')}</label>
+              <label htmlFor="settings-memory-embedding-api-key" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingApiKey')}</label>
               <input
+                id="settings-memory-embedding-api-key"
                 type="password"
                 value={settings.memory_engine.embedding_api_key}
                 onChange={e => { updateMemoryEngine('embedding_api_key', e.target.value); onClearEmbeddingModelList(); }}
@@ -248,10 +256,11 @@ export function MemoryEngineSection({
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingModel')}</label>
+              <label htmlFor="settings-memory-embedding-model" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingModel')}</label>
               <div className="flex gap-2">
                 {embeddingModelList.length > 0 ? (
                   <select
+                    id="settings-memory-embedding-model"
                     value={settings.memory_engine.embedding_model}
                     onChange={e => updateMemoryEngine('embedding_model', e.target.value)}
                     className="select-rich flex-1"
@@ -263,6 +272,7 @@ export function MemoryEngineSection({
                   </select>
                 ) : (
                   <input
+                    id="settings-memory-embedding-model"
                     value={settings.memory_engine.embedding_model}
                     onChange={e => updateMemoryEngine('embedding_model', e.target.value)}
                     className="input-rich flex-1"
@@ -281,8 +291,9 @@ export function MemoryEngineSection({
               {embeddingModelError && <p className="mt-1 text-xs text-red-500">{embeddingModelError}</p>}
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingDimension')}</label>
+              <label htmlFor="settings-memory-embedding-dimension" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingDimension')}</label>
               <input
+                id="settings-memory-embedding-dimension"
                 type="number"
                 min="0"
                 value={settings.memory_engine.embedding_dimension || ''}
@@ -308,8 +319,9 @@ export function MemoryEngineSection({
           {settings.memory_engine.reranker_enabled && (
             <div className="grid gap-3 md:grid-cols-2">
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryRerankerApiBase')}</label>
+                <label htmlFor="settings-memory-reranker-api-base" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryRerankerApiBase')}</label>
                 <input
+                  id="settings-memory-reranker-api-base"
                   value={settings.memory_engine.reranker_api_base}
                   onChange={e => { updateMemoryEngine('reranker_api_base', e.target.value); onClearRerankerModelList(); }}
                   className="input-rich"
@@ -317,8 +329,9 @@ export function MemoryEngineSection({
                 />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryRerankerApiKey')}</label>
+                <label htmlFor="settings-memory-reranker-api-key" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryRerankerApiKey')}</label>
                 <input
+                  id="settings-memory-reranker-api-key"
                   type="password"
                   value={settings.memory_engine.reranker_api_key}
                   onChange={e => { updateMemoryEngine('reranker_api_key', e.target.value); onClearRerankerModelList(); }}
@@ -326,10 +339,11 @@ export function MemoryEngineSection({
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryRerankerModel')}</label>
+                <label htmlFor="settings-memory-reranker-model" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryRerankerModel')}</label>
                 <div className="flex gap-2">
                   {rerankerModelList.length > 0 ? (
                     <select
+                      id="settings-memory-reranker-model"
                       value={settings.memory_engine.reranker_model}
                       onChange={e => updateMemoryEngine('reranker_model', e.target.value)}
                       className="select-rich flex-1"
@@ -341,6 +355,7 @@ export function MemoryEngineSection({
                     </select>
                   ) : (
                     <input
+                      id="settings-memory-reranker-model"
                       value={settings.memory_engine.reranker_model}
                       onChange={e => updateMemoryEngine('reranker_model', e.target.value)}
                       className="input-rich flex-1"
@@ -400,8 +415,9 @@ export function MemoryEngineSection({
 
         {settings.memory_trigger_interval_enabled && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-            <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.extractionInterval')}</label>
+            <label htmlFor="settings-memory-extraction-interval" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.extractionInterval')}</label>
             <input
+              id="settings-memory-extraction-interval"
               type="number"
               min="1"
               max="50"
@@ -423,8 +439,9 @@ export function MemoryEngineSection({
 
         {settings.memory_trigger_time_enabled && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-            <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerTimeMinutes')}</label>
+            <label htmlFor="settings-memory-trigger-time" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerTimeMinutes')}</label>
             <input
+              id="settings-memory-trigger-time"
               type="number"
               min="1"
               max="72"
@@ -446,9 +463,10 @@ export function MemoryEngineSection({
 
         {settings.memory_trigger_keyword_enabled && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-            <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerKeywords')}</label>
+            <label htmlFor="settings-memory-trigger-keywords" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerKeywords')}</label>
             <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.triggerKeywordsHint')}</p>
             <input
+              id="settings-memory-trigger-keywords"
               type="text"
               value={settings.memory_trigger_keywords}
               onChange={e => update('memory_trigger_keywords', e.target.value)}
@@ -478,9 +496,10 @@ export function MemoryEngineSection({
 
         {settings.limit_inject && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-            <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.maxMemoriesInject')}</label>
+            <label htmlFor="settings-memory-max-inject" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.maxMemoriesInject')}</label>
             <p className="mb-3 text-xs leading-relaxed text-text-muted">{t('settings.limitInjectHint')}</p>
             <input
+              id="settings-memory-max-inject"
               type="number"
               min="5"
               max="100"

@@ -139,6 +139,23 @@ test('/api/upload rejects oversized Content-Length before formData is parsed', a
   assert.deepEqual(writes, []);
 });
 
+test('/api/upload maps malformed multipart parsing failures to 400 JSON without filesystem writes', async () => {
+  const { route, writes, mkdirs } = createUploadHarness();
+
+  const response = await route.POST(uploadRequest({
+    contentLength: 128,
+    formDataImpl() {
+      throw new TypeError('Failed to parse multipart body');
+    },
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, '无效的 multipart 表单数据');
+  assert.deepEqual(mkdirs, []);
+  assert.deepEqual(writes, []);
+});
+
 test('/api/upload rejects missing Content-Length when actual file size is too large before writing', async () => {
   const { route, writes, mkdirs } = createUploadHarness();
 

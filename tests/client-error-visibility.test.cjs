@@ -80,7 +80,7 @@ test('ChatView write handlers validate failed responses before local mutation or
   const editValidationIndex = firstResponseValidationIndex(editBlock);
   assert.notEqual(editValidationIndex, -1, 'message edit should validate the write response');
   assert.ok(
-    editValidationIndex < editBlock.indexOf('await refreshMessages();'),
+    editValidationIndex < editBlock.indexOf('await refreshMessagesForConversation(updated.conversation_id);'),
     'message edits should not refresh messages before validating the write response',
   );
   assert.match(editBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);
@@ -89,7 +89,7 @@ test('ChatView write handlers validate failed responses before local mutation or
   const switchValidationIndex = firstResponseValidationIndex(switchBlock);
   assert.notEqual(switchValidationIndex, -1, 'version switch should validate the write response');
   assert.ok(
-    switchValidationIndex < switchBlock.indexOf('await refreshMessages();'),
+    switchValidationIndex < switchBlock.indexOf('await refreshMessagesForConversation(updated.conversation_id);'),
     'version switches should not refresh messages before validating the write response',
   );
   assert.match(switchBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);
@@ -137,4 +137,19 @@ test('settings page initial /api/settings failure has a visible error path', () 
 
   assert.match(loadEffect, /parseJsonResponse<Partial<SettingsWithMemoryEngine>>/);
   assert.match(loadEffect, /showToast\(`\$\{tRef\.current\('settings.loadFailed'\)\}: \$\{getErrorMessage\(err\)\}`, 'error'\)/);
+});
+
+test('character and memories pages validate initial loads and surface failures', () => {
+  const characterPage = readProjectFile('src/app/characters/[id]/page.tsx');
+  const memoriesPage = readProjectFile('src/app/memories/page.tsx');
+
+  const characterLoad = sliceBetween(characterPage, 'useEffect(() => {', '  // beforeunload');
+  assert.match(characterLoad, /parseJsonResponse<Character>/);
+  assert.match(characterLoad, /showToast\(`\$\{t\('common\.loadFailed'\)\}: \$\{getErrorMessage\(error\)\}`, 'error'\)/);
+  assert.doesNotMatch(characterLoad, /\.then\(r => r\.json\(\)\)\.then\(setCharacter\)/);
+
+  const memoriesLoad = sliceBetween(memoriesPage, 'useEffect(() => {', '  useEffect(() => {\n    selectedCharIdRef.current');
+  assert.match(memoriesLoad, /parseJsonArrayResponse<Character>/);
+  assert.match(memoriesLoad, /showToast\(`\$\{t\('common\.loadFailed'\)\}: \$\{getErrorMessage\(error\)\}`, 'error'\)/);
+  assert.doesNotMatch(memoriesLoad, /\.then\(r => r\.json\(\)\)/);
 });

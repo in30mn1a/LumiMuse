@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
-import { Message } from '@/types';
+import { Message, MessageAttachment } from '@/types';
 import { serializeTypedMessages } from '@/lib/messages';
 import { messageCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
+import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
 
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(serializeTypedMessages(messages));
   }
 
-  const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 80, 1), 200);
+  const limit = Math.floor(Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 80, 1), 200));
   const pageLimit = limit + 1;
   const rawMessages = beforeSeq !== null && Number.isFinite(beforeSeq)
     ? db.prepare(
@@ -38,34 +39,39 @@ export async function GET(request: NextRequest) {
 
   const hasMore = rawMessages.length > limit;
   const messages = rawMessages.slice(0, limit).reverse();
+  let unextractedCount: number | undefined;
+  let totalTokens: number | undefined;
 
-  // 从数据库查询真实的未提取用户消息数量（不受分页限制）
-  const unextractedRow = db.prepare(
-    `SELECT COUNT(*) as cnt FROM messages
-     WHERE conversation_id = ? AND role = 'user'
-     AND (metadata IS NULL OR metadata = '{}' OR json_extract(metadata, '$.memory_extracted') IS NULL)`
-  ).get(conversationId) as { cnt: number };
+  // 只有首页/刷新消费整对话统计；older-page 由缓存保留已有 metadata，避免每页重复全表聚合。
+  if (beforeSeq === null) {
+    const unextractedRow = db.prepare(
+      `SELECT COUNT(*) as cnt FROM messages
+       WHERE conversation_id = ? AND role = 'user'
+       AND (metadata IS NULL OR metadata = '{}' OR json_extract(metadata, '$.memory_extracted') IS NULL)`
+    ).get(conversationId) as { cnt: number };
+    unextractedCount = unextractedRow.cnt;
 
-  // 整对话的 token 总和（基于服务端持久化的 token_count），用于前端在分页未加载完时正确显示。
-  // 与前端 messageTokens 的语义一致：若存在 summary 消息，则从最后一条 summary 起累加；否则全量。
-  const lastSummaryRow = db.prepare(
-    `SELECT seq FROM messages
-     WHERE conversation_id = ? AND json_extract(metadata, '$.isSummary') = 1
-     ORDER BY seq DESC LIMIT 1`
-  ).get(conversationId) as { seq: number } | undefined;
-  const tokenSumRow = (lastSummaryRow
-    ? db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ? AND seq >= ?')
-        .get(conversationId, lastSummaryRow.seq)
-    : db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ?')
-        .get(conversationId)) as { s: number | null };
-  const totalTokens = tokenSumRow.s ?? 0;
+    // 整对话的 token 总和（基于服务端持久化的 token_count），用于前端在分页未加载完时正确显示。
+    // 与前端 messageTokens 的语义一致：若存在 summary 消息，则从最后一条 summary 起累加；否则全量。
+    const lastSummaryRow = db.prepare(
+      `SELECT seq FROM messages
+       WHERE conversation_id = ? AND json_extract(metadata, '$.isSummary') = 1
+       ORDER BY seq DESC LIMIT 1`
+    ).get(conversationId) as { seq: number } | undefined;
+    const tokenSumRow = (lastSummaryRow
+      ? db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ? AND seq >= ?')
+          .get(conversationId, lastSummaryRow.seq)
+      : db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ?')
+          .get(conversationId)) as { s: number | null };
+    totalTokens = tokenSumRow.s ?? 0;
+  }
 
   return NextResponse.json({
     messages: serializeTypedMessages(messages),
     hasMore,
     oldestSeq: messages[0]?.seq ?? null,
-    unextractedCount: unextractedRow.cnt,
-    totalTokens,
+    ...(unextractedCount !== undefined ? { unextractedCount } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
   });
 }
 
@@ -83,12 +89,17 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  const { conversation_id, role, content, token_count, metadata } = parsed.data;
+  const { conversation_id, role, content, metadata } = parsed.data;
 
   const db = getDb();
   const msgId = crypto.randomUUID().slice(0, 12);
   const now = new Date().toISOString();
-  const metaStr = metadata ? JSON.stringify(metadata) : '{}';
+  const baseMetadata = metadata ?? {};
+  const attachments = Array.isArray(baseMetadata.attachments)
+    ? baseMetadata.attachments as MessageAttachment[]
+    : undefined;
+  const tokenResult = createMessageTokenCount(content, role, attachments);
+  const metaStr = JSON.stringify(metadataWithTokenCountProvenance(baseMetadata, tokenResult.provenance));
 
   // 用事务包裹 SELECT MAX(seq) + INSERT + UPDATE conversations，避免并发写入产生重复 seq
   db.transaction(() => {
@@ -96,7 +107,7 @@ export async function POST(request: NextRequest) {
     db.prepare(`
       INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(msgId, conversation_id, role, content, token_count || 0, now, nextSeq, metaStr);
+    `).run(msgId, conversation_id, role, content, tokenResult.tokenCount, now, nextSeq, metaStr);
 
     db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
   })();

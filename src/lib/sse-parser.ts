@@ -61,6 +61,14 @@ export async function parseSseStream(
   const { signal, extractText = defaultExtractText } = options;
   const decoder = new TextDecoder();
   let buffer = '';
+  let aborted = signal?.aborted ?? false;
+
+  const cancelReader = (): void => {
+    aborted = true;
+    void reader.cancel().catch(() => {
+      // Abort is best-effort; the caller only needs parsing to stop.
+    });
+  };
 
   const processLine = (line: string): void => {
     const trimmed = line.trim();
@@ -80,35 +88,46 @@ export async function parseSseStream(
     }
   };
 
-  while (true) {
-    if (signal?.aborted) {
-      try { await reader.cancel(); } catch { /* ignore */ }
-      return;
+  if (aborted) {
+    cancelReader();
+    return;
+  }
+
+  signal?.addEventListener('abort', cancelReader, { once: true });
+  try {
+    while (true) {
+      if (aborted) return;
+
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch (error) {
+        if (aborted) return;
+        throw error;
+      }
+      if (aborted) return;
+      if (result.done) break;
+
+      buffer += decoder.decode(result.value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, '\n');
+      const parts = buffer.split('\n\n');
+      // 最后一段可能不完整，保留到下次循环
+      buffer = parts.pop() ?? '';
+
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          processLine(line);
+        }
+      }
     }
 
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    buffer = buffer.replace(/\r\n/g, '\n');
-    const parts = buffer.split('\n\n');
-    // 最后一段可能不完整，保留到下次循环
-    buffer = parts.pop() ?? '';
-
-    for (const part of parts) {
-      for (const line of part.split('\n')) {
+    // flush 残留 buffer：最后一段如果没有 \n\n 结尾，也要处理一次
+    if (buffer.trim()) {
+      for (const line of buffer.split('\n')) {
         processLine(line);
       }
     }
-  }
-
-  // abort 检查（循环正常结束后）
-  if (signal?.aborted) return;
-
-  // flush 残留 buffer：最后一段如果没有 \n\n 结尾，也要处理一次
-  if (buffer.trim()) {
-    for (const line of buffer.split('\n')) {
-      processLine(line);
-    }
+  } finally {
+    signal?.removeEventListener('abort', cancelReader);
   }
 }

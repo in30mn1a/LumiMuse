@@ -1,7 +1,7 @@
 import { useCallback, type MutableRefObject } from 'react';
 import type { Message } from '@/types';
 import type { ToastType } from '@/components/ui/Toast';
-import { expectOkResponse, parseJsonResponse } from '@/lib/http';
+import { parseJsonResponse } from '@/lib/http';
 import {
   buildClientTimePayload,
   readChatSseStream,
@@ -21,14 +21,13 @@ type StreamingUsage = {
 type UseChatMessageActionsOptions = {
   activeConvIdRef: MutableRefObject<string | null>;
   activeStreamsRef: MutableRefObject<Set<string>>;
-  activeStreamConvRef: MutableRefObject<string | null>;
   messagesRef: MutableRefObject<Message[]>;
   beginStream: (convId: string, options?: { regenerateAssistantId?: string }) => AbortController;
   finishStream: (convId: string, options?: { clearRegenerationState?: boolean }) => void;
-  scheduleStreamingText: (text: string) => void;
+  scheduleStreamingText: (convId: string, text: string) => void;
   setStreamingUsage: (usage: { convId: string; usage: StreamingUsage } | null) => void;
   pollMemoryTask: (convId: string) => void | Promise<void>;
-  refreshMessages: () => Promise<void>;
+  refreshMessagesForConversation: (conversationId: string) => Promise<void>;
   refreshConversationState: (preferredActiveId?: string | null) => Promise<void>;
   updateMessagesForConversation: UpdateMessagesForConversation;
   markSkipNextScroll: () => void;
@@ -39,14 +38,13 @@ type UseChatMessageActionsOptions = {
 export function useChatMessageActions({
   activeConvIdRef,
   activeStreamsRef,
-  activeStreamConvRef,
   messagesRef,
   beginStream,
   finishStream,
   scheduleStreamingText,
   setStreamingUsage,
   pollMemoryTask,
-  refreshMessages,
+  refreshMessagesForConversation,
   refreshConversationState,
   updateMessagesForConversation,
   markSkipNextScroll,
@@ -59,34 +57,47 @@ export function useChatMessageActions({
     attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>,
   ) => {
     try {
-      await expectOkResponse(await fetch(`/api/messages/${id}`, {
+      const updated = await parseJsonResponse<Message>(await fetch(`/api/messages/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, attachments: attachments ?? [] }),
       }));
-      await refreshMessages();
+      updateMessagesForConversation(updated.conversation_id, messages => messages.map(message => (
+        message.id === id ? updated : message
+      )));
+      await refreshMessagesForConversation(updated.conversation_id);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
-  }, [refreshMessages, showToast, t]);
+  }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
   const handleDeleteMessage = useCallback(async (id: string) => {
-    const res = await fetch(`/api/messages/${id}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    const data = await parseJsonResponse<{ ok: boolean; deleted: 'message' | 'version'; message?: Message }>(res);
-    if (!data.ok) throw new Error(t('message.deleteFailed'));
-    const convId = data.message?.conversation_id || activeConvIdRef.current;
-    if (!convId) return;
-    if (data.deleted === 'version' && data.message) {
-      updateMessagesForConversation(convId, messages => messages.map(message => (
-        message.id === id ? data.message! : message
-      )));
-    } else {
-      updateMessagesForConversation(convId, messages => messages.filter(message => message.id !== id));
+    try {
+      const res = await fetch(`/api/messages/${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await parseJsonResponse<{
+        ok: boolean;
+        deleted: 'message' | 'version';
+        conversation_id: string;
+        message?: Message;
+      }>(res);
+      if (!data.ok) throw new Error(t('message.deleteFailed'));
+      const convId = data.conversation_id;
+      if (!convId) throw new Error(t('message.deleteFailed'));
+      if (data.deleted === 'version' && data.message) {
+        updateMessagesForConversation(convId, messages => messages.map(message => (
+          message.id === id ? data.message! : message
+        )));
+      } else {
+        updateMessagesForConversation(convId, messages => messages.filter(message => message.id !== id));
+      }
+      await refreshMessagesForConversation(convId);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('message.deleteFailed'), 'error');
     }
-  }, [activeConvIdRef, t, updateMessagesForConversation]);
+  }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
   const callChatStream = useCallback(async (
     convId: string,
@@ -128,12 +139,7 @@ export function useChatMessageActions({
       await readChatSseStream(response.body, {
         onChunk: text => {
           fullText += text;
-          if (
-            activeStreamConvRef.current === streamConversationId
-            && activeConvIdRef.current === streamConversationId
-          ) {
-            scheduleStreamingText(fullText);
-          }
+          scheduleStreamingText(streamConversationId, fullText);
         },
         onUsage: usage => {
           if (activeConvIdRef.current === streamConversationId) {
@@ -147,11 +153,11 @@ export function useChatMessageActions({
       });
 
       if (regenerateAssistantId) markSkipNextScroll();
-      await refreshMessages();
+      await refreshMessagesForConversation(streamConversationId);
       void refreshConversationState(undefined);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        await refreshMessages();
+        await refreshMessagesForConversation(streamConversationId);
       } else if (error instanceof TypeError) {
         showToast(t('chat.errorNetwork'));
       } else {
@@ -163,13 +169,12 @@ export function useChatMessageActions({
     }
   }, [
     activeConvIdRef,
-    activeStreamConvRef,
     beginStream,
     finishStream,
     markSkipNextScroll,
     pollMemoryTask,
     refreshConversationState,
-    refreshMessages,
+    refreshMessagesForConversation,
     scheduleStreamingText,
     setStreamingUsage,
     showToast,
@@ -208,16 +213,19 @@ export function useChatMessageActions({
 
   const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {
     try {
-      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
+      const updated = await parseJsonResponse<Message>(await fetch(`/api/messages/${messageId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activeVersion: versionIndex }),
       }));
-      await refreshMessages();
+      updateMessagesForConversation(updated.conversation_id, messages => messages.map(message => (
+        message.id === messageId ? updated : message
+      )));
+      await refreshMessagesForConversation(updated.conversation_id);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
-  }, [refreshMessages, showToast, t]);
+  }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
   return {
     handleEditMessage,

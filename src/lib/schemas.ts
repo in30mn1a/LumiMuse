@@ -287,6 +287,12 @@ export const messageMetadataSchema: z.ZodType<Record<string, unknown>> = z.loose
   summarizedIds: z.array(z.string().max(64)).max(10000).optional(),
   memory_extracted: z.boolean().optional(),
   attachments: z.array(attachmentSchema).max(50).optional(),
+  token_count_provenance: z.object({
+    source: z.literal('server'),
+    version: z.number().int().nonnegative(),
+    algorithm: z.string().max(100),
+    fingerprint: z.string().max(128),
+  }).optional(),
   versions: z.array(messageVersionSchema).max(100).optional(),
   activeVersion: z.number().int().nonnegative().optional(),
   generatedImages: z.array(generatedImageSchema).max(100).optional(),

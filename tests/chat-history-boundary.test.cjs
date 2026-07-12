@@ -123,13 +123,14 @@ function insertMessage(database, {
   role,
   content,
   seq,
+  tokenCount = 1,
   createdAt = `2026-07-10T00:00:${String(seq).padStart(2, '0')}.000Z`,
   metadata = '{}',
 }) {
   database.prepare(`
     INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
-    VALUES (?, 'conv-a', ?, ?, 1, ?, ?, ?)
-  `).run(id, role, content, createdAt, seq, metadata);
+    VALUES (?, 'conv-a', ?, ?, ?, ?, ?, ?)
+  `).run(id, role, content, tokenCount, createdAt, seq, metadata);
 }
 
 function settings() {
@@ -230,6 +231,56 @@ test('runChat keeps full ordered history when no summary exists', async (t) => {
     'third by seq',
   ]);
   assert.ok(probe.queries.some(query => query.sql === 'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'));
+});
+
+test('runChat preserves created_at-first ordering when imported seq order differs', async (t) => {
+  const probe = await runWithProbe([
+    {
+      id: 'later-time-low-seq',
+      role: 'assistant',
+      content: 'later timestamp despite lower seq',
+      seq: 1,
+      createdAt: '2026-07-10T02:00:00.000Z',
+    },
+    {
+      id: 'earlier-time-high-seq',
+      role: 'user',
+      content: 'earlier timestamp despite higher seq',
+      seq: 9,
+      createdAt: '2026-07-10T01:00:00.000Z',
+    },
+  ]);
+  t.after(() => probe.database.close());
+
+  assert.deepEqual(conversationContents(probe.capture.messages), [
+    'earlier timestamp despite higher seq',
+    'later timestamp despite lower seq',
+  ]);
+});
+
+test('runChat lazily replaces an untrusted persisted token_count with current server provenance', async (t) => {
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+  const probe = await runWithProbe([
+    {
+      id: 'legacy-import',
+      role: 'user',
+      content: 'short imported message',
+      tokenCount: 5000,
+      seq: 1,
+    },
+  ]);
+  t.after(() => probe.database.close());
+
+  const repaired = probe.database.prepare(
+    'SELECT token_count, metadata FROM messages WHERE id = ?',
+  ).get('legacy-import');
+  const metadata = JSON.parse(repaired.metadata);
+
+  assert.equal(repaired.token_count, estimateTokens('short imported message'));
+  assert.equal(metadata.token_count_provenance.source, 'server');
+  assert.equal(typeof metadata.token_count_provenance.algorithm, 'string');
+  assert.equal(typeof metadata.token_count_provenance.fingerprint, 'string');
+  assert.match(probe.capture.messages.map(message => message.content).join('\n'), /short imported message/);
 });
 
 test('runChat tolerates malformed legacy metadata while locating a summary', async (t) => {

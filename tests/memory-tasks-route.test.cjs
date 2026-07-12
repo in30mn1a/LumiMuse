@@ -171,7 +171,7 @@ function loadRoute(db, options = {}) {
   });
 }
 
-function loadChatRoute(db, capturedEnqueues) {
+function loadChatRoute(db, capturedEnqueues, settingsOverrides = {}) {
   return requireFreshWithMocks('../src/app/api/chat/route.ts', {
     '@/lib/db': { getDb: () => db },
     '@/lib/settings': {
@@ -180,6 +180,7 @@ function loadChatRoute(db, capturedEnqueues) {
         memory_interval: 1,
         memory_trigger_keyword_enabled: false,
         memory_trigger_time_enabled: false,
+        ...settingsOverrides,
       }),
     },
     '@/lib/chat-engine': {
@@ -197,6 +198,57 @@ function loadChatRoute(db, capturedEnqueues) {
       },
     },
   });
+}
+
+function legacyChatExtractionBatch(db, conversationId, settings, now = Date.now()) {
+  const messages = db.prepare(
+    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
+  ).all(conversationId).map(message => ({
+    ...message,
+    metadata: (() => {
+      try {
+        const parsed = JSON.parse(message.metadata || '{}');
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        return {};
+      }
+    })(),
+  }));
+  const isProcessed = message => Boolean(
+    message.metadata.memory_extracted ||
+    typeof message.metadata.memory_noop_extracted_at === 'string'
+  );
+  const unextracted = messages.filter(message => message.role === 'user' && !isProcessed(message));
+  if (unextracted.length === 0) return null;
+
+  const unextractedIds = new Set(unextracted.map(message => message.id));
+  const extractionMessages = [];
+  let includeNext = false;
+  for (const message of messages) {
+    if (message.metadata.isSummary) continue;
+    if (unextractedIds.has(message.id)) {
+      extractionMessages.push(message);
+      includeNext = true;
+    } else if (includeNext && message.role === 'assistant') {
+      if (!isProcessed(message)) extractionMessages.push(message);
+      includeNext = false;
+    } else {
+      includeNext = false;
+    }
+  }
+
+  let shouldExtract = settings.memory_trigger_interval_enabled && unextracted.length >= settings.memory_interval;
+  if (!shouldExtract && settings.memory_trigger_keyword_enabled && settings.memory_trigger_keywords) {
+    const keywords = settings.memory_trigger_keywords.split(',').map(keyword => keyword.trim()).filter(Boolean);
+    shouldExtract = keywords.some(keyword => unextracted.at(-1).content.includes(keyword));
+  }
+  if (!shouldExtract && settings.memory_trigger_time_enabled) {
+    const lastExtracted = messages.filter(message => message.role === 'user' && isProcessed(message)).at(-1);
+    const lastExtractedTime = lastExtracted ? new Date(lastExtracted.created_at).getTime() : 0;
+    shouldExtract = now - lastExtractedTime >= (settings.memory_trigger_time_hours || 24) * 60 * 60 * 1000;
+  }
+
+  return shouldExtract ? extractionMessages.map(message => message.id) : null;
 }
 
 test('/api/memory-tasks GET exposes failed task diagnostics', async () => {
@@ -635,6 +687,127 @@ test('chat route skips noop processed old messages when rebuilding extraction ba
     conversationId: 'conv-chat-noop',
     messageIds: ['msg-user-new', 'msg-assistant-new'],
   }]);
+});
+
+test('chat route suffix query preserves the legacy memory trigger and extraction batch semantics', async () => {
+  const scenarios = [
+    {
+      name: 'interval',
+      settings: {
+        memory_trigger_interval_enabled: true,
+        memory_interval: 2,
+        memory_trigger_keyword_enabled: false,
+        memory_trigger_time_enabled: false,
+      },
+    },
+    {
+      name: 'keyword',
+      settings: {
+        memory_trigger_interval_enabled: false,
+        memory_interval: 99,
+        memory_trigger_keyword_enabled: true,
+        memory_trigger_keywords: '晚安,记住',
+        memory_trigger_time_enabled: false,
+      },
+    },
+    {
+      name: 'time',
+      settings: {
+        memory_trigger_interval_enabled: false,
+        memory_interval: 99,
+        memory_trigger_keyword_enabled: false,
+        memory_trigger_time_enabled: true,
+        memory_trigger_time_hours: 1,
+      },
+    },
+    {
+      name: 'disabled',
+      settings: {
+        memory_trigger_interval_enabled: false,
+        memory_interval: 99,
+        memory_trigger_keyword_enabled: true,
+        memory_trigger_keywords: '不存在的关键词',
+        memory_trigger_time_enabled: false,
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY,
+        character_id TEXT NOT NULL,
+        ignore_memory INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        token_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        seq INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    db.prepare('INSERT INTO conversations (id, character_id, ignore_memory) VALUES (?, ?, 0)')
+      .run(`conv-${scenario.name}`, 'char-a');
+    const insert = db.prepare(`
+      INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const conversationId = `conv-${scenario.name}`;
+    const rows = [
+      ['processed-user', 'user', '已经处理的旧消息', '{"memory_extracted":true}', '2000-01-01T00:00:00.000Z', 20],
+      ['processed-assistant', 'assistant', '旧回复', '{}', '2000-01-01T00:00:01.000Z', 21],
+      ['malformed-pending-user', 'user', '损坏 metadata 仍应视为待处理', '{bad', '2000-01-01T00:01:00.000Z', 40],
+      ['malformed-pending-assistant', 'assistant', '损坏 metadata 用户的紧邻回复', '{}', '2000-01-01T00:01:01.000Z', 41],
+      ['pending-user-1', 'user', '第一条待处理消息', '{}', '2000-01-01T00:02:00.000Z', 50],
+      ['pending-assistant-1', 'assistant', '第一条紧邻回复', '{}', '2000-01-01T00:02:01.000Z', 2],
+      ['summary', 'system', '摘要', '{"isSummary":true}', '2000-01-01T00:03:00.000Z', 60],
+      ['pending-user-2', 'user', '第二条待处理消息，晚安', '{}', '2000-01-01T00:04:00.000Z', 3],
+      ['processed-assistant-2', 'assistant', '已经处理的回复', '{"memory_extracted":true}', '2000-01-01T00:04:01.000Z', 70],
+    ];
+    for (const [id, role, content, metadata, createdAt, seq] of rows) {
+      insert.run(id, conversationId, role, content, metadata, createdAt, seq);
+    }
+
+    const expectedIds = legacyChatExtractionBatch(db, conversationId, scenario.settings);
+    const preparedSql = [];
+    const tracedDb = new Proxy(db, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return sql => {
+            preparedSql.push(sql.replace(/\s+/g, ' ').trim());
+            return target.prepare(sql);
+          };
+        }
+        const value = target[property];
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const capturedEnqueues = [];
+    const route = loadChatRoute(tracedDb, capturedEnqueues, scenario.settings);
+    const response = await route.POST({
+      signal: new AbortController().signal,
+      async json() {
+        return { conversation_id: conversationId, content: '触发判定' };
+      },
+    });
+    await response.text();
+
+    assert.deepEqual(
+      capturedEnqueues.map(entry => entry.messageIds),
+      expectedIds ? [expectedIds] : [],
+      `${scenario.name} trigger/batch must match the legacy full-read algorithm`,
+    );
+    assert.equal(
+      preparedSql.some(sql => sql === 'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'),
+      false,
+      `${scenario.name} must not read the entire conversation`,
+    );
+  }
 });
 
 function loadRealDbInTempDir(tempDir) {

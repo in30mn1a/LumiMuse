@@ -319,7 +319,9 @@ git pull
 docker compose up -d --build
 ```
 
-Before updating, it's recommended to export a backup from within the app, or manually back up `data/`, `public/generated/`, `public/avatars/`, and `public/attachments/`.
+Before updating, export a backup from within the app or manually back up `data/`, `public/generated/`, `public/avatars/`, and `public/attachments/`.
+
+Container health has two endpoints: `/api/health` reports process liveness only, while `/api/health?ready=1` also checks SQLite and all four persistent directories for writability. CI images expose the full commit SHA in the `build` field; a standard local Compose build defaults that field to `local`. To make a self-built image traceable, set `LUMIMUSE_BUILD_SHA` to the full output of `git rev-parse HEAD` before building. If the container stays unready, inspect `docker compose logs lumimuse`, then check UID/GID 1001 mount ownership, free disk space, and all four mounted directories. Compose rotates container logs at three 10MB files by default.
 
 ---
 
@@ -423,6 +425,8 @@ public/avatars/
 public/attachments/
 ```
 
+Database migrations record SQLite `user_version`. Before downgrading, stop the app and make a complete backup of every directory above. Builds that include the schema-version guard fail fast when they see a newer schema, but historical builds from before that guard do not have this protection. Do not roll back by manually lowering `user_version`; restore a database and asset backup that matches the older build instead.
+
 ---
 
 ## FAQ
@@ -495,10 +499,14 @@ LumiMuse/
 
 ## Development
 
-If you want to modify the code, it's recommended to run the following before committing or deploying:
+`Start.bat` is a Windows local-development shortcut, not a production service manager. Before committing or deploying, run the same full validation sequence used by CI:
+
+The Next.js-scoped PostCSS override in `package.json` is intentional security hardening. It replaces only Next's transitive copy until upstream ships an equal or newer fix. After upgrading Next, inspect the tree with `npm explain postcss` and verify cleanup with `npm prune --dry-run`; do not hide lockfile problems by deleting `node_modules`.
 
 ```bash
 npm run lint
+npm test
+npm run regression
 npm run build
 ```
 

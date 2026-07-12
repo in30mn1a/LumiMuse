@@ -60,7 +60,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '文件过大（最大 10MB）' }, { status: 413 });
   }
 
-  const formData = await req.formData();
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return NextResponse.json({ error: '无效的 multipart 表单数据' }, { status: 400 });
+  }
   const file = formData.get('avatar') as File | null;
   const purpose = formData.get('purpose') === 'attachment' ? 'attachment' : 'avatar';
 

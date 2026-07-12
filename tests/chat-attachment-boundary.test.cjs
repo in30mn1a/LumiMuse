@@ -58,6 +58,27 @@ function jsonRequest(body) {
   };
 }
 
+function controlledJsonRequest(body) {
+  const controller = new AbortController();
+  return {
+    controller,
+    request: {
+      signal: controller.signal,
+      async json() {
+        return body;
+      },
+    },
+  };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(resolvePromise => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function chatBody(overrides = {}) {
   return {
     conversation_id: 'conv-a',
@@ -234,6 +255,58 @@ test('/api/chat accepts small attachments and keeps streaming response shape', a
   assert.match(await readStreamText(response), /event: chunk\ndata: {"text":"hi"}/);
 });
 
+test('/api/chat emits an SSE error event and closes when runChat calls onError', async () => {
+  const route = requireFreshWithMocks('../src/app/api/chat/route.ts', routeMocks(async (_conversationId, _content, _settings, callbacks) => {
+    callbacks.onError(new Error('upstream failed'));
+  }));
+
+  const response = await route.POST(jsonRequest(chatBody()));
+  const streamText = await readStreamText(response);
+
+  assert.match(streamText, /event: error\ndata: {"message":"upstream failed"}\n\n/);
+  assert.doesNotMatch(streamText, /event: chunk/);
+});
+
+test('/api/chat emits an SSE error event and closes when runChat throws', async () => {
+  const route = requireFreshWithMocks('../src/app/api/chat/route.ts', routeMocks(async () => {
+    throw new Error('runChat exploded');
+  }));
+
+  const response = await route.POST(jsonRequest(chatBody()));
+  const streamText = await readStreamText(response);
+
+  assert.match(streamText, /event: error\ndata: {"message":"runChat exploded"}\n\n/);
+  assert.doesNotMatch(streamText, /event: chunk/);
+});
+
+test('/api/chat ignores late runChat callbacks after request abort', async () => {
+  const runChatGate = deferred();
+  let capturedCallbacks;
+  const route = requireFreshWithMocks('../src/app/api/chat/route.ts', routeMocks(async (_conversationId, _content, _settings, callbacks) => {
+    capturedCallbacks = callbacks;
+    await runChatGate.promise;
+  }));
+  const { controller, request } = controlledJsonRequest(chatBody());
+
+  const response = await route.POST(request);
+  assert.ok(capturedCallbacks);
+  controller.abort();
+
+  assert.doesNotThrow(() => capturedCallbacks.onChunk('late chunk'));
+  assert.doesNotThrow(() => capturedCallbacks.onUsage({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }));
+  await assert.doesNotReject(() => capturedCallbacks.onDone('late completion', 2));
+  assert.doesNotThrow(() => capturedCallbacks.onError(new Error('late error')));
+
+  runChatGate.resolve();
+  const reader = response.body.getReader();
+  const readResult = await Promise.race([
+    reader.read().then(() => 'event'),
+    new Promise(resolve => setImmediate(() => resolve('pending'))),
+  ]);
+  assert.equal(readResult, 'pending');
+  await reader.cancel();
+});
+
 test('chat input payload strips uploaded image data URLs while preserving text attachment data', () => {
   const { prepareAttachmentPayload } = require('../src/lib/attachment-payload.ts');
   const imageDataUrl = 'data:image/png;base64,AAAA';
@@ -375,4 +448,66 @@ test('assemblePrompt trims older history when the newest message already uses th
 
   assert.match(rendered, /latest user message/);
   assert.doesNotMatch(rendered, /old history should be trimmed/);
+});
+
+test('prompt token provenance is reusable only while content, attachments, and algorithm still match', () => {
+  const {
+    createMessageTokenCount,
+    resolveMessageTokenCount,
+  } = require('../src/lib/message-token-provenance.ts');
+  const attachments = [textAttachment('note.txt', 'remember this')];
+  const calculated = createMessageTokenCount('hello', 'user', attachments);
+  const trustedMessage = message({
+    content: 'hello',
+    token_count: calculated.tokenCount,
+    metadata: {
+      attachments,
+      token_count_provenance: calculated.provenance,
+    },
+  });
+
+  assert.equal(resolveMessageTokenCount(trustedMessage).reused, true);
+  assert.equal(resolveMessageTokenCount({ ...trustedMessage, content: 'edited' }).reused, false);
+  assert.equal(resolveMessageTokenCount({
+    ...trustedMessage,
+    metadata: {
+      ...trustedMessage.metadata,
+      attachments: [textAttachment('note.txt', 'changed attachment')],
+    },
+  }).reused, false);
+  assert.equal(resolveMessageTokenCount({
+    ...trustedMessage,
+    metadata: {
+      ...trustedMessage.metadata,
+      token_count_provenance: {
+        ...calculated.provenance,
+        algorithm: 'legacy-tokenizer-v0',
+      },
+    },
+  }).reused, false);
+});
+
+test('assemblePrompt does not trust an unversioned external token_count for budget trimming', async () => {
+  const { assemblePrompt } = require('../src/lib/chat-engine.ts');
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+  const prompt = await assemblePrompt(
+    baseCharacter(),
+    [
+      message({
+        id: 'external-count',
+        content: 'short imported message',
+        token_count: 5000,
+      }),
+      message({
+        id: 'current',
+        content: 'current question',
+        token_count: estimateTokens('current question'),
+        created_at: '2026-06-07T00:01:00.000Z',
+      }),
+    ],
+    baseSettings({ context_window: 1200, max_tokens: 100 }),
+    [],
+  );
+
+  assert.match(prompt.map(message => message.content).join('\n'), /short imported message/);
 });

@@ -4,6 +4,11 @@ import { getDb } from '@/lib/db';
 import { Character } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { readJsonObject } from '@/lib/request-json';
+import { findFirstBalancedJson } from '@/lib/balanced-json';
+import {
+  BackgroundLlmTimeoutError,
+  runWithBackgroundLlmDeadline,
+} from '@/lib/background-llm-deadline';
 
 const CHARACTER_GENERATION_SYSTEM = `你是 LumiMuse 的角色卡创作助手。
 请根据用户要求生成一个适合聊天陪伴工具使用的原创角色。
@@ -38,12 +43,24 @@ function parseGeneratedCharacter(text: string): Partial<Character> {
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/```$/i, '')
     .trim();
-  const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    const json = findFirstBalancedJson(cleaned, 'object');
+    if (!json) throw new SyntaxError('Character generation response did not contain a JSON object');
+    parsed = JSON.parse(json);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new SyntaxError('Character generation response must be a JSON object');
+  }
   const result: Partial<Character> = {};
 
   for (const field of ['name', 'basic_info', 'personality', 'scenario', 'greeting', 'example_dialogue', 'system_prompt', 'other_info', 'image_tags'] as const) {
-    if (typeof parsed[field] === 'string') {
-      result[field] = parsed[field].trim();
+    const value = (parsed as Record<string, unknown>)[field];
+    if (typeof value === 'string') {
+      result[field] = value.trim();
     }
   }
 
@@ -70,13 +87,26 @@ export async function POST(request: NextRequest) {
       ? `\n\n当前表单内容（可参考，也可以按用户要求重写）：\n${JSON.stringify(currentCharacter, null, 2)}`
       : '';
 
-    const result = await chatCompletion(settings, [
-      { role: 'system', content: CHARACTER_GENERATION_SYSTEM },
-      { role: 'user', content: `用户要求：${requirement.trim()}${currentContext}` },
-    ], request.signal);
+    const result = await runWithBackgroundLlmDeadline(
+      settings.memory_background_timeout_ms,
+      signal => chatCompletion(settings, [
+        { role: 'system', content: CHARACTER_GENERATION_SYSTEM },
+        { role: 'user', content: `用户要求：${requirement.trim()}${currentContext}` },
+      ], signal),
+      request.signal,
+    );
 
     return NextResponse.json(parseGeneratedCharacter(result));
   } catch (err) {
+    if (err instanceof BackgroundLlmTimeoutError) {
+      return NextResponse.json(
+        { error: '角色生成请求超过服务器处理时限', code: 'UPSTREAM_TIMEOUT' },
+        { status: 504 },
+      );
+    }
+    if (request.signal.aborted) {
+      return NextResponse.json({ error: '请求已取消' }, { status: 499 });
+    }
     console.error('[characters/generate] 生成角色失败:', err);
     return NextResponse.json(
       { error: '生成角色失败' },

@@ -84,7 +84,7 @@ function getCharacterIdsForRebuild(db: ReturnType<typeof getDb>): string[] {
   const rows = db.prepare(`
     SELECT DISTINCT character_id
     FROM memories
-    WHERE character_id IS NOT NULL AND character_id != ''
+    WHERE status = 'active' AND character_id IS NOT NULL AND character_id != ''
   `).all() as Array<{ character_id: string }>;
 
   return rows.map(row => row.character_id);
@@ -137,7 +137,10 @@ export async function POST(request: NextRequest) {
   const parsedBody = await readJsonObject(request);
   if (!parsedBody.ok) return parsedBody.response;
   const body = parsedBody.data;
-  const rawAction = body.action === undefined ? 'rebuild' : body.action;
+  if (body.action === undefined) {
+    return NextResponse.json({ error: 'memory index action is required' }, { status: 400 });
+  }
+  const rawAction = body.action;
   const rawBodyCharacterId = typeof body.character_id === 'string' ? body.character_id : undefined;
   const bodyCharacterId = rawBodyCharacterId?.trim();
   const characterId = bodyCharacterId || queryCharacterId || undefined;

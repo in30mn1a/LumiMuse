@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
-import { Message } from '@/types';
+import { Message, MessageAttachment } from '@/types';
 import { serializeMessage, serializeTypedMessages } from '@/lib/messages';
 import { conversationMessageCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
+import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
 
 export async function GET(
   _request: NextRequest,
@@ -36,12 +37,21 @@ export async function POST(
       { status: 400 },
     );
   }
-  const { role, content, token_count, metadata } = parsed.data;
+  const { role, content, metadata } = parsed.data;
   const db = getDb();
+  const conversation = db.prepare('SELECT id FROM conversations WHERE id = ?').get(id);
+  if (!conversation) {
+    return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
+  }
 
   const msgId = crypto.randomUUID().slice(0, 12);
   const now = new Date().toISOString();
-  const metaStr = metadata ? JSON.stringify(metadata) : '{}';
+  const baseMetadata = metadata ?? {};
+  const attachments = Array.isArray(baseMetadata.attachments)
+    ? baseMetadata.attachments as MessageAttachment[]
+    : undefined;
+  const tokenResult = createMessageTokenCount(content, role, attachments);
+  const metaStr = JSON.stringify(metadataWithTokenCountProvenance(baseMetadata, tokenResult.provenance));
 
   // 用事务包裹 SELECT MAX(seq) + INSERT + UPDATE conversations，避免并发写入产生重复 seq
   db.transaction(() => {
@@ -49,7 +59,7 @@ export async function POST(
     db.prepare(`
       INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(msgId, id, role, content, token_count || 0, now, nextSeq, metaStr);
+    `).run(msgId, id, role, content, tokenResult.tokenCount, now, nextSeq, metaStr);
 
     // 更新对话的最新时间
     db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, id);

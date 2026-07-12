@@ -50,7 +50,7 @@ function requireFreshWithMocks(modulePath, mocks) {
   }
 }
 
-function createHookRuntime(hookFactory, optionsFactory) {
+function createHookRuntime(hookFactory, optionsFactory, { replayStateUpdaters = false } = {}) {
   const stateValues = [];
   const refValues = [];
   const callbackValues = [];
@@ -115,7 +115,13 @@ function createHookRuntime(hookFactory, optionsFactory) {
       }
       const setState = nextValue => {
         const previousValue = stateValues[index];
-        const value = typeof nextValue === 'function' ? nextValue(previousValue) : nextValue;
+        let value;
+        if (typeof nextValue === 'function') {
+          value = nextValue(previousValue);
+          if (replayStateUpdaters) value = nextValue(previousValue);
+        } else {
+          value = nextValue;
+        }
         if (Object.is(previousValue, value)) return;
         stateValues[index] = value;
         if (!isRendering) render();
@@ -218,6 +224,198 @@ test('message paging initial load is not restarted by parent callback identity c
 
     assert.equal(requests.length, 1);
     assert.deepEqual(runtime.current.visibleMessages.map(message => message.id), ['msg-1']);
+  } finally {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    runtime?.cleanup();
+    global.document = originalDocument;
+  }
+});
+
+test('message paging does not expose the previous conversation unextracted count while switching', async () => {
+  const originalDocument = global.document;
+  global.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const activeConvIdRef = { current: 'conv-a' };
+  let activeConvId = 'conv-a';
+  let resolveConversationB;
+  const conversationBResponse = new Promise(resolve => {
+    resolveConversationB = resolve;
+  });
+  const fetchMessagesPage = conversationId => {
+    if (conversationId === 'conv-a') {
+      return Promise.resolve({
+        messages: [],
+        hasMore: false,
+        oldestSeq: null,
+        unextractedCount: 7,
+        totalTokens: 11,
+      });
+    }
+    return conversationBResponse;
+  };
+
+  let runtime;
+  try {
+    runtime = createHookRuntime(
+      reactMock => {
+        const realMessageCache = require('../src/lib/chat-message-cache.ts');
+        realMessageCache.clearCachedMessages();
+        const { useMessagePaging } = requireFreshWithMocks('../src/hooks/chat/useMessagePaging.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage },
+          '@/lib/chat-message-cache': realMessageCache,
+        });
+        return useMessagePaging;
+      },
+      () => ({
+        activeConvId,
+        activeConvIdRef,
+        targetMessageId: null,
+        pageSize: 60,
+        onTargetMessageLoaded: () => {},
+        onInitialMessagesLoaded: () => {},
+        onError: () => {},
+      }),
+    );
+
+    runtime.render();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(runtime.current.serverUnextractedCount, 7);
+
+    activeConvId = 'conv-b';
+    activeConvIdRef.current = 'conv-b';
+    runtime.render();
+    assert.equal(runtime.current.serverUnextractedCount, 0);
+
+    resolveConversationB({
+      messages: [],
+      hasMore: false,
+      oldestSeq: null,
+      unextractedCount: 2,
+      totalTokens: 3,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(runtime.current.serverUnextractedCount, 2);
+  } finally {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    runtime?.cleanup();
+    global.document = originalDocument;
+  }
+});
+
+test('older-page merge keeps the React updater pure and preserves cached server metadata', async () => {
+  const originalDocument = global.document;
+  global.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const activeConvIdRef = { current: 'conv-a' };
+  const firstMessage = {
+    id: 'msg-61',
+    conversation_id: 'conv-a',
+    role: 'user',
+    content: 'newer',
+    created_at: '2026-06-08T00:01:01.000Z',
+    token_count: 1,
+    seq: 61,
+    metadata: {},
+  };
+  const olderMessage = {
+    ...firstMessage,
+    id: 'msg-1',
+    content: 'older',
+    created_at: '2026-06-08T00:00:01.000Z',
+    seq: 1,
+  };
+  const optimisticMessage = {
+    ...firstMessage,
+    id: 'msg-temp',
+    content: 'optimistic while older page is in flight',
+    seq: 62,
+  };
+  let resolveOlderPage;
+  const olderPage = new Promise(resolve => {
+    resolveOlderPage = resolve;
+  });
+  let requestCount = 0;
+  const fetchMessagesPage = () => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      return Promise.resolve({
+        messages: [firstMessage],
+        hasMore: true,
+        oldestSeq: 61,
+        unextractedCount: 4,
+        totalTokens: 9,
+      });
+    }
+    return olderPage;
+  };
+  const resolveOlder = () => {
+    resolveOlderPage({
+      messages: [olderMessage],
+      hasMore: false,
+      oldestSeq: 1,
+    });
+  };
+
+  let runtime;
+  try {
+    const realMessageCache = require('../src/lib/chat-message-cache.ts');
+    realMessageCache.clearCachedMessages();
+    let pagingCacheWrites = 0;
+    runtime = createHookRuntime(
+      reactMock => {
+        const { useMessagePaging } = requireFreshWithMocks('../src/hooks/chat/useMessagePaging.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage },
+          '@/lib/chat-message-cache': {
+            ...realMessageCache,
+            updateCachedMessages: (...args) => {
+              pagingCacheWrites += 1;
+              return realMessageCache.updateCachedMessages(...args);
+            },
+          },
+        });
+        return useMessagePaging;
+      },
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef,
+        targetMessageId: null,
+        pageSize: 60,
+        onTargetMessageLoaded: () => {},
+        onInitialMessagesLoaded: () => {},
+        onError: () => {},
+      }),
+      { replayStateUpdaters: true },
+    );
+
+    runtime.render();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(runtime.current.hasOlderMessages, true);
+
+    const loadOlder = runtime.current.loadOlderMessages();
+    runtime.current.updateMessagesForConversation('conv-a', current => [...current, optimisticMessage]);
+    runtime.current.messagesRef.current = [firstMessage];
+    resolveOlder();
+    await loadOlder;
+
+    assert.equal(pagingCacheWrites, 1);
+    assert.deepEqual(runtime.current.visibleMessages.map(message => message.id), ['msg-1', 'msg-61', 'msg-temp']);
+    const cached = realMessageCache.readCachedMessages('conv-a');
+    assert.deepEqual(cached.messages.map(message => message.id), ['msg-1', 'msg-61', 'msg-temp']);
+    assert.equal(cached.unextractedCount, 4);
+    assert.equal(cached.totalTokens, 9);
   } finally {
     await new Promise(resolve => setTimeout(resolve, 0));
     runtime?.cleanup();

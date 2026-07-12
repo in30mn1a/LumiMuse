@@ -73,7 +73,7 @@ function ChatHeaderImpl({
           {onOpenSidebar && (
             <button
               onClick={onOpenSidebar}
-              className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
+              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
               aria-label={t('chat.openCharacterList')}
             >
               <MenuIcon className="h-4 w-4" />
@@ -91,7 +91,7 @@ function ChatHeaderImpl({
           <div className="flex shrink-0 items-center gap-0.5">
             <button
               onClick={onOpenConvDrawer}
-              className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
+              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
               aria-label={t('chat.switchConversation')}
             >
               <ListIcon className="h-4 w-4" />
@@ -99,7 +99,7 @@ function ChatHeaderImpl({
             <button
               onClick={onNewChat}
               disabled={creating}
-              className="rounded-xl bg-accent p-2 text-white shadow-sm disabled:opacity-50"
+              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-accent p-2 text-white shadow-sm disabled:opacity-50"
               aria-label={t('chat.newConversation')}
             >
               {creating ? <span className="spinner-sm" aria-hidden="true" /> : <PlusIcon className="h-4 w-4" />}
@@ -107,7 +107,7 @@ function ChatHeaderImpl({
             {onOpenSearch && (
               <button
                 onClick={onOpenSearch}
-                className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
+                className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
                 aria-label={t('chat.searchMessages')}
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
@@ -117,7 +117,7 @@ function ChatHeaderImpl({
             )}
             <button
               onClick={onToggleToolbar}
-              className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
+              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
               aria-label={toolbarExpanded ? t('chat.collapseToolbar') : t('chat.expandToolbar')}
               aria-expanded={toolbarExpanded}
             >

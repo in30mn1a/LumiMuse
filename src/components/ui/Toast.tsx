@@ -22,6 +22,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useTranslation } from '@/lib/i18n-context';
 
 export type ToastType = 'success' | 'error' | 'info';
 
@@ -71,15 +72,17 @@ function ToastViewport({
   items: ToastItem[];
   onDismiss: (id: number) => void;
 }) {
+  const { t } = useTranslation();
   if (items.length === 0) return null;
   return (
     <div className="pointer-events-none fixed bottom-6 left-1/2 z-[100] flex -translate-x-1/2 flex-col items-center gap-2">
       {items.map(item => (
         <div
           key={item.id}
-          onClick={() => onDismiss(item.id)}
-          role="status"
-          className={`pointer-events-auto relative flex max-w-[90vw] cursor-pointer items-center gap-2 overflow-hidden rounded-2xl border px-4 py-2.5 text-sm shadow-lg backdrop-blur-xl transition-all ${
+          role={item.type === 'error' ? 'alert' : 'status'}
+          aria-live={item.type === 'error' ? 'assertive' : 'polite'}
+          aria-atomic="true"
+          className={`pointer-events-auto relative flex max-w-[90vw] items-center gap-2 overflow-hidden rounded-2xl border py-1.5 pl-4 pr-1.5 text-sm shadow-lg backdrop-blur-xl transition-all ${
             item.type === 'error'
               ? 'border-red-200/60 bg-red-50/90 text-red-700'
               : item.type === 'success'
@@ -88,6 +91,14 @@ function ToastViewport({
           }`}
         >
           <span className="break-words">{item.message}</span>
+          <button
+            type="button"
+            onClick={() => onDismiss(item.id)}
+            aria-label={t('common.close')}
+            className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl text-current/70 hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/30"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
         </div>
       ))}
     </div>

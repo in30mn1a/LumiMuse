@@ -5,7 +5,7 @@ import { Character } from '@/types';
 import MemoryList from '@/components/memories/MemoryList';
 import Link from 'next/link';
 import { useTranslation } from '@/lib/i18n-context';
-import { getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { getErrorMessage, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, ChevronDownIcon, MemoryIcon, SparkIcon } from '@/components/ui/icons';
 
@@ -37,14 +37,26 @@ export default function MemoriesPage() {
   const { showToast } = useToast();
 
   useEffect(() => {
-    fetch('/api/characters').then(r => r.json()).then((chars: Character[]) => {
-      setCharacters(chars);
-      if (chars.length > 0) {
-        selectedCharIdRef.current = chars[0].id;
-        setSelectedCharId(chars[0].id);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const chars = await parseJsonArrayResponse<Character>(await fetch('/api/characters'));
+        if (cancelled) return;
+        setCharacters(chars);
+        if (chars.length > 0) {
+          selectedCharIdRef.current = chars[0].id;
+          setSelectedCharId(chars[0].id);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          showToast(`${t('common.loadFailed')}: ${getErrorMessage(error)}`, 'error');
+        }
       }
-    });
-  }, []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showToast, t]);
 
   useEffect(() => {
     selectedCharIdRef.current = selectedCharId;

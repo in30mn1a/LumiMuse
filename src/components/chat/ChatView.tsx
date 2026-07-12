@@ -20,6 +20,8 @@ import { useChatScrollController, type UseChatScrollControllerResult } from '@/h
 import { useMemoryTaskPolling } from '@/hooks/chat/useMemoryTaskPolling';
 import { useChatImageGeneration } from '@/hooks/chat/useChatImageGeneration';
 import { useChatMessageActions } from '@/hooks/chat/useChatMessageActions';
+import { useNewChat } from '@/hooks/chat/useNewChat';
+import { canBeginChatSend } from '@/hooks/chat/chat-send-guard';
 import { formatTemplate } from '@/lib/i18n';
 import { estimateClientTokens } from '@/lib/token-counter-client';
 import { getVersionInfo } from '@/lib/chat-view-utils';
@@ -32,8 +34,8 @@ import {
 } from '@/lib/chat-stream-client';
 import {
   clearCachedMessages,
+  readCachedMessages,
   uniqueMessagesById,
-  writeCachedMessages,
 } from '@/lib/chat-message-cache';
 import { MenuIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
@@ -74,8 +76,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const creatingConversationRef = useRef(false);
   const hasCharacter = Boolean(character);
 
-  // 连点新对话防重
-  const [creating, setCreating] = useState(false);
   // 总结上下文
   const [summarizing, setSummarizing] = useState(false);
   // 复制对话
@@ -156,6 +156,17 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     onInitialMessagesLoaded: () => scrollControllerRef.current?.markScrollToBottomOnLoad(),
     onError: message => showToast(`${t('chat.messageLoadFailed')}: ${message}`, 'error'),
   });
+  const { creating, handleNewChat } = useNewChat({
+    character,
+    setConversations,
+    selectActiveConvId,
+    applyMessagesResponse,
+    clearMessages,
+    clearStreamingText,
+    refreshConversationState,
+    showToast,
+    t,
+  });
   // 用 useEffect 更新 ref 而非渲染期间直接赋值：React 19 禁止渲染期间更新 ref，
   // 否则可能导致渲染不一致（react-hooks/refs 规则）
   useEffect(() => {
@@ -199,6 +210,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   const {
     handleGenerateImage,
+    generatingImageMessageIds,
     maybeAutoGenerateImageFromMessages,
     handleDeleteImage,
     handleEditImagePrompt,
@@ -223,14 +235,13 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   } = useChatMessageActions({
     activeConvIdRef,
     activeStreamsRef,
-    activeStreamConvRef,
     messagesRef,
     beginStream,
     finishStream,
     scheduleStreamingText,
     setStreamingUsage,
     pollMemoryTask,
-    refreshMessages,
+    refreshMessagesForConversation,
     refreshConversationState,
     updateMessagesForConversation,
     markSkipNextScroll,
@@ -394,51 +405,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     prevActiveStreamsRef.current = activeStreams;
   }, [activeStreams, activeConvId, applyMessagesResponse, maybeAutoGenerateImageFromMessages, messages.length, showToast, t]);
 
-  const handleNewChat = async () => {
-    if (!character || creating) return;
-    setCreating(true);
-    try {
-      const response = await fetch('/api/conversations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ character_id: character.id }),
-      });
-      const conversation = await response.json();
-      setConversations(prev => [conversation, ...prev]);
-      selectActiveConvId(conversation.id);
-
-      if (character.greeting) {
-        const greetingResponse = await fetch('/api/messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversation_id: conversation.id, role: 'assistant', content: character.greeting, token_count: 0 }),
-        });
-        const greetingMessage = await greetingResponse.json();
-        applyMessagesResponse(conversation.id, {
-          messages: [greetingMessage],
-          hasMore: false,
-          oldestSeq: typeof greetingMessage.seq === 'number' ? greetingMessage.seq : null,
-          unextractedCount: 0,
-          totalTokens: greetingMessage.token_count || 0,
-        });
-      } else {
-        writeCachedMessages(conversation.id, {
-          messages: [],
-          hasMore: false,
-          oldestSeq: null,
-          unextractedCount: 0,
-          totalTokens: 0,
-        });
-        clearMessages();
-      }
-
-      clearStreamingText();
-      void refreshConversationState(conversation.id);
-    } finally {
-      setCreating(false);
-    }
-  };
-
   const openRename = () => {
     if (!activeConversation) return;
     setRenameValue(activeConversation.title);
@@ -584,15 +550,18 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         return { ...m, metadata: meta };
       };
       // 更新服务端未提取数量
+      const currentUnextractedCount = serverUnextractedCountRef.current?.convId === activeConvId
+        ? serverUnextractedCountRef.current.value
+        : readCachedMessages(activeConvId)?.unextractedCount ?? 0;
       const nextUnextractedCount = action === 'mark'
-        ? Math.max(0, serverUnextractedCountRef.current - resetCount)
-        : serverUnextractedCountRef.current + resetCount;
+        ? Math.max(0, currentUnextractedCount - resetCount)
+        : currentUnextractedCount + resetCount;
       updateMessagesForConversation(
         activeConvId,
         messages => messages.map(updateMeta),
         { unextractedCount: nextUnextractedCount },
       );
-      setServerUnextractedCountValue(nextUnextractedCount);
+      setServerUnextractedCountValue(activeConvId, nextUnextractedCount);
       setResetExtractionOpen(false);
       const actionText = action === 'mark' ? t('chat.resetActionMark') : t('chat.resetActionReset');
       showToast(formatTemplate(t('chat.resetActionDone'), { action: actionText, count: resetCount }), 'info');
@@ -625,8 +594,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const handleSend = async (content: string, attachments?: import('@/lib/chat-engine').AttachmentItem[]) => {
     if (!character) return;
     // 当前对话正在生成时不允许重复发送（但其他对话可以）
-    if (activeConvId && activeStreamsRef.current.has(activeConvId)) return;
-    if (!activeConvId && creatingConversationRef.current) return;
+    if (!canBeginChatSend(activeConvId, creatingConversationRef.current, activeStreamsRef.current)) return;
 
     let convId = activeConvId;
     let createdNewConversation = false;
@@ -700,10 +668,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       await readChatSseStream(response.body, {
         onChunk: text => {
           fullText += text;
-          // 同 callChatStream：双重守卫，避免在用户切走后写到错误的对话上
-          if (activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId) {
-            scheduleStreamingText(fullText);
-          }
+          scheduleStreamingText(myConvId, fullText);
         },
         onUsage: (usage) => {
           if (activeConvIdRef.current === myConvId) {
@@ -872,6 +837,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
               onRegenerateFromHere={handleRegenerateFromHere}
               onSwitchVersion={handleSwitchVersion}
               onGenerateImage={handleGenerateImage}
+              generatingImageMessageIds={generatingImageMessageIds}
               onDeleteImage={handleDeleteImage}
               onEditImagePrompt={handleEditImagePrompt}
               onSetPrimaryImage={handleSetPrimaryImage}

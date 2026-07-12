@@ -16,6 +16,11 @@ import {
   RerankerAdapterConfig,
   RerankResult,
 } from '@/lib/memory-reranker';
+import {
+  DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET,
+  MEMORY_CONTEXT_TITLE,
+  MEMORY_USAGE_PRINCIPLES,
+} from '@/lib/memory-prompt-contract';
 
 export interface MemoryEngineConfig {
   enabled: boolean;
@@ -107,7 +112,7 @@ const DEFAULT_MEMORY_ENGINE_CONFIG: MemoryEngineConfig = {
   reranker_api_key: '',
   reranker_model: '',
   fallback_local_enabled: true,
-  memory_package_token_budget: 12000,
+  memory_package_token_budget: DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET,
   retrieval_token_budget: 8000,
   vector_top_k: 80,
   keyword_top_k: 20,
@@ -118,11 +123,6 @@ const DEFAULT_MEMORY_ENGINE_CONFIG: MemoryEngineConfig = {
   total_retrieval_timeout_ms: 2500,
   profile_token_budget: 1200,
 };
-
-const MEMORY_USAGE_PRINCIPLES = `### 记忆使用原则
-记忆上下文是系统整理过的长期记忆。请自然使用，不要在回复中提到“记忆条目、检索结果、分数、上下文”等系统概念。
-记忆上下文用于帮助你保持长期连续性，但不得覆盖用户当前消息。
-如果旧记忆和当前消息冲突，以当前消息为准。`;
 
 
 function finiteNumber(value: unknown, fallback: number): number {
@@ -377,7 +377,7 @@ function renderPackage(memories: Memory[], profileText = ''): string {
     groups.get(layerForMemory(memory))?.push(`- ${content}`);
   }
 
-  const sections = ['## 记忆上下文'];
+  const sections = [MEMORY_CONTEXT_TITLE];
   if (profileText) {
     sections.push(`### 记忆画像\n${profileText.replace(/^记忆画像：\n?/u, '').trim()}`);
   }
@@ -435,10 +435,18 @@ function trimByTokenBudget(
   options: TrimByTokenBudgetOptions = {},
 ): { text: string; selected: Memory[]; tokenCount: number } {
   const budget = config.memory_package_token_budget;
+  const exactTokenCache = new Map<string, number>();
+  const countTokens = (text: string): number => {
+    const cached = exactTokenCache.get(text);
+    if (cached !== undefined) return cached;
+    const count = tokenCounter(text);
+    exactTokenCache.set(text, count);
+    return count;
+  };
 
   // 画像 + 固定结构若已超预算,丢弃画像让记忆仍能按预算注入,避免画像把记忆一起饿死。
   let effectiveProfile = profileText;
-  if (effectiveProfile && tokenCounter(renderPackage([], effectiveProfile)) > budget) {
+  if (effectiveProfile && countTokens(renderPackage([], effectiveProfile)) > budget) {
     effectiveProfile = '';
   }
 
@@ -449,7 +457,7 @@ function trimByTokenBudget(
   // 同时把整包渲染从 O(n) 次降到 O(log n) 次(原贪心每个候选都重渲染整包)。
   const prefixFits = (k: number): boolean => {
     const text = renderPackage(ranked.slice(0, k).map(candidate => candidate.memory), effectiveProfile);
-    return (text ? tokenCounter(text) : 0) <= budget;
+    return (text ? countTokens(text) : 0) <= budget;
   };
 
   let lo = 0;
@@ -466,12 +474,16 @@ function trimByTokenBudget(
   const selected = ranked.slice(0, lo).map(candidate => candidate.memory);
   const canAppend = (memory: Memory): boolean => {
     const text = renderPackage([...selected, memory], effectiveProfile);
-    return (text ? tokenCounter(text) : 0) <= budget;
+    return (text ? countTokens(text) : 0) <= budget;
   };
 
   for (let index = lo; index < limit && selected.length < maxMemoryCount; index += 1) {
     const memory = ranked[index].memory;
     const highPriority = isHighPriorityMemory(memory);
+
+    if (!options.skipOversizedOrdinary && !highPriority) {
+      continue;
+    }
 
     if (canAppend(memory)) {
       if (options.skipOversizedOrdinary || highPriority) {
@@ -481,7 +493,7 @@ function trimByTokenBudget(
     }
 
     if (highPriority) {
-      const truncated = truncateMemoryForBudget(memory, budget, effectiveProfile, tokenCounter, selected);
+      const truncated = truncateMemoryForBudget(memory, budget, effectiveProfile, countTokens, selected);
       if (truncated) {
         selected.push(truncated);
         continue;
@@ -495,7 +507,7 @@ function trimByTokenBudget(
   }
 
   const text = renderPackage(selected, effectiveProfile);
-  const tokenCount = text ? tokenCounter(text) : 0;
+  const tokenCount = text ? countTokens(text) : 0;
   return { text, selected, tokenCount };
 }
 
@@ -547,9 +559,10 @@ async function applyReranker(
     // 只有 top reranker_top_k 候选被送入重排,其余仍保留原始相关性(尺度与重排分不同)。
     // 把未重排候选压到重排集最低分以下,避免它们在 finalScore 上反超被重排压低的候选。
     if (Number.isFinite(minRerankedRelevance)) {
+      const unrerankedCeiling = Math.max(0, minRerankedRelevance - 1e-6);
       for (const candidate of candidates.values()) {
         if (rerankedIds.has(candidate.memory.id)) continue;
-        candidate.relevance = Math.min(candidate.relevance, minRerankedRelevance);
+        candidate.relevance = Math.min(candidate.relevance, unrerankedCeiling);
       }
     }
   } catch (error) {

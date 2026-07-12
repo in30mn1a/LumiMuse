@@ -21,6 +21,14 @@ let lastFallbackWarnAt = 0;
 const ENCODER_INIT_RETRY_COOLDOWN_MS = 60_000;
 const FALLBACK_WARN_COOLDOWN_MS = 60_000;
 
+export const TOKEN_COUNTER_EXACT_ALGORITHM = 'cl100k_base-js-tiktoken-v1';
+export const TOKEN_COUNTER_FALLBACK_ALGORITHM = 'client-estimate-v1';
+
+export interface TokenEstimate {
+  tokenCount: number;
+  algorithm: string;
+}
+
 function warnFallback(reason: string): void {
   const now = Date.now();
   if (lastFallbackWarnAt > 0 && now - lastFallbackWarnAt < FALLBACK_WARN_COOLDOWN_MS) {
@@ -59,17 +67,42 @@ function getEncoder(): Tiktoken | null {
  * - 同步返回 number，与原有接口完全一致
  */
 export function estimateTokens(text: string): number {
-  if (!text) return 0;
+  return estimateTokensWithAlgorithm(text).tokenCount;
+}
+
+/**
+ * 返回 token 数及实际采用的算法版本，供持久化计数建立可验证 provenance。
+ * encoder 临时不可用或单次 encode 失败时会明确标记 fallback 版本，避免后续
+ * 把粗略估算误当成 cl100k_base 的可复用结果。
+ */
+export function estimateTokensWithAlgorithm(text: string): TokenEstimate {
+  if (!text) {
+    return {
+      tokenCount: 0,
+      algorithm: getEncoder() ? TOKEN_COUNTER_EXACT_ALGORITHM : TOKEN_COUNTER_FALLBACK_ALGORITHM,
+    };
+  }
 
   const enc = getEncoder();
   if (enc) {
     try {
-      return enc.encode(text).length;
+      return {
+        tokenCount: enc.encode(text).length,
+        algorithm: TOKEN_COUNTER_EXACT_ALGORITHM,
+      };
     } catch (error) {
       // 单次 encode 失败不污染全局状态，仅本次回退
       warnFallback(`token encoder failed to encode text${error instanceof Error ? `: ${error.message}` : ''}`);
     }
   }
 
-  return estimateClientTokens(text);
+  return {
+    tokenCount: estimateClientTokens(text),
+    algorithm: TOKEN_COUNTER_FALLBACK_ALGORITHM,
+  };
+}
+
+/** 当前一次新计数会采用的算法版本；不会对消息正文执行 encode。 */
+export function getTokenCounterAlgorithmVersion(): string {
+  return getEncoder() ? TOKEN_COUNTER_EXACT_ALGORITHM : TOKEN_COUNTER_FALLBACK_ALGORITHM;
 }

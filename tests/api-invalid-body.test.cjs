@@ -75,6 +75,16 @@ function invalidJsonRequest(url = 'http://test.local/api/test') {
   };
 }
 
+function noBodyRequest(url = 'http://test.local/api/test') {
+  return {
+    nextUrl: new URL(url),
+    signal: new AbortController().signal,
+    async json() {
+      throw new SyntaxError('Unexpected end of JSON input');
+    },
+  };
+}
+
 function jsonRequest(body, url = 'http://test.local/api/test') {
   return {
     nextUrl: new URL(url),
@@ -282,7 +292,65 @@ test('/api/characters/generate POST does not leak raw upstream errors', async ()
   await assertJsonError(response, 500, '生成角色失败');
 });
 
-test('/api/characters/generate POST passes the request signal to the LLM call', async () => {
+test('/api/characters/generate POST extracts the first balanced character object from complex LLM prose', async () => {
+  const generatedCharacter = {
+    name: '  星璃  ',
+    basic_info: '来自 {旧城} 的档案员，保管 [星图] 索引',
+    personality: '她会说："follow C:\\\\maps\\\\stars"，也会直接念出 } 和 ]',
+    scenario: '与 {{user}} 一起追查遗失的 [坐标]',
+    greeting: '“你终于来了，{nickname}。”',
+    example_dialogue: '{{char}}: "密钥是 \\\"Orion\\\""。',
+    system_prompt: '保持温和、精确的语气。',
+    other_info: { ignored: true },
+    image_tags: 'silver hair, blue eyes',
+    ignored_extra: '不应写入响应',
+  };
+  const laterObject = {
+    name: '错误的第二个角色',
+    greeting: '不应被采用',
+  };
+  const llmOutput = [
+    '下面是根据要求生成的角色卡：',
+    JSON.stringify(generatedCharacter),
+    '以上是主要结果，后面是不应被采用的备选：',
+    JSON.stringify(laterObject),
+  ].join('\n');
+  const route = requireFreshWithMocks('../src/app/api/characters/generate/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/settings': {
+      loadSettings() {
+        return {
+          api_base: 'https://api.example.test',
+          api_key: 'secret',
+          model: 'model',
+          memory_background_timeout_ms: 1_000,
+        };
+      },
+    },
+    '@/lib/api-client': {
+      async chatCompletion() {
+        return llmOutput;
+      },
+    },
+    '@/lib/db': { getDb: failIfCalled('getDb') },
+  });
+
+  const response = await withSilencedConsoleError(() => route.POST(jsonRequest({ requirement: '生成星图档案员' })));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    name: '星璃',
+    basic_info: generatedCharacter.basic_info,
+    personality: generatedCharacter.personality,
+    scenario: generatedCharacter.scenario,
+    greeting: generatedCharacter.greeting,
+    example_dialogue: generatedCharacter.example_dialogue,
+    system_prompt: generatedCharacter.system_prompt,
+    image_tags: generatedCharacter.image_tags,
+  });
+});
+
+test('/api/characters/generate POST combines the request signal with the server deadline', async () => {
   const controller = new AbortController();
   let seenSignal = null;
   const route = requireFreshWithMocks('../src/app/api/characters/generate/route.ts', {
@@ -293,6 +361,7 @@ test('/api/characters/generate POST passes the request signal to the LLM call', 
           api_base: 'https://api.example.test',
           api_key: 'secret',
           model: 'model',
+          memory_background_timeout_ms: 1_000,
         };
       },
     },
@@ -321,7 +390,94 @@ test('/api/characters/generate POST passes the request signal to the LLM call', 
   });
 
   assert.equal(response.status, 200);
-  assert.equal(seenSignal, controller.signal);
+  assert.notEqual(seenSignal, controller.signal);
+  assert.equal(seenSignal.aborted, false);
+
+  controller.abort(new DOMException('client disconnected', 'AbortError'));
+  assert.equal(seenSignal.aborted, false, 'completed requests must detach the external abort listener');
+});
+
+test('/api/characters/generate POST returns structured 504 when the server deadline expires', async () => {
+  let seenSignal = null;
+  const route = requireFreshWithMocks('../src/app/api/characters/generate/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/settings': {
+      loadSettings() {
+        return {
+          api_base: 'https://api.example.test',
+          api_key: 'secret',
+          model: 'model',
+          memory_background_timeout_ms: 10,
+        };
+      },
+    },
+    '@/lib/api-client': {
+      async chatCompletion(_settings, _messages, signal) {
+        seenSignal = signal;
+        return new Promise((_, reject) => {
+          const fallback = setTimeout(() => reject(new Error('deadline signal was not applied')), 100);
+          signal.addEventListener('abort', () => {
+            clearTimeout(fallback);
+            reject(signal.reason);
+          }, { once: true });
+        });
+      },
+    },
+    '@/lib/db': { getDb: failIfCalled('getDb') },
+  });
+
+  const response = await withSilencedConsoleError(() => route.POST(jsonRequest({ requirement: '生成一个角色' })));
+  const payload = await response.json();
+
+  assert.equal(response.status, 504);
+  assert.deepEqual(payload, {
+    error: '角色生成请求超过服务器处理时限',
+    code: 'UPSTREAM_TIMEOUT',
+  });
+  assert.equal(seenSignal.aborted, true);
+});
+
+test('/api/characters/generate POST preserves client cancellation instead of reporting a timeout', async () => {
+  const controller = new AbortController();
+  let seenSignal = null;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const route = requireFreshWithMocks('../src/app/api/characters/generate/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/settings': {
+      loadSettings() {
+        return {
+          api_base: 'https://api.example.test',
+          api_key: 'secret',
+          model: 'model',
+          memory_background_timeout_ms: 1_000,
+        };
+      },
+    },
+    '@/lib/api-client': {
+      async chatCompletion(_settings, _messages, signal) {
+        seenSignal = signal;
+        markStarted();
+        return new Promise((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    },
+    '@/lib/db': { getDb: failIfCalled('getDb') },
+  });
+
+  const responsePromise = route.POST({
+    ...jsonRequest({ requirement: '生成一个角色' }),
+    signal: controller.signal,
+  });
+  await started;
+  controller.abort(new DOMException('client disconnected', 'AbortError'));
+  const response = await withSilencedConsoleError(() => responsePromise);
+
+  assert.equal(response.status, 499);
+  assert.notEqual(seenSignal, controller.signal);
+  assert.equal(seenSignal.aborted, true);
+  assert.equal(seenSignal.reason?.message, 'client disconnected');
 });
 
 test('/api/settings PUT returns 400 for a non-object body', async () => {
@@ -465,6 +621,34 @@ test('/api/memory-index POST returns 400 for invalid JSON without rebuilding', a
   await assertJsonError(response, 400, 'Invalid JSON body');
 });
 
+test('/api/memory-index POST returns 400 when the request has no body', async () => {
+  const route = requireFreshWithMocks('../src/app/api/memory-index/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: failIfCalled('getDb') },
+    '@/lib/settings': { loadSettings: failIfCalled('loadSettings') },
+    '@/lib/memory-embeddings': {
+      ensureMemoryEmbeddingTables: failIfCalled('ensureMemoryEmbeddingTables'),
+      enqueueRebuildMemoryEmbeddings: failIfCalled('enqueueRebuildMemoryEmbeddings'),
+      enqueueUnindexedMemoryEmbeddings: failIfCalled('enqueueUnindexedMemoryEmbeddings'),
+      retryFailedMemoryEmbeddings: failIfCalled('retryFailedMemoryEmbeddings'),
+      clearMemoryIndex: failIfCalled('clearMemoryIndex'),
+      stopCurrentMemoryIndexTasks: failIfCalled('stopCurrentMemoryIndexTasks'),
+      getMemoryIndexStatus: failIfCalled('getMemoryIndexStatus'),
+    },
+    '@/lib/memory-index-trigger': {
+      getMemoryIndexProcessingBlockedReason: () => undefined,
+      stopMemoryIndexProcessing: failIfCalled('stopMemoryIndexProcessing'),
+      triggerMemoryIndexProcessing: failIfCalled('triggerMemoryIndexProcessing'),
+    },
+  });
+
+  const response = await route.POST(noBodyRequest(
+    'http://test.local/api/memory-index?character_id=char-1',
+  ));
+
+  await assertJsonError(response, 400, 'Invalid JSON body');
+});
+
 test('/api/memory-index POST returns 400 for a non-object body', async () => {
   const route = requireFreshWithMocks('../src/app/api/memory-index/route.ts', {
     'next/server': jsonResponseMock(),
@@ -489,6 +673,35 @@ test('/api/memory-index POST returns 400 for a non-object body', async () => {
   const response = await route.POST(jsonRequest([], 'http://test.local/api/memory-index?character_id=char-1'));
 
   await assertJsonError(response, 400, 'Invalid request body');
+});
+
+test('/api/memory-index POST requires an explicit action for an empty object', async () => {
+  const route = requireFreshWithMocks('../src/app/api/memory-index/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: failIfCalled('getDb') },
+    '@/lib/settings': { loadSettings: failIfCalled('loadSettings') },
+    '@/lib/memory-embeddings': {
+      ensureMemoryEmbeddingTables: failIfCalled('ensureMemoryEmbeddingTables'),
+      enqueueRebuildMemoryEmbeddings: failIfCalled('enqueueRebuildMemoryEmbeddings'),
+      enqueueUnindexedMemoryEmbeddings: failIfCalled('enqueueUnindexedMemoryEmbeddings'),
+      retryFailedMemoryEmbeddings: failIfCalled('retryFailedMemoryEmbeddings'),
+      clearMemoryIndex: failIfCalled('clearMemoryIndex'),
+      stopCurrentMemoryIndexTasks: failIfCalled('stopCurrentMemoryIndexTasks'),
+      getMemoryIndexStatus: failIfCalled('getMemoryIndexStatus'),
+    },
+    '@/lib/memory-index-trigger': {
+      getMemoryIndexProcessingBlockedReason: () => undefined,
+      stopMemoryIndexProcessing: failIfCalled('stopMemoryIndexProcessing'),
+      triggerMemoryIndexProcessing: failIfCalled('triggerMemoryIndexProcessing'),
+    },
+  });
+
+  const response = await route.POST(jsonRequest(
+    {},
+    'http://test.local/api/memory-index?character_id=char-1',
+  ));
+
+  await assertJsonError(response, 400, 'memory index action is required');
 });
 
 test('/api/memory-index POST rejects actions outside the enum without rebuilding', async () => {

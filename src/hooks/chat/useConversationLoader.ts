@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import type { Character, Conversation, Memory } from '@/types';
+import { parseJsonArrayResponse } from '@/lib/http';
 
 function getConversationLoadErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -18,7 +19,7 @@ async function fetchCharacterConversations(characterId: string): Promise<Convers
       offset: String(offset),
     });
     const response = await fetch(`/api/conversations?${params.toString()}`);
-    const page = await response.json() as Conversation[];
+    const page = await parseJsonArrayResponse<Conversation>(response);
     conversations.push(...page);
 
     if (page.length === 0 || response.headers.get('X-Has-More') !== 'true') {
@@ -75,12 +76,12 @@ export function useConversationLoader({
     const requestSeq = ++loadCharacterStateSeqRef.current;
     setLoadingThread(true);
     try {
-      const [conversationList, memoryResponse] = await Promise.all([
+      const [conversationList, memoryList] = await Promise.all([
         fetchCharacterConversations(characterId),
-        fetch(`/api/memories?character_id=${characterId}`),
+        fetch(`/api/memories?character_id=${encodeURIComponent(characterId)}`)
+          .then(response => parseJsonArrayResponse<Memory>(response)),
       ]);
 
-      const memoryList = await memoryResponse.json();
       if (loadCharacterStateSeqRef.current !== requestSeq || characterRef.current?.id !== characterId) return;
       setConversationLoadError(null);
       setConversations(conversationList);
@@ -150,11 +151,11 @@ export function useConversationLoader({
     const requestSeq = ++refreshConversationStateSeqRef.current;
     const requestedCharacterId = currentCharacter.id;
     try {
-      const [conversationList, memoryResponse] = await Promise.all([
+      const [conversationList, memoryList] = await Promise.all([
         fetchCharacterConversations(requestedCharacterId),
-        fetch(`/api/memories?character_id=${requestedCharacterId}`),
+        fetch(`/api/memories?character_id=${encodeURIComponent(requestedCharacterId)}`)
+          .then(response => parseJsonArrayResponse<Memory>(response)),
       ]);
-      const memoryList = await memoryResponse.json();
       if (refreshConversationStateSeqRef.current !== requestSeq || characterRef.current?.id !== requestedCharacterId) return;
       setConversationLoadError(null);
       setConversations(conversationList);

@@ -4,12 +4,16 @@ import { getDb } from '@/lib/db';
 import { Message, Character } from '@/types';
 import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
 import { REASONING_SAFE_MAX_TOKENS, sanitizeUpstreamError } from '@/lib/api-client';
-import { estimateTokens } from '@/lib/token-counter';
+import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { parseSseStream } from '@/lib/sse-parser';
 import { serializeTypedMessages } from '@/lib/messages';
 import { formatZodFieldErrors, summarizeBodySchema } from '@/lib/schemas';
 import { readMemoryProfile, renderMemoryProfile } from '@/lib/memory-profile';
+import {
+  BackgroundLlmTimeoutError,
+  runWithBackgroundLlmDeadline,
+} from '@/lib/background-llm-deadline';
 
 export async function POST(request: NextRequest) {
   let rawBody: unknown;
@@ -111,49 +115,50 @@ ${convText}`;
     // 客户端断开连接时同步取消上游请求，避免 reader 泄漏
     const bgConfig = resolveBackgroundConfig(settings);
     const backgroundExtraBody = buildBackgroundChatExtraBody(settings, bgConfig.model);
-    const response = await safeFetch(`${bgConfig.api_base}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${bgConfig.api_key}`,
+    const summaryContent = await runWithBackgroundLlmDeadline(
+      settings.memory_background_timeout_ms,
+      async signal => {
+        const response = await safeFetch(`${bgConfig.api_base}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${bgConfig.api_key}`,
+          },
+          body: JSON.stringify({
+            model: bgConfig.model,
+            messages: [{ role: 'user', content: summaryPrompt }],
+            max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
+            temperature: settings.temperature,
+            stream: true,
+            ...(backgroundExtraBody ?? {}),
+          }),
+          signal,
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`LLM API error ${response.status}: ${sanitizeUpstreamError(text)}`);
+        }
+
+        if (!response.body) {
+          throw new Error('LLM 未返回响应体');
+        }
+
+        // 读取流式响应，累积完整内容
+        const reader = response.body.getReader();
+        let content = '';
+        try {
+          await parseSseStream(reader, ({ text }) => {
+            if (text) content += text;
+          }, { signal });
+        } finally {
+          // 无论正常结束还是异常都释放 reader
+          try { await reader.cancel(); } catch { /* ignore */ }
+        }
+        return content;
       },
-      body: JSON.stringify({
-        model: bgConfig.model,
-        messages: [{ role: 'user', content: summaryPrompt }],
-        max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
-        temperature: settings.temperature,
-        stream: true,
-        ...(backgroundExtraBody ?? {}),
-      }),
-      signal: request.signal,
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`LLM API error ${response.status}: ${sanitizeUpstreamError(text)}`);
-    }
-
-    if (!response.body) {
-      throw new Error('LLM 未返回响应体');
-    }
-
-    // 读取流式响应，累积完整内容
-    const reader = response.body.getReader();
-    let summaryContent = '';
-
-    try {
-      await parseSseStream(reader, ({ text }) => {
-        if (text) summaryContent += text;
-      }, { signal: request.signal });
-    } finally {
-      // 无论正常结束还是异常都释放 reader
-      try { await reader.cancel(); } catch { /* ignore */ }
-    }
-
-    // 客户端主动取消时，parseSseStream 内部已静默返回；这里映射成 499
-    if (request.signal.aborted) {
-      return NextResponse.json({ error: '请求已取消' }, { status: 499 });
-    }
+      request.signal,
+    );
 
     if (!summaryContent.trim()) {
       throw new Error('总结内容为空，模型未返回有效内容');
@@ -162,18 +167,22 @@ ${convText}`;
     // 将总结作为特殊消息存入数据库（role = 'summary'）
     const summaryId = crypto.randomUUID().slice(0, 12);
     const now = new Date().toISOString();
-    const tokenCount = estimateTokens(summaryContent);
+    const tokenResult = createMessageTokenCount(summaryContent, 'system');
+    const tokenCount = tokenResult.tokenCount;
     const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
 
     const summarizedIds = messagesToSummarize.map(m => m.id);
-    const meta = { summarizedIds, isSummary: true };
+    const meta = metadataWithTokenCountProvenance(
+      { summarizedIds, isSummary: true },
+      tokenResult.provenance,
+    );
 
     db.prepare(`
       INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
       VALUES (?, ?, 'system', ?, ?, ?, ?, ?)
     `).run(summaryId, conversation_id, summaryContent, tokenCount, now, nextSeq, JSON.stringify(meta));
 
-    db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(conversation_id);
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
 
     const summaryMessage: Message = {
       id: summaryId,
@@ -187,6 +196,15 @@ ${convText}`;
 
     return NextResponse.json({ ok: true, message: summaryMessage, summarizedCount: messagesToSummarize.length });
   } catch (err) {
+    if (err instanceof BackgroundLlmTimeoutError) {
+      return NextResponse.json(
+        { error: '总结请求超过服务器处理时限', code: 'UPSTREAM_TIMEOUT' },
+        { status: 504 },
+      );
+    }
+    if (request.signal.aborted) {
+      return NextResponse.json({ error: '请求已取消' }, { status: 499 });
+    }
     return NextResponse.json({ error: err instanceof Error ? err.message : '总结失败' }, { status: 500 });
   }
 }

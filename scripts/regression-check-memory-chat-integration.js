@@ -4,6 +4,8 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const chatEnginePath = path.join(root, 'src', 'lib', 'chat-engine.ts');
 const source = fs.readFileSync(chatEnginePath, 'utf8');
+const memoryPromptContractPath = path.join(root, 'src', 'lib', 'memory-prompt-contract.ts');
+const memoryPromptContractSource = fs.readFileSync(memoryPromptContractPath, 'utf8');
 
 const checks = [
   {
@@ -20,15 +22,18 @@ const checks = [
   },
   {
     name: 'memory context uses the planned section title',
-    pass: source.includes('## 记忆上下文'),
+    pass: source.includes('MEMORY_CONTEXT_TITLE')
+      && memoryPromptContractSource.includes("MEMORY_CONTEXT_TITLE = '## 记忆上下文'"),
   },
   {
     name: 'memory usage principles hide retrieval implementation details',
-    pass: source.includes('记忆条目、检索结果、分数、上下文'),
+    pass: source.includes('MEMORY_USAGE_PRINCIPLES')
+      && memoryPromptContractSource.includes('记忆条目、检索结果、分数、上下文'),
   },
   {
     name: 'memory usage principles keep current user message authoritative',
-    pass: source.includes('旧记忆和当前消息冲突，以当前消息为准'),
+    pass: source.includes('MEMORY_USAGE_PRINCIPLES')
+      && memoryPromptContractSource.includes('旧记忆和当前消息冲突，以当前消息为准'),
   },
   {
     name: 'assemblePrompt accepts pre-rendered working memory text without numbering it',

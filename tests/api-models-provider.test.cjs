@@ -236,3 +236,178 @@ test('/api/models POST rejects malformed JSON without fetching upstream models',
   assert.deepEqual(payload, { models: [], error: '请求体不是有效 JSON' });
   assert.equal(safeFetchCalled, false);
 });
+
+test('/api/models rejects missing saved credentials with a 400 JSON response', async () => {
+  const route = requireFreshWithMocks('../src/app/api/models/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': {
+      getDb: () => {
+        throw new Error('getDb should not be called');
+      },
+    },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: '',
+        api_key: '',
+        memory_engine: {},
+      }),
+    },
+    '@/lib/ssrf-guard': {
+      safeFetch: async () => {
+        throw new Error('safeFetch should not be called');
+      },
+    },
+  });
+
+  const response = await route.GET({
+    nextUrl: new URL('http://test.local/api/models'),
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { models: [], error: '请先配置 API 地址和密钥' });
+});
+
+test('/api/models maps upstream HTTP failures to a safe 502 JSON response', async () => {
+  const db = {
+    prepare(sql) {
+      if (sql.includes('SELECT models, cached_at FROM model_cache')) {
+        return { get: () => undefined };
+      }
+      throw new Error(`unexpected sql: ${sql}`);
+    },
+  };
+
+  const route = requireFreshWithMocks('../src/app/api/models/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://chat.example/v1',
+        api_key: 'chat-secret',
+        memory_engine: {},
+      }),
+    },
+    '@/lib/ssrf-guard': {
+      safeFetch: async () => ({
+        ok: false,
+        status: 401,
+        async text() {
+          return 'Authorization: Bearer leaked-secret';
+        },
+      }),
+    },
+  });
+
+  const response = await route.GET({
+    nextUrl: new URL('http://test.local/api/models?refresh=1'),
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(payload, { models: [], error: '获取模型列表失败（上游状态 401）' });
+  assert.doesNotMatch(JSON.stringify(payload), /leaked-secret/);
+});
+
+test('/api/models maps network exceptions to a safe 502 JSON response when no cache exists', async () => {
+  const db = {
+    prepare(sql) {
+      if (sql.includes('SELECT models, cached_at FROM model_cache')) {
+        return { get: () => undefined };
+      }
+      if (sql.includes('SELECT models FROM model_cache')) {
+        return { get: () => undefined };
+      }
+      throw new Error(`unexpected sql: ${sql}`);
+    },
+  };
+
+  const route = requireFreshWithMocks('../src/app/api/models/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://chat.example/v1',
+        api_key: 'chat-secret',
+        memory_engine: {},
+      }),
+    },
+    '@/lib/ssrf-guard': {
+      safeFetch: async () => {
+        throw new Error('connect failed with sk-super-secret and C:\\internal\\proxy.ts');
+      },
+    },
+  });
+
+  const response = await route.GET({
+    nextUrl: new URL('http://test.local/api/models?refresh=1'),
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(payload, { models: [], error: '无法连接模型服务' });
+  assert.doesNotMatch(JSON.stringify(payload), /super-secret|internal|proxy\.ts/);
+});
+
+test('/api/models GET refresh still fetches upstream and writes the model cache', async () => {
+  let cacheWrite = null;
+  const db = {
+    prepare(sql) {
+      if (sql.includes('INSERT INTO model_cache')) {
+        return {
+          run: (...args) => {
+            cacheWrite = args;
+          },
+        };
+      }
+      throw new Error(`unexpected sql: ${sql}`);
+    },
+  };
+
+  const route = requireFreshWithMocks('../src/app/api/models/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://chat.example/v1',
+        api_key: 'chat-secret',
+        memory_engine: {},
+      }),
+    },
+    '@/lib/ssrf-guard': {
+      safeFetch: async () => ({
+        ok: true,
+        async json() {
+          return { data: [{ id: 'model-b' }, { id: 'model-a' }] };
+        },
+      }),
+    },
+  });
+
+  const response = await route.GET({
+    nextUrl: new URL('http://test.local/api/models?refresh=1'),
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { models: ['model-a', 'model-b'], error: null, cached: false });
+  assert.equal(cacheWrite?.[0], 'https://chat.example/v1');
+  assert.equal(cacheWrite?.[1], JSON.stringify(['model-a', 'model-b']));
+  assert.match(cacheWrite?.[2], /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('models clients surface the safe JSON error from a non-2xx response', async () => {
+  const { parseJsonResponse } = requireFreshWithMocks('../src/lib/http.ts', {});
+  const response = new Response(JSON.stringify({
+    models: [],
+    error: '获取模型列表失败（上游状态 401）',
+  }), {
+    status: 502,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  await assert.rejects(
+    () => parseJsonResponse(response),
+    { message: '获取模型列表失败（上游状态 401）' },
+  );
+});

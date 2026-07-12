@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 type UseChatStreamingOptions = {
   activeConvId: string | null;
@@ -22,6 +22,8 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
   const [streamingConvId, setStreamingConvId] = useState<string | null>(null);
   // 所有正在生成中的对话 ID 集合（用于判断切回某对话时是否仍在生成）
   const [activeStreams, setActiveStreams] = useState<Set<string>>(new Set());
+  // 网络流会持有启动时的 callback；同步 ref 始终指向当前对话，避免旧闭包污染可见状态。
+  const currentActiveConvIdRef = useRef(activeConvId);
   // 当前活跃的流式 convId ref（闭包内用来判断自己是否还是最新流，控制 streamingText 写入）
   const activeStreamConvRef = useRef<string | null>(null);
   // 停止生成用的 AbortController ref
@@ -30,31 +32,43 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const streamingFrameRef = useRef<number | null>(null);
   const pendingStreamingTextRef = useRef('');
+  const streamingBuffersRef = useRef<Map<string, string>>(new Map());
   const activeStreamsRef = useRef<Set<string>>(activeStreams);
   const streamingTargetId = activeConvId ? regenerationTargetIdsByConv[activeConvId] ?? null : null;
   const hiddenMessageId = streamingTargetId;
+
+  useLayoutEffect(() => {
+    currentActiveConvIdRef.current = activeConvId;
+  }, [activeConvId]);
 
   useEffect(() => {
     activeStreamsRef.current = activeStreams;
   }, [activeStreams]);
 
-  // 竞态保护：用户切换对话时立即清空 streamingText / streamingConvId，
-  // 避免上一段流尚未结束就把旧文字带到新对话。
-  // 切到的目标对话若有后台流在跑（activeStreams 中），等其新 chunk 到达时会重新写回 streaming state。
+  // 切换对话时从对应 buffer 恢复正在生成的文本；没有活跃流则清空可见状态。
   useEffect(() => {
-    if (streamingConvId && streamingConvId !== activeConvId) {
-      queueMicrotask(() => {
-        setStreamingText('');
-        setStreamingConvId(null);
-      });
+    const hasActiveStream = Boolean(activeConvId && activeStreamsRef.current.has(activeConvId));
+    const bufferedText = hasActiveStream && activeConvId
+      ? streamingBuffersRef.current.get(activeConvId) ?? ''
+      : '';
+    if (streamingFrameRef.current !== null) {
+      cancelAnimationFrame(streamingFrameRef.current);
+      streamingFrameRef.current = null;
     }
-  }, [activeConvId, streamingConvId]);
+    activeStreamConvRef.current = hasActiveStream ? activeConvId : null;
+    pendingStreamingTextRef.current = bufferedText;
+    setStreamingText(bufferedText);
+    setStreamingConvId(hasActiveStream ? activeConvId : null);
+    setIsLoading(hasActiveStream);
+  }, [activeConvId]);
 
   const clearStreamingText = useCallback(() => {
     setStreamingText('');
   }, []);
 
-  const scheduleStreamingText = useCallback((text: string) => {
+  const scheduleStreamingText = useCallback((convId: string, text: string) => {
+    streamingBuffersRef.current.set(convId, text);
+    if (currentActiveConvIdRef.current !== convId) return;
     pendingStreamingTextRef.current = text;
     if (streamingFrameRef.current !== null) return;
     streamingFrameRef.current = requestAnimationFrame(() => {
@@ -71,18 +85,22 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
 
   const handleStop = useCallback(() => {
     // 停止当前对话的流
-    if (activeConvId && abortControllersRef.current.has(activeConvId)) {
-      abortControllersRef.current.get(activeConvId)!.abort();
+    const currentActiveConvId = currentActiveConvIdRef.current;
+    if (currentActiveConvId && abortControllersRef.current.has(currentActiveConvId)) {
+      abortControllersRef.current.get(currentActiveConvId)!.abort();
     } else {
       abortControllerRef.current?.abort();
     }
-  }, [activeConvId]);
+  }, []);
 
   const beginStream = useCallback((convId: string, options?: BeginStreamOptions) => {
-    setIsLoading(true);
-    setStreamingText('');
-    setStreamingConvId(convId);
-    activeStreamConvRef.current = convId;
+    streamingBuffersRef.current.set(convId, '');
+    if (currentActiveConvIdRef.current === convId) {
+      activeStreamConvRef.current = convId;
+      setIsLoading(true);
+      setStreamingText('');
+      setStreamingConvId(convId);
+    }
     const next = new Set(activeStreamsRef.current).add(convId);
     activeStreamsRef.current = next;
     setActiveStreams(next);
@@ -108,8 +126,9 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
   }, []);
 
   const finishStream = useCallback((convId: string, options?: FinishStreamOptions) => {
+    streamingBuffersRef.current.delete(convId);
     // 只有结束的流仍拥有当前可见流状态时才清理，避免后台流结束时打断另一个会话的流式显示。
-    if (activeStreamConvRef.current === convId) {
+    if (currentActiveConvIdRef.current === convId) {
       activeStreamConvRef.current = null;
       setIsLoading(false);
       setStreamingText('');

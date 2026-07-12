@@ -26,6 +26,7 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const resultRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const { results: messageResults, loading, loadingMore, hasMore, loadMore, clearSearch } = useMessageSearch(open ? query : '', { limit: 30, debounceMs: 200 });
   const results = useMemo<SearchResult[]>(() => messageResults.map(m => ({
       id: m.messageId,
@@ -36,6 +37,11 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
       messageId: m.messageId,
     })), [messageResults]);
   const safeActiveIndex = results.length > 0 ? Math.min(activeIndex, results.length - 1) : 0;
+
+  useEffect(() => {
+    if (!open || results.length === 0) return;
+    resultRefs.current[safeActiveIndex]?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, results.length, safeActiveIndex]);
 
   // 打开时重置搜索；Modal 统一负责初始焦点、焦点陷阱与焦点恢复。
   useEffect(() => {
@@ -102,6 +108,7 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
           {results.map((result, i) => (
             <button
               key={result.id}
+              ref={element => { resultRefs.current[i] = element; }}
               onClick={() => handleSelect(result)}
               className={`flex w-full flex-col gap-1 border-b border-border-light px-4 py-3 text-left last:border-0 transition-colors ${
                 i === safeActiveIndex ? 'bg-accent/8' : 'hover:bg-warm-50'

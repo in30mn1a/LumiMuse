@@ -133,6 +133,21 @@ test('generated image thumbnail is keyboard operable and opens the lightbox', as
   assert.ok(within(document.body).getByRole('dialog'));
 });
 
+test('image generation controls expose busy state and reject repeated activation for the same message', async () => {
+  let generations = 0;
+  const view = renderBubble({
+    isGeneratingImage: true,
+    onGenerateImage: () => { generations += 1; },
+  });
+
+  const generateButton = view.getByRole('button', { name: 'imageGen.button' });
+  assert.equal(generateButton.disabled, true);
+  assert.equal(generateButton.getAttribute('aria-busy'), 'true');
+
+  generateButton.click();
+  assert.equal(generations, 0);
+});
+
 test('image lightbox traps focus, closes with Escape, and restores thumbnail focus', async () => {
   const user = userEvent.setup({ document });
   const view = renderBubble();

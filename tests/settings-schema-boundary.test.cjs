@@ -233,6 +233,37 @@ test('/api/settings PUT accepts known typed fields and preserves unknown fields'
   assert.equal(payload.model, 'chat-model-v2');
 });
 
+test('/api/settings PUT deep-merges a partial image_gen update and preserves masked keys', async () => {
+  const { API_KEY_MASK } = require('../src/lib/constants.ts');
+  const harness = createSettingsHarness({
+    image_gen: {
+      enabled: false,
+      nai_api_key: 'nai-secret',
+      custom_api_key: 'custom-secret',
+      custom_model: 'existing-model',
+      future_image_option: { keep: true },
+    },
+  });
+
+  const response = await harness.route.PUT(jsonRequest({
+    image_gen: {
+      enabled: true,
+      nai_api_key: API_KEY_MASK,
+      custom_api_key: API_KEY_MASK,
+    },
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(harness.settingsState.image_gen.enabled, true);
+  assert.equal(harness.settingsState.image_gen.custom_model, 'existing-model');
+  assert.deepEqual(harness.settingsState.image_gen.future_image_option, { keep: true });
+  assert.equal(harness.settingsState.image_gen.nai_api_key, 'nai-secret');
+  assert.equal(harness.settingsState.image_gen.custom_api_key, 'custom-secret');
+  assert.equal(payload.image_gen.nai_api_key, API_KEY_MASK);
+  assert.equal(payload.image_gen.custom_api_key, API_KEY_MASK);
+});
+
 test('/api/settings PUT keeps masked api_key when api_base is unchanged', async () => {
   const { API_KEY_MASK } = require('../src/lib/constants.ts');
   const harness = createSettingsHarness();

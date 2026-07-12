@@ -31,6 +31,11 @@ interface MemoryIndexActionResponse {
 export interface MemoryDiagnostics {
   index: { total: number; ready: number; failed: number };
   tasks: Record<string, number>;
+  queues?: {
+    extraction: Record<string, number>;
+    profile: Record<string, number>;
+    embedding: Record<string, number>;
+  };
   candidates: Record<string, number>;
   profile: { exists: boolean; filled_fields: number };
   archive: Record<string, number>;

@@ -171,6 +171,11 @@ function createHookRuntime(hookFactory, optionsFactory) {
       return currentResult;
     },
     render,
+    unmount() {
+      for (const effect of effects) {
+        effect?.cleanup?.();
+      }
+    },
   };
 }
 
@@ -191,6 +196,9 @@ function createDelayedStateHookRuntime(hookFactory, optionsFactory) {
       if (!queuedStateUpdates.some(update => update.type === 'effect' && update.index === index)) {
         queuedStateUpdates.push({ type: 'effect', index, callback });
       }
+    },
+    useLayoutEffect: callback => {
+      callback();
     },
     useRef: initialValue => {
       const index = refCursor;
@@ -356,6 +364,213 @@ test('conversation loader exposes refresh errors while preserving current state'
     assert.equal(runtime.current.conversationLoadError, 'conversation backend down');
     assert.deepEqual(runtime.current.conversations.map(item => item.id), ['conv-a']);
     assert.deepEqual(runtime.current.memories.map(item => item.id), ['mem-a']);
+    runtime.unmount();
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('conversation loader rejects a failed memories response without replacing usable state', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async input => {
+    const url = new URL(String(input), 'http://test.local');
+    if (url.pathname === '/api/conversations') {
+      return jsonResponse([{ id: 'conv-new', character_id: 'char-a', title: 'new' }], {
+        headers: { 'X-Has-More': 'false' },
+      });
+    }
+    if (url.pathname === '/api/memories') {
+      return jsonResponse({ error: 'memory backend denied the request' }, { status: 500 });
+    }
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+
+  try {
+    const character = { id: 'char-a', name: 'Alice' };
+    const clearMessagesRef = { current: () => {} };
+    const clearStreamingTextRef = { current: () => {} };
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useConversationLoader } = requireFreshWithMocks('../src/hooks/chat/useConversationLoader.ts', {
+          react: reactMock,
+        });
+        return useConversationLoader;
+      },
+      () => ({
+        character,
+        conversationId: 'conv-old',
+        clearMessagesRef,
+        clearStreamingTextRef,
+      }),
+    );
+
+    runtime.render();
+    runtime.current.setConversations([{ id: 'conv-old', character_id: 'char-a', title: 'current' }]);
+    runtime.current.setMemories([{ id: 'mem-old', character_id: 'char-a', category: 'preference', content: 'keep me' }]);
+
+    await runtime.current.refreshConversationState();
+
+    assert.equal(runtime.current.conversationLoadError, 'memory backend denied the request');
+    assert.deepEqual(runtime.current.conversations.map(item => item.id), ['conv-old']);
+    assert.deepEqual(runtime.current.memories.map(item => item.id), ['mem-old']);
+    runtime.unmount();
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('memory task polling keeps old memories and reports a failed refresh', async () => {
+  const originalFetch = global.fetch;
+  const toasts = [];
+  let memories = [{ id: 'mem-old', character_id: 'char-a', category: 'preference', content: 'keep me' }];
+
+  global.fetch = async input => {
+    const url = new URL(String(input), 'http://test.local');
+    if (url.pathname === '/api/memory-tasks') {
+      return jsonResponse({ status: 'done', mergeCount: 0, updatedAt: '2026-07-11T00:00:00.000Z' });
+    }
+    if (url.pathname === '/api/memories') {
+      return jsonResponse({ error: 'memory refresh failed' }, { status: 500 });
+    }
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryTaskPolling } = requireFreshWithMocks('../src/hooks/chat/useMemoryTaskPolling.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage: async () => ({ unextractedCount: 0, totalTokens: 0 }) },
+        });
+        return useMemoryTaskPolling;
+      },
+      () => ({
+        activeConvIdRef: { current: 'conv-a' },
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        setMemories: next => {
+          memories = typeof next === 'function' ? next(memories) : next;
+        },
+        showToast: (message, type) => toasts.push({ message, type }),
+        t: key => key,
+        getLoadedMessageCount: () => 0,
+        updateServerCounts: () => {},
+        pageSize: 20,
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.pollMemoryTask('conv-a');
+
+    assert.deepEqual(memories.map(item => item.id), ['mem-old']);
+    assert.deepEqual(toasts, [{ message: 'common.loadFailed: memory refresh failed', type: 'error' }]);
+    runtime.unmount();
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('memory task polling owns abort controllers per conversation and cleans them all up', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  const activeConvIdRef = { current: 'conv-a' };
+
+  global.fetch = (input, init = {}) => {
+    const url = new URL(String(input), 'http://test.local');
+    assert.equal(url.pathname, '/api/memory-tasks');
+    const deferred = createDeferred();
+    const request = {
+      convId: url.searchParams.get('conversation_id'),
+      signal: init.signal,
+      deferred,
+    };
+    requests.push(request);
+    init.signal?.addEventListener('abort', () => {
+      deferred.reject(new DOMException('Aborted', 'AbortError'));
+    }, { once: true });
+    return deferred.promise;
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryTaskPolling } = requireFreshWithMocks('../src/hooks/chat/useMemoryTaskPolling.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage: async () => ({ unextractedCount: 0, totalTokens: 0 }) },
+        });
+        return useMemoryTaskPolling;
+      },
+      () => ({
+        activeConvIdRef,
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        setMemories: () => {},
+        showToast: () => {},
+        t: key => key,
+        getLoadedMessageCount: () => 0,
+        updateServerCounts: () => {},
+        pageSize: 20,
+      }),
+    );
+
+    runtime.render();
+    const firstA = runtime.current.pollMemoryTask('conv-a');
+    const pollB = runtime.current.pollMemoryTask('conv-b');
+
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].convId, 'conv-a');
+    assert.equal(requests[0].signal.aborted, false, 'starting B must not cancel A');
+    assert.equal(requests[1].convId, 'conv-b');
+    assert.equal(requests[1].signal.aborted, false);
+
+    const replacementA = runtime.current.pollMemoryTask('conv-a');
+    assert.equal(requests.length, 3);
+    assert.equal(requests[0].signal.aborted, true, 'restarting A must cancel the old A poll');
+    assert.equal(requests[1].signal.aborted, false, 'restarting A must leave B running');
+    assert.equal(requests[2].signal.aborted, false);
+
+    runtime.unmount();
+    assert.equal(requests[1].signal.aborted, true, 'unmount must cancel B');
+    assert.equal(requests[2].signal.aborted, true, 'unmount must cancel replacement A');
+
+    await Promise.all([firstA, pollB, replacementA]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('memory task polling consumes non-abort failures and exposes an error toast', async () => {
+  const originalFetch = global.fetch;
+  const toasts = [];
+  const activeConvIdRef = { current: 'conv-a' };
+  global.fetch = async () => {
+    activeConvIdRef.current = 'conv-b';
+    throw new Error('poll transport failed');
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryTaskPolling } = requireFreshWithMocks('../src/hooks/chat/useMemoryTaskPolling.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage: async () => ({ unextractedCount: 0, totalTokens: 0 }) },
+        });
+        return useMemoryTaskPolling;
+      },
+      () => ({
+        activeConvIdRef,
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        setMemories: () => {},
+        showToast: (message, type) => toasts.push({ message, type }),
+        t: key => key,
+        getLoadedMessageCount: () => 0,
+        updateServerCounts: () => {},
+        pageSize: 20,
+      }),
+    );
+
+    runtime.render();
+    await assert.doesNotReject(runtime.current.pollMemoryTask('conv-a'));
+    assert.deepEqual(toasts, [{ message: 'common.loadFailed: poll transport failed', type: 'error' }]);
+    runtime.unmount();
   } finally {
     global.fetch = originalFetch;
   }
@@ -576,6 +791,115 @@ test('chat streaming marks an active stream in the ref before React applies stat
   assert.equal(runtime.current.activeStreams.has('conv-a'), true);
 });
 
+test('chat streaming restores the active conversation and ignores another stream finishing in the background', () => {
+  let activeConvId = 'conv-a';
+  let frameCallback = null;
+  const originalRequestAnimationFrame = global.requestAnimationFrame;
+  const originalCancelAnimationFrame = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => {
+    frameCallback = callback;
+    return 1;
+  };
+  global.cancelAnimationFrame = () => {};
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useChatStreaming } = requireFreshWithMocks('../src/hooks/chat/useChatStreaming.ts', {
+          react: reactMock,
+        });
+        return useChatStreaming;
+      },
+      () => ({ activeConvId }),
+    );
+
+    runtime.render();
+    runtime.current.beginStream('conv-a');
+    const scheduleFromAStart = runtime.current.scheduleStreamingText;
+    const finishFromAStart = runtime.current.finishStream;
+    scheduleFromAStart('conv-a', 'partial A');
+    frameCallback();
+    assert.equal(runtime.current.streamingText, 'partial A');
+
+    activeConvId = 'conv-b';
+    runtime.render();
+    runtime.render();
+    runtime.current.beginStream('conv-b');
+    runtime.current.scheduleStreamingText('conv-b', 'partial B');
+    frameCallback();
+    assert.equal(runtime.current.streamingText, 'partial B');
+
+    scheduleFromAStart('conv-a', 'continued A from old callback');
+    assert.equal(runtime.current.streamingText, 'partial B', 'an old A callback must not overwrite visible B text');
+
+    activeConvId = 'conv-a';
+    runtime.render();
+    runtime.render();
+    assert.equal(runtime.current.streamingText, 'continued A from old callback');
+
+    runtime.current.scheduleStreamingText('conv-a', 'continued A');
+    frameCallback();
+    assert.equal(runtime.current.streamingText, 'continued A');
+
+    runtime.current.finishStream('conv-b');
+    assert.equal(runtime.current.streamingText, 'continued A');
+    assert.equal(runtime.current.isLoading, true);
+    assert.equal(runtime.current.activeStreams.has('conv-a'), true);
+
+    finishFromAStart('conv-a');
+    assert.equal(runtime.current.streamingText, '');
+
+    runtime.current.beginStream('conv-a');
+    assert.equal(runtime.current.streamingText, '', 'finished streams must not retain their old buffer');
+  } finally {
+    global.requestAnimationFrame = originalRequestAnimationFrame;
+    global.cancelAnimationFrame = originalCancelAnimationFrame;
+  }
+});
+
+test('chat streaming old finish callback cannot clear the newly active conversation', () => {
+  let activeConvId = 'conv-a';
+  let frameCallback = null;
+  const originalRequestAnimationFrame = global.requestAnimationFrame;
+  const originalCancelAnimationFrame = global.cancelAnimationFrame;
+  global.requestAnimationFrame = callback => {
+    frameCallback = callback;
+    return 1;
+  };
+  global.cancelAnimationFrame = () => {};
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useChatStreaming } = requireFreshWithMocks('../src/hooks/chat/useChatStreaming.ts', {
+          react: reactMock,
+        });
+        return useChatStreaming;
+      },
+      () => ({ activeConvId }),
+    );
+
+    runtime.render();
+    runtime.current.beginStream('conv-a');
+    const finishFromAStart = runtime.current.finishStream;
+
+    activeConvId = 'conv-b';
+    runtime.render();
+    runtime.render();
+    runtime.current.beginStream('conv-b');
+    runtime.current.scheduleStreamingText('conv-b', 'visible B');
+    frameCallback();
+
+    finishFromAStart('conv-a');
+    assert.equal(runtime.current.streamingText, 'visible B');
+    assert.equal(runtime.current.isLoading, true);
+    assert.equal(runtime.current.activeStreams.has('conv-b'), true);
+  } finally {
+    global.requestAnimationFrame = originalRequestAnimationFrame;
+    global.cancelAnimationFrame = originalCancelAnimationFrame;
+  }
+});
+
 test('scroll controller observes a top sentinel that appears after the first effect pass', () => {
   const observed = [];
   const originalIntersectionObserver = global.IntersectionObserver;
@@ -709,6 +1033,86 @@ test('chat image generation aborts on active conversation change and skips stale
     assert.equal(messageWrites.length, 1, 'only the initial placeholder may be persisted before abort');
     assert.equal(localWrites.length, 1, 'stale prompt/image results must not write into the new conversation');
     assert.deepEqual(toasts, [{ message: 'chat.imageGenStart', type: 'info' }]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('chat image generation serializes the same message, keeps other messages concurrent, and clears busy state for retry', async () => {
+  const imageRequests = [];
+  const messages = ['msg-a', 'msg-b'].map((id, index) => ({
+    id,
+    conversation_id: 'conv-a',
+    role: 'assistant',
+    content: `draw ${id}`,
+    token_count: 0,
+    created_at: `2026-06-07T00:0${index}:00.000Z`,
+    metadata: {},
+  }));
+  const currentMessagesRef = { current: messages };
+  const messageWrites = [];
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname.startsWith('/api/messages/')) {
+      messageWrites.push(parsedUrl.pathname);
+      return jsonResponse({ ok: true });
+    }
+    if (parsedUrl.pathname === '/api/image-gen') {
+      const deferred = createDeferred();
+      imageRequests.push(deferred);
+      return deferred.promise;
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useChatImageGeneration } = requireFreshWithMocks('../src/hooks/chat/useChatImageGeneration.ts', {
+          react: reactMock,
+        });
+        return useChatImageGeneration;
+      },
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef: { current: 'conv-a' },
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        messagesRef: currentMessagesRef,
+        updateMessagesForConversation: (_conversationIdToUpdate, updater) => {
+          currentMessagesRef.current = updater(currentMessagesRef.current);
+        },
+        markSkipNextScroll: () => {},
+        showToast: () => {},
+        t: key => key,
+      }),
+    );
+
+    runtime.render();
+    const firstA = runtime.current.handleGenerateImage('msg-a', 'prompt a');
+    const duplicateA = runtime.current.handleGenerateImage('msg-a', 'prompt a duplicate');
+    const firstB = runtime.current.handleGenerateImage('msg-b', 'prompt b');
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepEqual([...runtime.current.generatingImageMessageIds].sort(), ['msg-a', 'msg-b']);
+    assert.equal(imageRequests.length, 2, 'same-message duplicate must be rejected while another message may run concurrently');
+    assert.equal(messageWrites.length, 2, 'only one placeholder write per message should occur');
+
+    imageRequests[0].resolve(jsonResponse({ url: '/generated/a.png' }));
+    imageRequests[1].resolve(jsonResponse({ url: '/generated/b.png' }));
+    await Promise.all([firstA, duplicateA, firstB]);
+
+    assert.deepEqual([...runtime.current.generatingImageMessageIds], []);
+
+    const retryA = runtime.current.handleGenerateImage('msg-a', 'prompt a retry');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...runtime.current.generatingImageMessageIds], ['msg-a']);
+    assert.equal(imageRequests.length, 3, 'finally must clear the guard so the same message can retry');
+
+    imageRequests[2].resolve(jsonResponse({ url: '/generated/a-retry.png' }));
+    await retryA;
+    assert.deepEqual([...runtime.current.generatingImageMessageIds], []);
   } finally {
     global.fetch = originalFetch;
   }

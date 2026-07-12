@@ -76,21 +76,19 @@ test('ChatView keeps stream chunks scoped to the active conversation and refresh
 
   const callStreamBlock = messageActionsHook.slice(callStreamStart, regenerateStart);
   const sendBlock = source.slice(sendStart, noCharacterStart);
-  const actionActiveConversationGuard = 'activeStreamConvRef.current === streamConversationId';
-  const sendActiveConversationGuard = 'activeStreamConvRef.current === myConvId && activeConvIdRef.current === myConvId';
-
-  assert.ok(callStreamBlock.includes(actionActiveConversationGuard), 'regeneration stream chunks should be guarded by active stream ownership');
-  assert.ok(callStreamBlock.includes('activeConvIdRef.current === streamConversationId'), 'regeneration stream chunks should be guarded by active conversation');
-  assert.ok(sendBlock.includes(sendActiveConversationGuard), 'send stream chunks should be guarded by active stream and active conversation');
+  const streamingHook = readProjectFile('src/hooks/chat/useChatStreaming.ts');
+  assert.ok(callStreamBlock.includes('scheduleStreamingText(streamConversationId, fullText)'), 'regeneration chunks should be tagged with their conversation');
+  assert.ok(sendBlock.includes('scheduleStreamingText(myConvId, fullText)'), 'send chunks should be tagged with their conversation');
+  assert.match(streamingHook, /if \(currentActiveConvIdRef\.current !== convId\) return;/, 'the streaming hook should guard old callbacks with the current active conversation ref');
   assert.ok(callStreamBlock.includes('void pollMemoryTask(streamConversationId);'), 'regeneration stream should still poll memory extraction tasks');
   assert.ok(sendBlock.includes('void pollMemoryTask(myConvId);'), 'send stream should still poll memory extraction tasks');
-  assert.ok(callStreamBlock.includes('await refreshMessages();'), 'regeneration stream should refresh the active message list when finished');
+  assert.ok(callStreamBlock.includes('await refreshMessagesForConversation(streamConversationId);'), 'regeneration stream should refresh its owning conversation when finished');
   assert.ok(sendBlock.includes('await refreshMessagesForConversation(myConvId);'), 'send stream should refresh the generated conversation when finished');
   assert.ok(callStreamBlock.includes('void refreshConversationState(undefined);'), 'regeneration stream should refresh conversations without changing active conversation');
   assert.ok(sendBlock.includes('void refreshConversationState(undefined);'), 'send stream should refresh conversations without changing active conversation');
 });
 
-test('useChatStreaming only clears visible streaming state for the finished display owner', () => {
+test('architecture contract: useChatStreaming only clears visible streaming state for the finished display owner', () => {
   const hook = readProjectFile('src/hooks/chat/useChatStreaming.ts');
 
   const finishStart = hook.indexOf('const finishStream = useCallback');
@@ -101,7 +99,7 @@ test('useChatStreaming only clears visible streaming state for the finished disp
   const finishBlock = hook.slice(finishStart, returnStart);
   assert.match(
     finishBlock,
-    /if \(activeStreamConvRef\.current === convId\) \{\s*activeStreamConvRef\.current = null;\s*setIsLoading\(false\);\s*setStreamingText\(''\);\s*setStreamingConvId\(null\);\s*\}/,
+    /if \(currentActiveConvIdRef\.current === convId\) \{\s*activeStreamConvRef\.current = null;\s*setIsLoading\(false\);\s*setStreamingText\(''\);\s*setStreamingConvId\(null\);\s*\}/,
     'a completed background stream must not clear another conversation stream that currently owns the visible streaming state',
   );
 });
@@ -131,7 +129,7 @@ test('useChatStreaming mirrors active streams into the ref during begin and fini
   );
 });
 
-test('ChatView prevents duplicate new-conversation sends before React state catches up', () => {
+test('architecture contract: ChatView delegates synchronous new-conversation send guarding', () => {
   const source = readChatView();
   const sendStart = source.indexOf('const handleSend = async');
   const noCharacterStart = source.indexOf('if (!hasCharacter)', sendStart);
@@ -140,12 +138,12 @@ test('ChatView prevents duplicate new-conversation sends before React state catc
 
   const sendBlock = source.slice(sendStart, noCharacterStart);
   assert.match(source, /const creatingConversationRef = useRef\(false\);/);
-  assert.match(sendBlock, /if \(!activeConvId && creatingConversationRef\.current\) return;/);
+  assert.match(sendBlock, /canBeginChatSend\(activeConvId, creatingConversationRef\.current, activeStreamsRef\.current\)/);
   assert.match(sendBlock, /creatingConversationRef\.current = true;/);
   assert.match(sendBlock, /creatingConversationRef\.current = false;/);
 });
 
-test('ChatView prevents duplicate existing-conversation sends with the synchronous active stream ref', () => {
+test('architecture contract: ChatView delegates existing-conversation guard to the synchronous stream ref', () => {
   const source = readChatView();
   const sendStart = source.indexOf('const handleSend = async');
   const noCharacterStart = source.indexOf('if (!hasCharacter)', sendStart);
@@ -153,7 +151,7 @@ test('ChatView prevents duplicate existing-conversation sends with the synchrono
   assert.notEqual(noCharacterStart, -1, 'missing handleSend end marker');
 
   const sendBlock = source.slice(sendStart, noCharacterStart);
-  assert.match(sendBlock, /if \(activeConvId && activeStreamsRef\.current\.has\(activeConvId\)\) return;/);
+  assert.match(sendBlock, /canBeginChatSend\(activeConvId, creatingConversationRef\.current, activeStreamsRef\.current\)/);
   assert.doesNotMatch(
     sendBlock,
     /if \(activeConvId && activeStreams\.has\(activeConvId\)\) return;/,

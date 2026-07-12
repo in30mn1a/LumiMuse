@@ -1,3 +1,5 @@
+import { sanitizeLogErrorMessage } from '@/lib/log-message-sanitizer';
+
 type LogLevel = 'info' | 'warn' | 'error';
 
 type SafeLogFields = Record<string, unknown>;
@@ -17,14 +19,12 @@ const SAFE_FIELDS = new Set([
   'attempt',
 ]);
 
-function serializeError(error: unknown): { name: string } | undefined {
+function serializeError(error: unknown): { name: string; message: string } | undefined {
   if (error instanceof Error) {
-    // Error.message 可能来自上游响应正文，并包含 prompt、消息、密钥或内部 URL。
-    // 关联日志只记录错误类别；面向用户的安全错误由各调用边界单独生成。
-    return { name: error.name };
+    return { name: error.name, message: sanitizeLogErrorMessage(error) };
   }
   if (error === undefined || error === null) return undefined;
-  return { name: 'Error' };
+  return { name: 'Error', message: sanitizeLogErrorMessage(error) };
 }
 
 export function structuredLog(

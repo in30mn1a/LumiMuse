@@ -1,8 +1,16 @@
 services:
   lumimuse:
-    build: .
+    build:
+      context: .
+      args:
+        LUMIMUSE_BUILD_SHA: ${LUMIMUSE_BUILD_SHA:-local}
     container_name: lumimuse
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "3000:3000"
     env_file:

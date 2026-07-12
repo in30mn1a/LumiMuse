@@ -7,6 +7,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
+import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -129,6 +130,9 @@ function ImportDialog({
   return (
     <Modal open onClose={onCancel} title={t('import.characterTitle')} maxWidth="max-w-sm">
       <p className="mb-3 text-sm text-text-muted">{t('import.characterHint')}</p>
+      <p className="mb-3 rounded-2xl border border-amber-200/70 bg-amber-50/70 px-4 py-3 text-xs leading-relaxed text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200">
+        {t('import.characterMemoryRisk')}
+      </p>
       <p className="mb-5 truncate rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-xs text-text-muted">{fileName}</p>
       <div className="space-y-2">
         <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
@@ -196,8 +200,21 @@ export default function CharacterEditor({ params }: Props) {
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/characters/${id}`).then(r => r.json()).then(setCharacter);
-  }, [id]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const loadedCharacter = await parseJsonResponse<Character>(await fetch(`/api/characters/${id}`));
+        if (!cancelled) setCharacter(loadedCharacter);
+      } catch (error) {
+        if (!cancelled) {
+          showToast(`${t('common.loadFailed')}: ${getErrorMessage(error)}`, 'error');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, showToast, t]);
 
   // beforeunload：dirty 时拦截浏览器关闭/刷新/前进后退，避免误丢修改。
   // 注意：现代浏览器会忽略我们设置的提示文案，统一显示其原生提示，但仍需调用以触发拦截。

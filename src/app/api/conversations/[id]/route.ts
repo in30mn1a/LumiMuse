@@ -78,7 +78,9 @@ export async function PUT(
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
 
-  updates.push("updated_at = datetime('now')");
+  const now = new Date().toISOString();
+  updates.push("updated_at = ?");
+  values.push(now);
   values.push(id);
   db.prepare(`UPDATE conversations SET ${updates.join(", ")} WHERE id = ?`).run(...values);
 

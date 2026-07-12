@@ -12,6 +12,24 @@ const EXTRACTING_SIGNAL = JSON.stringify({ status: 'extracting' });
 const STREAM_CLOSE_DELAY_MS = 100;
 const UNKNOWN_ERROR_LABEL = 'Unknown error';
 
+// 与 isMemoryProcessed() 的 JavaScript truthiness 语义保持一致：
+// memory_extracted 的非空字符串、非零数字、true、数组或对象均视为已处理；
+// memory_noop_extracted_at 只有 JSON string 类型才视为已处理。
+const MEMORY_PROCESSED_SQL = `
+  CASE WHEN json_valid(metadata) THEN
+    CASE
+      WHEN json_type(metadata, '$.memory_noop_extracted_at') = 'text' THEN 1
+      WHEN json_type(metadata, '$.memory_extracted') = 'true' THEN 1
+      WHEN json_type(metadata, '$.memory_extracted') IN ('integer', 'real')
+        AND json_extract(metadata, '$.memory_extracted') != 0 THEN 1
+      WHEN json_type(metadata, '$.memory_extracted') = 'text'
+        AND json_extract(metadata, '$.memory_extracted') != '' THEN 1
+      WHEN json_type(metadata, '$.memory_extracted') IN ('array', 'object') THEN 1
+      ELSE 0
+    END
+  ELSE 0 END
+`;
+
 function isMemoryProcessed(message: Message): boolean {
   return Boolean(
     message.metadata.memory_extracted ||
@@ -123,14 +141,36 @@ export async function POST(request: NextRequest) {
             // 尽快下发、流尽快关闭；消息保存仍由 runChat 内部同步完成，不会丢消息。
             queueMicrotask(() => {
               try {
-                const allMessages = serializeTypedMessages(
+                const earliestUnprocessed = db.prepare(`
+                  SELECT created_at, seq
+                  FROM messages
+                  WHERE conversation_id = ?
+                    AND role = 'user'
+                    AND NOT (${MEMORY_PROCESSED_SQL})
+                  ORDER BY created_at ASC, seq ASC
+                  LIMIT 1
+                `).get(conversation_id) as { created_at: string; seq: number } | undefined;
+
+                if (!earliestUnprocessed) return;
+
+                // 只读取从最早未处理 user 开始的后缀。该后缀仍包含所有后续 user，
+                // 以及构建提取批次时可能需要的紧邻 assistant，顺序与原全量查询一致。
+                const suffixMessages = serializeTypedMessages(
                   db.prepare(
-                    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-                  ).all(conversation_id) as Message[]
+                    `SELECT * FROM messages
+                     WHERE conversation_id = ?
+                       AND (created_at > ? OR (created_at = ? AND seq >= ?))
+                     ORDER BY created_at ASC, seq ASC`
+                  ).all(
+                    conversation_id,
+                    earliestUnprocessed.created_at,
+                    earliestUnprocessed.created_at,
+                    earliestUnprocessed.seq,
+                  ) as Message[]
                 );
 
                 // 未提取的用户消息（排除 summary 类型）
-                const unextracted = allMessages.filter(
+                const unextracted = suffixMessages.filter(
                   message => message.role === 'user' && !isMemoryProcessed(message)
                 );
 
@@ -141,7 +181,7 @@ export async function POST(request: NextRequest) {
                 const unextractedIds = new Set(unextracted.map(m => m.id));
                 const extractionMessages: Message[] = [];
                 let includeNext = false;
-                for (const msg of allMessages) {
+                for (const msg of suffixMessages) {
                   if (msg.metadata.isSummary) continue;
                   if (unextractedIds.has(msg.id)) {
                     extractionMessages.push(msg);
@@ -176,9 +216,15 @@ export async function POST(request: NextRequest) {
                 // 3. 固定时间间隔触发：检查距离上次提取是否超过设定小时数
                 if (!shouldExtract && settings.memory_trigger_time_enabled && unextracted.length > 0) {
                   const hours = settings.memory_trigger_time_hours || 24;
-                  const lastExtractedMsg = allMessages
-                    .filter(m => m.role === 'user' && isMemoryProcessed(m))
-                    .pop();
+                  const lastExtractedMsg = db.prepare(`
+                    SELECT created_at
+                    FROM messages
+                    WHERE conversation_id = ?
+                      AND role = 'user'
+                      AND (${MEMORY_PROCESSED_SQL})
+                    ORDER BY created_at DESC, seq DESC
+                    LIMIT 1
+                  `).get(conversation_id) as { created_at: string } | undefined;
                   const lastExtractedTime = lastExtractedMsg ? new Date(lastExtractedMsg.created_at).getTime() : 0;
                   const now = Date.now();
                   if (now - lastExtractedTime >= hours * 60 * 60 * 1000) {

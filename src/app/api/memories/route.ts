@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { Memory, MEMORY_KINDS, MEMORY_STATUSES, MemoryKind, MemoryStatus } from '@/types';
+import { Memory, MEMORY_STATUSES, MemoryStatus } from '@/types';
 import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-category';
+import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { memoryCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
@@ -12,69 +13,12 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, char => `\\${char}`);
 }
 
-function parseJsonArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
-  if (typeof value !== 'string') return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-function parseJsonObject(value: unknown): Record<string, unknown> {
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
-  if (typeof value !== 'string') return {};
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
-
-function toNumber(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function normalizeMemoryKind(value: unknown, fallback: MemoryKind): MemoryKind {
-  return typeof value === 'string' && (MEMORY_KINDS as readonly string[]).includes(value)
-    ? value as MemoryKind
-    : fallback;
-}
-
-function normalizeMemoryStatus(value: unknown): MemoryStatus {
-  return typeof value === 'string' && (MEMORY_STATUSES as readonly string[]).includes(value)
-    ? value as MemoryStatus
-    : 'active';
-}
-
 function parseMemoryStatusFilter(value: string | null): MemoryStatus[] {
   if (!value) return [];
   return value
     .split(',')
     .map(status => status.trim())
     .filter((status): status is MemoryStatus => (MEMORY_STATUSES as readonly string[]).includes(status));
-}
-
-function normalizeMemoryRecord(record: Record<string, unknown>): Memory {
-  const category = normalizeMemoryCategory(String(record.category || '话题历史'));
-  const defaults = inferMemoryDefaults(category);
-  return {
-    ...record,
-    category,
-    tags: parseJsonArray(record.tags),
-    source_msg_ids: parseJsonArray(record.source_msg_ids),
-    memory_kind: normalizeMemoryKind(record.memory_kind, defaults.memory_kind),
-    importance: toNumber(record.importance, defaults.importance),
-    emotional_weight: toNumber(record.emotional_weight, defaults.emotional_weight),
-    status: normalizeMemoryStatus(record.status),
-    pinned: record.pinned === true || record.pinned === 1,
-    last_used_at: typeof record.last_used_at === 'string' ? record.last_used_at : null,
-    usage_count: toNumber(record.usage_count, 0),
-    metadata: parseJsonObject(record.metadata),
-  } as Memory;
 }
 
 export async function GET(request: NextRequest) {
@@ -137,8 +81,8 @@ export async function GET(request: NextRequest) {
     params.push(limit, offset);
   }
 
-  const memories = db.prepare(sql).all(...params) as Record<string, unknown>[];
-  const normalized = memories.map(normalizeMemoryRecord);
+  const memories = db.prepare(sql).all(...params) as Memory[];
+  const normalized = memories.map(normalizeMemoryRow);
 
   if (shouldPaginate) {
     return NextResponse.json({
@@ -271,6 +215,6 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const memory = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Record<string, unknown>;
-  return NextResponse.json(normalizeMemoryRecord(memory), { status: 201 });
+  const memory = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory;
+  return NextResponse.json(normalizeMemoryRow(memory), { status: 201 });
 }

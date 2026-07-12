@@ -115,7 +115,7 @@ function resolvePostApiKey(
 async function handle(params: ModelsRequestParams): Promise<NextResponse> {
   const { apiBase, apiKey, forceRefresh } = params;
   if (!apiBase || !apiKey) {
-    return NextResponse.json({ models: [], error: '请先配置 API 地址和密钥' });
+    return NextResponse.json({ models: [], error: '请先配置 API 地址和密钥' }, { status: 400 });
   }
 
   const db = getDb();
@@ -140,7 +140,10 @@ async function handle(params: ModelsRequestParams): Promise<NextResponse> {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) {
-      return NextResponse.json({ models: [], error: `获取失败: ${res.status}` });
+      return NextResponse.json(
+        { models: [], error: `获取模型列表失败（上游状态 ${res.status}）` },
+        { status: 502 },
+      );
     }
     const data = await res.json();
     const models: string[] = (data.data || data.models || [])
@@ -156,7 +159,7 @@ async function handle(params: ModelsRequestParams): Promise<NextResponse> {
     `).run(apiBase, JSON.stringify(models), now);
 
     return NextResponse.json({ models, error: null, cached: false });
-  } catch (err) {
+  } catch {
     // 拉取失败时尝试返回旧缓存
     const stale = db.prepare('SELECT models FROM model_cache WHERE api_base = ?').get(apiBase) as
       | { models: string }
@@ -164,7 +167,7 @@ async function handle(params: ModelsRequestParams): Promise<NextResponse> {
     if (stale) {
       return NextResponse.json({ models: JSON.parse(stale.models), error: '网络错误，显示上次缓存', cached: true });
     }
-    return NextResponse.json({ models: [], error: String(err) });
+    return NextResponse.json({ models: [], error: '无法连接模型服务' }, { status: 502 });
   }
 }
 

@@ -1,3 +1,5 @@
+import { DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET } from '@/lib/memory-prompt-contract';
+
 export interface Character {
   id: string;
   name: string;
@@ -33,6 +35,13 @@ export interface MessageAttachment {
   mimeType: string;
 }
 
+export interface MessageTokenCountProvenance {
+  source: 'server';
+  version: number;
+  algorithm: string;
+  fingerprint: string;
+}
+
 /** 消息历史版本（重新生成时旧内容存入 metadata.versions） */
 export interface MessageVersion {
   content: string;
@@ -64,10 +73,13 @@ export interface GeneratedImage {
  * 仍保留索引签名以兼容历史字段或第三方扩展，但新代码应优先访问正式字段。
  */
 export interface MessageMetadata {
+  // Wire compatibility: legacy metadata intentionally mixes snake_case (`memory_extracted`)
+  // and camelCase (`summarizedIds`, `generatedImages`). Do not rename these persisted keys.
   isSummary?: boolean;
   summarizedIds?: string[];
   memory_extracted?: boolean;
   attachments?: MessageAttachment[];
+  token_count_provenance?: MessageTokenCountProvenance;
   versions?: MessageVersion[];
   generatedImages?: GeneratedImage[];
   /** 内联生图提示词：AI 回复中 [IMG]...[/IMG] 提取出的提示词，出图时直接复用 */
@@ -297,7 +309,7 @@ export const DEFAULT_MEMORY_ENGINE_SETTINGS: MemoryEngineSettings = {
   reranker_api_key: '',
   reranker_model: '',
   fallback_local_enabled: true,
-  memory_package_token_budget: 12000,
+  memory_package_token_budget: DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET,
   retrieval_token_budget: 8000,
   vector_top_k: 80,
   keyword_top_k: 20,

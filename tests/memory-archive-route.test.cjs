@@ -335,3 +335,76 @@ test('/api/memory-archive ai_archive deduplicates valid LLM archive IDs before e
   }]);
   assert.equal(triggerCalls, 1);
 });
+
+test('/api/memory-archive ai_archive extracts one balanced object from prose with escaped delimiters and multiple JSON blocks', async () => {
+  const db = createArchiveRouteDb();
+  insertMemory(db, 'mem-complex');
+  insertMemory(db, 'mem-ignored');
+  const expectedSummary = '摘要含有 } ]、"引号" 与 C:\\tmp\\archive 路径';
+
+  const route = requireFreshWithMocks('../src/app/api/memory-archive/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://llm.example/v1',
+        api_key: 'llm-secret',
+        model: 'chat-model',
+        max_tokens: 1024,
+      }),
+      resolveBackgroundConfig: () => ({
+        api_base: 'https://llm.example/v1',
+        api_key: 'llm-secret',
+        model: 'chat-model',
+      }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async () => [
+        '归档计划如下：',
+        JSON.stringify({
+          archive_memory_ids: ['mem-complex'],
+          summary: expectedSummary,
+        }),
+        '以下是另一个不应合并进主对象的块：',
+        JSON.stringify({ archive_memory_ids: ['mem-ignored'], summary: '错误摘要' }),
+      ].join('\n'),
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({
+    action: 'ai_archive',
+    character_id: 'char-a',
+  }));
+  const payload = await response.json();
+  const rows = db.prepare(`
+    SELECT id, status
+    FROM memories
+    WHERE id IN ('mem-complex', 'mem-ignored')
+    ORDER BY id
+  `).all();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.status, 'archived');
+  assert.equal(payload.summary, expectedSummary);
+  assert.deepEqual(payload.plan.summaryMemory.metadata.coveredMemoryIds, ['mem-complex']);
+  assert.deepEqual(rows, [
+    { id: 'mem-complex', status: 'archived' },
+    { id: 'mem-ignored', status: 'active' },
+  ]);
+});

@@ -173,3 +173,81 @@ test('/api/summarize POST redacts sensitive upstream error details', async () =>
   assert.doesNotMatch(payload.error, /plain-secret/);
   assert.doesNotMatch(payload.error, /sk-second-secret-987654321/);
 });
+
+test('/api/summarize applies one combined deadline signal to fetch and SSE and returns structured 504', async () => {
+  const requestController = new AbortController();
+  let fetchSignal;
+  let parserSignal;
+  let cancelCount = 0;
+  const reader = {
+    async cancel() {
+      cancelCount += 1;
+    },
+  };
+  const route = requireFreshWithMocks('../src/app/api/summarize/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createSummarizeDb() },
+    '@/lib/memory-profile': {
+      readMemoryProfile() { return null; },
+      renderMemoryProfile() { return ''; },
+    },
+    '@/lib/settings': {
+      loadSettings() {
+        return {
+          max_tokens: 1024,
+          temperature: 0.7,
+          memory_background_timeout_ms: 10,
+        };
+      },
+      resolveBackgroundConfig() {
+        return {
+          api_base: 'https://llm.example/v1',
+          api_key: 'summary-secret',
+          model: 'summary-model',
+        };
+      },
+      buildBackgroundChatExtraBody() {
+        return {};
+      },
+    },
+    '@/lib/ssrf-guard': {
+      async safeFetch(_url, init) {
+        fetchSignal = init.signal;
+        return {
+          ok: true,
+          body: { getReader: () => reader },
+        };
+      },
+    },
+    '@/lib/sse-parser': {
+      parseSseStream: async (_reader, _onEvent, options) => {
+        parserSignal = options.signal;
+        return new Promise((resolve, reject) => {
+          const fallback = setTimeout(() => reject(new Error('deadline signal was not applied')), 100);
+          options.signal.addEventListener('abort', () => {
+            clearTimeout(fallback);
+            reject(options.signal.reason);
+          }, { once: true });
+        });
+      },
+    },
+  });
+
+  const request = {
+    signal: requestController.signal,
+    async json() {
+      return { conversation_id: 'conv-a' };
+    },
+  };
+  const response = await route.POST(request);
+  const payload = await response.json();
+
+  assert.equal(response.status, 504);
+  assert.equal(payload.code, 'UPSTREAM_TIMEOUT');
+  assert.equal(typeof payload.error, 'string');
+  assert.equal(fetchSignal, parserSignal);
+  assert.notEqual(fetchSignal, requestController.signal);
+  assert.equal(fetchSignal.aborted, true);
+  assert.equal(requestController.signal.aborted, false);
+  assert.equal(cancelCount, 1);
+});

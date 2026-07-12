@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-category';
+import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
-import { Memory, MEMORY_KINDS, MEMORY_STATUSES, MemoryKind, MemoryStatus } from '@/types';
+import { Memory } from '@/types';
 import { formatZodFieldErrors, memoryCreateSchema } from '@/lib/schemas';
 
 type CandidateRow = {
@@ -35,41 +36,6 @@ function parseJsonArray(value: unknown): string[] {
   } catch {
     return [];
   }
-}
-
-function toNumber(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function normalizeMemoryKind(value: unknown, fallback: MemoryKind): MemoryKind {
-  return typeof value === 'string' && (MEMORY_KINDS as readonly string[]).includes(value)
-    ? value as MemoryKind
-    : fallback;
-}
-
-function normalizeMemoryStatus(value: unknown): MemoryStatus {
-  return typeof value === 'string' && (MEMORY_STATUSES as readonly string[]).includes(value)
-    ? value as MemoryStatus
-    : 'active';
-}
-
-function normalizeMemoryRecord(record: Record<string, unknown>): Memory {
-  const category = normalizeMemoryCategory(String(record.category || '话题历史'));
-  const defaults = inferMemoryDefaults(category);
-  return {
-    ...record,
-    category,
-    tags: parseJsonArray(record.tags),
-    source_msg_ids: parseJsonArray(record.source_msg_ids),
-    memory_kind: normalizeMemoryKind(record.memory_kind, defaults.memory_kind),
-    importance: toNumber(record.importance, defaults.importance),
-    emotional_weight: toNumber(record.emotional_weight, defaults.emotional_weight),
-    status: normalizeMemoryStatus(record.status),
-    pinned: record.pinned === true || record.pinned === 1,
-    last_used_at: typeof record.last_used_at === 'string' ? record.last_used_at : null,
-    usage_count: toNumber(record.usage_count, 0),
-    metadata: parseJsonObject(record.metadata),
-  } as Memory;
 }
 
 async function readJsonBody(request: NextRequest): Promise<Record<string, unknown> | null> {
@@ -191,6 +157,6 @@ export async function POST(
     });
   }
 
-  const created = db.prepare('SELECT * FROM memories WHERE id = ?').get(memoryId) as Record<string, unknown>;
-  return NextResponse.json({ ok: true, memory: normalizeMemoryRecord(created) }, { status: 201 });
+  const created = db.prepare('SELECT * FROM memories WHERE id = ?').get(memoryId) as Memory;
+  return NextResponse.json({ ok: true, memory: normalizeMemoryRow(created) }, { status: 201 });
 }

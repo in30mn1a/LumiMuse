@@ -25,6 +25,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.selectConv': '选择对话',
     'chat.newChat': '新对话',
     'chat.newChatDefault': '新的对话',
+    'chat.greetingCreateFailed': '新对话已创建，但开场白保存失败',
     'chat.start': '从这里开始输入第一句吧',
     'chat.renameTitle': '重命名对话',
     'chat.renamePlaceholder': '输入新的对话名称',
@@ -326,6 +327,9 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.memoryAiReview': 'AI 整理',
     'settings.memoryDiagnosticsIndex': '索引 ready/total',
     'settings.memoryDiagnosticsTasks': '任务 pending/processing/failed',
+    'settings.memoryDiagnosticsExtractionQueue': '提取队列 pending/processing/failed',
+    'settings.memoryDiagnosticsProfileQueue': '画像队列 pending/processing/failed',
+    'settings.memoryDiagnosticsEmbeddingQueue': 'Embedding 队列 pending/processing/failed',
     'settings.memoryDiagnosticsCandidates': '候选 repairable',
     'settings.memoryDiagnosticsProfile': '画像字段',
     'settings.memoryDiagnosticsArchive': '归档数',
@@ -648,6 +652,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'import.characterTitle': '导入到当前角色',
     'import.characterHint': '只会导入到当前正在编辑的角色，可选择覆盖表单资料或追加它的记忆/对话',
+    'import.characterMemoryRisk': '请仅导入可信来源的角色卡。第三方角色卡中的对话和记忆可能长期保存在本地，并影响后续记忆提取与角色表现。',
     'import.apply': '导入',
     'import.characterSuccess': '导入完成：{memories} 条记忆，{conversations} 段对话。角色资料如有勾选，会先覆盖当前表单，保存后生效',
     'import.successPrefix': '导入完成：',
@@ -714,6 +719,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.attachTextWarn': '{name} 文本文件超过 200KB，可能导致 token 过多',
     'input.attachUnsupported': '{name} 不支持的格式（支持 JPG、PNG、TXT、MD、JSON 等文本文件）',
     'input.attachUploadFail': '{name} 上传失败',
+    'input.remoteMarkdownImagePrivacy': '隐私提示：聊天消息中的远程 Markdown 图片会让浏览器向第三方地址发起请求，可能暴露 IP 等网络信息。',
 
     // 全局搜索
     'search.dialogLabel': '搜索',
@@ -768,6 +774,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.selectConv': 'Select conversation',
     'chat.newChat': 'New chat',
     'chat.newChatDefault': 'New conversation',
+    'chat.greetingCreateFailed': 'Conversation created, but the greeting could not be saved',
     'chat.start': 'Start typing your first message here',
     'chat.renameTitle': 'Rename conversation',
     'chat.renamePlaceholder': 'Enter a new conversation name',
@@ -1069,6 +1076,9 @@ const translations: Record<Lang, Record<string, string>> = {
     'settings.memoryAiReview': 'AI Review',
     'settings.memoryDiagnosticsIndex': 'Index ready/total',
     'settings.memoryDiagnosticsTasks': 'Tasks pending/processing/failed',
+    'settings.memoryDiagnosticsExtractionQueue': 'Extraction pending/processing/failed',
+    'settings.memoryDiagnosticsProfileQueue': 'Profile pending/processing/failed',
+    'settings.memoryDiagnosticsEmbeddingQueue': 'Embedding pending/processing/failed',
     'settings.memoryDiagnosticsCandidates': 'Candidates repairable',
     'settings.memoryDiagnosticsProfile': 'Profile fields',
     'settings.memoryDiagnosticsArchive': 'Archived',
@@ -1391,6 +1401,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'import.characterTitle': 'Import to current character',
     'import.characterHint': 'Only imports into the character currently being edited. You can overwrite form fields or append its memories/conversations.',
+    'import.characterMemoryRisk': 'Only import character cards from sources you trust. Conversations and memories in third-party cards may be stored locally long term and influence future memory extraction and character behavior.',
     'import.apply': 'Import',
     'import.characterSuccess': 'Import complete: {memories} memories, {conversations} conversations. Checked profile fields are applied to the form and need saving.',
     'import.successPrefix': 'Import complete: ',
@@ -1457,6 +1468,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.attachTextWarn': '{name} text file exceeds 200KB and may use too many tokens',
     'input.attachUnsupported': '{name} unsupported format (supported: JPG, PNG, TXT, MD, JSON, etc.)',
     'input.attachUploadFail': '{name} upload failed',
+    'input.remoteMarkdownImagePrivacy': 'Privacy notice: remote Markdown images in chat messages make browser requests to third-party addresses and may expose network information such as your IP address.',
 
     // Global search
     'search.dialogLabel': 'Search',

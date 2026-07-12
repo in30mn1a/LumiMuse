@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
       memory_embeddings: embeddings,
     };
 
-    return new Response(JSON.stringify(payload, null, 2), {
+    return new Response(JSON.stringify(payload), {
       headers: {
         'Content-Type': 'application/json',
         'Content-Disposition': `attachment; filename="lumimuse-character-${id}.json"`,
@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
   ].filter(Boolean).join('-');
   const filename = `lumimuse-${parts}-${new Date().toISOString().slice(0, 10)}.json`;
 
-  return new Response(JSON.stringify(payload, null, 2), {
+  return new Response(JSON.stringify(payload), {
     headers: {
       'Content-Type': 'application/json',
       'Content-Disposition': `attachment; filename="${filename}"`,

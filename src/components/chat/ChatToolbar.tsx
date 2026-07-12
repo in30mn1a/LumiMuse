@@ -67,7 +67,7 @@ function ChatToolbarImpl({
           </button>
         )}
         {memoryExtractStatus !== 'idle' && (
-          <span className={`chip text-[10px] md:text-xs transition-opacity ${
+          <span role="status" aria-live="polite" aria-atomic="true" className={`chip text-[10px] md:text-xs transition-opacity ${
             memoryExtractStatus === 'extracting'
               ? 'text-purple-600 border-purple-200 bg-purple-50/80 animate-pulse'
               : memoryExtractStatus === 'done'

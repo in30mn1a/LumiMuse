@@ -474,6 +474,77 @@ test('/api/image-gen still persists normal small remote images', async () => {
   assert.equal(harness.writes[0].size, pngBytes().byteLength);
 });
 
+test('/api/image-gen sends the exact SD WebUI txt2img payload with a composed signal', async () => {
+  let capturedInit;
+  const harness = createImageGenHarness({
+    imageGenSettings: sdSettings({
+      quality_tags: 'masterpiece, best quality',
+      sd_negative_prompt: 'saved negative',
+      sd_steps: 28,
+      sd_cfg_scale: 6.5,
+      sd_width: 640,
+      sd_height: 960,
+      sd_sampler: 'DPM++ 2M',
+      generate_timeout_ms: 5000,
+    }),
+    safeFetchImpl: async (url, init) => {
+      assert.equal(url, 'https://sd.example/sdapi/v1/txt2img');
+      capturedInit = init;
+      return new Response(JSON.stringify({
+        images: [Buffer.from(pngBytes()).toString('base64')],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const response = await harness.route.POST(jsonRequest({
+    prompt: '1girl, rainy library',
+    negative_prompt: 'request negative',
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.url, '/api/files/generated/11111111-1111-4111-8111-111111111111.png');
+  assert.equal(capturedInit.method, 'POST');
+  assert.equal(capturedInit.headers['Content-Type'], 'application/json');
+  assert.ok(capturedInit.signal instanceof AbortSignal);
+  assert.deepEqual(JSON.parse(capturedInit.body), {
+    prompt: 'masterpiece, best quality, 1girl, rainy library',
+    negative_prompt: 'request negative',
+    steps: 28,
+    cfg_scale: 6.5,
+    width: 640,
+    height: 960,
+    sampler_name: 'DPM++ 2M',
+    batch_size: 1,
+    n_iter: 1,
+  });
+  assert.equal(harness.writes.length, 1);
+});
+
+test('/api/image-gen aborts a stalled SD WebUI request at generate_timeout_ms', async () => {
+  let upstreamSignal;
+  const harness = createImageGenHarness({
+    imageGenSettings: sdSettings({ generate_timeout_ms: 40 }),
+    safeFetchImpl: async (_url, init) => {
+      upstreamSignal = init.signal;
+      return rejectWhenAborted(init.signal, 'SD WebUI');
+    },
+  });
+
+  const response = await withSilencedConsoleError(
+    () => harness.route.POST(jsonRequest({ prompt: 'stalled sd request' })),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 500);
+  assert.match(body.error, /SD WebUI 出图超时或已取消/);
+  assert.equal(upstreamSignal.aborted, true);
+  assert.deepEqual(harness.writes, []);
+});
+
 test('/api/image-gen writes ComfyUI prompt placeholders through parsed JSON values', async () => {
   let queuedWorkflow = null;
   const smallImage = streamResponse([pngBytes()]);

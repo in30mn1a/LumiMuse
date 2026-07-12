@@ -178,6 +178,52 @@ test('memory profile loading stays true when an older request finishes after a n
   }
 });
 
+test('memory profile init preserves the no_active_memories business result while using HTTP errors', async () => {
+  const toastMessages = [];
+  const memoryManagementCharacterIdRef = { current: 'A' };
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname === '/api/memory-profile' && init.method === 'POST') {
+      return jsonResponse({ ok: false, error: 'no_active_memories' }, { status: 400 });
+    }
+    if (parsedUrl.pathname === '/api/memory-profile') {
+      return jsonResponse({ profile: null, versions: [], tasks: [] });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryProfilePanel } = requireFreshWithMocks('../src/hooks/settings/useMemoryProfilePanel.ts', {
+          react: reactMock,
+        });
+        return useMemoryProfilePanel;
+      },
+      () => ({
+        characterId: memoryManagementCharacterIdRef.current,
+        memoryManagementCharacterIdRef,
+        loadMemoryDiagnostics: async () => {},
+        t: key => key,
+        showToast: (message, type) => toastMessages.push({ message, type }),
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.handleMemoryProfileAction('init_from_memories');
+
+    assert.equal(runtime.current.memoryProfileActionLoading, false);
+    assert.deepEqual(toastMessages, [
+      { message: 'settings.memoryProfileInitFromMemoriesStarted', type: 'success' },
+      { message: 'settings.memoryProfileInitFromMemoriesNoMemories', type: 'error' },
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('memory archive AI state is aborted and cleared on character change without writing old results', async () => {
   const aiArchiveRequest = createDeferred();
   const followUpRequests = [];
@@ -621,6 +667,60 @@ test('memory archive AI failure shows an error without reporting success or appl
     assert.equal(runtime.current.memoryArchiveError, 'archive failed');
     assert.equal(runtime.current.memoryArchivePlan, null);
     assert.deepEqual(toastMessages, [{ message: 'archive failed', type: 'error' }]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('memory archive batch detail keeps old state and exposes non-2xx or invalid-shape errors', async () => {
+  const memoryManagementCharacterIdRef = { current: 'A' };
+  const responses = [
+    jsonResponse({
+      ok: true,
+      covered: [{ id: 'memory-1', category: 'fact', content: 'kept detail', status: 'summarized' }],
+      summary: { id: 'summary-1', content: 'kept summary' },
+    }),
+    jsonResponse({ error: 'detail failed' }, { status: 500 }),
+    jsonResponse({ ok: true, covered: 'not-an-array', summary: null }),
+  ];
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    const response = responses.shift();
+    assert.ok(response, 'unexpected extra request');
+    return response;
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryArchivePanel } = requireFreshWithMocks('../src/hooks/settings/useMemoryArchivePanel.ts', {
+          react: reactMock,
+        });
+        return useMemoryArchivePanel;
+      },
+      () => ({
+        characterId: memoryManagementCharacterIdRef.current,
+        memoryManagementCharacterIdRef,
+        loadMemoryDiagnostics: async () => {},
+        loadMemoryIndexStatus: async () => {},
+        t: key => key,
+        showToast: () => {},
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.loadMemoryArchiveBatchDetail('batch-1');
+    const oldDetail = runtime.current.memoryArchiveBatchDetail;
+    assert.equal(oldDetail.summary.content, 'kept summary');
+
+    await runtime.current.loadMemoryArchiveBatchDetail('batch-1');
+    assert.deepEqual(runtime.current.memoryArchiveBatchDetail, oldDetail);
+    assert.equal(runtime.current.memoryArchiveError, 'detail failed');
+
+    await runtime.current.loadMemoryArchiveBatchDetail('batch-1');
+    assert.deepEqual(runtime.current.memoryArchiveBatchDetail, oldDetail);
+    assert.match(runtime.current.memoryArchiveError, /Invalid memory archive batch detail response/);
   } finally {
     global.fetch = originalFetch;
   }

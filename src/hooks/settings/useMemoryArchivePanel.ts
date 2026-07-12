@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type MutableRefObject } from 'react';
-import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { HttpResponseError, expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
 import type { ToastType } from '@/components/ui/Toast';
 
 export interface MemoryArchiveSelectableMemory {
@@ -27,6 +27,40 @@ export interface MemoryArchivePlan {
 interface MemoryArchiveBatchDetail {
   covered: Array<{ id: string; category: string; content: string; status: string }>;
   summary: { id: string; content: string } | null;
+}
+
+interface MemoryArchiveAiResponse {
+  ok: true;
+  status?: string;
+  archive_count?: number;
+  summary?: string;
+  message?: string;
+  batch_id?: string;
+  plan?: MemoryArchivePlan;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseMemoryArchiveAiResponse(response: Response, data: unknown): MemoryArchiveAiResponse {
+  if (!isRecord(data) || data.ok !== true) {
+    throw new HttpResponseError('Invalid memory archive AI response', response.status, data);
+  }
+  return data as unknown as MemoryArchiveAiResponse;
+}
+
+function parseMemoryArchiveBatchDetail(response: Response, data: unknown): MemoryArchiveBatchDetail {
+  const summary = isRecord(data) ? data.summary : undefined;
+  if (
+    !isRecord(data)
+    || data.ok !== true
+    || !Array.isArray(data.covered)
+    || !(summary === null || (isRecord(summary) && typeof summary.id === 'string' && typeof summary.content === 'string'))
+  ) {
+    throw new HttpResponseError('Invalid memory archive batch detail response', response.status, data);
+  }
+  return data as unknown as MemoryArchiveBatchDetail;
 }
 
 interface UseMemoryArchivePanelOptions {
@@ -345,19 +379,11 @@ export function useMemoryArchivePanel({
         body: JSON.stringify({ action: 'ai_archive', character_id: requestedCharacterId }),
         signal: controller.signal,
       });
-      const result = await res.json().catch(() => null) as {
-        ok?: boolean; status?: string; archive_count?: number;
-        summary?: string; error?: string; message?: string; detail?: string;
-        batch_id?: string; plan?: MemoryArchivePlan;
-      } | null;
+      const result = parseMemoryArchiveAiResponse(res, await parseJsonResponse<unknown>(res));
 
       if (!isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)) return;
 
-      if (!result || result.ok === false) {
-        const msg = result?.error || result?.message || t('settings.memoryArchiveAiFailed');
-        showToast(msg, 'error');
-        setMemoryArchiveError(msg);
-      } else if (result.status === 'no_archive_needed') {
+      if (result.status === 'no_archive_needed') {
         showToast(result.message || t('settings.memoryArchiveAiNoArchiveNeeded'), 'success');
         setMemoryArchivePlan(null);
       } else if (result.plan) {
@@ -387,7 +413,7 @@ export function useMemoryArchivePanel({
       }
       if (!isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)) return;
       const msg = getErrorMessage(err);
-      showToast(`${t('settings.memoryArchiveAiFailed')}: ${msg}`, 'error');
+      showToast(err instanceof HttpResponseError ? msg : `${t('settings.memoryArchiveAiFailed')}: ${msg}`, 'error');
       setMemoryArchiveError(msg);
     } finally {
       if (memoryArchiveAiControllerRef.current === controller) {
@@ -419,19 +445,14 @@ export function useMemoryArchivePanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const data = await res.json() as {
-        ok?: boolean;
-        covered?: Array<{ id: string; category: string; content: string; status: string }>;
-        summary?: { id: string; content: string } | null;
-      };
+      const data = parseMemoryArchiveBatchDetail(res, await parseJsonResponse<unknown>(res));
       if (!isCurrentMemoryArchiveDetailRequest(requestedCharacterId, requestSeq)) return;
-      if (data.ok) {
-        setMemoryArchiveBatchDetail(data as MemoryArchiveBatchDetail);
-        if (data.summary?.content) setMemoryArchiveSummary(data.summary.content);
-      }
-    } catch {
+      setMemoryArchiveBatchDetail(data);
+      setMemoryArchiveError(null);
+      if (data.summary?.content) setMemoryArchiveSummary(data.summary.content);
+    } catch (err) {
       if (!isCurrentMemoryArchiveDetailRequest(requestedCharacterId, requestSeq)) return;
-      setMemoryArchiveBatchDetail(null);
+      setMemoryArchiveError(getErrorMessage(err));
     }
   };
 

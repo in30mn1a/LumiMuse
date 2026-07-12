@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --frozen-lockfile
+RUN npm ci
 
 # ── 阶段二：构建 ──────────────────────────────────────────────
 FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
@@ -35,8 +35,10 @@ FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e16
 
 WORKDIR /app
 
+ARG LUMIMUSE_BUILD_SHA=local
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV LUMIMUSE_BUILD_SHA=$LUMIMUSE_BUILD_SHA
 
 # 创建非 root 用户，提升安全性。
 # UID/GID 固定为 1001，便于 docker-compose 通过 `user: "1001:1001"` 对齐挂载卷。

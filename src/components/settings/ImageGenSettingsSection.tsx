@@ -112,8 +112,9 @@ export function ImageGenSettingsSection({
           <>
             {/* 引擎选择 */}
             <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-              <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.imageGenEngine')}</label>
+              <label htmlFor="settings-image-engine" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.imageGenEngine')}</label>
               <select
+                id="settings-image-engine"
                 value={imgGen.engine}
                 onChange={e => updateImg('engine', e.target.value as ImageGenSettings['engine'])}
                 className="select-rich"
@@ -129,36 +130,36 @@ export function ImageGenSettingsSection({
             {imgGen.engine === 'sd' && (
               <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDUrl')}</label>
-                  <input value={imgGen.sd_url} onChange={e => updateImg('sd_url', e.target.value)} className="input-rich" placeholder="http://127.0.0.1:7860" />
+                  <label htmlFor="settings-image-sd-url" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDUrl')}</label>
+                  <input id="settings-image-sd-url" value={imgGen.sd_url} onChange={e => updateImg('sd_url', e.target.value)} className="input-rich" placeholder="http://127.0.0.1:7860" />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDSampler')}</label>
-                  <input value={imgGen.sd_sampler} onChange={e => updateImg('sd_sampler', e.target.value)} className="input-rich" />
+                  <label htmlFor="settings-image-sd-sampler" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDSampler')}</label>
+                  <input id="settings-image-sd-sampler" value={imgGen.sd_sampler} onChange={e => updateImg('sd_sampler', e.target.value)} className="input-rich" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDSteps')}</label>
-                    <input type="number" min="1" max="150" value={imgGen.sd_steps} onChange={e => updateImg('sd_steps', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-sd-steps" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDSteps')}</label>
+                    <input id="settings-image-sd-steps" type="number" min="1" max="150" value={imgGen.sd_steps} onChange={e => updateImg('sd_steps', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDCfg')}</label>
-                    <input type="number" min="1" max="30" step="0.5" value={imgGen.sd_cfg_scale} onChange={e => updateImg('sd_cfg_scale', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-sd-cfg" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDCfg')}</label>
+                    <input id="settings-image-sd-cfg" type="number" min="1" max="30" step="0.5" value={imgGen.sd_cfg_scale} onChange={e => updateImg('sd_cfg_scale', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDWidth')}</label>
-                    <input type="number" min="256" max="2048" step="64" value={imgGen.sd_width} onChange={e => updateImg('sd_width', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-sd-width" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDWidth')}</label>
+                    <input id="settings-image-sd-width" type="number" min="256" max="2048" step="64" value={imgGen.sd_width} onChange={e => updateImg('sd_width', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDHeight')}</label>
-                    <input type="number" min="256" max="2048" step="64" value={imgGen.sd_height} onChange={e => updateImg('sd_height', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-sd-height" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDHeight')}</label>
+                    <input id="settings-image-sd-height" type="number" min="256" max="2048" step="64" value={imgGen.sd_height} onChange={e => updateImg('sd_height', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDNeg')}</label>
-                  <textarea value={imgGen.sd_negative_prompt} onChange={e => updateImg('sd_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm" />
+                  <label htmlFor="settings-image-sd-negative" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDNeg')}</label>
+                  <textarea id="settings-image-sd-negative" value={imgGen.sd_negative_prompt} onChange={e => updateImg('sd_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm" />
                 </div>
               </div>
             )}
@@ -167,13 +168,13 @@ export function ImageGenSettingsSection({
             {imgGen.engine === 'nai' && (
               <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIKey')}</label>
-                  <input type="password" value={imgGen.nai_api_key} onChange={e => updateImg('nai_api_key', e.target.value)} className="input-rich" />
+                  <label htmlFor="settings-image-nai-key" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIKey')}</label>
+                  <input id="settings-image-nai-key" type="password" value={imgGen.nai_api_key} onChange={e => updateImg('nai_api_key', e.target.value)} className="input-rich" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIModel')}</label>
-                    <select value={imgGen.nai_model} onChange={e => updateImg('nai_model', e.target.value)} className="select-rich">
+                    <label htmlFor="settings-image-nai-model" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIModel')}</label>
+                    <select id="settings-image-nai-model" value={imgGen.nai_model} onChange={e => updateImg('nai_model', e.target.value)} className="select-rich">
                       <option value="nai-diffusion-4-5-full">NAI Diffusion 4.5 Full</option>
                       <option value="nai-diffusion-4-5-curated">NAI Diffusion 4.5 Curated</option>
                       <option value="nai-diffusion-4-full">NAI Diffusion 4 Full</option>
@@ -183,8 +184,8 @@ export function ImageGenSettingsSection({
                     </select>
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAISampler')}</label>
-                    <select value={imgGen.nai_sampler} onChange={e => updateImg('nai_sampler', e.target.value)} className="select-rich">
+                    <label htmlFor="settings-image-nai-sampler" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAISampler')}</label>
+                    <select id="settings-image-nai-sampler" value={imgGen.nai_sampler} onChange={e => updateImg('nai_sampler', e.target.value)} className="select-rich">
                       <option value="k_euler_ancestral">Euler Ancestral</option>
                       <option value="k_euler">Euler</option>
                       <option value="k_dpmpp_2s_ancestral">DPM++ 2S Ancestral</option>
@@ -195,8 +196,8 @@ export function ImageGenSettingsSection({
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAINoiseSchedule')}</label>
-                  <select value={imgGen.nai_noise_schedule} onChange={e => updateImg('nai_noise_schedule', e.target.value)} className="select-rich">
+                  <label htmlFor="settings-image-nai-noise-schedule" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAINoiseSchedule')}</label>
+                  <select id="settings-image-nai-noise-schedule" value={imgGen.nai_noise_schedule} onChange={e => updateImg('nai_noise_schedule', e.target.value)} className="select-rich">
                     <option value="karras">Karras</option>
                     <option value="exponential">Exponential</option>
                     <option value="polyexponential">Polyexponential</option>
@@ -205,30 +206,30 @@ export function ImageGenSettingsSection({
                 </div>
                 <div className="grid grid-cols-3 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAISteps')}</label>
-                    <input type="number" min="1" max="50" value={imgGen.nai_steps} onChange={e => updateImg('nai_steps', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-nai-steps" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAISteps')}</label>
+                    <input id="settings-image-nai-steps" type="number" min="1" max="50" value={imgGen.nai_steps} onChange={e => updateImg('nai_steps', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIScale')}</label>
-                    <input type="number" min="0" max="25" step="0.1" value={imgGen.nai_scale} onChange={e => updateImg('nai_scale', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-nai-scale" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIScale')}</label>
+                    <input id="settings-image-nai-scale" type="number" min="0" max="25" step="0.1" value={imgGen.nai_scale} onChange={e => updateImg('nai_scale', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAICfgRescale')}</label>
-                    <input type="number" min="0" max="1" step="0.01" value={imgGen.nai_cfg_rescale} onChange={e => updateImg('nai_cfg_rescale', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-nai-cfg-rescale" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAICfgRescale')}</label>
+                    <input id="settings-image-nai-cfg-rescale" type="number" min="0" max="1" step="0.01" value={imgGen.nai_cfg_rescale} onChange={e => updateImg('nai_cfg_rescale', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIWidth')}</label>
-                    <input type="number" min="256" max="2048" step="64" value={imgGen.nai_width} onChange={e => updateImg('nai_width', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-nai-width" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIWidth')}</label>
+                    <input id="settings-image-nai-width" type="number" min="256" max="2048" step="64" value={imgGen.nai_width} onChange={e => updateImg('nai_width', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIHeight')}</label>
-                    <input type="number" min="256" max="2048" step="64" value={imgGen.nai_height} onChange={e => updateImg('nai_height', parseNumber(e.target.value))} className="input-rich" />
+                    <label htmlFor="settings-image-nai-height" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIHeight')}</label>
+                    <input id="settings-image-nai-height" type="number" min="256" max="2048" step="64" value={imgGen.nai_height} onChange={e => updateImg('nai_height', parseNumber(e.target.value))} className="input-rich" />
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIArtist')}</label>
+                  <label htmlFor="settings-image-nai-artist-tags" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIArtist')}</label>
                   <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenNAIArtistHint')}</p>
                   {/* 画师串预设管理 */}
                   <div className="space-y-2">
@@ -245,6 +246,7 @@ export function ImageGenSettingsSection({
                       </select>
                     </div>
                     <textarea
+                      id="settings-image-nai-artist-tags"
                       value={imgGen.nai_artist_tags}
                       onChange={e => handleArtistTagsChange(e.target.value)}
                       rows={2}
@@ -290,8 +292,8 @@ export function ImageGenSettingsSection({
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAINeg')}</label>
-                  <textarea value={imgGen.nai_negative_prompt} onChange={e => updateImg('nai_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm" />
+                  <label htmlFor="settings-image-nai-negative" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAINeg')}</label>
+                  <textarea id="settings-image-nai-negative" value={imgGen.nai_negative_prompt} onChange={e => updateImg('nai_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm" />
                 </div>
               </div>
             )}
@@ -300,13 +302,13 @@ export function ImageGenSettingsSection({
             {imgGen.engine === 'comfyui' && (
               <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenComfyUrl')}</label>
-                  <input value={imgGen.comfyui_url} onChange={e => updateImg('comfyui_url', e.target.value)} className="input-rich" placeholder="http://127.0.0.1:8188" />
+                  <label htmlFor="settings-image-comfy-url" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenComfyUrl')}</label>
+                  <input id="settings-image-comfy-url" value={imgGen.comfyui_url} onChange={e => updateImg('comfyui_url', e.target.value)} className="input-rich" placeholder="http://127.0.0.1:8188" />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenComfyWorkflow')}</label>
+                  <label htmlFor="settings-image-comfy-workflow" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenComfyWorkflow')}</label>
                   <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenComfyWorkflowHint')}</p>
-                  <textarea value={imgGen.comfyui_workflow} onChange={e => updateImg('comfyui_workflow', e.target.value)} rows={4} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 font-mono text-xs" />
+                  <textarea id="settings-image-comfy-workflow" value={imgGen.comfyui_workflow} onChange={e => updateImg('comfyui_workflow', e.target.value)} rows={4} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 font-mono text-xs" />
                 </div>
               </div>
             )}
@@ -315,21 +317,21 @@ export function ImageGenSettingsSection({
             {imgGen.engine === 'custom' && (
               <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomUrl')}</label>
-                  <input value={imgGen.custom_url} onChange={e => updateImg('custom_url', e.target.value)} className="input-rich" placeholder="https://api.openai.com/v1/images/generations" />
+                  <label htmlFor="settings-image-custom-url" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomUrl')}</label>
+                  <input id="settings-image-custom-url" value={imgGen.custom_url} onChange={e => updateImg('custom_url', e.target.value)} className="input-rich" placeholder="https://api.openai.com/v1/images/generations" />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomKey')}</label>
-                  <input type="password" value={imgGen.custom_api_key} onChange={e => updateImg('custom_api_key', e.target.value)} className="input-rich" />
+                  <label htmlFor="settings-image-custom-key" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomKey')}</label>
+                  <input id="settings-image-custom-key" type="password" value={imgGen.custom_api_key} onChange={e => updateImg('custom_api_key', e.target.value)} className="input-rich" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomModel')}</label>
-                    <input value={imgGen.custom_model} onChange={e => updateImg('custom_model', e.target.value)} className="input-rich" placeholder="dall-e-3" />
+                    <label htmlFor="settings-image-custom-model" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomModel')}</label>
+                    <input id="settings-image-custom-model" value={imgGen.custom_model} onChange={e => updateImg('custom_model', e.target.value)} className="input-rich" placeholder="dall-e-3" />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomSize')}</label>
-                    <input value={imgGen.custom_size} onChange={e => updateImg('custom_size', e.target.value)} className="input-rich" placeholder="1024x1024" />
+                    <label htmlFor="settings-image-custom-size" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomSize')}</label>
+                    <input id="settings-image-custom-size" value={imgGen.custom_size} onChange={e => updateImg('custom_size', e.target.value)} className="input-rich" placeholder="1024x1024" />
                   </div>
                 </div>
               </div>
@@ -337,14 +339,15 @@ export function ImageGenSettingsSection({
 
             {/* 通用设置 */}
             <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-              <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenQuality')}</label>
-              <input value={imgGen.quality_tags} onChange={e => updateImg('quality_tags', e.target.value)} className="input-rich" />
+              <label htmlFor="settings-image-quality" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenQuality')}</label>
+              <input id="settings-image-quality" value={imgGen.quality_tags} onChange={e => updateImg('quality_tags', e.target.value)} className="input-rich" />
             </div>
 
             {/* 出图总时限：适用于所有引擎的提交、等待与下载阶段 */}
             <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-              <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenTimeout')}</label>
+              <label htmlFor="settings-image-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenTimeout')}</label>
               <input
+                id="settings-image-timeout"
                 type="number"
                 min="1000"
                 step="1000"
@@ -380,9 +383,10 @@ export function ImageGenSettingsSection({
 
             {imgGen.auto_generate && (
               <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-                <label className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenAutoKeywords')}</label>
+                <label htmlFor="settings-image-auto-keywords" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenAutoKeywords')}</label>
                 <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenAutoKeywordsHint')}</p>
                 <input
+                  id="settings-image-auto-keywords"
                   value={imgGen.auto_generate_keywords}
                   onChange={e => updateImg('auto_generate_keywords', e.target.value)}
                   className="input-rich"

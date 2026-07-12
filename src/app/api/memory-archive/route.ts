@@ -13,6 +13,7 @@ import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { AI_ARCHIVE_PROMPT } from '@/lib/prompt-templates';
 import type { MemoryCategory, MemoryKind, MemoryStatus } from '@/types';
+import { findFirstBalancedJson } from '@/lib/balanced-json';
 
 const MAX_SUMMARY_CONTENT_LENGTH = 8 * 1024;
 
@@ -281,15 +282,23 @@ export async function POST(request: NextRequest) {
     }
 
     // 解析 LLM 响应
-    let parsed: { archive_memory_ids?: string[]; summary?: string };
+    let parsed: Record<string, unknown>;
     try {
       let text = response.trim();
       if (text.startsWith('```')) text = text.split('\n').slice(1).join('\n');
       if (text.endsWith('```')) text = text.slice(0, text.lastIndexOf('```'));
-      const jsonStart = text.indexOf('{');
-      const jsonEnd = text.lastIndexOf('}');
-      if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON object found');
-      parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+
+      let value: unknown;
+      try {
+        value = JSON.parse(text);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        const snippet = findFirstBalancedJson(text, 'object');
+        if (!snippet) throw new Error('No JSON object found');
+        value = JSON.parse(snippet);
+      }
+      if (!isObject(value)) throw new Error('AI archive response must be a JSON object');
+      parsed = value;
     } catch {
       return NextResponse.json(
         { ok: false, error: 'Failed to parse AI archive response', raw_response: response.slice(0, 500) },

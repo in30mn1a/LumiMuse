@@ -27,7 +27,7 @@ assert(!importRoute.includes('const importConversations = db.transaction'), 'imp
 
 const messageRoute = read('src/app/api/messages/[id]/route.ts');
 assert(messageRoute.includes('function mergeMessageMetadata'), 'messages PUT uses metadata merge helper');
-assert(messageRoute.includes('const mergedMeta = mergeMessageMetadata'), 'messages PUT merges metadata instead of replacing it');
+assert(/(?:const|let)\s+mergedMeta\s*=\s*mergeMessageMetadata/.test(messageRoute), 'messages PUT merges metadata instead of replacing it');
 assert(!messageRoute.includes('run(JSON.stringify(body.metadata), id)'), 'messages PUT does not overwrite metadata with raw request body');
 
 if (process.exitCode) process.exit(process.exitCode);

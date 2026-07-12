@@ -84,6 +84,7 @@ function resetModules(extra = []) {
     'src/app/api/providers/route.ts',
     'src/app/api/providers/activate/route.ts',
     'src/app/api/maintenance/route.ts',
+    'src/app/api/import/route.ts',
     'src/app/api/settings/route.ts',
     ...extra,
   ]) {
@@ -367,6 +368,7 @@ test('sensitive route-level auth rejects tokens issued before current min_iat', 
   const providers = requireFreshWithMocks('../src/app/api/providers/route.ts', mocks);
   const activate = requireFreshWithMocks('../src/app/api/providers/activate/route.ts', mocks);
   const maintenance = requireFreshWithMocks('../src/app/api/maintenance/route.ts', mocks);
+  const importRoute = requireFreshWithMocks('../src/app/api/import/route.ts', mocks);
   const settings = requireFreshWithMocks('../src/app/api/settings/route.ts', mocks);
 
   const cases = [
@@ -375,6 +377,7 @@ test('sensitive route-level auth rejects tokens issued before current min_iat', 
       id: '11111111-1111-4111-8111-111111111111',
     }))],
     ['maintenance GET', () => maintenance.GET(makeRequest('/api/maintenance', oldToken))],
+    ['import POST', () => importRoute.POST(jsonRequest('/api/import', oldToken, { version: 2 }))],
     ['settings GET', () => settings.GET(makeRequest('/api/settings', oldToken))],
   ];
 

@@ -1,5 +1,6 @@
 import { Memory, MemoryKind, MEMORY_KINDS, MEMORY_STATUSES, MemoryStatus } from '@/types';
 import { inferMemoryDefaults, normalizeMemoryCategory } from '@/lib/memory-category';
+import { parseMemoryMetadata } from '@/lib/metadata';
 
 type MemoryRowFields = Memory & {
   category: unknown;
@@ -10,7 +11,9 @@ type MemoryRowFields = Memory & {
   emotional_weight: unknown;
   pinned: unknown;
   status: unknown;
+  last_used_at: unknown;
   usage_count: unknown;
+  metadata: unknown;
 };
 
 function parseJsonArray(value: unknown): string[] {
@@ -83,6 +86,8 @@ export function normalizeMemoryRow(record: Memory): Memory {
     emotional_weight: numberOrDefault(raw.emotional_weight, defaults.emotional_weight),
     pinned: normalizePinned(raw.pinned),
     status: normalizeMemoryStatus(raw.status),
+    last_used_at: typeof raw.last_used_at === 'string' ? raw.last_used_at : null,
     usage_count: normalizeUsageCount(raw.usage_count),
+    metadata: parseMemoryMetadata(raw.metadata),
   };
 }

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { structuredLog } from '@/lib/structured-log';
 import path from 'path';
 import fs from 'fs';
 import { inferMemoryDefaults } from '@/lib/memory-category';
@@ -11,6 +12,7 @@ import {
 
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'lumimuse.db');
+export const CURRENT_SCHEMA_VERSION = 1;
 
 let _db: Database.Database | null = null;
 
@@ -102,14 +104,18 @@ export function getDb(): Database.Database {
       triggerQueue();
     }).catch((err) => {
       // 不静默吞错：启动期失败必须可见，否则记忆队列恢复出问题用户根本无从察觉
-      console.error('[db] memory-queue boot failed:', err);
+      structuredLog('error', 'memory.queue.boot_failed', {
+        operation: 'recover_and_drain', status: 'failed',
+      }, err);
     });
     // 画像更新队列同样需要启动恢复 + 触发处理（与提取队列对称），独立 import 避免互相影响
     import('@/lib/memory-profile').then(({ recoverStaleMemoryProfileTasks, triggerMemoryProfileQueue }) => {
       recoverStaleMemoryProfileTasks();
       triggerMemoryProfileQueue();
     }).catch((err) => {
-      console.error('[db] memory-profile queue boot failed:', err);
+      structuredLog('error', 'memory.profile.boot_failed', {
+        operation: 'recover_and_drain', status: 'failed',
+      }, err);
     });
     // 向量索引任务没有租约机制,崩溃遗留的 processing 只能靠启动恢复(与上面两个队列对称);
     // 实际处理仍由 memory-index 路由按需驱动,这里只把卡死的 processing 重置为可领取的 pending——
@@ -117,7 +123,9 @@ export function getDb(): Database.Database {
     import('@/lib/memory-embeddings').then(({ recoverStaleMemoryEmbeddingTasks }) => {
       recoverStaleMemoryEmbeddingTasks();
     }).catch((err) => {
-      console.error('[db] memory-embedding boot recovery failed:', err);
+      structuredLog('error', 'memory.embedding.recovery_failed', {
+        operation: 'recover_stale', status: 'failed',
+      }, err);
     });
   });
 
@@ -188,6 +196,13 @@ export function ensureMemoryProfileTables(db: Database.Database): void {
 }
 
 function migrate(db: Database.Database): void {
+  const schemaVersion = Number(db.pragma('user_version', { simple: true }));
+  if (schemaVersion > CURRENT_SCHEMA_VERSION) {
+    throw new Error(
+      `Database schema version ${schemaVersion} is newer than this build supports ${CURRENT_SCHEMA_VERSION}`,
+    );
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS characters (
       id TEXT PRIMARY KEY,
@@ -341,14 +356,18 @@ function migrate(db: Database.Database): void {
   `);
 
   // 增量迁移：为 messages 表添加 seq 列，用于同毫秒时的稳定排序
-  const cols = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
-  const hasSeq = cols.some(c => c.name === 'seq');
-  if (!hasSeq) {
-    db.exec(`ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`);
+  const migrateMessageSeq = db.transaction(() => {
+    const cols = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'seq')) {
+      db.exec(`ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`);
+    }
     // 用 rowid 回填已有数据，保证历史消息顺序稳定
     db.exec(`UPDATE messages SET seq = rowid WHERE seq = 0`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(conversation_id, seq)`);
-  }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_seq ON messages(conversation_id, created_at, seq)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)`);
+  });
+  migrateMessageSeq();
 
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -359,6 +378,16 @@ function migrate(db: Database.Database): void {
       created_at UNINDEXED,
       seq UNINDEXED,
       tokenize = 'unicode61'
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
+      id UNINDEXED,
+      content,
+      role UNINDEXED,
+      conversation_id UNINDEXED,
+      created_at UNINDEXED,
+      seq UNINDEXED,
+      tokenize = 'trigram'
     );
 
     CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
@@ -375,6 +404,21 @@ function migrate(db: Database.Database): void {
       INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
       VALUES (new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
     END;
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts_trigram(id, content, role, conversation_id, created_at, seq)
+      VALUES (new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_ad AFTER DELETE ON messages BEGIN
+      DELETE FROM messages_fts_trigram WHERE id = old.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_au AFTER UPDATE OF content, role, conversation_id, created_at, seq ON messages BEGIN
+      DELETE FROM messages_fts_trigram WHERE id = old.id;
+      INSERT INTO messages_fts_trigram(id, content, role, conversation_id, created_at, seq)
+      VALUES (new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
+    END;
   `);
 
   const ftsCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts').get() as { count: number }).count;
@@ -388,6 +432,16 @@ function migrate(db: Database.Database): void {
     db.exec(`DELETE FROM messages_fts`);
     db.exec(`
       INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
+      SELECT id, content, role, conversation_id, created_at, seq
+      FROM messages
+    `);
+  }
+
+  const trigramCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts_trigram').get() as { count: number }).count;
+  if (trigramCount !== messageCount) {
+    db.exec(`DELETE FROM messages_fts_trigram`);
+    db.exec(`
+      INSERT INTO messages_fts_trigram(id, content, role, conversation_id, created_at, seq)
       SELECT id, content, role, conversation_id, created_at, seq
       FROM messages
     `);
@@ -423,14 +477,18 @@ function migrate(db: Database.Database): void {
   if (taskCols.length > 0 && !taskCols.some(c => c.name === 'error_message')) {
     db.exec(`ALTER TABLE memory_tasks ADD COLUMN error_message TEXT`);
   }
-  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'started_at')) {
-    db.exec(`ALTER TABLE memory_tasks ADD COLUMN started_at TEXT`);
+  const migrateMemoryTaskStartedAt = db.transaction(() => {
+    const currentTaskCols = db.prepare("PRAGMA table_info(memory_tasks)").all() as { name: string }[];
+    if (currentTaskCols.length > 0 && !currentTaskCols.some(c => c.name === 'started_at')) {
+      db.exec(`ALTER TABLE memory_tasks ADD COLUMN started_at TEXT`);
+    }
     db.exec(`
       UPDATE memory_tasks
       SET started_at = updated_at
       WHERE status = 'processing' AND started_at IS NULL
     `);
-  }
+  });
+  migrateMemoryTaskStartedAt();
 
   // 增量迁移：模型列表缓存表
   db.exec(`
@@ -477,24 +535,39 @@ function migrate(db: Database.Database): void {
   }
 
   // 增量迁移：characters 表补 sort_order 列（侧边栏拖拽排序，越小越靠前）
-  if (!charCols.some(c => c.name === 'sort_order')) {
-    db.exec(`ALTER TABLE characters ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`);
-    // 旧数据按 updated_at DESC 回填，保持当前观感不变
-    db.exec(`
-      UPDATE characters
-      SET sort_order = (
-        SELECT rn FROM (
-          SELECT id, ROW_NUMBER() OVER (ORDER BY updated_at DESC) AS rn FROM characters
-        ) AS ranked
-        WHERE ranked.id = characters.id
-      )
-    `);
+  const migrateCharacterSortOrder = db.transaction(() => {
+    const currentCharCols = db.prepare("PRAGMA table_info(characters)").all() as { name: string }[];
+    const addedSortOrder = !currentCharCols.some(c => c.name === 'sort_order');
+    if (addedSortOrder) {
+      db.exec(`ALTER TABLE characters ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`);
+    }
+    const sortOrderCounts = db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN sort_order = 0 THEN 1 ELSE 0 END) AS zero_count
+      FROM characters
+    `).get() as { total: number; zero_count: number | null };
+    if (addedSortOrder || (sortOrderCounts.total > 0 && sortOrderCounts.zero_count === sortOrderCounts.total)) {
+      // 旧数据按 updated_at DESC 回填，保持当前观感不变；全 0 表示旧迁移只完成了加列。
+      db.exec(`
+        UPDATE characters
+        SET sort_order = (
+          SELECT rn FROM (
+            SELECT id, ROW_NUMBER() OVER (ORDER BY updated_at DESC) AS rn FROM characters
+          ) AS ranked
+          WHERE ranked.id = characters.id
+        )
+      `);
+    }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_characters_sort_order ON characters(sort_order)`);
-  }
+  });
+  migrateCharacterSortOrder();
 
   // 增量迁移：conversations 表补 ignore_memory 列（忽略记忆提取）
   const convCols = db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
   if (!convCols.some(c => c.name === 'ignore_memory')) {
     db.exec(`ALTER TABLE conversations ADD COLUMN ignore_memory INTEGER NOT NULL DEFAULT 0`);
   }
+
+  db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
 }

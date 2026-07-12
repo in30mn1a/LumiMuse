@@ -262,7 +262,7 @@ async function runApiSmoke(baseUrl) {
 
   const rebuildAll = await requestJson(baseUrl, '/api/memory-index', {
     method: 'POST',
-    body: { reason: 'rebuild' },
+    body: { action: 'rebuild' },
   });
   assert.equal(rebuildAll.status, 200);
   assert.equal(rebuildAll.json.ok, true);
@@ -271,7 +271,7 @@ async function runApiSmoke(baseUrl) {
 
   const invalidCharacterId = await requestJson(baseUrl, '/api/memory-index', {
     method: 'POST',
-    body: { character_id: 42 },
+    body: { action: 'rebuild', character_id: 42 },
   });
   assert.equal(invalidCharacterId.status, 400);
 

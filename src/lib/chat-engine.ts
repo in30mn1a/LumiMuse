@@ -10,6 +10,17 @@ import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
 import { buildCurrentTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
 import { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } from '@/lib/inline-image-prompt';
+import {
+  buildMessageTokenCountContent,
+  createMessageTokenCount,
+  metadataWithTokenCountProvenance,
+  resolveMessageTokenCount,
+} from '@/lib/message-token-provenance';
+import {
+  DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET,
+  MEMORY_CONTEXT_TITLE,
+  MEMORY_USAGE_PRINCIPLES,
+} from '@/lib/memory-prompt-contract';
 
 /**
  * 消息附件类型。重新导出 MessageAttachment 别名以保持外部 API 不变
@@ -119,12 +130,6 @@ const BEHAVIOR_INSTRUCTION = `请始终保持角色扮演，不要跳出角色�
 保持角色的性格、语气和说话方式一致，回答要有情绪、有细节、有陪伴感。
 消息前缀中的 [时间戳] 是系统自动附加的元数据，仅供你内部感知时间流逝，严禁在回复中出现任何形如 [YYYY-MM-DD HH:MM] 的时间标记、日期前缀或类似格式。你的回复必须是纯粹的角色对话内容。`;
 
-const MEMORY_CONTEXT_TITLE = '## 记忆上下文';
-const MEMORY_USAGE_PRINCIPLES = `### 记忆使用原则
-记忆上下文是系统整理过的长期记忆。请自然使用，不要在回复中提到“记忆条目、检索结果、分数、上下文”等系统概念。
-记忆上下文用于帮助你保持长期连续性，但不得覆盖用户当前消息。
-如果旧记忆和当前消息冲突，以当前消息为准。`;
-
 /** 清理 AI 回复中可能残留的时间戳前缀 */
 function stripTimestampPrefix(text: string): string {
   // 匹配开头的 [2026-05-13 14:30] 或 [2026/05/13 14:30] 等格式
@@ -149,7 +154,7 @@ function normalizeMemoryContextText(memoryText: string): string {
 
 function memoryPackageTokenBudget(settings: Settings): number {
   const budget = Number(settings.memory_engine?.memory_package_token_budget);
-  return Number.isFinite(budget) && budget > 0 ? budget : 12000;
+  return Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_MEMORY_PACKAGE_TOKEN_BUDGET;
 }
 
 function renderLegacyMemoryContext(memories: string[], settings: Settings): string {
@@ -230,18 +235,6 @@ function parseExampleDialogue(raw: string): ChatMessage[] {
   return messages;
 }
 
-function appendTextAttachments(content: string, attachments?: MessageAttachment[]): string {
-  if (!attachments || attachments.length === 0) return content;
-
-  let combinedText = content;
-  for (const att of attachments) {
-    if (att.type === 'text') {
-      combinedText += `\n\n[附件: ${att.name}]\n${att.data || ''}`;
-    }
-  }
-  return combinedText;
-}
-
 export async function assemblePrompt(
   character: Character,
   messages: Message[],
@@ -282,10 +275,7 @@ export async function assemblePrompt(
     // ASCII 0.25 token、空格按 0.25 计算，整体 ~5 token。预算时计入，避免长会话
     // 因为时间戳累积偏差导致预算超支。
     const TIMESTAMP_TOKEN_OVERHEAD = 5;
-    const contentForBudget = message.role === 'user'
-      ? appendTextAttachments(message.content, meta.attachments)
-      : message.content;
-    const baseTokens = Math.max(message.token_count || 0, estimateTokens(contentForBudget));
+    const baseTokens = resolveMessageTokenCount(message).tokenCount;
     const messageTokens = baseTokens
       + (settings.show_timestamps && message.created_at ? TIMESTAMP_TOKEN_OVERHEAD : 0);
     // 至少保证最新一条有效消息(通常是当前用户输入)进入上下文,即使系统提示+记忆包已逼近预算——
@@ -312,7 +302,7 @@ export async function assemblePrompt(
     const attachments = meta.attachments;
     if (message.role === 'user' && attachments && attachments.length > 0) {
       let hasImage = false;
-      let combinedText = appendTextAttachments(textContent, attachments);
+      let combinedText = buildMessageTokenCountContent(textContent, message.role, attachments);
 
       for (const att of attachments) {
         if (att.type === 'image') {
@@ -474,16 +464,6 @@ export async function runChat(
   if (!options?.regenerateAssistantId && !options?.skipUserInsert) {
     const userMsgId = crypto.randomUUID().slice(0, 12);
     const now = new Date().toISOString();
-    // token 统计包含文本附件内容
-    let fullContent = userContent;
-    if (options?.attachments) {
-      for (const att of options.attachments) {
-        if (att.type === 'text') {
-          fullContent += `\n\n[附件: ${att.name}]\n${att.data || ''}`;
-        }
-      }
-    }
-    const userTokenCount = estimateTokens(fullContent);
     const promptAttachments = options?.attachments || [];
     // 落库时要求 image 必须有 URL；无 URL 的 base64 仅作为内存中的 prompt 多模态输入，
     // 不写入 messages.metadata，避免 DB 体积爆炸 + 后续 SELECT * 拖慢。
@@ -499,16 +479,18 @@ export async function runChat(
         storedAttachments.push(att);
       }
     }
-    const userMeta = storedAttachments.length > 0
-      ? JSON.stringify({ attachments: storedAttachments })
-      : '{}';
+    const userTokenResult = createMessageTokenCount(userContent, 'user', storedAttachments);
+    const userMeta = JSON.stringify(metadataWithTokenCountProvenance(
+      storedAttachments.length > 0 ? { attachments: storedAttachments } : {},
+      userTokenResult.provenance,
+    ));
     // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
     db.transaction(() => {
       const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
       db.prepare(`
         INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
         VALUES (?, ?, 'user', ?, ?, ?, ?, ?)
-      `).run(userMsgId, conversationId, userContent, userTokenCount, now, nextSeq, userMeta);
+      `).run(userMsgId, conversationId, userContent, userTokenResult.tokenCount, now, nextSeq, userMeta);
     })();
   }
 
@@ -545,8 +527,16 @@ export async function runChat(
   const history = serializeTypedMessages(
     db.prepare(historySql).all(...historyParams) as Message[]
   );
-
-  const contextMessages = history;
+  const repairTokenCount = db.prepare(
+    'UPDATE messages SET token_count = ?, metadata = ? WHERE id = ?',
+  );
+  const contextMessages = history.map(message => {
+    const resolved = resolveMessageTokenCount(message);
+    if (resolved.reused) return message;
+    const metadata = metadataWithTokenCountProvenance(message.metadata, resolved.provenance);
+    repairTokenCount.run(resolved.tokenCount, JSON.stringify(metadata), message.id);
+    return { ...message, token_count: resolved.tokenCount, metadata };
+  });
 
   const effectiveTimeContext = resolveCurrentTimeContext(
     options?.timeContext,
@@ -611,7 +601,8 @@ export async function runChat(
     // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离，保证落库/上下文/记忆/token 都干净
     const inlinePrompt = extractInlinePrompt(withoutTs);
     const fullText = inlinePrompt ? stripInlinePrompt(withoutTs) : withoutTs;
-    const tokenCount = estimateTokens(fullText);
+    const tokenResult = createMessageTokenCount(fullText, 'assistant');
+    const tokenCount = tokenResult.tokenCount;
     const asstNow = new Date().toISOString();
     const wasStopped = options?.signal?.aborted === true;
 
@@ -657,6 +648,7 @@ export async function runChat(
       if (lastMemoryInjection) {
         meta.last_memory_injection = lastMemoryInjection;
       }
+      meta.token_count_provenance = tokenResult.provenance;
 
       // 用事务包裹两条 UPDATE，保持与新建分支对称、避免半成功状态
       // 注：重新生成 assistant 消息时不调用 invalidateMemoriesForSourceMessage。
@@ -670,7 +662,11 @@ export async function runChat(
       await callbacks.onDone(fullText, tokenCount);
     } else {
       const asstId = crypto.randomUUID().slice(0, 12);
-      const meta: Record<string, unknown> = { versions: [{ content: fullText, token_count: tokenCount }], activeVersion: 0 };
+      const meta: Record<string, unknown> = {
+        versions: [{ content: fullText, token_count: tokenCount }],
+        activeVersion: 0,
+        token_count_provenance: tokenResult.provenance,
+      };
       if (inlinePrompt) {
         meta.inlineImagePrompt = inlinePrompt;
       }

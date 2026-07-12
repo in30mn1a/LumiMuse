@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+concurrency:
+  # push 与 pull_request 的 ref 不同；统一使用源 commit SHA 才能取消同一提交的重复流水线。
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-24.04
@@ -52,7 +57,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Build Docker image
-        run: docker build --tag "$IMAGE_NAME" .
+        run: docker build --build-arg LUMIMUSE_BUILD_SHA="$GITHUB_SHA" --tag "$IMAGE_NAME" .
 
       - name: Create temporary persistent volumes
         run: |
@@ -90,6 +95,11 @@ jobs:
       - name: Assert container runs as non-root
         run: |
           docker exec "$CONTAINER_NAME" node -e "if (process.getuid() !== 1001) process.exit(1); console.log(process.getuid())"
+
+      - name: Assert exact build SHA
+        run: |
+          curl --fail --silent --show-error 'http://127.0.0.1:3000/api/health?ready=1' |
+            node -e "let data = ''; process.stdin.on('data', chunk => data += chunk).on('end', () => { const parsed = JSON.parse(data); if (parsed.build !== process.env.GITHUB_SHA) { console.error(parsed.build); process.exit(1); } });"
 
       - name: Print Docker logs on failure
         if: failure()

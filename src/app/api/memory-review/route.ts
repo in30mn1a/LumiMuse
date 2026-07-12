@@ -6,6 +6,11 @@ import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { normalizeTags, TAG_SPEC_PROMPT_SECTION } from '@/lib/memory-tag-spec';
 import { MEMORY_CATEGORIES } from '@/types';
+import {
+  BackgroundLlmTimeoutError,
+  runWithBackgroundLlmDeadline,
+} from '@/lib/background-llm-deadline';
+import { findFirstBalancedJson } from '@/lib/balanced-json';
 
 const MEMORY_REVIEW_OUTPUT_MAX_TOKENS = REASONING_SAFE_MAX_TOKENS;
 const MEMORY_REVIEW_BATCH_CONCURRENCY = 3;
@@ -93,6 +98,7 @@ async function mapWithConcurrencySettled<T, R>(
   items: T[],
   concurrency: number,
   worker: (item: T, index: number) => Promise<R>,
+  abortSignal?: AbortSignal,
 ): Promise<SettledResult<R>[]> {
   const results = new Array<SettledResult<R>>(items.length);
   let nextIndex = 0;
@@ -105,8 +111,10 @@ async function mapWithConcurrencySettled<T, R>(
       if (index >= items.length) return;
 
       try {
+        abortSignal?.throwIfAborted();
         results[index] = { ok: true, value: await worker(items[index], index) };
       } catch (error) {
+        abortSignal?.throwIfAborted();
         results[index] = { ok: false, error };
       }
     }
@@ -157,12 +165,22 @@ function parseMemoryReviewCorrections(llmResult: string): MemoryReviewCorrection
   let text = llmResult.trim();
   if (text.startsWith('```')) text = text.split('\n').slice(1).join('\n');
   if (text.endsWith('```')) text = text.slice(0, text.lastIndexOf('```'));
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('No JSON');
-  const parsed = JSON.parse(text.slice(start, end + 1));
-  if (!Array.isArray(parsed.corrections)) return [];
-  return parsed.corrections.filter(
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    const snippet = findFirstBalancedJson(text, 'object');
+    if (!snippet) throw new Error('No JSON object');
+    parsed = JSON.parse(snippet);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Memory review response must be a JSON object');
+  }
+  const corrections = (parsed as Record<string, unknown>).corrections;
+  if (!Array.isArray(corrections)) return [];
+  return corrections.filter(
     (correction: unknown) => correction && typeof correction === 'object' && typeof (correction as Record<string, unknown>).id === 'string',
   );
 }
@@ -247,36 +265,55 @@ export async function POST(request: NextRequest) {
   }
   const backgroundExtraBody = buildBackgroundChatExtraBody(settings, llmSettings.model);
 
-  const batchOutcomes = await mapWithConcurrencySettled(
-    reviewBatches,
-    MEMORY_REVIEW_BATCH_CONCURRENCY,
-    async (batch, batchIndex) => {
-      const prompt = buildMemoryReviewPrompt(
-        batch.join('\n\n'),
-        validCategories,
-        tagOverview,
-        batchIndex,
-        reviewBatches.length,
-      );
-      let llmResult: string;
-      try {
-        llmResult = await chatCompletion(
-          llmSettings,
-          [{ role: 'user', content: prompt }],
-          request.signal,
-          backgroundExtraBody,
-        );
-      } catch (err) {
-        throw new Error(`AI 调用失败（第 ${batchIndex + 1}/${reviewBatches.length} 批）: ${err instanceof Error ? err.message : String(err)}`);
-      }
+  let batchOutcomes: SettledResult<MemoryReviewCorrection[]>[];
+  try {
+    batchOutcomes = await runWithBackgroundLlmDeadline(
+      settings.memory_background_timeout_ms,
+      signal => mapWithConcurrencySettled(
+        reviewBatches,
+        MEMORY_REVIEW_BATCH_CONCURRENCY,
+        async (batch, batchIndex) => {
+          const prompt = buildMemoryReviewPrompt(
+            batch.join('\n\n'),
+            validCategories,
+            tagOverview,
+            batchIndex,
+            reviewBatches.length,
+          );
+          let llmResult: string;
+          try {
+            llmResult = await chatCompletion(
+              llmSettings,
+              [{ role: 'user', content: prompt }],
+              signal,
+              backgroundExtraBody,
+            );
+          } catch (err) {
+            throw new Error(`AI 调用失败（第 ${batchIndex + 1}/${reviewBatches.length} 批）: ${err instanceof Error ? err.message : String(err)}`);
+          }
 
-      try {
-        return parseMemoryReviewCorrections(llmResult);
-      } catch (err) {
-        throw new Error(`解析 AI 响应失败（第 ${batchIndex + 1}/${reviewBatches.length} 批）: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    },
-  );
+          try {
+            return parseMemoryReviewCorrections(llmResult);
+          } catch (err) {
+            throw new Error(`解析 AI 响应失败（第 ${batchIndex + 1}/${reviewBatches.length} 批）: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        },
+        signal,
+      ),
+      request.signal,
+    );
+  } catch (err) {
+    if (err instanceof BackgroundLlmTimeoutError) {
+      return NextResponse.json(
+        { ok: false, error: '记忆审核请求超过服务器处理时限', code: 'UPSTREAM_TIMEOUT' },
+        { status: 504 },
+      );
+    }
+    if (request.signal.aborted) {
+      return NextResponse.json({ ok: false, error: '请求已取消' }, { status: 499 });
+    }
+    throw err;
+  }
 
   // 失败批次相互隔离：收集失败信息，仍应用成功批次的修正。
   // 仅当本页所有批次全部失败时才视为整页失败返回 500（与单批失败场景的契约保持一致）。

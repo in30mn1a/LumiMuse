@@ -67,8 +67,8 @@ const MAX_RECOVERABLE_EMBEDDING_ATTEMPTS = 3;
 const RECOVERABLE_EMBEDDING_RETRY_DELAY_MS = 30_000;
 // From the audit remediation performance spec: keep vector retrieval's synchronous
 // SQLite read and JS ranking bounded as memory history grows.
-const VECTOR_RETRIEVAL_CANDIDATE_LIMIT = 500;
 const VECTOR_RETRIEVAL_SCAN_LIMIT = 5_000;
+const HOST_IS_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 function getEmbeddingErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -158,6 +158,10 @@ export function blobToEmbedding(blob: Buffer | Uint8Array): Float32Array {
   const bytes = Buffer.isBuffer(blob)
     ? blob
     : Buffer.from(blob.buffer, blob.byteOffset, blob.byteLength);
+  if (HOST_IS_LITTLE_ENDIAN && bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+    return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / Float32Array.BYTES_PER_ELEMENT);
+  }
+
   const vector = new Float32Array(bytes.byteLength / 4);
   for (let i = 0; i < vector.length; i += 1) {
     vector[i] = bytes.readFloatLE(i * 4);
@@ -189,7 +193,9 @@ export function rankEmbeddingRows<T extends { embedding_blob: Buffer | Uint8Arra
     try {
       const embedding = blobToEmbedding(row.embedding_blob);
       if (embedding.length !== normalizedQuery.length) continue;
-      scored.push({ row, similarity: dotProduct(normalizedQuery, embedding) });
+      const similarity = dotProduct(normalizedQuery, embedding);
+      if (!Number.isFinite(similarity)) continue;
+      scored.push({ row, similarity });
     } catch {
       continue;
     }
@@ -437,19 +443,10 @@ export function loadReadyMemoryEmbeddings(
       COALESCE(m.importance, 0) DESC,
       e.updated_at DESC,
       e.memory_id ASC
-    LIMIT ? OFFSET ?
+    LIMIT ?
   `;
   const stmt = db.prepare(sql);
-  const rows: MemoryEmbeddingRow[] = [];
-
-  for (let offset = 0; offset < scanLimit; offset += VECTOR_RETRIEVAL_CANDIDATE_LIMIT) {
-    const batchLimit = Math.min(VECTOR_RETRIEVAL_CANDIDATE_LIMIT, scanLimit - offset);
-    const batch = stmt.all(...params, batchLimit, offset) as MemoryEmbeddingRow[];
-    rows.push(...batch);
-    if (batch.length < batchLimit) break;
-  }
-
-  return rows;
+  return stmt.all(...params, scanLimit) as MemoryEmbeddingRow[];
 }
 
 export function enqueueMemoryEmbeddingTask(
@@ -497,7 +494,9 @@ export function enqueueRebuildMemoryEmbeddings(
   db: Database.Database = getDb(),
 ): number {
   ensureMemoryEmbeddingTables(db);
-  const rows = db.prepare('SELECT id, character_id FROM memories WHERE character_id = ?').all(characterId) as Array<{
+  const rows = db.prepare(
+    "SELECT id, character_id FROM memories WHERE character_id = ? AND status = 'active'",
+  ).all(characterId) as Array<{
     id: string;
     character_id: string;
   }>;

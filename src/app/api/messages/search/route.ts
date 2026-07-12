@@ -5,6 +5,11 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, char => `\\${char}`);
 }
 
+function isLongCjkQuery(value: string): boolean {
+  const codePoints = Array.from(value);
+  return codePoints.length >= 3 && codePoints.every(codePoint => /\p{Script=Han}/u.test(codePoint));
+}
+
 /**
  * 尝试把用户输入解析为日期范围
  * 支持格式：2026/3/30、2026-03-30、3月30日、3/30 等
@@ -78,8 +83,8 @@ export async function GET(request: NextRequest) {
   const q = request.nextUrl.searchParams.get('q')?.trim();
   const limitParam = Number(request.nextUrl.searchParams.get('limit') || '15');
   const offsetParam = Number(request.nextUrl.searchParams.get('offset') || '0');
-  const limit = Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 15, 1), 50);
-  const offset = Math.max(Number.isFinite(offsetParam) ? offsetParam : 0, 0);
+  const limit = Math.floor(Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 15, 1), 50));
+  const offset = Math.floor(Math.max(Number.isFinite(offsetParam) ? offsetParam : 0, 0));
   const pageSize = limit + 1;
 
   if (!q) return NextResponse.json([]);
@@ -125,7 +130,8 @@ export async function GET(request: NextRequest) {
     // 普通关键词搜索
     const normalized = q.replace(/"/g, '""');
     const ftsQuery = normalized.includes(' ') ? `"${normalized}"` : normalized;
-    const shouldUseLikeFirst = /[\u4e00-\u9fff]/.test(q);
+    const shouldUseLikeFirst = Array.from(q).some(codePoint => /\p{Script=Han}/u.test(codePoint));
+    const shouldUseTrigram = isLongCjkQuery(q);
     const escapedKeyword = escapeLikePattern(q);
     const searchLike = (): typeof rows => db.prepare(`
       SELECT
@@ -142,11 +148,35 @@ export async function GET(request: NextRequest) {
       JOIN conversations c  ON m.conversation_id = c.id
       JOIN characters   ch ON c.character_id     = ch.id
       WHERE m.content LIKE ? ESCAPE '\\' AND m.role IN ('user', 'assistant')
-      ORDER BY m.created_at DESC
+      ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
       LIMIT ? OFFSET ?
     `).all(`%${escapedKeyword}%`, pageSize, offset) as typeof rows;
 
-    if (shouldUseLikeFirst) {
+    if (shouldUseTrigram) {
+      try {
+        rows = db.prepare(`
+          SELECT
+            m.id        AS message_id,
+            m.content   AS content,
+            m.role      AS role,
+            m.created_at AS created_at,
+            c.id        AS conversation_id,
+            c.title     AS conversation_title,
+            ch.id       AS character_id,
+            ch.name     AS character_name,
+            ch.avatar_url AS avatar_url
+          FROM messages_fts_trigram fts
+          JOIN messages m      ON m.id = fts.id
+          JOIN conversations c ON m.conversation_id = c.id
+          JOIN characters ch   ON c.character_id = ch.id
+          WHERE messages_fts_trigram MATCH ? AND m.role IN ('user', 'assistant')
+          ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
+          LIMIT ? OFFSET ?
+        `).all(`"${normalized}"`, pageSize, offset) as typeof rows;
+      } catch {
+        rows = searchLike();
+      }
+    } else if (shouldUseLikeFirst) {
       rows = searchLike();
     } else {
       // 非中文走 FTS5；FTS query 解析错误或零结果（unicode61 把 query 全过滤掉）回退到 LIKE
@@ -167,7 +197,7 @@ export async function GET(request: NextRequest) {
           JOIN conversations c ON m.conversation_id = c.id
           JOIN characters ch   ON c.character_id = ch.id
           WHERE messages_fts MATCH ? AND m.role IN ('user', 'assistant')
-          ORDER BY m.created_at DESC
+          ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
           LIMIT ? OFFSET ?
         `).all(ftsQuery, pageSize, offset) as typeof rows;
         rows = ftsRows.length === 0 ? searchLike() : ftsRows;

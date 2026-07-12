@@ -106,6 +106,26 @@ test('message cache snapshots isolate message objects and metadata', () => {
   assert.equal(next.messages[0].metadata.generatedImages[0].status, 'ready');
 });
 
+test('message cache preserves server token provenance without sharing nested references', () => {
+  clearCachedMessages();
+  const provenance = {
+    source: 'server',
+    version: 1,
+    algorithm: 'cl100k_base-v1',
+    fingerprint: 'abc123',
+  };
+  writeCachedMessages('conv-a', {
+    messages: [{ ...message('a-1', 1), metadata: { token_count_provenance: provenance } }],
+    hasMore: false,
+    oldestSeq: 1,
+  });
+
+  const cached = readCachedMessages('conv-a');
+  cached.messages[0].metadata.token_count_provenance.algorithm = 'mutated';
+
+  assert.deepEqual(readCachedMessages('conv-a').messages[0].metadata.token_count_provenance, provenance);
+});
+
 test('message cache updates cached messages without dropping page metadata', () => {
   clearCachedMessages();
   writeCachedMessages('conv-a', {

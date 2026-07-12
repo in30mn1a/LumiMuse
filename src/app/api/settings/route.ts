@@ -62,6 +62,10 @@ export async function PUT(request: NextRequest) {
   // 处理 image_gen 中的密钥掩码
   if (updates.image_gen) {
     const currentImgGen = currentSettings.image_gen;
+    updates.image_gen = {
+      ...currentImgGen,
+      ...updates.image_gen,
+    };
     if (updates.image_gen.nai_api_key === API_KEY_MASK) {
       updates.image_gen.nai_api_key = currentImgGen?.nai_api_key || '';
     }

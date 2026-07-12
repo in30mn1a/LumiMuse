@@ -256,6 +256,63 @@ test('/api/memory-review requeues and starts indexing after changing embedding-r
   assert.equal(triggerCalls, 1);
 });
 
+test('/api/memory-review extracts one balanced object from prose with escaped delimiters and multiple JSON blocks', async () => {
+  const db = createReviewDb();
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 100 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async () => [
+        '审核结果如下：',
+        JSON.stringify({
+          note: '字符串里的 } ] 和 "引号" 以及 C:\\tmp\\review 不影响边界',
+          corrections: [{
+            id: 'mem-a',
+            category: '四季日常',
+            tags: ['午餐'],
+            importance: 0.4,
+          }],
+        }),
+        '后续诊断块不属于 corrections：',
+        JSON.stringify({ ignored: true, corrections: [{ id: 'not-in-page', importance: 0.1 }] }),
+      ].join('\n'),
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+  const row = db.prepare('SELECT category, tags, importance FROM memories WHERE id = ?').get('mem-a');
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.corrected, 1);
+  assert.deepEqual(row, {
+    category: '四季日常',
+    tags: JSON.stringify(['午餐']),
+    importance: 0.4,
+  });
+});
+
 test('/api/memory-review skips corrections when memories are no longer active after AI returns', async () => {
   const db = createEmptyReviewDb();
   insertReviewMemory(db, { id: 'mem-archived', content: '归档竞态记忆', status: 'active' });
@@ -1056,4 +1113,183 @@ test('/api/memory-review returns zero correction counts when there are no active
     indexing_started: false,
     changes: [],
   });
+});
+
+test('/api/memory-review uses one combined deadline signal for every concurrent batch', async () => {
+  const controller = new AbortController();
+  const combinedController = new AbortController();
+  let deadlineCalls = 0;
+  const seenSignals = [];
+
+  class TestBackgroundLlmTimeoutError extends Error {}
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://llm.example/v1',
+        api_key: 'secret',
+        model: 'chat',
+        max_tokens: 64000,
+        memory_background_timeout_ms: 5_000,
+      }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/background-llm-deadline': {
+      BackgroundLlmTimeoutError: TestBackgroundLlmTimeoutError,
+      runWithBackgroundLlmDeadline: async (timeoutMs, work, externalSignal) => {
+        deadlineCalls += 1;
+        assert.equal(timeoutMs, 5_000);
+        assert.equal(externalSignal, controller.signal);
+        return work(combinedController.signal);
+      },
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 16384,
+      chatCompletion: async (_settings, _messages, signal) => {
+        seenSignals.push(signal);
+        return JSON.stringify({ corrections: [] });
+      },
+    },
+    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const response = await route.POST({
+    ...jsonRequest({ character_id: 'char-a' }),
+    signal: controller.signal,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(deadlineCalls, 1, 'one request must own one deadline timer, not one timer per batch');
+  assert.ok(seenSignals.length > 1, 'fixture must produce multiple AI review batches');
+  assert.ok(seenSignals.every(signal => signal === combinedController.signal));
+});
+
+test('/api/memory-review returns structured 504 when its shared server deadline expires', async () => {
+  const seenSignals = [];
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://llm.example/v1',
+        api_key: 'secret',
+        model: 'chat',
+        max_tokens: 64000,
+        memory_background_timeout_ms: 10,
+      }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 16384,
+      chatCompletion: async (_settings, _messages, signal) => {
+        seenSignals.push(signal);
+        if (signal.aborted) throw signal.reason;
+        return new Promise((_, reject) => {
+          const fallback = setTimeout(() => reject(new Error('deadline signal was not applied')), 100);
+          signal.addEventListener('abort', () => {
+            clearTimeout(fallback);
+            reject(signal.reason);
+          }, { once: true });
+        });
+      },
+    },
+    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const response = await route.POST({
+    ...jsonRequest({ character_id: 'char-a' }),
+    signal: new AbortController().signal,
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 504);
+  assert.deepEqual(payload, {
+    ok: false,
+    error: '记忆审核请求超过服务器处理时限',
+    code: 'UPSTREAM_TIMEOUT',
+  });
+  assert.ok(seenSignals.length >= 2, 'concurrent batches should start before the shared deadline');
+  assert.equal(new Set(seenSignals).size, 1);
+  assert.equal(seenSignals[0].aborted, true);
+});
+
+test('/api/memory-review preserves one client cancellation across concurrent batches', async () => {
+  const controller = new AbortController();
+  const seenSignals = [];
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://llm.example/v1',
+        api_key: 'secret',
+        model: 'chat',
+        max_tokens: 64000,
+        memory_background_timeout_ms: 1_000,
+      }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 16384,
+      chatCompletion: async (_settings, _messages, signal) => {
+        seenSignals.push(signal);
+        if (seenSignals.length === 3) markStarted();
+        if (signal.aborted) throw signal.reason;
+        return new Promise((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    },
+    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const responsePromise = route.POST({
+    ...jsonRequest({ character_id: 'char-a' }),
+    signal: controller.signal,
+  });
+  await started;
+  controller.abort(new DOMException('client disconnected', 'AbortError'));
+  const response = await responsePromise;
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(response.status, 499);
+  assert.equal(seenSignals.length, 3, 'request cancellation must stop queued batches from starting');
+  assert.equal(new Set(seenSignals).size, 1);
+  assert.notEqual(seenSignals[0], controller.signal);
+  assert.equal(seenSignals[0].aborted, true);
+  assert.equal(seenSignals[0].reason?.message, 'client disconnected');
 });

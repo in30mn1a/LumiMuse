@@ -1,5 +1,6 @@
 import { getDb } from '@/lib/db';
 import { loadSettings } from '@/lib/settings';
+import { structuredLog } from '@/lib/structured-log';
 import {
   ensureMemoryEmbeddingTables,
   getMemoryIndexStatus,
@@ -17,6 +18,7 @@ const MEMORY_INDEX_DRAIN_RETRY_DELAY_MS = 30_000;
 let memoryIndexDrainActive = false;
 let memoryIndexDrainRequested = false;
 let memoryIndexDrainStopVersion = 0;
+let memoryIndexDrainGeneration = 0;
 
 export type MemoryIndexProcessingBlockedReason =
   | 'memory_engine_disabled'
@@ -69,7 +71,9 @@ function hasPendingMemoryIndexTasks(): boolean {
     ensureMemoryEmbeddingTables(db);
     return getMemoryIndexStatus(undefined, db).pending > 0;
   } catch (error) {
-    console.error('[memory-index] Failed to inspect pending memory embedding tasks:', error);
+    structuredLog('error', 'memory.index.inspect_failed', {
+      operation: 'inspect_pending', status: 'failed',
+    }, error);
     return false;
   }
 }
@@ -92,7 +96,9 @@ async function drainMemoryIndexTasks(initialConfig: EmbeddingAdapterConfig): Pro
     try {
       result = await processMemoryEmbeddingTasks(config, { limit: MEMORY_INDEX_PROCESS_BATCH_LIMIT });
     } catch (error) {
-      console.error('[memory-index] Failed to process memory embedding tasks:', error);
+      structuredLog('error', 'memory.index.process_failed', {
+        operation: 'process_batch', status: 'failed',
+      }, error);
       break;
     }
 
@@ -107,7 +113,9 @@ async function drainMemoryIndexTasks(initialConfig: EmbeddingAdapterConfig): Pro
       try {
         nextConfig = resolveEmbeddingProcessingConfig();
       } catch (error) {
-        console.error('[memory-index] Failed to refresh embedding processing config:', error);
+        structuredLog('error', 'memory.index.config_refresh_failed', {
+          operation: 'refresh_config', status: 'failed',
+        }, error);
         break;
       }
       if (!nextConfig) break;
@@ -118,13 +126,14 @@ async function drainMemoryIndexTasks(initialConfig: EmbeddingAdapterConfig): Pro
   return { handled: totalHandled };
 }
 
-function scheduleMemoryIndexProcessing(config: EmbeddingAdapterConfig, delayMs: number): void {
+function scheduleMemoryIndexProcessing(
+  config: EmbeddingAdapterConfig,
+  delayMs: number,
+  generation: number,
+): void {
   const stopVersion = memoryIndexDrainStopVersion;
   setTimeout(() => {
-    if (stopVersion !== memoryIndexDrainStopVersion) {
-      memoryIndexDrainActive = false;
-      return;
-    }
+    if (generation !== memoryIndexDrainGeneration || stopVersion !== memoryIndexDrainStopVersion) return;
 
     let handled = 0;
     void drainMemoryIndexTasks(config)
@@ -132,9 +141,12 @@ function scheduleMemoryIndexProcessing(config: EmbeddingAdapterConfig, delayMs: 
         handled = result.handled;
       })
       .catch(error => {
-        console.error('[memory-index] Failed to drain memory embedding tasks:', error);
+        structuredLog('error', 'memory.index.drain_failed', {
+          operation: 'drain', status: 'failed',
+        }, error);
       })
       .finally(() => {
+        if (generation !== memoryIndexDrainGeneration) return;
         memoryIndexDrainActive = false;
         if (stopVersion === memoryIndexDrainStopVersion && hasPendingMemoryIndexTasks()) {
           triggerMemoryIndexProcessing(handled > 0 ? MEMORY_INDEX_DRAIN_CONTINUE_DELAY_MS : MEMORY_INDEX_DRAIN_RETRY_DELAY_MS);
@@ -146,6 +158,7 @@ function scheduleMemoryIndexProcessing(config: EmbeddingAdapterConfig, delayMs: 
 export function stopMemoryIndexProcessing(): void {
   memoryIndexDrainRequested = false;
   memoryIndexDrainStopVersion += 1;
+  memoryIndexDrainGeneration += 1;
   // 同步清掉 active 标志，避免 stop/clear 后紧跟 rebuild 时新任务卡在 pending。
   memoryIndexDrainActive = false;
 }
@@ -155,7 +168,9 @@ export function triggerMemoryIndexProcessing(delayMs = MEMORY_INDEX_DRAIN_CONTIN
   try {
     resolved = resolveEmbeddingProcessingConfigState();
   } catch (error) {
-    console.error('[memory-index] Failed to resolve embedding processing config:', error);
+    structuredLog('error', 'memory.index.config_resolve_failed', {
+      operation: 'resolve_config', status: 'failed',
+    }, error);
     return false;
   }
   if (!resolved.config) return false;
@@ -164,6 +179,7 @@ export function triggerMemoryIndexProcessing(delayMs = MEMORY_INDEX_DRAIN_CONTIN
   if (memoryIndexDrainActive) return true;
 
   memoryIndexDrainActive = true;
-  scheduleMemoryIndexProcessing(resolved.config, delayMs);
+  const generation = ++memoryIndexDrainGeneration;
+  scheduleMemoryIndexProcessing(resolved.config, delayMs, generation);
   return true;
 }

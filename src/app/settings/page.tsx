@@ -29,6 +29,8 @@ import { MemoryProfilePanel } from '@/components/settings/memory/MemoryProfilePa
 import { MemoryArchivePanel } from '@/components/settings/memory/MemoryArchivePanel';
 import { MemoryCandidatesPanel } from '@/components/settings/memory/MemoryCandidatesPanel';
 import { ImageGenSettingsSection } from '@/components/settings/ImageGenSettingsSection';
+import { ApiSettingsSection } from '@/components/settings/ApiSettingsSection';
+import { ProviderSettingsSection } from '@/components/settings/ProviderSettingsSection';
 import { useSettingsAuth } from '@/hooks/settings/useSettingsAuth';
 import { useSettingsProviders } from '@/hooks/settings/useSettingsProviders';
 
@@ -486,243 +488,29 @@ export default function SettingsPage() {
 
           <main className="space-y-4">
             {activeTab === 'api' && (<>
-            {/* 供应商管理 */}
-            <section className="surface-panel p-5">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="section-title text-lg">{t('settings.providerManage')}</h2>
-                <div className="flex gap-2">
-                  {activeProviderId && (
-                    <button
-                      onClick={handleUpdateCurrentProvider}
-                      className="soft-button soft-button-secondary text-xs"
-                    >
-                      {t('settings.providerUpdateCurrent')}
-                    </button>
-                  )}
-                  <button
-                    onClick={handleSaveCurrentAsProvider}
-                    className="soft-button soft-button-primary text-xs"
-                  >
-                    {t('settings.providerSaveCurrent')}
-                  </button>
-                </div>
-              </div>
-
-              {providers.length === 0 ? (
-                <p className="text-sm text-text-muted">{t('settings.providerEmpty')}</p>
-              ) : (
-                <div className="space-y-2">
-                  {providers.map(p => (
-                    <div
-                      key={p.id}
-                      className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
-                        p.id === activeProviderId
-                          ? 'border-accent/30 bg-accent/8'
-                          : 'border-border-light bg-white/70 hover:border-accent/20'
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-text-primary">{p.name}</span>
-                          {p.id === activeProviderId && (
-                            <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-medium text-accent-dark">
-                              {t('settings.providerActive')}
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-0.5 text-xs text-text-muted truncate">
-                          {p.api_base} · {p.model || t('settings.modelPlaceholder')}
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 gap-1.5">
-                        {p.id !== activeProviderId && (
-                          <button
-                            onClick={() => handleActivateProvider(p.id)}
-                            className="soft-button soft-button-primary px-2.5 py-1 text-xs"
-                          >
-                            {t('settings.providerSwitch')}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => setEditingProvider({ ...p })}
-                          className="soft-button soft-button-secondary px-2.5 py-1 text-xs"
-                        >
-                          {t('common.edit')}
-                        </button>
-                        <button
-                          onClick={() => handleDeleteProvider(p.id)}
-                          className="soft-button soft-button-danger px-2.5 py-1 text-xs"
-                        >
-                          {t('common.delete')}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {editingProvider && (
-                <div className="mt-4 space-y-3 rounded-2xl border border-accent/20 bg-white/80 px-4 py-4">
-                  <h3 className="text-sm font-medium text-text-primary">
-                    {editingProvider.id ? t('settings.providerEdit') : t('settings.providerNew')}
-                  </h3>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.providerName')}</label>
-                    <input
-                      value={editingProvider.name || ''}
-                      onChange={e => setEditingProvider(prev => prev ? { ...prev, name: e.target.value } : null)}
-                      className="input-rich"
-                      placeholder="OpenAI"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.apiBase')}</label>
-                    <input
-                      value={editingProvider.api_base || ''}
-                      onChange={e => setEditingProvider(prev => prev ? { ...prev, api_base: e.target.value } : null)}
-                      className="input-rich"
-                      placeholder={t('settings.apiBasePlaceholder')}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.apiKey')}</label>
-                    <input
-                      type="password"
-                      value={editingProvider.api_key || ''}
-                      onChange={e => setEditingProvider(prev => prev ? { ...prev, api_key: e.target.value } : null)}
-                      className="input-rich"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.model')}</label>
-                    <input
-                      value={editingProvider.model || ''}
-                      onChange={e => setEditingProvider(prev => prev ? { ...prev, model: e.target.value } : null)}
-                      className="input-rich"
-                      placeholder={t('settings.modelPlaceholder')}
-                    />
-                  </div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div>
-                      <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.temperature')}</label>
-                      <input
-                        type="number" min="0" max="2" step="0.1"
-                        value={editingProvider.temperature ?? 1}
-                        onChange={e => setEditingProvider(prev => prev ? { ...prev, temperature: parseNumber(e.target.value) } : null)}
-                        className="input-rich"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.maxTokens')}</label>
-                      <input
-                        type="number" min="1"
-                        value={editingProvider.max_tokens ?? 4096}
-                        onChange={e => setEditingProvider(prev => prev ? { ...prev, max_tokens: parseNumber(e.target.value) } : null)}
-                        className="input-rich"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.contextWindow')}</label>
-                      <input
-                        type="number" min="1"
-                        value={editingProvider.context_window ?? 131072}
-                        onChange={e => setEditingProvider(prev => prev ? { ...prev, context_window: parseNumber(e.target.value) } : null)}
-                        className="input-rich"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={handleSaveProvider} className="soft-button soft-button-primary text-xs">
-                      {t('common.save')}
-                    </button>
-                    <button onClick={() => setEditingProvider(null)} className="soft-button soft-button-secondary text-xs">
-                      {t('common.cancel')}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </section>
-
-            {/* 当前接口配置 */}
-            <section className="surface-panel p-5">
-              <div className="mb-4">
-                <h2 className="section-title text-lg">{t('settings.api')}</h2>
-                {activeProviderId && (
-                  <p className="mt-1 text-xs text-text-muted">{t('settings.apiFromProvider')}</p>
-                )}
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.apiBase')}</label>
-                  <input
-                    value={settings.api_base}
-                    onChange={e => update('api_base', e.target.value)}
-                    className="input-rich"
-                    placeholder={t('settings.apiBasePlaceholder')}
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.apiKey')}</label>
-                  <input
-                    type="password"
-                    value={settings.api_key}
-                    onChange={e => update('api_key', e.target.value)}
-                    className="input-rich"
-                  />
-                  <p className="mt-2 text-xs text-text-muted">{t('settings.apiKeyHint')}</p>
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.model')}</label>
-                  <div className="flex flex-col gap-2 lg:flex-row">
-                    {modelList.length > 0 ? (
-                      <select
-                        value={settings.model}
-                        onChange={e => update('model', e.target.value)}
-                        className="select-rich flex-1"
-                      >
-                        <option value="">{t('settings.modelSelectPlaceholder')}</option>
-                        {modelList.map(model => (
-                          <option key={model} value={model}>{model}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        value={settings.model}
-                        onChange={e => update('model', e.target.value)}
-                        className="input-rich flex-1"
-                        placeholder={t('settings.modelPlaceholder')}
-                      />
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => fetchModels()}
-                      disabled={modelLoading}
-                      className="soft-button soft-button-secondary shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {modelLoading ? t('common.loading') : t('settings.fetchModels')}
-                    </button>
-                  </div>
-                  {modelError && <p className="mt-2 text-xs text-red-500">{modelError}</p>}
-                </div>
-
-                <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-3">
-                  <label className="flex items-center gap-3 text-sm text-text-secondary">
-                    <input
-                      type="checkbox"
-                      checked={settings.json_mode}
-                      onChange={e => update('json_mode', e.target.checked)}
-                    />
-                    {t('settings.jsonMode')}
-                  </label>
-                  <p className="mt-2 text-xs leading-relaxed text-text-muted">
-                    {t('settings.jsonModeHint')}
-                  </p>
-                </div>
-              </div>
-            </section>
+            <ProviderSettingsSection
+              providers={providers}
+              activeProviderId={activeProviderId}
+              editingProvider={editingProvider}
+              setEditingProvider={setEditingProvider}
+              onActivateProvider={handleActivateProvider}
+              onDeleteProvider={handleDeleteProvider}
+              onSaveProvider={handleSaveProvider}
+              onSaveCurrentAsProvider={handleSaveCurrentAsProvider}
+              onUpdateCurrentProvider={handleUpdateCurrentProvider}
+              parseNumber={parseNumber}
+              t={t}
+            />
+            <ApiSettingsSection
+              settings={settings}
+              activeProviderId={activeProviderId}
+              modelList={modelList}
+              modelLoading={modelLoading}
+              modelError={modelError}
+              update={update}
+              onFetchModels={() => void fetchModels()}
+              t={t}
+            />
             </>)}
 
             {activeTab === 'generation' && (<>
@@ -733,8 +521,9 @@ export default function SettingsPage() {
 
               <div className="grid gap-4 md:grid-cols-3">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.temperature')}</label>
+                  <label htmlFor="settings-temperature" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.temperature')}</label>
                   <input
+                    id="settings-temperature"
                     type="number"
                     min="0"
                     max="2"
@@ -746,8 +535,9 @@ export default function SettingsPage() {
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.maxTokens')}</label>
+                  <label htmlFor="settings-max-tokens" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.maxTokens')}</label>
                   <input
+                    id="settings-max-tokens"
                     type="number"
                     min="1"
                     value={settings.max_tokens}
@@ -757,8 +547,9 @@ export default function SettingsPage() {
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.contextWindow')}</label>
+                  <label htmlFor="settings-context-window" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.contextWindow')}</label>
                   <input
+                    id="settings-context-window"
                     type="number"
                     min="1"
                     value={settings.context_window}
@@ -777,6 +568,7 @@ export default function SettingsPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <SamplingParamRow
+                  id="settings-top-p"
                   label={t('settings.topP')}
                   value={settings.top_p}
                   defaultValue={0.9}
@@ -785,6 +577,7 @@ export default function SettingsPage() {
                   parseNumber={parseNumber}
                 />
                 <SamplingParamRow
+                  id="settings-top-k"
                   label={t('settings.topK')}
                   value={settings.top_k}
                   defaultValue={40}
@@ -793,6 +586,7 @@ export default function SettingsPage() {
                   parseNumber={parseNumber}
                 />
                 <SamplingParamRow
+                  id="settings-frequency-penalty"
                   label={t('settings.frequencyPenalty')}
                   value={settings.frequency_penalty}
                   defaultValue={0}
@@ -801,6 +595,7 @@ export default function SettingsPage() {
                   parseNumber={parseNumber}
                 />
                 <SamplingParamRow
+                  id="settings-presence-penalty"
                   label={t('settings.presencePenalty')}
                   value={settings.presence_penalty}
                   defaultValue={0}
@@ -809,6 +604,7 @@ export default function SettingsPage() {
                   parseNumber={parseNumber}
                 />
                 <SamplingParamRow
+                  id="settings-repetition-penalty"
                   label={t('settings.repetitionPenalty')}
                   value={settings.repetition_penalty}
                   defaultValue={1.1}
@@ -817,6 +613,7 @@ export default function SettingsPage() {
                   parseNumber={parseNumber}
                 />
                 <SamplingParamRow
+                  id="settings-seed"
                   label={t('settings.seed')}
                   value={settings.seed}
                   defaultValue={0}
@@ -965,7 +762,7 @@ export default function SettingsPage() {
                   </select>
                 </label>
 
-                <label className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
+                <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
                   <span className="mb-2 block">{t('settings.font')}</span>
                   <div className="grid grid-cols-3 gap-2">
                     {(['wenkai', 'system', 'serif'] as const).map(f => (
@@ -996,7 +793,7 @@ export default function SettingsPage() {
                       </button>
                     ))}
                   </div>
-                </label>
+                </div>
               </div>
             </section>
             </>)}
@@ -1017,6 +814,7 @@ export default function SettingsPage() {
 
 // ========== 高级采样参数行 ==========
 interface SamplingParamRowProps {
+  id: string;
   label: string;
   value: number | null;
   /** 勾选启用时若当前值为 null，自动填入的初值 */
@@ -1028,7 +826,7 @@ interface SamplingParamRowProps {
   parseNumber: (v: string) => number;
 }
 
-function SamplingParamRow({ label, value, defaultValue, min, max, step, onChange, parseNumber }: SamplingParamRowProps) {
+function SamplingParamRow({ id, label, value, defaultValue, min, max, step, onChange, parseNumber }: SamplingParamRowProps) {
   const enabled = value !== null;
   return (
     <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
@@ -1049,8 +847,9 @@ function SamplingParamRow({ label, value, defaultValue, min, max, step, onChange
           }
         }}
       />
-      <label className="flex-1 text-sm text-text-secondary">{label}</label>
+      <label htmlFor={id} className="flex-1 text-sm text-text-secondary">{label}</label>
       <input
+        id={id}
         type="number"
         min={min}
         max={max}

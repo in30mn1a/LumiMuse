@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import type { Character, Message, Settings } from '@/types';
 import { sanitizeGeneratedImages, type GeneratedImage } from '@/lib/generated-image-assets';
 import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
@@ -37,6 +37,8 @@ export function useChatImageGeneration({
   const autoImagedMsgIdsRef = useRef<Set<string>>(new Set());
   const imageRequestSeqRef = useRef(0);
   const activeImageRequestsRef = useRef<Map<number, { controller: AbortController; conversationId: string }>>(new Map());
+  const inFlightMessageIdsRef = useRef<Set<string>>(new Set());
+  const [generatingImageMessageIds, setGeneratingImageMessageIds] = useState<Set<string>>(() => new Set());
 
   const abortImageRequests = useCallback((conversationId?: string | null) => {
     for (const [requestId, request] of activeImageRequestsRef.current.entries()) {
@@ -67,11 +69,19 @@ export function useChatImageGeneration({
   const handleGenerateImage = useCallback(async (messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => {
     const targetConversationId = conversationIdOverride || activeConvIdRef.current;
     if (!targetConversationId || !characterRef.current) return;
-    showToast(t('chat.imageGenStart'), 'info');
 
     const currentMessages = messagesRef.current;
     const targetIdx = currentMessages.findIndex(m => m.id === messageId);
     if (targetIdx < 0) return;
+
+    if (inFlightMessageIdsRef.current.has(messageId)) return;
+    inFlightMessageIdsRef.current.add(messageId);
+    setGeneratingImageMessageIds(current => {
+      const next = new Set(current);
+      next.add(messageId);
+      return next;
+    });
+    showToast(t('chat.imageGenStart'), 'info');
 
     const targetMsg = currentMessages[targetIdx];
     let workingMeta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
@@ -228,6 +238,12 @@ export function useChatImageGeneration({
       if (request?.controller === controller) {
         activeImageRequestsRef.current.delete(requestId);
       }
+      inFlightMessageIdsRef.current.delete(messageId);
+      setGeneratingImageMessageIds(current => {
+        const next = new Set(current);
+        next.delete(messageId);
+        return next;
+      });
     }
   }, [activeConvIdRef, characterRef, isCurrentImageRequest, markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
 
@@ -393,6 +409,7 @@ export function useChatImageGeneration({
 
   return {
     handleGenerateImage,
+    generatingImageMessageIds,
     maybeAutoGenerateImageFromMessages,
     handleDeleteImage,
     handleEditImagePrompt,

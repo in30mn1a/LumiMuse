@@ -8,6 +8,8 @@ import {
   filterUnreferencedLocalAssetUrls,
 } from '@/lib/character-file-utils';
 import { messageUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
+import type { MessageAttachment, MessageMetadata } from '@/types';
+import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
 
 type MessageRecord = Record<string, unknown>;
 
@@ -67,6 +69,14 @@ function mergeMessageMetadata(
   return { ...current, ...incoming };
 }
 
+function messageRole(value: unknown): 'user' | 'assistant' | 'system' {
+  return value === 'assistant' || value === 'system' ? value : 'user';
+}
+
+function messageAttachments(metadata: MessageMetadata): MessageAttachment[] | undefined {
+  return Array.isArray(metadata.attachments) ? metadata.attachments : undefined;
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -92,11 +102,6 @@ export async function PUT(
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   const previousFileUrls = collectMessageLocalAssetUrls(existing);
 
-  // 在事务外完成 async import，避免事务函数变成异步
-  const estimateTokens = body.activeVersion === undefined && body.content !== undefined
-    ? (await import('@/lib/token-counter')).estimateTokens
-    : null;
-
   // 用事务包裹多个 UPDATE，避免中途失败留下不一致状态
   db.transaction(() => {
     if (body.activeVersion !== undefined) {
@@ -106,16 +111,23 @@ export async function PUT(
       if (versions && body.activeVersion >= 0 && body.activeVersion < versions.length) {
         meta.activeVersion = body.activeVersion;
         const target = versions[body.activeVersion];
+        const tokenResult = createMessageTokenCount(
+          target.content,
+          messageRole(existing.role),
+          messageAttachments(meta),
+        );
+        versions[body.activeVersion] = { ...target, token_count: tokenResult.tokenCount };
+        meta.versions = versions;
+        meta = metadataWithTokenCountProvenance(meta, tokenResult.provenance);
         db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
-          .run(target.content, target.token_count, JSON.stringify(meta), id);
+          .run(target.content, tokenResult.tokenCount, JSON.stringify(meta), id);
       }
-    } else if (body.content !== undefined) {
-      const tokenCount = estimateTokens!(body.content);
-
+    } else if (body.content !== undefined || body.attachments !== undefined) {
       // 同步更新 metadata.versions 里当前激活版本的内容，防止切换版本时覆盖编辑
       let meta: Record<string, unknown> = {};
       meta = parseMessageMetadata(existing.metadata);
       const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
+      const nextContent = body.content ?? String(existing.content ?? '');
 
       // 如果传了 attachments，更新 metadata 里的附件
       if (body.attachments !== undefined) {
@@ -125,18 +137,25 @@ export async function PUT(
           delete meta.attachments;
         }
       }
+      const tokenResult = createMessageTokenCount(
+        nextContent,
+        messageRole(existing.role),
+        messageAttachments(meta),
+      );
+      const tokenCount = tokenResult.tokenCount;
+      meta = metadataWithTokenCountProvenance(meta, tokenResult.provenance);
 
       if (versions && versions.length > 0) {
         const activeIdx = typeof meta.activeVersion === 'number' ? meta.activeVersion : 0;
         if (activeIdx >= 0 && activeIdx < versions.length) {
-          versions[activeIdx] = { content: body.content, token_count: tokenCount };
+          versions[activeIdx] = { content: nextContent, token_count: tokenCount };
           meta.versions = versions;
         }
         db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
-          .run(body.content, tokenCount, JSON.stringify(meta), id);
+          .run(nextContent, tokenCount, JSON.stringify(meta), id);
       } else {
         db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
-          .run(body.content, tokenCount, JSON.stringify(meta), id);
+          .run(nextContent, tokenCount, JSON.stringify(meta), id);
       }
 
       // 注：不再自动 invalidate 消息编辑触发的记忆。编辑原因多样（改错别字/调语气/补内容），
@@ -147,11 +166,27 @@ export async function PUT(
     if (shouldMergeIncomingMetadata) {
       const latest = db.prepare('SELECT metadata FROM messages WHERE id = ?').get(id) as { metadata: unknown } | undefined;
       const currentMeta = parseMessageMetadata(latest?.metadata ?? existing.metadata);
-      const incomingMeta = body.metadata ?? {};
+      const incomingMeta = { ...(body.metadata ?? {}) };
+      delete incomingMeta.token_count_provenance;
       // body.content !== undefined && body.metadata !== undefined 时，
       // currentMeta 已是上方刚写入的最新 versions/attachments。
-      const mergedMeta = mergeMessageMetadata(currentMeta, incomingMeta);
-      db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(mergedMeta), id);
+      let mergedMeta = mergeMessageMetadata(currentMeta, incomingMeta);
+      if (Object.hasOwn(incomingMeta, 'attachments')) {
+        const latestRow = db.prepare('SELECT content, token_count FROM messages WHERE id = ?').get(id) as {
+          content: string;
+          token_count: number;
+        };
+        const tokenResult = createMessageTokenCount(
+          latestRow.content,
+          messageRole(existing.role),
+          messageAttachments(mergedMeta),
+        );
+        mergedMeta = metadataWithTokenCountProvenance(mergedMeta, tokenResult.provenance);
+        db.prepare('UPDATE messages SET token_count = ?, metadata = ? WHERE id = ?')
+          .run(tokenResult.tokenCount, JSON.stringify(mergedMeta), id);
+      } else {
+        db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(mergedMeta), id);
+      }
     }
   })();
 
@@ -185,13 +220,25 @@ export async function DELETE(
     meta.versions = newVersions;
     meta.activeVersion = newActiveIdx;
     const target = newVersions[newActiveIdx];
+    const tokenResult = createMessageTokenCount(
+      target.content,
+      messageRole(existing.role),
+      messageAttachments(meta),
+    );
+    newVersions[newActiveIdx] = { ...target, token_count: tokenResult.tokenCount };
+    meta = metadataWithTokenCountProvenance(meta, tokenResult.provenance);
     const updated = db.transaction(() => {
       db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
-        .run(target.content, target.token_count, JSON.stringify(meta), id);
+        .run(target.content, tokenResult.tokenCount, JSON.stringify(meta), id);
       return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
     })();
     await deleteUnreferencedLocalAssets(db, previousFileUrls);
-    return NextResponse.json({ ok: true, deleted: 'version', message: serializeMessage(updated) });
+    return NextResponse.json({
+      ok: true,
+      deleted: 'version',
+      conversation_id: String(existing.conversation_id),
+      message: serializeMessage(updated),
+    });
   }
 
   // 只有一个版本（或无版本信息）：删整条消息
@@ -202,5 +249,9 @@ export async function DELETE(
   })();
   if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   await deleteUnreferencedLocalAssets(db, previousFileUrls);
-  return NextResponse.json({ ok: true, deleted: 'message' });
+  return NextResponse.json({
+    ok: true,
+    deleted: 'message',
+    conversation_id: String(existing.conversation_id),
+  });
 }

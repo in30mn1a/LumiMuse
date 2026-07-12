@@ -83,12 +83,19 @@ function memoryProfileOverview(db: ReturnType<typeof getDb>, characterId?: strin
 export async function GET(request: NextRequest) {
   const characterId = request.nextUrl.searchParams.get('character_id')?.trim() || undefined;
   const db = getDb();
+  const queueStatuses = ['pending', 'processing', 'failed'];
+  const embeddingTasks = statusCounts(db, 'memory_embedding_tasks', queueStatuses, characterId);
 
   return NextResponse.json({
     ok: true,
     character_id: characterId || null,
     index: memoryIndexOverview(db, characterId),
-    tasks: statusCounts(db, 'memory_embedding_tasks', ['pending', 'processing', 'failed'], characterId),
+    tasks: embeddingTasks,
+    queues: {
+      extraction: statusCounts(db, 'memory_tasks', queueStatuses, characterId),
+      profile: statusCounts(db, 'character_memory_profile_update_tasks', queueStatuses, characterId),
+      embedding: embeddingTasks,
+    },
     candidates: statusCounts(db, 'memory_extraction_candidates', ['repairable', 'ignored'], characterId),
     profile: memoryProfileOverview(db, characterId),
     archive: statusCounts(db, 'memories', ['archived', 'summarized'], characterId),

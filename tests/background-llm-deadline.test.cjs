@@ -75,6 +75,73 @@ test('zero timeout disables the watchdog and passes no synthetic signal', async 
   assert.equal(receivedSignal, undefined);
 });
 
+test('zero timeout forwards the external signal without wrapping it', async () => {
+  const { runWithBackgroundLlmDeadline } = loadDeadlineModule();
+  const controller = new AbortController();
+  let receivedSignal;
+
+  const result = await runWithBackgroundLlmDeadline(0, async signal => {
+    receivedSignal = signal;
+    return 'ok';
+  }, controller.signal);
+
+  assert.equal(result, 'ok');
+  assert.equal(receivedSignal, controller.signal);
+});
+
+test('external abort wins over the server deadline and preserves its reason', async () => {
+  const { BackgroundLlmTimeoutError, runWithBackgroundLlmDeadline } = loadDeadlineModule();
+  const controller = new AbortController();
+  const clientAbort = new DOMException('client disconnected', 'AbortError');
+  let receivedSignal;
+
+  const promise = runWithBackgroundLlmDeadline(1_000, signal => {
+    receivedSignal = signal;
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  }, controller.signal);
+  controller.abort(clientAbort);
+
+  await assert.rejects(promise, error => {
+    assert.equal(error, clientAbort);
+    assert.equal(error instanceof BackgroundLlmTimeoutError, false);
+    return true;
+  });
+  assert.equal(receivedSignal.aborted, true);
+  assert.equal(receivedSignal.reason, clientAbort);
+});
+
+test('successful work clears the deadline timer and detaches the external abort listener', async () => {
+  const { runWithBackgroundLlmDeadline } = loadDeadlineModule();
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const originalAdd = signal.addEventListener.bind(signal);
+  const originalRemove = signal.removeEventListener.bind(signal);
+  let abortAdds = 0;
+  let abortRemoves = 0;
+  signal.addEventListener = (type, listener, options) => {
+    if (type === 'abort') abortAdds += 1;
+    return originalAdd(type, listener, options);
+  };
+  signal.removeEventListener = (type, listener, options) => {
+    if (type === 'abort') abortRemoves += 1;
+    return originalRemove(type, listener, options);
+  };
+  let receivedSignal;
+
+  const result = await runWithBackgroundLlmDeadline(20, async combinedSignal => {
+    receivedSignal = combinedSignal;
+    return 'done';
+  }, signal);
+  await new Promise(resolve => setTimeout(resolve, 30));
+
+  assert.equal(result, 'done');
+  assert.equal(abortAdds, 1);
+  assert.equal(abortRemoves, 1);
+  assert.equal(receivedSignal.aborted, false);
+});
+
 test('positive timeout aborts a stuck background operation with a typed error', async () => {
   const { BackgroundLlmTimeoutError, runWithBackgroundLlmDeadline } = loadDeadlineModule();
   assert.equal(typeof runWithBackgroundLlmDeadline, 'function');

@@ -82,7 +82,7 @@ function createOptions(overrides = {}) {
     scheduleStreamingText: () => {},
     setStreamingUsage: () => {},
     pollMemoryTask: () => Promise.resolve(),
-    refreshMessages: () => Promise.resolve(),
+    refreshMessagesForConversation: () => Promise.resolve(),
     refreshConversationState: () => Promise.resolve(),
     updateMessagesForConversation: () => {},
     markSkipNextScroll: () => {},
@@ -167,4 +167,120 @@ test('regenerate-from-here targets the next assistant and skips reinserting the 
   assert.equal(requestBody.content, 'nearest question');
   assert.equal(requestBody.regenerate_assistant_id, 'assistant-target');
   assert.equal(requestBody.skip_user_insert, true);
+});
+
+test('regenerate refreshes the stream owner even when the active conversation changes', async () => {
+  const useChatMessageActions = loadHook();
+  const options = createOptions();
+  const refreshed = [];
+  global.fetch = async () => {
+    options.activeConvIdRef.current = 'conv-b';
+    return new Response('', { status: 200 });
+  };
+
+  const { result } = renderHook(() => useChatMessageActions({
+    ...options,
+    refreshMessagesForConversation: async convId => { refreshed.push(convId); },
+  }));
+  await act(async () => {
+    await result.current.handleRegenerate('assistant-target');
+  });
+
+  assert.deepEqual(refreshed, ['conv-a']);
+});
+
+test('delete uses the response conversation id and refreshes its authoritative cache snapshot', async () => {
+  const useChatMessageActions = loadHook();
+  const options = createOptions();
+  const refreshed = [];
+  const {
+    cacheMessagesResponse,
+    clearCachedMessages,
+    readCachedMessages,
+    writeCachedMessages,
+  } = require('../src/lib/chat-message-cache.ts');
+  clearCachedMessages();
+  writeCachedMessages('conv-a', {
+    messages: options.messagesRef.current,
+    hasMore: false,
+    oldestSeq: 1,
+    unextractedCount: 1,
+    totalTokens: 99,
+  });
+  global.fetch = async () => {
+    options.activeConvIdRef.current = 'conv-b';
+    return new Response(JSON.stringify({
+      ok: true,
+      deleted: 'message',
+      conversation_id: 'conv-a',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const { result } = renderHook(() => useChatMessageActions({
+    ...options,
+    refreshMessagesForConversation: async convId => {
+      refreshed.push(convId);
+      cacheMessagesResponse(convId, {
+        messages: options.messagesRef.current.filter(item => item.id !== 'assistant-target'),
+        hasMore: false,
+        oldestSeq: 1,
+        unextractedCount: 0,
+        totalTokens: 42,
+      });
+    },
+  }));
+  await act(async () => {
+    await result.current.handleDeleteMessage('assistant-target');
+  });
+
+  assert.deepEqual(refreshed, ['conv-a']);
+  const cached = readCachedMessages('conv-a');
+  assert.equal(cached.messages.some(item => item.id === 'assistant-target'), false);
+  assert.equal(cached.unextractedCount, 0);
+  assert.equal(cached.totalTokens, 42);
+});
+
+test('delete failure is consumed and shown as an error toast', async () => {
+  const useChatMessageActions = loadHook();
+  const toasts = [];
+  global.fetch = async () => new Response(JSON.stringify({ error: 'delete denied' }), {
+    status: 500,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const { result } = renderHook(() => useChatMessageActions(createOptions({
+    showToast: (messageText, type) => toasts.push({ messageText, type }),
+  })));
+  await act(async () => {
+    await result.current.handleDeleteMessage('assistant-target');
+  });
+
+  assert.deepEqual(toasts, [{ messageText: 'delete denied', type: 'error' }]);
+});
+
+test('edit and version switch refresh the message owner response instead of the current conversation', async () => {
+  const useChatMessageActions = loadHook();
+  const options = createOptions();
+  const refreshed = [];
+  global.fetch = async (_url, init) => {
+    options.activeConvIdRef.current = 'conv-b';
+    return new Response(JSON.stringify(message('assistant-target', 'assistant', init.method === 'PUT' ? 'updated' : 'unchanged')), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const { result } = renderHook(() => useChatMessageActions({
+    ...options,
+    refreshMessagesForConversation: async convId => { refreshed.push(convId); },
+  }));
+  await act(async () => {
+    await result.current.handleEditMessage('assistant-target', 'updated');
+    await result.current.handleSwitchVersion('assistant-target', 0);
+  });
+
+  assert.deepEqual(refreshed, ['conv-a', 'conv-a']);
 });

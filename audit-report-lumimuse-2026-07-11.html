@@ -1,0 +1,2208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LumiMuse 审计报告</title>
+<style>
+  :root {
+    --sidebar-bg: #1a1f2e;
+    --sidebar-hover: #242a3d;
+    --sidebar-active: #2d3555;
+    --bg: #f0f3f7;
+    --card-bg: #ffffff;
+    --border: #e6eaef;
+    --text: #1e2233;
+    --text-secondary: #6b7394;
+    --accent: #3370ff;
+    --accent-light: #e8f0ff;
+    --success: #34c759;
+    --warning: #ff9500;
+    --danger: #ff3b30;
+    --info: #5ac8fa;
+    --badge-critical: #ff3b30;
+    --badge-high: #ff9500;
+    --badge-medium: #3370ff;
+    --badge-low: #8e8e93;
+    --badge-info: #5ac8fa;
+    --bar-bg: #e8eaed;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    display: flex;
+    min-height: 100vh;
+    font-size: 15px;
+  }
+  .sidebar { width: 240px; background: var(--sidebar-bg); color: #fff; flex-shrink: 0; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  .sidebar-header { padding: 20px 20px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
+  .sidebar-header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  .sidebar-header .sub { font-size: 12px; color: rgba(255,255,255,.4); margin-top: 4px; }
+  .sidebar-nav { padding: 8px 0; flex: 1; }
+  .sidebar-nav a { display: flex; align-items: center; gap: 12px; padding: 14px 20px; color: rgba(255,255,255,.6); text-decoration: none; font-size: 14px; transition: all .15s; border-left: 3px solid transparent; }
+  .sidebar-nav a:hover { background: var(--sidebar-hover); color: #fff; }
+  .sidebar-nav a.active { background: var(--sidebar-active); color: #fff; border-left-color: var(--accent); }
+  .sidebar-nav a .icon { width: 18px; text-align: center; font-size: 14px; }
+  .sidebar-footer { padding: 12px 20px; border-top: 1px solid rgba(255,255,255,.06); font-size: 11px; color: rgba(255,255,255,.3); }
+  .main { flex: 1; min-width: 0; padding: 32px 40px 80px; }
+  .page-header { margin-bottom: 32px; }
+  .page-header h2 { font-size: 26px; font-weight: 700; }
+  .page-header .meta { font-size: 14px; color: var(--text-secondary); margin-top: 6px; display: flex; gap: 20px; flex-wrap: wrap; }
+  .page-header .meta span { display: flex; align-items: center; gap: 4px; }
+  .card { background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border); margin-bottom: 20px; overflow: hidden; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 24px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 15px; }
+  .card-body { padding: 24px; }
+  .score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .score-item { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px; background: #f8fafc; border-radius: 8px; border: 1px solid var(--border); }
+  .score-item .label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .4px; }
+  .score-item .bar-row { display: flex; align-items: center; gap: 12px; }
+  .score-item .bar-track { flex: 1; height: 10px; background: var(--bar-bg); border-radius: 5px; overflow: hidden; }
+  .score-item .bar-fill { height: 100%; border-radius: 5px; transition: width .6s ease; }
+  .score-item .value { font-size: 22px; font-weight: 700; min-width: 52px; text-align: right; }
+  .score-item .grade { font-size: 15px; font-weight: 700; min-width: 22px; text-align: center; }
+  .bar-fill.s { background: linear-gradient(90deg, #34c759, #30d158); }
+  .bar-fill.a { background: linear-gradient(90deg, #3370ff, #5e8cff); }
+  .bar-fill.b { background: linear-gradient(90deg, #ff9500, #ffb340); }
+  .bar-fill.c { background: linear-gradient(90deg, #ff3b30, #ff6b61); }
+  .bar-fill.d { background: linear-gradient(90deg, #ff6b61, #ff9f91); }
+  .bar-fill.f { background: linear-gradient(90deg, #9b1d1a, #d63031); }
+  .grade-s { color: #34c759; } .grade-a { color: #3370ff; }
+  .grade-b { color: #ff9500; } .grade-c { color: #ff3b30; }
+  .grade-d { color: #ff6b61; } .grade-f { color: #9b1d1a; }
+  .overall-row { grid-column: 1 / -1; background: linear-gradient(135deg, #1a1f2e, #2d3555); border-color: transparent; }
+  .overall-row .label { color: rgba(255,255,255,.6); }
+  .overall-row .value { color: #fff; }
+  .overall-row .grade { color: #34c759; }
+  .overall-row .bar-fill { background: linear-gradient(90deg, #34c759, #30d158); }
+  .stats-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .stat-card { flex: 1; min-width: 140px; padding: 20px 24px; background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border); text-align: center; }
+  .stat-card .num { font-size: 32px; font-weight: 700; line-height: 1.3; }
+  .stat-card .desc { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+  .finding { border-left: 4px solid var(--border); margin-bottom: 20px; padding: 20px 24px; border-radius: 0 10px 10px 0; background: #fafbfc; border: 1px solid var(--border); border-left-width: 4px; }
+  .finding.severity-critical { border-left-color: var(--badge-critical); }
+  .finding.severity-high { border-left-color: var(--badge-high); }
+  .finding.severity-medium { border-left-color: var(--badge-medium); }
+  .finding.severity-low { border-left-color: var(--badge-low); }
+  .finding.severity-info { border-left-color: var(--badge-info); }
+  .finding-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .finding-header h4 { font-size: 16px; font-weight: 600; flex: 1; }
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; line-height: 1.6; }
+  .badge-critical { background: #ffeae9; color: var(--badge-critical); }
+  .badge-high { background: #fff3e0; color: var(--badge-high); }
+  .badge-medium { background: var(--accent-light); color: var(--badge-medium); }
+  .badge-low { background: #f2f2f5; color: var(--badge-low); }
+  .badge-info { background: #e4f5ff; color: #007aff; }
+  .badge-confirmed { background: #e8ffe8; color: #248a3d; }
+  .badge-suspected { background: #fff8e1; color: #b8860b; }
+  .badge-s { background: #e8ffe8; color: #248a3d; }
+  .badge-a { background: var(--accent-light); color: var(--accent); }
+  .badge-b { background: #fff3e0; color: var(--warning); }
+  .badge-c { background: #ffeae9; color: var(--danger); }
+  .finding-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+  .finding-meta span { display: flex; align-items: center; gap: 4px; }
+  .finding .evidence { margin: 12px 0; padding: 14px 18px; background: #f0f2f5; border-radius: 8px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; line-height: 1.8; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .finding .problem { font-size: 14px; margin: 12px 0; color: var(--text); line-height: 1.8; }
+  .finding .fix-box { margin-top: 12px; padding: 14px 18px; background: #f0f7ff; border-radius: 8px; border: 1px solid #d6e4ff; font-size: 13px; }
+  .finding .fix-box code { display: block; margin-top: 6px; padding: 12px 16px; background: #1e2233; color: #cdd6f4; border-radius: 6px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+  .fix-label { font-weight: 600; font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: .3px; }
+  .section-title { font-size: 20px; font-weight: 700; margin: 36px 0 20px; padding-bottom: 10px; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; padding: 12px 16px; font-weight: 600; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 2px solid var(--border); background: #f8fafc; }
+  td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .check-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px; }
+  .check-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 14px; line-height: 1.6; }
+  .check-item .check { color: var(--success); font-weight: 700; }
+  .check-item .cross { color: var(--danger); font-weight: 700; }
+  .win-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .win-card { padding: 16px; background: linear-gradient(135deg, #f0f7ff, #e8f0ff); border-radius: 8px; border: 1px solid #d6e4ff; }
+  .win-card .win-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .win-card .win-meta { font-size: 11px; color: var(--text-secondary); }
+  .small { font-size: 13px; color: var(--text-secondary); }
+  .code-block { margin: 8px 0; padding: 14px 18px; background: #1e2233; color: #cdd6f4; border-radius: 6px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; overflow-x: auto; white-space: pre; line-height: 1.7; }
+  .hl { color: #f7768e; font-weight: 600; } .cm { color: #565f89; }
+  .kw { color: #bb9af7; } .fn { color: #7aa2f7; }
+  .ty { color: #ff9e64; } .op { color: #89ddff; }
+  .str { color: #9ece6a; } .nu { color: #ff9e64; }
+  @media (max-width: 768px) { .sidebar { display: none; } .main { padding: 16px; } .score-grid { grid-template-columns: 1fr; } .stats-row { flex-direction: column; } .check-list { grid-template-columns: 1fr; } .win-grid { grid-template-columns: 1fr; } }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #c1c7d0; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #a8adb8; }
+</style>
+</head>
+<body>
+
+<nav class="sidebar">
+  <div class="sidebar-header">
+    <h1>LumiMuse</h1>
+    <div class="sub">全维度审计 · 2026-07-11</div>
+  </div>
+  <div class="sidebar-nav">
+    <a href="#summary"><span class="icon">📊</span> 评分总览</a>
+    <a href="#executive-summary"><span class="icon">📝</span> 总体评估</a>
+    <a href="#coverage"><span class="icon">🧭</span> 覆盖矩阵</a>
+    <a href="#findings"><span class="icon">🔍</span> 详细发现</a>
+    <a href="#architecture"><span class="icon">🏗</span> 架构边界</a>
+    <a href="#security"><span class="icon">🔒</span> 安全</a>
+    <a href="#stability"><span class="icon">⚡</span> 稳定性</a>
+    <a href="#performance"><span class="icon">🚀</span> 性能</a>
+    <a href="#testing"><span class="icon">🧪</span> 测试质量</a>
+    <a href="#maintainability"><span class="icon">📐</span> 可维护性</a>
+    <a href="#design"><span class="icon">📋</span> 设计原则</a>
+    <a href="#release"><span class="icon">🚢</span> 发布部署</a>
+    <a href="#documentation"><span class="icon">📚</span> 文档</a>
+    <a href="#configuration"><span class="icon">⚙️</span> 配置安全</a>
+    <a href="#observability"><span class="icon">🩺</span> 可观测性</a>
+    <a href="#data-integrity"><span class="icon">🧱</span> 数据完整性</a>
+    <a href="#privacy"><span class="icon">🛡</span> 隐私</a>
+    <a href="#accessibility"><span class="icon">⌨️</span> 可访问性</a>
+    <a href="#supply-chain"><span class="icon">🔗</span> 供应链</a>
+    <a href="#cost"><span class="icon">💸</span> 成本</a>
+    <a href="#ai-safety"><span class="icon">🤖</span> AI 安全</a>
+    <a href="#fallback"><span class="icon">🕳</span> 回退与防御</a>
+    <a href="#testing-authenticity"><span class="icon">🎭</span> 测试真实性</a>
+    <a href="#type-safety"><span class="icon">🔤</span> 类型安全</a>
+    <a href="#frontend-state"><span class="icon">🧩</span> 前端状态</a>
+    <a href="#backend-api"><span class="icon">🔌</span> 后端 API</a>
+    <a href="#dependency-weight"><span class="icon">📦</span> 依赖重量</a>
+    <a href="#code-consistency"><span class="icon">🧬</span> 代码一致性</a>
+    <a href="#comment-coverage"><span class="icon">💬</span> 注释覆盖</a>
+    <a href="#principles"><span class="icon">📋</span> 原则符合度</a>
+    <a href="#fix-order"><span class="icon">🎯</span> 修复顺序</a>
+  </div>
+  <div class="sidebar-footer">Fuck My Shit Mountain v1.0</div>
+</nav>
+
+<div class="main">
+
+  <div class="page-header" id="summary">
+    <h2>LumiMuse 全维度审计报告</h2>
+    <div class="meta">
+      <span>📅 2026-07-11</span>
+      <span>🔍 full（25 个主维度 + Concurrency 跨维度复核）</span>
+      <span>🛠 Claude (Fable 5) · 8 组并行审计 + 主审逐项验证</span>
+      <span>📌 基线 commit 0bcd321</span>
+      <span>✅ r4 整改关闭版：63 项现实风险已验证关闭；保留 4 项 Info、#2/#7 设计取舍与历史 Resolved #9</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">📊 评分面板</div>
+    <div class="card-body">
+      <div class="score-grid">
+
+        <div class="score-item">
+          <div class="label">Security</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill s" style="width:95%"></div></div>
+            <span class="value grade-s">9.5</span>
+            <span class="grade grade-s">S</span>
+          </div>
+          <div class="small">导入边界、路由二道鉴权、错误脱敏与供应链审计均已补强；4 项 Info 保持为有意权衡记录</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Stability</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill s" style="width:95%"></div></div>
+            <span class="value grade-s">9.5</span>
+            <span class="grade grade-s">S</span>
+          </div>
+          <div class="small">交互式 LLM deadline/取消、SSE 中断、队列 generation ownership 与输入边界均有直接行为验证</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Performance</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill s" style="width:95%"></div></div>
+            <span class="value grade-s">9.5</span>
+            <span class="grade grade-s">S</span>
+          </div>
+          <div class="small">装箱、历史、搜索、token provenance 与向量召回优化均以逐条语义等价测试为门禁，未引入任何聊天 cap</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Testing</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill s" style="width:95%"></div></div>
+            <span class="value grade-s">9.5</span>
+            <span class="grade grade-s">S</span>
+          </div>
+          <div class="small">649/649 通过、0 skipped；关键 DB/路由/SSE/并发 hook 已改为真实行为测试，8 个 regression 脚本全部通过</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Maintainability</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill s" style="width:90%"></div></div>
+            <span class="value grade-s">9.0</span>
+            <span class="grade grade-s">S</span>
+          </div>
+          <div class="small">记忆规范化、JSON 提取、prompt 契约和 HTTP 边界已收敛；大文件仅做触达式拆分，状态所有权保持局部</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Design</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill s" style="width:95%"></div></div>
+            <span class="value grade-s">9.5</span>
+            <span class="grade grade-s">S</span>
+          </div>
+          <div class="small">单一权威契约、局部纯 helper 与按会话状态所有权已建立；设计取舍 #2/#7 继续尊重角色表现优先</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Release</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill s" style="width:95%"></div></div>
+            <span class="value grade-s">9.5</span>
+            <span class="grade grade-s">S</span>
+          </div>
+          <div class="small">build SHA、schema fail-fast、commit 级 CI concurrency、readiness 与日志轮转已落地；本地 Docker 等价 smoke 已通过</div>
+        </div>
+
+        <div class="score-item overall-row">
+          <div class="label">Overall</div>
+          <div class="bar-row">
+            <div class="bar-track" style="background:rgba(255,255,255,.12)"><div class="bar-fill" style="width:94%;background:linear-gradient(90deg,#34c759,#30d158)"></div></div>
+            <span class="value" style="color:#fff">9.4</span>
+            <span class="grade" style="color:#34c759">S</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="executive-summary">📝 总体评估</h3>
+  <div class="card">
+    <div class="card-header">📋 总体评估</div>
+    <div class="card-body">
+      <p><strong>整改结论：</strong>本报告仍以 commit 0bcd321 为审计基线。r3 登记的 1 High、18 Medium、44 Low 共 63 项现实风险已完成实现、需求逐条审计和全量验证。第一手证据：TypeScript、ESLint、649/649 测试（0 skipped）、8 个 regression 脚本、生产 build、prod/dev npm audit 全部通过；本地 Docker 等价 smoke 也已验证 readiness、四个持久化目录、非 root UID 1001 与完整 build SHA。</p>
+      <p style="margin-top:12px"><strong>审计口径（项目价值观）：</strong>本报告遵循项目 CLAUDE.md「产品核心价值观」：<strong>角色表现高于所有</strong>（记忆完整性、上下文完整性、总结质量优先于 token 成本与性能开销），<strong>严禁给聊天系统引入 cap</strong>。据此：「提取全量携带已有记忆」「summarize 全量输入」等属于有意设计而非缺陷，初版曾误报的两条已撤销为设计取舍记录（保留编号 #2/#7 备查）；所有保留的性能类发现，其修复方案均限定为<strong>零聊天语义变化</strong>的纯无效计算消除与查询优化，不含任何形式的上限或截断。</p>
+      <p style="margin-top:12px"><strong>关闭范围：</strong>#1 的两种装箱模式、历史查询/token provenance、中文检索、向量单查询、外部调用 deadline、导入事务、索引 drain、前端多会话流/分页/缓存/轮询、可访问性、测试真实性、发布/诊断/隐私提示均已关闭。最终 dirty review 额外发现并修复了并发 A/B 流 owner 串台与旧页响应覆盖同批新消息两个回归。</p>
+      <p style="margin-top:12px"><strong>亮点：</strong>安全面在同类自托管项目中表现出色——双层 SSRF 防护（DNS 预解析 + socket 层 remoteAddress 复核防 rebinding）、Content-Type CSRF 拦截、LRU 登录限流（含伪造 IP 共享桶）、常量时间比较、__Host- cookie、API key 掩码、导出不含密钥、全部 SQL 参数化、react-markdown 无 XSS 面；稳定性地基扎实——三队列事务化原子认领 + claim_token 守护、导入单事务全回滚、级联删除完整、"失败不阻塞"回退链每级都有可观测痕迹；工程质量红线全过——lib 分层零反向依赖、memory 子系统无环、as any/@ts-ignore 全库零命中、TODO/FIXME 零残留、核心算法注释与实现精确一致；CI 含 Docker 端到端冒烟（readiness 探测 + 非 root 断言）+ 全部 action SHA-pin + dependabot。</p>
+      <p style="margin-top:12px"><strong>保留记录：</strong>#2/#7 是角色表现优先下的明确设计取舍；#9 保持历史 Resolved；4 个 Info 继续作为 characterization/接受风险记录，不为清零数字制造代码改动。</p>
+      <p style="margin-top:12px"><strong>总评：</strong>9.4 / S——当前开放风险仅剩 4 项 Info。评分没有机械满分：Maintainability 仍保留大型组件渐进拆分空间，其他维度也继续保留长期演进余量。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="coverage">🧭 覆盖矩阵</h3>
+  <div class="card">
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>维度</th><th style="width:120px">覆盖度</th><th>已检查证据</th><th>排除项 / 局限</th></tr></thead>
+          <tbody>
+            <tr><td>Architecture</td><td><span class="badge badge-confirmed">High</span></td><td>lib→components/app 反向依赖 grep（零命中）；memory 子系统 12 文件依赖图闭环验证（无环）；proxy.ts 全文；路由直接 SQL 统计（206 处/33 文件）</td><td>chat-message-cache 与服务端一致性策略细节未深查（由前端状态维度补充覆盖）</td></tr>
+            <tr><td>Security</td><td><span class="badge badge-confirmed">High</span></td><td>proxy/auth-token/auth 路由/ssrf-guard/files 路由/settings 全文精读；SQL 拼接全库 grep 逐条核对；出站 fetch 盘点（100% 走 safeFetch）；CSP/安全头/export 内容核实；npm audit 实跑</td><td>子代理两次上下文中断后由主审接手完成；api-client 错误脱敏面由稳定性组交叉覆盖</td></tr>
+            <tr><td>Stability</td><td><span class="badge badge-confirmed">High</span></td><td>40 个路由 handler/catch 覆盖统计（24 个精读全文）；9 处出站 fetch 超时逐一核对；sse-parser/api-client/long-timeout/deadline 基础设施全读</td><td>整改后 npm test/build 由主审运行（649/649 通过）；前端 catch→toast 链路已补代表性行为测试</td></tr>
+            <tr><td>Performance</td><td><span class="badge badge-confirmed">High</span></td><td>db.ts 全部 DDL/索引 vs 高频查询核对；retrieval/engine/embeddings/chat-engine 热路径通读；js-tiktoken 只读微基准实测（4 组场景）；前端虚拟列表/节流验证</td><td>i18n.ts（纯文案）、maintenance/upload 等低频路由未逐行；memories 管理页前端深层未查</td></tr>
+            <tr><td>Testing</td><td><span class="badge badge-confirmed">High</span></td><td>整改后 649/649 实跑、0 skipped；核心 DB/路由/hook/竞态/SSE 测试精读；8 个已跟踪 regression 脚本及 CI 门禁逐一核对</td><td>不再给出无法复算的精确“路由域/lib 覆盖率”；结构契约仅保留在架构/构建边界</td></tr>
+            <tr><td>Maintainability</td><td><span class="badge badge-suspected">Medium</span></td><td>全库行数排序；四份记忆规范化与 JSON 解析/注入字面量差异核对；大文件职责与既往决策对照</td><td>i18n.ts 未深查；四个最大前端文件未逐段完成职责分析，因此不宣称 High 完整覆盖</td></tr>
+            <tr><td>Design</td><td><span class="badge badge-suspected">Medium</span></td><td>DRY/fail-fast/函数长度/吞错误/依赖规则逐原则核对；lib 全部 11 个 get* 导出的 CQS 抽查</td><td>嵌套深度未做系统性扫描；服务端队列 worker 函数长度未收敛到证据</td></tr>
+            <tr><td>Release</td><td><span class="badge badge-confirmed">High</span></td><td>ci.yml/Dockerfile/compose/entrypoint/dependabot/Start.bat/postbuild 脚本逐行；生产 build 与本地 Docker 等价 smoke 已通过；build SHA 与 schema version 契约有测试</td><td>未执行公网反向代理部署验证；CI 仍保留端到端 readiness 冒烟</td></tr>
+            <tr><td>Documentation</td><td><span class="badge badge-confirmed">High</span></td><td>README.md 全文 511 行；README.en.md 关键段对照 + 行数对齐；.env.local.example 对照全库 process.env 实际读取（无遗漏无多余）</td><td>AGENTS.md 未逐行；截图与实际 UI 一致性无法静态验证</td></tr>
+            <tr><td>Configuration</td><td><span class="badge badge-confirmed">High</span></td><td>env 读取全景 grep；settings 深合并原型污染分析（spread 安全）；Zod schema 与路由调用交叉核对（23 个 request.json 点位）；entrypoint fail-fast 验证</td><td>记忆预算无上界确认为有意设计（价值观确认，非缺口）；角色级覆盖配置链未逐项验证</td></tr>
+            <tr><td>Observability</td><td><span class="badge badge-confirmed">High</span></td><td>structured-log 全部 8 处调用点 + 全库 38 处 console.* 分类统计；readiness/health/requestId 链路全文；三队列可见性与前端消费面核对</td><td>memory-embeddings 日志细节抽样（已足以定性双轨现状）</td></tr>
+            <tr><td>Data-Integrity</td><td><span class="badge badge-confirmed">High</span></td><td>db.ts migrate 逐段幂等性/事务性核对；PRAGMA foreign_keys 确认；import/export 全文（事务边界/字段归一）；级联删除 11 表清单核对；文件双写顺序</td><td>WAL checkpoint 依赖 SQLite 默认行为（无自定义逻辑可审）</td></tr>
+            <tr><td>Privacy</td><td><span class="badge badge-confirmed">High</span></td><td>日志内容泄露全库 grep（无聊天/记忆/密钥输出）；export 内容核实（不含 settings/providers 表）；files 路由鉴权链；出站数据流全盘点（仅用户配置上游）</td><td>无遥测代码是静态结论，未做运行时抓包验证</td></tr>
+            <tr><td>Accessibility</td><td><span class="badge badge-confirmed">High</span></td><td>既有 2 个 a11y 测试先读；Modal/Toast/ChatInput/GlobalSearch/CharacterList 通读；settings 三大文件 label/htmlFor 全量计数；ChatHeader 16 按钮逐个核对；aria-live 全库 grep</td><td>纯静态审查（无真实屏幕阅读器实测）；对比度未做数值计算（审查了维护机制）</td></tr>
+            <tr><td>Supply-Chain</td><td><span class="badge badge-confirmed">High</span></td><td>13 个生产依赖逐个使用点核对 + 体积实测；action SHA-pin/镜像 digest-pin 验证；dependabot 覆盖面；prod/dev npm audit 均为 0</td><td>SBOM/签名维持既往决策（local-first 无镜像分发，不适用）</td></tr>
+            <tr><td>Cost</td><td><span class="badge badge-confirmed">High</span></td><td>全部 8 类 LLM/embedding/reranker 调用点盘点；三队列重试上限与去重事务核对</td><td>按项目价值观不以 token 用量立案；AI 生成角色与生图提示词为手动单次调用，未展开</td></tr>
+            <tr><td>AI-Safety</td><td><span class="badge badge-suspected">Medium</span></td><td>提取/归档 prompt 全文；inline-image-prompt 解析全文；记忆污染链数据流追踪；markdown 渲染 XSS 面；成本放大与畸形输出容错（由稳定性组交叉验证）</td><td>子代理上下文中断后由主审接手；附件进 prompt 的路径仅结构性检查；无对抗性注入实测</td></tr>
+            <tr><td>Fallback</td><td><span class="badge badge-confirmed">High</span></td><td>catch 空块全库 grep（lib 仅 3 处且合理）；chat-engine 记忆三级回退、检索超时回退、models 缓存回退逐级核对——每级均有可观测痕迹</td><td>前端组件 catch 链路抽查（服务端为重心）</td></tr>
+            <tr><td>Testing-Authenticity</td><td><span class="badge badge-confirmed">High</span></td><td>8 个已跟踪 regression 脚本逐一核对且全部进入 npm run regression/CI；另 8 个 ignored 本地工作脚本不计发布门禁；grep 型前端测试与真实 hook 测试交叉核对</td><td>断言质量精读约 40%，结论限定为已抽样测试族</td></tr>
+            <tr><td>Type-Safety</td><td><span class="badge badge-confirmed">High</span></td><td>as any/@ts-ignore/@ts-expect-error 全库 grep（零命中）；as unknown 18 处逐条上下文；非空断言 6 处核对；23 个 request.json 与 Zod 交叉核对；DB 行规范化集中度</td><td>3 处双重断言未逐一深挖运行时可达性（目测风险低）</td></tr>
+            <tr><td>Frontend-State</td><td><span class="badge badge-confirmed">High</span></td><td>7 个 chat hooks + ChatView + page.tsx 全文通读；useEffect 全库分布统计（最高 7 个/文件，无链式风暴）；竞态守卫体系逐条推演（含排除 8 个疑点）</td><td>4 个设置面板 hook 抽样未通读（与已查 useSettingsProviders 同源模式）；settings/characters 页表单主体 grep 抽查</td></tr>
+            <tr><td>Backend-API</td><td><span class="badge badge-confirmed">High</span></td><td>40 路由方法/Zod 调用全枚举；19 个路由通读；GET 写副作用扫描；PATCH/PUT 字段清空逐个排除；非整数 limit 实测复现（:memory: SQLite）</td><td>export/import/memory 系路由完整业务体由其他维度覆盖；image-gen 主路由 700 行生成逻辑未逐行</td></tr>
+            <tr><td>Dependency-Weight</td><td><span class="badge badge-confirmed">High</span></td><td>13 个生产依赖逐个使用点 + unpacked 体积实测；undici 必要性经 ssrf-guard 源码确认；overrides/devDeps 评估</td><td>无（该维度覆盖完整）</td></tr>
+            <tr><td>Code-Consistency</td><td><span class="badge badge-confirmed">High</span></td><td>错误响应格式全库对比；readJsonObject 采用率；84 个 fetch 调用点分类；现有 parseJsonResponse/expectOkResponse helper 与绕过点核对</td><td>import 语句组织顺序主动放弃（纯风格不构成发现）</td></tr>
+            <tr><td>Comment-Coverage</td><td><span class="badge badge-confirmed">High</span></td><td>三处核心算法（sse-parser 多字节不变量/auth-token 签名方案/retrieval 二分装箱）注释与实现一致性全文验证；TODO/FIXME 零命中；lib 层 JSDoc 抽查</td><td>前端大文件过时注释系统性排查未完成（抽查质量高）</td></tr>
+            <tr><td>Cross-cutting: Concurrency</td><td><span class="badge badge-confirmed">High</span></td><td>三队列 claim/complete/fail 全路径精读；共享状态、transaction、seq 分配与 drain stop/trigger 竞态推演</td><td>跨维度复核，不计入 25 个主维度；结论归入 Stability、Data-Integrity 与 Frontend-State</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card"><div class="num">4</div><div class="desc">当前开放记录</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-high)">0</div><div class="desc">High</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-medium)">0</div><div class="desc">Medium</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-low)">0</div><div class="desc">Low</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-info)">4</div><div class="desc">Info</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--success)">63</div><div class="desc">本轮 Resolved</div></div>
+  </div>
+
+  <h3 class="section-title" id="top-risks">✅ Top 风险清单（已关闭）</h3>
+  <div class="card">
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>关闭结论</th><th style="width:140px">状态</th></tr></thead>
+          <tbody>
+            <tr><td>r3 的 1 High 与 18 Medium 已全部完成最小修复和直接验证；63 项现实风险均在下方保留原始证据与严重度，状态统一标记为 Resolved。</td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+            <tr><td>当前仅保留 4 项 Info、#2/#7 设计取舍与历史 Resolved #9；本地 Docker 等价 smoke 已通过并完成资源清理。</td><td><span class="badge badge-info">Info only</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="findings">🔍 重点完整卡片（30 项本轮 Resolved + 历史 #9 + 2 项设计取舍）</h3>
+
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>1. 检索装箱尾部循环对每个溢出候选做整包渲染 + 整包 tokenize，数百条记忆后每轮聊天同步阻塞秒级</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 performance</span>
+      <span>📍 src/lib/memory-retrieval.ts:467-495</span>
+      <span>🎯 trimByTokenBudget / canAppend</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>二分找到预算内最长前缀后，尾部循环会为剩余候选反复重建整包文本并执行 js-tiktoken 编码，长记忆集合下形成秒级同步 CPU 阻塞。经复核，两种调用模式不能混为一谈：当 skipOversizedOrdinary=false 时，普通候选的 canAppend 结果确实不影响行为；默认 legacy full 路径传入 true，此检查还承担“跳过超大普通记忆并继续尝试后项”的装箱语义，不能直接删除。withTotalTimeout 无法抢占同步 tokenize，但“超时后必然再跑一遍导致翻倍”并不成立。<strong>现实失败场景：</strong>单角色积累数百条 active 记忆后，每轮聊天可能在流式开始前长时间占用事件循环。
+    </div>
+    <div class="evidence">src/lib/memory-retrieval.ts:467-470
+  const canAppend = (memory: Memory): boolean =&gt; {
+    const text = renderPackage([...selected, memory], effectiveProfile);  // 整包重渲染
+    return (text ? tokenCounter(text) : 0) &lt;= budget;                     // 整包 tokenize
+  };
+:472-481  for (...) { if (canAppend(memory)) { if (options.skipOversizedOrdinary || highPriority) { push } continue; } ... }
+—— 仅在 skipOversizedOrdinary=false 时，普通候选 fits 与否都 continue；legacy true 分支仍需要该结果决定是否跳过超大项并继续扫描</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>先为 skipOversizedOrdinary=true/false 两种模式建立逐条输出等价测试；仅在 !skipOversizedOrdinary &amp;&amp; !highPriority 的分支跳过 canAppend。默认 legacy 路径若要继续优化，必须使用与当前整包 tokenCounter 精确等价的增量缓存，不得用近似 overhead 或改变装箱结果。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>安全分支优化 0.5-1 天；默认路径等价优化 1-2 天 &nbsp;·&nbsp; <strong>回归测试：</strong>两种 option、超大普通记忆与高优先级记忆组合下，优化前后 selected 内容和顺序逐条完全一致，再断言整包 tokenize 调用数下降。
+    </div>
+  </div>
+
+  <div class="finding severity-info">
+    <div class="finding-header">
+      <h4>2. 记忆提取默认携带全部 active 记忆——有意设计（角色表现优先），不作为发现</h4>
+      <span class="badge badge-info">设计取舍记录</span>
+      <span class="badge badge-confirmed">不计入统计</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 设计取舍（原 cost 候选，按项目价值观撤销）</span>
+      <span>📍 src/lib/memory-engine.ts:552-568</span>
+      <span>🎯 extractMemories / limit_inject</span>
+    </div>
+    <div class="problem">
+      <strong>撤销说明：</strong>本条初版报告曾以 High(cost) 报告"提取 prompt 携带全部 active 记忆导致 token 膨胀"，并建议加检索上限。经项目 Owner 裁定撤销：<strong>角色表现高于所有，token 成本不是本项目关心的问题</strong>——全量携带已有记忆是保证提取去重与记忆连贯性的有意设计（limit_inject 默认关闭即此意图），限制注入会削弱角色记忆质量，此类建议违反项目价值观（见 CLAUDE.md「产品核心价值观」）。<br><strong>保留的唯一提示（以保护角色表现为出发点，供 Owner 知悉，非缺陷）：</strong>当 active 记忆总量增长到超过后台模型上下文窗口时，提取调用会被上游拒绝并标记 failed，届时新记忆停止积累（这本身损害角色表现）。如未来观察到提取批量 failed，可考虑的方向由 Owner 决策（如换更大窗口的后台模型）；审计不提供任何加 cap 的方案。
+    </div>
+    <div class="evidence">src/lib/memory-engine.ts:559-561
+  if (!settings.limit_inject) {
+    // 不限制：全部已有记忆都发给 AI 参考，避免重复提取   ← 有意设计
+    relevantExisting = normalizedExisting;
+  }</div>
+    <div class="fix-box" style="background:#f2f2f5;border-color:#e6eaef">
+      <div class="fix-label" style="color:var(--text-secondary)">处置</div>
+      <code>不修复、不建议任何限制。维持现状。</code>
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>3. summarize / 生成角色 / AI 整理三处交互式 LLM 调用无服务器侧超时兜底</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 stability</span>
+      <span>📍 src/app/api/summarize/route.ts:114-129 等三处</span>
+      <span>🎯 POST handler 的 safeFetch/chatCompletion 调用</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>summarize（:114-129）、characters/generate（:73-76）、memory-review（:263-268，且并发 3 批）三处的唯一取消来源是 request.signal（客户端断开），未使用 runWithBackgroundLlmDeadline 也无 AbortSignal.timeout。前端 ChatView.tsx:509-513 调 summarize 无 AbortController、无停止按钮。对照组全部做对了：提取/画像/生图提示词走 runWithBackgroundLlmDeadline，models 用 AbortSignal.timeout(10000)，image-gen 有 120s 默认超时。<strong>现实失败场景</strong>：自建/中转 LLM 上游 TCP 建立后不返回数据，用户点「总结」→ 服务端 fetch 无限等待 → 按钮永久转圈，唯一恢复手段是刷新页面。
+    </div>
+    <div class="evidence">src/app/api/summarize/route.ts:114-129
+  const response = await safeFetch(`${bgConfig.api_base}/chat/completions`, {
+    ...
+    signal: request.signal,   // 唯一取消来源：客户端断开
+  });
+（chat 主链路同模式但前端有逐会话停止按钮，用户即超时机制，不计入）</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>用 AbortSignal.any（或等价组合 helper）合并 request.signal 与服务器 deadline signal；summarize 的 fetch 和 SSE reader 必须复用同一组合信号，超时返回 504。不要直接套用会丢失客户端取消的现有单信号 helper。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1-2 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>mock 一个只握手不响应的上游（http.createServer 收到请求后不回写），断言 summarize 在 deadline 后返回 504 而非挂起。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>4. 导入端不归一 memories.status / messages.role：脏值造成"UI 显示 active、检索永久不可见"的幽灵记忆</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 data-integrity + type-safety（fail-fast 4.4 违规）</span>
+      <span>📍 src/app/api/import/route.ts:488 / :444</span>
+      <span>🎯 importPayload 的 memories/messages 写入循环</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>导入走 JSON.parse as ImportPayload + 手写 asString 防御（schemas.ts 无 import schema），挡住了类型污染但<strong>无枚举白名单</strong>：status 任意非空字符串（如 "ACTIVE"、手改备份的 "actve"）原样入库；role 同理（role 为空串时违反 CHECK 约束 → 未捕获 SqliteError → 500，与发现 15 交叉）。下游行为不一致：检索 SQL 全部按字面量 status = 'active' 过滤（retrieval.ts:172/196/208、engine.ts:143、embeddings.ts:419）→ 脏值行永不进候选池；而展示端 normalizeMemoryStatus 把未知值<strong>显示为</strong> active（memories/route.ts:47-51）。对照：同一张表的 API 创建路径有 z.enum(MEMORY_STATUSES) 枚举（schemas.ts:378）。<strong>现实失败场景</strong>：用户导入手工编辑过或第三方工具产出的备份，导入报告显示成功、记忆管理页显示 active，但聊天永远不注入这些记忆——"记忆明明在列表里，角色却从不记得"，且无任何告警可定位。
+    </div>
+    <div class="evidence">src/app/api/import/route.ts:488
+  asString(mem.status) || 'active'   // 任意非空字符串原样入库，无白名单
+对照 src/lib/schemas.ts:378
+  status: z.enum(MEMORY_STATUSES)    // API 创建路径有枚举，同表两个写入口校验强度不一致</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>区分“字段缺失”和“字段非法”：缺失值使用格式版本默认值；非法 status/role/memory_kind 返回 400，并指出记录序号与字段。不要把任意非法 status 静默回退 active，以免复活原本意图归档的数据。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>0.5-1.5 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>缺失 status 使用默认值；status: "ACTIVE"/拼写错误和非法 role 返回带记录位置的 400，事务不写入任何数据。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>5. 多处裸 fetch 无 response.ok 检查，401/500 的错误对象流入 setMemories 导致整页崩溃到全局错误页</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 frontend-state</span>
+      <span>📍 src/hooks/chat/useConversationLoader.ts:80-87 等</span>
+      <span>🎯 loadCharacterState / refreshConversationState / useMemoryTaskPolling</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>useConversationLoader.ts:80-87 与 :153-161、useMemoryTaskPolling.ts:128-134 对 /api/memories 的 fetch 全程无 response.ok 检查，响应 JSON 直接 setMemories；proxy 未认证时返回 401 JSON 对象 { error: ... }——正是会进入 setMemories 的非数组载荷；ChatView.tsx:250/:253 对 memories 调 .slice 与 for...of，非数组时 TypeError；ChatView 外层无 ErrorBoundary（只包了 ChatMessageList），崩溃冒泡到 global-error.tsx 全屏错误页。同类无检查裸 fetch 还有 handleNewChat（错误对象被当 conversation 放进列表且整函数无 catch）、characters/[id]/page.tsx:198-200、memories/page.tsx:39-47。<strong>现实失败场景</strong>：设备 A 登出（bumpAuthMinIat 全局吊销）→ 设备 B 已打开的页面点击另一角色 → /api/memories 返回 401 → setMemories({error}) → memories.slice TypeError → 整个应用替换为全局错误页而非提示重新登录。瞬时 500 亦可触发。
+    </div>
+    <div class="evidence">src/hooks/chat/useConversationLoader.ts:80-87
+  const memoryResponse = await fetch(`/api/memories?...`);
+  const memoryList = await memoryResponse.json();   // 无 response.ok 检查
+  setMemories(memoryList);                          // 401 时是 { error: '未授权...' }
+src/components/chat/ChatView.tsx:250  memories.slice(0, 2)   // 非数组 → TypeError → global-error</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>这些调用点统一使用已有 parseJsonResponse；仅成功且载荷为数组时替换 memories。失败时保留旧状态并展示错误，不要用 Array.isArray ? data : [] 静默清空可用记忆。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>2-4 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>在现有 jsdom harness 中 mock /api/memories 返回 401/500，断言 ChatView 不抛错并出现错误提示。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>6. 无总结长会话每轮聊天 2 次全量 SELECT * + 全表 json_extract 扫描，线性变卡</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 performance</span>
+      <span>📍 src/lib/chat-engine.ts:522-547 + src/app/api/chat/route.ts:126-130</span>
+      <span>🎯 runChat 历史加载 / onDone 未提取查询</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>historySql 仅在存在 summary 消息时带 AND seq &gt;= ?——从未总结过的会话每轮全量加载全部消息（SELECT * 含 content/metadata）再逐条 JSON.parse；ORDER BY created_at ASC, seq ASC 与索引 (conversation_id, seq) 排序键不匹配需 temp B-tree；summarySql 对每行执行 json_valid + json_extract，无 summary 的会话每轮全会话扫描；onDone 里再次全量加载同一会话找未提取消息（queueMicrotask 只是延后，同步 better-sqlite3 调用仍阻塞事件循环）。<strong>现实失败场景</strong>：陪伴型应用的典型用法是单角色单会话聊到底、从不手动总结；会话到 2 万条消息（一年多日常量）时每轮约 300-800ms 同步阻塞，严格随消息数线性增长，与发现 1/8 同轮叠加。
+    </div>
+    <div class="evidence">src/lib/chat-engine.ts:536-541
+  const historySql = [
+    'SELECT * FROM messages WHERE conversation_id = ?',
+    lastSummary ? 'AND seq &gt;= ?' : '',        // 无 summary → 全量加载
+    ...
+    'ORDER BY created_at ASC, seq ASC',        // 与 idx_messages_seq 排序键不匹配
+  ]
+src/app/api/chat/route.ts:126-130  onDone 内第二次全量 SELECT * 同一会话</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>仅做零语义查询优化，不引入窗口/上限：为现有 ORDER BY created_at, seq 增加 (conversation_id, created_at, seq) 复合索引；onDone 先在 SQL 中求最早未处理 user 的 seq，再无损读取该用户消息及随后 assistant 后缀。导入允许 created_at 与 seq 独立存在，未经迁移和等价证明不得改成单独 ORDER BY seq。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>0.5-1 天 &nbsp;·&nbsp; <strong>回归测试：</strong>构造 created_at 与 seq 顺序不一致的导入数据，断言优化前后 runChat 与提取批次序列逐条一致；EXPLAIN QUERY PLAN 断言走新复合索引。
+    </div>
+  </div>
+
+  <div class="finding severity-info">
+    <div class="finding-header">
+      <h4>7. summarize 全量携带未总结消息——有意设计（总结完整性优先），不作为发现</h4>
+      <span class="badge badge-info">设计取舍记录</span>
+      <span class="badge badge-confirmed">不计入统计</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 设计取舍（原 cost 候选，按项目价值观撤销）</span>
+      <span>📍 src/app/api/summarize/route.ts:52-107</span>
+      <span>🎯 convText 拼接</span>
+    </div>
+    <div class="problem">
+      <strong>撤销说明：</strong>本条初版报告曾以 Medium(cost) 报告"summarize 无输入预算"并建议按预算截断输入。经项目 Owner 裁定撤销：<strong>总结质量属于角色表现，高于 token 成本</strong>——总结必须覆盖上次总结点之后的完整对话，截断输入会让总结遗漏剧情与关系变化，此类建议违反项目价值观（见 CLAUDE.md「产品核心价值观」）。<br><strong>保留的唯一提示（以保护角色表现为出发点，供 Owner 知悉，非缺陷）：</strong>当未总结消息量超过后台模型上下文窗口时，该次总结调用会被上游 4xx 拒绝（总结失败同样损害角色表现）。如遇到此情况，处置方向由 Owner 决策（如换更大窗口的后台模型、或分段多次总结——分段属于流程编排而非截断，是否采纳由 Owner 定）；审计不提供任何截断输入的方案。
+    </div>
+    <div class="evidence">src/app/api/summarize/route.ts:86-89  上次 summary 之后的全部消息完整拼接 convText 进 prompt——保证总结覆盖完整，有意设计</div>
+    <div class="fix-box" style="background:#f2f2f5;border-color:#e6eaef">
+      <div class="fix-label" style="color:var(--text-secondary)">处置</div>
+      <code>不修复、不建议任何截断。维持现状。</code>
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>8. assemblePrompt 无条件对每条历史消息 re-tokenize，无视已持久化的 token_count</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 performance</span>
+      <span>📍 src/lib/chat-engine.ts:288</span>
+      <span>🎯 assemblePrompt 预算裁剪</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>即使 token_count（写入时就是同一 estimateTokens 算出）已持久化，每条历史消息仍重新 encode。<strong>实测</strong>：填满默认 127k 上下文窗口需逐条 re-encode 约 669 条消息 = 约 1.56 秒/轮纯 tokenize，与发现 1/6 同轮叠加。
+    </div>
+    <div class="evidence">src/lib/chat-engine.ts:288
+  const baseTokens = Math.max(message.token_count || 0, estimateTokens(contentForBudget));
+  // token_count 已存在仍无条件 re-encode</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>先建立 token_count 的可信来源与算法版本：导入值必须校验或标记不可信，内容编辑后失效，旧 tokenizer 版本需重算。只有明确由当前算法生成且内容未变的计数才可复用；否则维持重算或仅缓存本轮计算结果。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>0.5-1 天 &nbsp;·&nbsp; <strong>回归测试：</strong>覆盖导入伪造 token_count、内容编辑、旧算法版本和附件拼接；优化前后预算裁剪边界与最终上下文逐条一致。
+    </div>
+  </div>
+
+  <div class="finding severity-info">
+    <div class="finding-header">
+      <h4>9. 已解决：CLAUDE.md 的预算钳制描述已与“无上限钳制”设计对齐</h4>
+      <span class="badge badge-info">Resolved</span>
+      <span class="badge badge-confirmed">不计当前风险</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 documentation</span>
+      <span>📍 CLAUDE.md 记忆系统章节 vs src/lib/memory-retrieval.ts:149-150</span>
+      <span>🎯 memory_package_token_budget 文档描述</span>
+    </div>
+    <div class="problem">
+      <strong>解决记录：</strong>初版文档曾错误描述为“钳制到 ≤32000”，本轮已改为“无上限钳制——有意设计，严禁恢复”，并新增产品核心价值观。该项已解决，不再计入 Low 或当前风险统计。
+    </div>
+    <div class="evidence">CLAUDE.md（修正前）「钳制到 ≤ 32000」 vs memory-retrieval.ts:149-150 注释「不设上界」
+tests/memory-retrieval.test.cjs:3311  测试名明言「超大值不再被钳制」——代码与测试一致，仅文档过期</div>
+    <div class="fix-box">
+      <div class="fix-label">处置（已完成）</div>
+      <code>CLAUDE.md 已更新：钳制描述改为「无上限钳制——有意设计，严禁恢复」，并新增「产品核心价值观」节（角色表现高于所有 / 严禁聊天系统 cap / 审计约束）。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>已完成 &nbsp;·&nbsp; <strong>回归测试：</strong>无需（文档）；现有"不钳制"测试断言即是行为的守护。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>10. 中文消息搜索必然走 LIKE 全表扫描（FTS unicode61 对 CJK 无效），日期搜索 created_at 无索引</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 performance</span>
+      <span>📍 src/app/api/messages/search/route.ts:128-147 + src/lib/db.ts:354-362</span>
+      <span>🎯 searchLike / messages_fts tokenizer</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>含 CJK 字符的查询直接走 LIKE '%kw%' 扫描并排序；FTS5 的 unicode61 对中文子串搜索无效，日期范围也缺少 created_at 索引。50k 行复测确认查询计划为扫描，当前硬件中 LIKE 中位约 34ms、日期约 13ms，影响尚非 200-800ms，但会随消息量线性增长。
+    </div>
+    <div class="evidence">src/app/api/messages/search/route.ts:128
+  const shouldUseLikeFirst = /[一-鿿]/.test(q);   // 中文必走 LIKE
+:144  WHERE m.content LIKE ? ESCAPE '\\' ... ORDER BY m.created_at DESC   // 全表 + 全排序
+src/lib/db.ts:361  tokenize = 'unicode61'   // 连续 CJK 单 token，中文子串不可用</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>为日期搜索增加 created_at 索引；评估新增 trigram FTS 时必须保留 1-2 字中文查询的 LIKE fallback（trigram 对短查询不命中），并对拍排序、大小写和完整结果集合。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1 天（含 FTS 重建迁移） &nbsp;·&nbsp; <strong>回归测试：</strong>中文关键词在 trigram FTS 与 LIKE 结果一致性对拍；EXPLAIN QUERY PLAN 断言不再出现 SCAN messages。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>11. embedding rebuild 为非 active 记忆重复入队，缺 action 的 JSON 对象默认触发重建</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 stability（防误触）</span>
+      <span>📍 src/lib/memory-embeddings.ts:500 + src/app/api/memory-index/route.ts:140</span>
+      <span>🎯 enqueueRebuildMemoryEmbeddings / POST action 默认值</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>rebuild 查询无 status 过滤，非 active 记忆也会重复入队，而当前检索只消费 active。真正无 JSON body 会被 readJsonObject 拒绝；风险点是合法的 {} 或缺 action 对象会按兼容约定默认 rebuild。旧向量不会先删除，归档 undo 后还可复用，因此这更接近冗余工作与 API 显式性问题，而非已证实事故。
+    </div>
+    <div class="evidence">src/lib/memory-embeddings.ts:500
+  db.prepare('SELECT id, character_id FROM memories WHERE character_id = ?')   // 无 status 过滤
+src/lib/memory-embeddings.ts:417-419  检索端 JOIN ... AND m.status = 'active'   // 死记忆向量永不被消费
+src/app/api/memory-index/route.ts:140  body.action === undefined ? 'rebuild' : body.action</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>如确认不需要为 undo 保留/刷新非 active 向量，可只为 active 入队；action 改为必填属于兼容性变更，应先更新 smoke 契约与所有调用方，再返回 400。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>0.25-0.5 天 &nbsp;·&nbsp; <strong>回归测试：</strong>区分无 body、{}、显式 action；若过滤状态，覆盖 archive undo 后的索引可用性。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>12. 同一消息并发生图的 metadata 读-改-写竞态，last-write-wins 丢失已生成图片引用</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 frontend-state（兼后端合并语义）</span>
+      <span>📍 src/hooks/chat/useChatImageGeneration.ts:77-112 + src/app/api/messages/[id]/route.ts:63-68</span>
+      <span>🎯 persistImages / mergeMessageMetadata</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>生图按钮无 pending 禁用（MessageBubble.tsx:406-414）；每次调用捕获 workingMeta 快照并把<strong>整个 metadata</strong> PUT 上去；服务端 mergeMessageMetadata 是顶层浅合并，generatedImages 数组<strong>整体替换</strong>现值。两个并发请求各自基于自己的快照写全量 → 后写者抹掉前者的占位符/成图条目。<strong>现实失败场景</strong>：对同一条 AI 消息快速点两次"生成图片"（或自动生图与手动点击同时发生）→ 后完成的请求以不含对方条目的快照覆盖 → 一张已生成图片的引用从 metadata 消失（文件成孤儿，只能靠 maintenance 清理）。
+    </div>
+    <div class="evidence">src/hooks/chat/useChatImageGeneration.ts:77  每次调用捕获 workingMeta 快照
+:90-112  persistImages 把整个 metadata PUT
+src/app/api/messages/[id]/route.ts:63-68  顶层浅合并，generatedImages 整组替换</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>前端按 messageId 维护 in-flight 集合，pending 期间禁用按钮/直接 return；或服务端对 generatedImages 按 id upsert 合并而非整组替换。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>2-4 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>对 useChatImageGeneration 并发调用两次 handleGenerateImage，断言两个 image id 都留存。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>13. 主页角色选择与对话选择两条竞态守卫互不感知，慢响应覆盖用户最新选择</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 frontend-state</span>
+      <span>📍 src/app/page.tsx:17-66</span>
+      <span>🎯 handleCharacterSelect / handleConversationSelect</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>两个独立 seq ref（characterRequestSeqRef / conversationSelectSeqRef）各自递增、各自校验，但两条赛道都写同一个 selectedCharacter，互相的 seq 不失效。<strong>现实失败场景</strong>：点搜索结果跳到角色 C 的对话（角色详情 fetch 较慢）→ 立刻点侧边栏角色 B → C 的 fetch 返回时 conversationSelectSeqRef 未被 B 操作递增 → setSelectedCharacter(C) → 界面显示角色 C、侧边栏高亮 B——用户点了 B 看到 C。反方向同样成立。另有 transient 闪烁：handleConversationSelect 先设 selectedConversationId 再等角色 fetch，期间 ChatView 短暂用旧角色渲染新对话消息。
+    </div>
+    <div class="evidence">src/app/page.tsx:17-21  两个独立 seq ref（注释明言两条赛道独立）
+:58-60  if (mySeq === conversationSelectSeqRef.current) setSelectedCharacter(full)
+  // 角色选择操作不会使此 seq 失效</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>两个入口共用一个「选择代数」计数器（各自 bump、各自回调校验）；或回调内比对 selectedCharacterId 是否仍等于本次请求的角色 id。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1-2 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>单测两条 promise 交错 resolve 的顺序矩阵。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>14. conversations.updated_at 混用 datetime('now') 与 ISO 格式，对话列表"最近使用"排序错乱</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 backend-api（兼 data-integrity）</span>
+      <span>📍 src/app/api/conversations/[id]/route.ts:81 + src/app/api/summarize/route.ts:176</span>
+      <span>🎯 PUT 更新 / 总结落库的 updated_at 写入</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>改名/忽略记忆与总结用 SQL datetime('now') 写入 '2026-07-11 09:00:00' 格式；而创建对话、发消息、聊天落库全部写 ISO '2026-07-11T...Z'。对话列表 ORDER BY updated_at DESC 做字符串比较：第 11 个字符 'T'(0x54) &gt; ' '(0x20)，同一天内 SQLite 格式永远排在 ISO 格式之后。<strong>现实失败场景</strong>：用户给刚聊完的对话改名或执行总结 → 该对话明明最新，却在侧栏掉到当天所有聊过天的对话之下，排序失真持续到下一条消息写入。
+    </div>
+    <div class="evidence">src/app/api/conversations/[id]/route.ts:81  updates.push("updated_at = datetime('now')")  // '2026-07-11 09:00:00'
+src/lib/chat-engine.ts:615 等  new Date().toISOString()                                // '2026-07-11T09:00:00.000Z'
+字符串排序：'T' &gt; ' ' → 同日内 SQLite 格式恒排后</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>两处 datetime('now') 改为绑定 new Date().toISOString()。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>0.5 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>PUT 后断言 updated_at 匹配 ISO 正则；或插入混合格式行断言排序正确。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>15a. upload 对畸形 multipart 的 formData 解析异常返回非结构化 500</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 stability</span>
+      <span>📍 src/app/api/upload/route.ts:57-64</span>
+      <span>🎯 req.formData()</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>损坏 multipart、错误 boundary 或中断上传可让 await req.formData() 抛出，当前路由没有将其转换为 400 JSON。数据不会写入且前端会显示失败，因此影响限于错误响应不一致与排障信息不足。
+    </div>
+    <div class="evidence">src/app/api/upload/route.ts:63  await req.formData()  // 解析异常未映射为 400 JSON</div>
+    <div class="fix-box"><div class="fix-label">最小修复</div><code>只包裹 formData 解析并将可预期解析异常映射为 400 JSON；保留未知内部异常为 500。</code></div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预估工时：</strong>0.5-1 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>畸形 multipart 返回 400 JSON，且持久化目录无新文件。</div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>15b. 未使用的会话消息 POST 对不存在会话暴露 FK 500</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 backend-api + stability</span>
+      <span>📍 src/app/api/conversations/[id]/messages/route.ts:46-56</span>
+      <span>🎯 POST handler</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>向不存在或已删除的会话插入消息时，FK 异常直接成为 500。当前前端未发现调用该 POST，因此属于 latent API 边界问题；import 的非法 role 已并入 #4，不在此重复计数。
+    </div>
+    <div class="evidence">src/app/api/conversations/[id]/messages/route.ts:46-56  INSERT 前未验证 conversation 存在，FK 失败未映射</div>
+    <div class="fix-box"><div class="fix-label">最小修复</div><code>INSERT 前检查会话存在，或只捕获对应 FK 约束并返回 404 JSON。</code></div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预估工时：</strong>0.5 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>不存在会话返回 404；有效会话仍正常插入。</div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>16. 应用运行时无法自证构建版本：health 在 Docker/standalone 下回退固定值</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 release + observability</span>
+      <span>📍 src/app/api/health/route.ts:9 + Dockerfile:75</span>
+      <span>🎯 health GET / 容器启动命令</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>health 读取 npm_package_version，但容器直接 node server.js 启动，通常只能回退固定 0.1.0；应用接口没有构建 SHA 或镜像版本。Git commit 与 Docker image ID 仍可从外部追溯，因此并非“全项目完全无版本手段”，核心缺口是运行实例不能通过自身 health 响应证明所运行构建。
+    </div>
+    <div class="evidence">src/app/api/health/route.ts:9  version: process.env.npm_package_version || '0.1.0'
+Dockerfile:75  CMD ["node", "server.js"]   // 不经 npm，npm_package_version 恒 undefined
+git tag -l → 空；package.json version 恒 0.1.0</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>Dockerfile 加 ARG GIT_COMMIT → ENV LUMIMUSE_BUILD=...，health 路由改读该变量（CI/compose 传 --build-arg GIT_COMMIT=$(git rev-parse --short HEAD)）。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1-2 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>CI docker-smoke 中 curl /api/health 断言返回的 build 标识等于当前 github.sha 前缀。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>17. DB schema 无版本标记，未来非加法迁移缺少降级治理</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 release + data-integrity</span>
+      <span>📍 src/lib/db.ts:190-500</span>
+      <span>🎯 migrate()</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>migrate 没有 PRAGMA user_version 或 schema_version。当前迁移均为增表、增列和增索引，未发现现行回滚故障；风险仅在未来出现重建表、收紧约束等非加法迁移时，旧代码无法 fail-fast。属于预防性发布治理，而非当前数据完整性故障。
+    </div>
+    <div class="evidence">src/lib/db.ts:190-500  migrate() 全文无 user_version / schema_version（grep 零命中）
+对照 src/lib/export-version.ts:8-15  EXPORT_VERSION = 2 有版本门禁
+README.md:315-322  更新章节仅 git pull + rebuild + 备份建议，无回滚步骤</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>migrate 末尾写 PRAGMA user_version = N；getDb() 读到 user_version &gt; N 时拒绝启动并打印指引；README 更新章节补一句「回滚需先恢复升级前的 data/ 备份」。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>2-4 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>:memory: 库手动 PRAGMA user_version = 999 后断言 getDb 等价入口抛错；正常迁移后断言 user_version 等于当前值。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>18. 8 个已跟踪回归脚本均进入 CI，但主要是源码契约检查</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 testing-authenticity</span>
+      <span>📍 scripts/regression-check-*.js（8 个已跟踪）+ package.json regression script</span>
+      <span>🎯 npm run regression 门禁</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>当前 8 个已跟踪 regression-check 脚本全部进入 npm run regression 与 CI，但主要通过 readFileSync + includes/正则断言源码结构，不能替代行为测试。另有 8 个被 .gitignore 明确忽略的本地工作脚本，不属于发布门禁，不应计入缺口。现实风险是结构字符串仍存在时行为可能已坏，或无害重命名导致假红。
+    </div>
+    <div class="evidence">scripts/regression-check-memory-chat-integration.js:10-12
+  pass: /retrieveWorkingMemoryPackage/.test(source)   // 字符串存在 = 测试通过
+scripts/regression-check-security-consistency.js:22
+  assert(importRoute.includes('const importAll = db.transaction'), ...)
+package.json regression：8 个已跟踪脚本全部被串联；其余 8 个为 ignored 本地材料</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>不再扩展“脚本是否进门禁”检查；优先把 import 单事务、metadata 合并等高价值源码契约逐步替换为行为测试，替换完成后删除对应字符串断言。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>每条 1-3 小时，渐进替换 &nbsp;·&nbsp; <strong>回归测试：</strong>真实执行事务失败回滚与 metadata 合并结果，而非断言私有源码字符串。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>19. 部分行为式命名的前端测试实际只验证源码结构</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 testing-authenticity</span>
+      <span>📍 tests/chat-view-cache-integration.test.cjs 等 5 个文件</span>
+      <span>🎯 grep 型 UI 测试族</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>列出的五个文件确有不少 readFileSync + 正则断言，部分测试名会让读者误以为覆盖了运行时行为。但仓库同时已有 frontend-state-p1 等真实 hook/竞态行为测试，因此不能概括为“前端核心状态机系统性假信心”。风险应限定为这些结构契约测试自身：实现字符串保留时可能漏过行为回归，重命名又可能假红。
+    </div>
+    <div class="evidence">tests/chat-view-cache-integration.test.cjs:134
+  测试名 "ChatView prevents duplicate new-conversation sends before React state catches up"
+  实际断言 assert.match(source, /useChatStreaming\(/)   // 源码字符串匹配，0 行为执行
+tests/memory-card-ui.test.cjs:12-37  断言私有 useState 变量名存在</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>不引入 E2E（既往已决策）。挑 3 个最高风险不变量迁移为 frontend-state-p1 式真 hook 测试：串台防护、重复发送防护、streaming owner 清理；迁移后删除对应 grep 断言；纯结构检查改名为 "architecture contract: ..."（该模式已有先例）。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1-1.5 天 &nbsp;·&nbsp; <strong>回归测试：</strong>迁移后的真 hook 测试本身即回归。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>20. 导入/导出各自深测但从未串联，"roundtrip"名不副实；import 事务原子性只有字符串检查</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 testing</span>
+      <span>📍 tests/import-export-roundtrip.test.cjs（793 行）</span>
+      <span>🎯 备份→恢复数据生命线</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>该文件质量很高（v2 字段、id 重映射、孤儿向量、UTF-8 限长均覆盖），但 import 测试全部使用手写 payload，export 测试独立断言输出形状——全文件无一处把 export GET 的真实输出喂给 import POST；import 中途失败回滚零行为测试（原子性仅由发现 18 的字符串检查"保证"）。<strong>现实失败场景</strong>：export 端字段改名或形状变化时两侧测试各自对着自己的 fixture 依然全绿，用户真实"备份→恢复"损坏——这是 local-first 应用的数据生命线。
+    </div>
+    <div class="evidence">tests/import-export-roundtrip.test.cjs:210 起  import 全部手写 payload
+:689/757/779  export 独立断言形状；全文无 export→import 串联；'rollback' 零命中</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>加 1 个链路测试：DB A 造全量数据 → 真实 export GET → 输出直接 POST 给 import 到 DB B → 逐表对比；加 1 个注入失败测试断言全量回滚。现有 :memory: 设施齐备。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>3-5 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>串联测试本身即回归。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>21. sse-parser 自我声明的关键不变量（多字节跨 chunk、末段 flush、abort）全部无测试</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 testing</span>
+      <span>📍 src/lib/sse-parser.ts:7-12 vs tests/sse-parser.test.cjs</span>
+      <span>🎯 SSE 流解析不变量</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>源码注释明列三条不变量（TextDecoder stream:true 防多字节截断、最后一段必须保留、abort 时取消 reader），但仅有的 3 个测试逐字符串 encode——每个 chunk 都是完整 UTF-8 序列，永远无法触发多字节截断路径；残留 buffer flush 分支与 abort 分支零覆盖。<strong>现实失败场景</strong>：有人把 decoder.decode(value, {stream:true}) 改成每次 new TextDecoder().decode(value)（常见"简化"），中文/emoji 在 chunk 边界变 U+FFFD 乱码——本项目主要用户语言是中文，这是最高频真实流量形态；当前测试全部继续通过。
+    </div>
+    <div class="evidence">src/lib/sse-parser.ts:7-12  注释明列三条不变量
+tests/sse-parser.test.cjs:22-31  chunk 构造 encoder.encode(chunk)——恒为完整 UTF-8 序列，
+多字节截断路径不可达；:109-113 flush 分支、:84-87 abort 分支零覆盖</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>加 3 个用例：① 含中文/emoji 的字节流在多字节序列中间切开分两次 enqueue；② 最后一个 data 事件无尾随空行断言仍被 onDelta；③ mid-stream abort 断言 reader.cancel 被调且不再产出。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1-2 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>新增用例本身即回归。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>22. chat 路由 SSE 的错误/中断防御逻辑零测试</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 testing</span>
+      <span>📍 src/app/api/chat/route.ts:72-98, 200-212</span>
+      <span>🎯 closed 标志 / safeClose / event: error</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>chat 路由专门实现了 closed 标志 + safeClose + enqueue try/catch + abort 监听（注释明言防 ERR_INVALID_STATE），onError → event: error → safeClose 有完整兜底——但 tests/ 全库 grep "event: error" 零命中；已有测试只覆盖 400/413 校验、chunk 形状与记忆触发。这段防御代码曾为修 bug 而写（注释可证），没有回归测试锁住，下次重构极易回退。<strong>现实失败场景</strong>：上游 LLM 报错时客户端收不到 error 事件、流悬挂直到超时；客户端 abort 后异步回调继续 enqueue 导致未捕获异常。
+    </div>
+    <div class="evidence">src/app/api/chat/route.ts:72-98  closed/safeClose/abort 防御体系（注释明言防 ERR_INVALID_STATE）
+tests/ 全库 grep "event: error" → 零命中</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>复用 chat-attachment-boundary 的 readStreamText 设施加 2 个用例：runChat 调 onError/直接 throw → 断言流内出现 event: error 且正常终结；AbortController 先 abort 再让 mock runChat 回调 → 断言不抛异常、无新事件。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>2-3 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>新增用例本身即回归。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>23. summarize / maintenance / inline-image-prompt / 角色卡导入 / reranker 等次核心路径零或仅错误路径测试</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 testing</span>
+      <span>📍 多处（见证据）</span>
+      <span>🎯 测试覆盖缺口清单</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>各子项独立可查：① memory-reranker.ts 的 HTTP 适配器、响应解析和“未送重排尾部压分”缺少直接测试，但检索管线已有候选选择行为测试，不能称 reranker 整体零覆盖；② inline-image-prompt 的 [IMG] 提取/剥离无直接测试；③ character-card-import 在导入测试中被 mock；④ summarize 只有输入错误和上游错误脱敏测试，缺少成功落库主路径；⑤ maintenance 只有鉴权覆盖，孤儿检测/删除行为未测。
+    </div>
+    <div class="evidence">tests/ 与 scripts/ 中 "[IMG]" 零命中；character-card-import 仅被 mock（import-export-roundtrip:195）；
+summarize 仅 1 个错误脱敏测试；maintenance 仅 401 鉴权测试</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>按风险排序补测：maintenance（临时目录 + :memory: 断言只删孤儿）&gt; inline-image-prompt（纯函数 30 分钟）&gt; summarize 主路径 &gt; character-card-import fixture &gt; reranker 适配器。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1-1.5 天（可拆分） &nbsp;·&nbsp; <strong>回归测试：</strong>新增用例本身即回归。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>24. messages 分页 GET 重复计算会话级聚合，增长性开销当前较低</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 performance</span>
+      <span>📍 src/app/api/messages/route.ts:43-61</span>
+      <span>🎯 GET 分页的聚合统计</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>每次分页都会计算 unextracted COUNT、lastSummary 和 SUM(token_count)。查询受 conversation_id 索引限制为单会话范围，但仍随该会话消息量线性增长。50k 行复测三项合计中位约 20.8ms，明显低于初版估计，当前影响较低，故降为 Low。
+    </div>
+    <div class="evidence">src/app/api/messages/route.ts:43-47（unextracted COUNT 逐行 json_extract）、:51-55（lastSummary 倒扫）、:56-61（SUM 全会话）——每页请求均触发</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>unextractedCount/totalTokens 仅在首页请求（无 before_seq）时计算；或把 memory_extracted 提升为生成列 + 部分索引。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>0.5 天 &nbsp;·&nbsp; <strong>回归测试：</strong>断言 before_seq 分页请求不再执行三个聚合查询（SQL 计数 hook）。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>25. 向量检索 OFFSET 分页反复全排序 + 每轮 20MB blob 逐元素解码</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 performance</span>
+      <span>📍 src/lib/memory-embeddings.ts:445-450, 153-166</span>
+      <span>🎯 向量召回批处理 / blobToEmbedding</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>同一 ORDER BY（横跨两表无索引可用）按 500/批 LIMIT+OFFSET 循环到 5000——每批都完整 JOIN + 全排序再跳 offset（10 批 = 10 次全排序），且 rows.push(...batch) 仍全量持有、没有降低内存峰值；rankEmbeddingRows 对每行逐元素 readFloatLE，5000×1024 ≈ 512 万次调用 + 20MB Buffer 装载，每轮聊天（vector/hybrid 模式）同步执行。<strong>现实失败场景</strong>：5000 条已索引记忆时每轮向量检索同步部分约 100-300ms，纯粹多付 9 次排序。
+    </div>
+    <div class="evidence">src/lib/memory-embeddings.ts:445-450  LIMIT ? OFFSET ? 循环，每批完整 JOIN+全排序
+:153-166  blobToEmbedding 逐元素 readFloatLE（5000×1024 ≈ 512 万次/轮）</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>单条 LIMIT 5000 一次取回（结果与现有上限等价）；仅在 byteOffset 对齐且平台小端时使用 Float32Array 零拷贝，否则回退复制或 DataView，避免通用 Uint8Array 抛错/误解码。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>0.5 天 &nbsp;·&nbsp; <strong>回归测试：</strong>对拍单查询与分批结果一致；基准断言 5000 行 rank &lt;50ms。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>26. memories 行规范化存在四份平行实现，钳制/字符串处理行为已分叉</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 type-safety + maintainability（DRY 4.1 违规）</span>
+      <span>📍 memory-normalization.ts + memories 两路由 + memory-candidates/[id]/route.ts</span>
+      <span>🎯 normalizeMemoryRow 及三份路由本地副本</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>权威实现与 memories GET、memories/[id]、memory-candidates/[id] 三份路由副本对数字钳制、字符串数字和 JSON 数组元素的处理不同。importance=5 等脏导入值可在检索层归一为 1、API 层仍显示 5。问题真实但主要是边界一致性和修一漏一的维护债，当前影响受非法导入数据前提限制。
+    </div>
+    <div class="evidence">src/lib/memory-normalization.ts:27-31  numberOrDefault：接受字符串数字 + 钳制 [0,1]
+src/app/api/memories/route.ts:37-39  toNumber：仅 typeof number、不钳制
+memories/[id]/route.ts 与 memory-candidates/[id]/route.ts 另有平行转换 helper</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>让三个路由副本复用权威 normalizeMemoryRow，或拆出可复用的字段转换 helper；导入边界同时拒绝越界 importance。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>2 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>插入 importance=5、tags='[1,2]'、status='unknown' 的行，断言 API GET 返回与 normalizeMemoryRow 输出逐字段一致。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>27. LLM JSON 响应提取有 5 处实现、3 种健壮性等级，同名函数已发生分叉</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 maintainability（DRY 4.1 违规）</span>
+      <span>📍 memory-engine.ts:461 / memory-profile.ts:281 / memory-review:156 / memory-archive:286 / characters-generate:35</span>
+      <span>🎯 findBalancedJsonSnippet 及 4 个变体</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>5 处响应解析有不同的代码块剥离、平衡扫描和前后缀容错。profile 只接受对象符合其明确契约，不应把“不支持数组”当作缺陷；真实分叉集中在 review/archive 的 first '{' + last '}' 截取，以及 character generate 对带解释文字响应的容错较弱。json_mode 已降低现实触发率，因此校准为 Low。
+    </div>
+    <div class="evidence">src/lib/memory-engine.ts:461  if (first !== '{' &amp;&amp; first !== '[') return null   // 支持数组
+src/lib/memory-profile.ts:281  同名函数只接受对象，符合 profile schema 契约
+src/app/api/memory-review/route.ts:156-168  indexOf('{') + lastIndexOf('}')      // naive</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>抽共享“代码块剥离 + 平衡 JSON 片段提取”工具；调用方继续用各自 schema 决定只接对象还是允许数组，不统一业务契约。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>3 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>用带前后缀文字、嵌套括号、字符串内花括号的 fixture 分别打 5 个解析入口。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>28. 记忆注入契约依赖重复字面量，失配会造成标题重复与格式漂移</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 maintainability（DRY 4.1 违规）</span>
+      <span>📍 src/lib/memory-retrieval.ts:122-125,380 + src/lib/chat-engine.ts:122-139,152</span>
+      <span>🎯 MEMORY_CONTEXT_TITLE / MEMORY_USAGE_PRINCIPLES / 默认预算</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>使用原则、标题和默认预算存在重复字面量。标题失配时 normalizeMemoryContextText 会把旧标题当正文并再加新标题，结果是重复标题或格式漂移，<strong>不会让记忆停止注入</strong>。因此属于低优先级维护耦合，不是静默功能失效。
+    </div>
+    <div class="evidence">src/lib/chat-engine.ts:122  const MEMORY_CONTEXT_TITLE = '## 记忆上下文'（:138-139 startsWith 剥离）
+src/lib/memory-retrieval.ts:380  const sections = ['## 记忆上下文']   // 硬编码，必须逐字一致
+默认预算 12000：retrieval.ts:110 与 chat-engine.ts:152 双份</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>MEMORY_CONTEXT_TITLE、MEMORY_USAGE_PRINCIPLES、默认预算常量移到单一导出点（memory-retrieval 导出或独立常量模块），chat-engine import。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>1 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>断言 renderPackage 输出首行 === chat-engine 剥离所用常量；快照测试注入后 system prompt 无重复标题。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>29. 少数 memory 调用点绕过现有 HTTP helper，并依赖 ok 字段</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 code-consistency</span>
+      <span>📍 memory-archive/index/profile/review 四路由 vs 其余路由</span>
+      <span>🎯 错误响应形状 / fetch 调用点</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>项目已有 src/lib/http.ts 的 parseJsonResponse/expectOkResponse，会按 HTTP 状态读取 error/message；问题不是“84 处 fetch 全无封装”，而是 useMemoryArchivePanel、useMemoryProfilePanel 等少数调用点仍手写复合判定并依赖 result.ok。84 只是 fetch 总量，不能等同于 84 条错误链。
+    </div>
+    <div class="evidence">src/hooks/settings/useMemoryProfilePanel.ts:119
+  if (!response.ok || !result || result.ok === false || result.error === 'no_active_memories')
+  // 双 envelope 逼出的复合判定
+src/lib/http.ts:1-14  已有 parseJsonResponse / expectOkResponse 共享 helper</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>只迁移已确认绕过 helper 的 memory 调用点，并明确哪些 200 业务结果允许 ok:false；新调用默认使用现有 parseJsonResponse/expectOkResponse。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>规范固化 0.5 小时；渐进收敛另计约 4 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>对 6-8 个代表路由的错误分支做契约测试，断言错误体形状一致。
+    </div>
+  </div>
+
+  <div class="finding severity-low">
+    <div class="finding-header">
+      <h4>30. runChat / assemblePrompt 函数过长，职责密度增加维护成本</h4>
+      <span class="badge badge-low">Low</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 design（函数长度 1.3 / SRP 1.1）</span>
+      <span>📍 src/lib/chat-engine.ts:245-724</span>
+      <span>🎯 runChat / assemblePrompt</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>assemblePrompt 约 200 行、runChat 约 270 行，覆盖预算裁剪、记忆注入和流式/非流式分发等阶段，阅读与局部修改成本较高。两函数已有 chat-attachment-boundary、chat-history-boundary 等直接行为测试，中间也存在 ChatEngineCallbacks 声明，因此初版“无独立测试面/无其他顶层声明”不准确。现有测试显著缓解风险，降为 Low。
+    </div>
+    <div class="evidence">src/lib/chat-engine.ts:245-445 assemblePrompt；:447 ChatEngineCallbacks；:453-724 runChat
+tests/chat-attachment-boundary.test.cjs 与 chat-history-boundary.test.cjs 直接调用相关函数</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>先不拆函数：两函数内部加阶段分隔注释并为各阶段抽可单测的纯函数；仅当下次实际修改该文件时顺势拆分，避免为拆而拆。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>约 3 小时（随下次改动摊销） &nbsp;·&nbsp; <strong>回归测试：</strong>现有 chat-engine 用例先行覆盖非流式路径快照。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>31. 设置页 79 个可见 label 未通过 htmlFor/id 关联相邻表单控件</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 accessibility</span>
+      <span>📍 src/app/settings/page.tsx + ImageGenSettingsSection.tsx + MemoryEngineSection.tsx</span>
+      <span>🎯 设置表单 label 关联</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>rg 全量统计——settings/page.tsx：21 个 label、22 个输入控件、0 个 htmlFor；ImageGenSettingsSection：31/33/0；MemoryEngineSection：27/31/0。典型形态是兄弟节点不包裹。checkbox 类是包裹式 label 关联正常。<strong>现实失败场景</strong>：屏幕阅读器用户 Tab 到 API Base / API Key / 模型名输入框只听到"编辑文本"无字段名——而配置 API 是使用本应用的前置核心流程，非视觉用户无法独立完成初始配置。
+    </div>
+    <div class="evidence">src/app/settings/page.tsx:570-574（典型形态）
+  &lt;label className="mb-1.5 block ..."&gt;{t('settings.providerName')}&lt;/label&gt;
+  &lt;input .../&gt;   // 兄弟节点，无 htmlFor/id 关联
+三文件合计：79 个 label / 86 个表单控件（input/select/textarea）/ 0 个 htmlFor；包裹式 checkbox 已隐式关联</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>用 useId() 生成 id，label 加 htmlFor（或改为包裹式 label）。改动机械但量大，可先覆盖 API 设置区（核心流程）。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>2-3 小时 &nbsp;·&nbsp; <strong>回归测试：</strong>沿用现有 a11y harness 对 settings 关键区块 getByLabelText 断言。
+    </div>
+  </div>
+
+  <div class="finding severity-medium">
+    <div class="finding-header">
+      <h4>32. 移动端发送/停止按钮无可访问名称</h4>
+      <span class="badge badge-medium">Medium</span>
+      <span class="badge badge-confirmed">Resolved</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 accessibility</span>
+      <span>📍 src/components/chat/ChatInput.tsx:358-375</span>
+      <span>🎯 发送/停止按钮</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>两按钮的文字 span 是 hidden md:inline（移动端 display:none 不参与可访问名称计算），图标 SVG aria-hidden="true"，按钮本身无 aria-label/title。对比：同文件回形针按钮有完整 aria-label，ChatHeader 移动端 10 个图标按钮全部带 aria-label——唯独聊天最核心的发送/停止漏了。<strong>现实失败场景</strong>：移动端屏幕阅读器用户聚焦发送按钮只听到"按钮"，无法区分发送与停止（两者同位置随 isGenerating 切换渲染）。
+    </div>
+    <div class="evidence">src/components/chat/ChatInput.tsx:358-375
+  &lt;span className="hidden md:inline"&gt;...&lt;/span&gt;   // 移动端不参与名称计算
+  SVG aria-hidden="true"，按钮无 aria-label
+对照 :332 回形针按钮有完整 aria-label（模式已存在，仅此处遗漏）</div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>两个按钮各加 aria-label={t('input.send')} / {t('input.stop')}。</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong>15 分钟 &nbsp;·&nbsp; <strong>回归测试：</strong>a11y 测试断言 getByRole('button', { name })。
+    </div>
+  </div>
+
+  <h3 class="section-title" id="architecture">🏗 Architecture 架构与模块边界</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>lib→components/app/hooks 反向依赖 grep（零命中）；组件→db.ts 直接 import grep（零命中）；memory 子系统 12 文件依赖图逐文件核对（无环）；proxy.ts 鉴权链全文；API 路由直接 SQL 统计（206 处/33 文件，项目无 repository 层为既定模式）。</p>
+      <p><strong>排除项/局限：</strong>chat-message-cache 与服务端一致性策略由前端状态维度补充覆盖；状态所有权深层分析未完成。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>requireAuth 二道防线仅覆盖 providers/maintenance/settings 等 4 个路由，import/export/upload 等敏感度相当的路由无二道防线且选择标准未文档化（route-auth.ts 建议补一行判据注释）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证健康</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 分层依赖方向零违规：src/lib 对 @/components、@/app、@/hooks 的 import 全库零命中</div>
+        <div class="check-item"><span class="check">✓</span> memory 子系统 12 个文件依赖图无环（底层纯逻辑 → 中层引擎 → 编排层 → chat-engine 入口）</div>
+        <div class="check-item"><span class="check">✓</span> memory-archive.ts 零 lib 依赖、纯 db 参数注入——可测试性最佳实践</div>
+        <div class="check-item"><span class="check">✓</span> 客户端组件对 db.ts/memory-engine/settings 的直接 import 零命中（server/client 边界干净）</div>
+        <div class="check-item"><span class="check">✓</span> proxy.ts 对 Next.js 16 proxy 约定的防事故注释（:17-27）主动防止未来错误修改</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="security">🔒 Security 安全</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High（子代理两次上下文中断后由主审接手逐文件完成）</p>
+      <p><strong>已检查证据：</strong>proxy.ts / auth-token.ts / auth 路由 / ssrf-guard.ts / files 路由 / settings.ts 全文精读；SQL 模板字符串拼接全库 grep 逐条核对（全部为白名单列名/占位符模式）；服务端出站 fetch 全盘点（15 处 100% 走 safeFetch）；react-markdown XSS 面（无 rehypeRaw、默认 urlTransform 协议清洗）；CSP/安全响应头；export 内容核实（不含 settings/api_providers 表）；npm audit 实跑。</p>
+      <p><strong>排除项/局限：</strong>api-client 错误脱敏由稳定性组交叉覆盖（sanitizeUpstreamError 存在且被复用）；无运行时渗透测试。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 2 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>proxy.ts:107-111 getAuthMinIat 失败时回落 minIat=0 跳过撤销检查（fail-open）——注释已说明是可用性权衡（避免 SQLite IO 异常踢掉全部用户），触发前提苛刻，作为纵深观察记录</td><td><span class="badge badge-info">Info</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>生产 CSP script-src 含 'unsafe-inline'（next.config.ts:24-28，Next.js 内联脚本所需，注释已列 nonce 化为未来方向）——应用本身无 XSS 注入面，属纵深防御弱化而非漏洞</td><td><span class="badge badge-info">Info</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证安全</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> SSRF 双层防护：DNS 预解析 + socket 层 remoteAddress 复核（防 rebinding TOCTOU），重定向逐跳校验 + 跨 origin 剥凭证头</div>
+        <div class="check-item"><span class="check">✓</span> IPv4-mapped IPv6 归一、metadata/TEST-NET/CGNAT/multicast 地址段全覆盖，十进制 IP 表示经 lookup 兜底</div>
+        <div class="check-item"><span class="check">✓</span> HMAC-SHA256 token + __Host- cookie 前缀（生产）+ 常量时间比较（含长度泄漏防护）+ minIat 撤销（时钟回拨防护）</div>
+        <div class="check-item"><span class="check">✓</span> 登录限流：LRU 语义 + 过期清扫 + 容量上限 + 未信任转发头共享桶（防逐请求伪造 IP 绕过）+ TRUST_PROXY_HOPS 多跳</div>
+        <div class="check-item"><span class="check">✓</span> CSRF：写方法强制 application/json Content-Type，multipart 白名单仅 /api/upload（自带三重校验）</div>
+        <div class="check-item"><span class="check">✓</span> SQL 全参数化：模板字符串拼接均为代码内白名单列名或占位符串，值全走绑定</div>
+        <div class="check-item"><span class="check">✓</span> 路径穿越防护：path.resolve + 分隔符边界前缀校验 + 目录白名单 + MIME 白名单（files 路由）</div>
+        <div class="check-item"><span class="check">✓</span> API key 服务端掩码返回、导出文件不含密钥、日志不打印密钥/聊天内容</div>
+        <div class="check-item"><span class="check">✓</span> markdown 渲染无 XSS：无 rehypeRaw、无用户输入 dangerouslySetInnerHTML、默认 urlTransform 过滤危险协议、noopener noreferrer</div>
+        <div class="check-item"><span class="check">✓</span> settings 深合并用 spread（CopyDataProperties 不触发 setter），无原型污染面</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="stability">⚡ Stability 稳定性与错误处理</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>40 个 API 路由 handler/catch 覆盖统计（24 个精读全文）；9 处服务端出站 fetch 超时/AbortSignal 逐一核对；sse-parser / api-client / long-timeout / background-llm-deadline 基础设施全读；整改后主审实跑 npm test（649/649 通过）。</p>
+      <p><strong>排除项/局限：</strong>前端 catch→toast 链路抽查（服务端为重心）；build 未在本地执行（CI 端到端覆盖）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 5 项（Medium #3；Low #11/#15a/#15b）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>summarize / 生成角色 / AI 整理三处交互式 LLM 调用无服务器侧超时兜底（详见发现 #3）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>upload 畸形 multipart 返回非结构化 500（详见 #15a）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>未使用的会话消息 POST 对不存在会话暴露 FK 500（详见 #15b）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>embedding rebuild 为非 active 记忆重复入队，缺 action 的 JSON 对象默认触发重建（详见 #11）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>memory-index-trigger stop 后残留的 setTimeout 回调会清掉新 drain 的 active 标志，可产生并发 drain（memory-index-trigger.ts:123-127 + 30s retry 窗口；claim_token 守护保证数据无损，后果限于重复出站 embedding 请求）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证稳健</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 三队列 claim 全部事务化原子认领 + claim_token 守护 + 租约（画像队列含写前复核），单进程内无 SELECT-then-UPDATE 竞态窗口</div>
+        <div class="check-item"><span class="check">✓</span> seq 分配三处均以事务包 SELECT MAX(seq)+INSERT（或同步块不可分割）</div>
+        <div class="check-item"><span class="check">✓</span> SSE 解析五条不变量成立：stream:true 防多字节截断、末段保留、跨 chunk \r\n 自愈、解析失败有 warn、循环后 flush</div>
+        <div class="check-item"><span class="check">✓</span> 客户端断开：chat 路由 closed 标志 + abort 监听 + safeClose 幂等；abort 时部分回复保存并打 generation_stopped 标记</div>
+        <div class="check-item"><span class="check">✓</span> 对照组超时全部做对：提取/画像/生图提示词走 runWithBackgroundLlmDeadline，models 10s timeout，image-gen 默认 120s，embedding/reranker 自带</div>
+        <div class="check-item"><span class="check">✓</span> 重试有界：embedding 可恢复错误 3 次上限 + 30s 间隔；提取/画像失败停在 failed 由用户手动重试，无热循环重试风暴</div>
+        <div class="check-item"><span class="check">✓</span> FTS MATCH 语法错误有 catch 回退 LIKE</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="performance">🚀 Performance 性能与可扩展性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>db.ts 全部 DDL/索引与高频查询交叉核对；memory-retrieval / memory-engine / memory-embeddings / chat-engine 热路径通读；js-tiktoken 只读微基准实测（4 组场景，150 条中文记忆整包 encode 89ms、尾部 90 次 11.4s）；import/export 大 JSON 处理；前端虚拟列表/RAF 节流/memo 验证。</p>
+      <p><strong>排除项/局限：</strong>i18n.ts（纯文案）、maintenance/upload/files 等低频路由未逐行；memories 管理页前端深层未查。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 9 项（High #1；Medium #6/#8/#10/#25；Low #24）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>检索装箱尾部循环整包渲染 + 整包 tokenize，数百条记忆后每轮聊天秒级阻塞（详见发现 #1，实测 11.4s@90 尾部候选）</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>无总结长会话每轮 2 次全量 SELECT * + json_extract 全扫（详见发现 #6）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>assemblePrompt 无条件 re-tokenize 历史消息，实测 1.56s/轮（详见发现 #8）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>中文搜索必走 LIKE 全表扫描 + created_at 无索引（详见发现 #10）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>messages 分页每页三项会话范围聚合，当前 50k 行约 20.8ms（详见 #24）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>向量检索 OFFSET 重复全排序 + blob 逐元素解码（详见发现 #25）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>import 在每行循环内重复 db.prepare，10 万条消息备份多付 1-3 秒编译（import/route.ts:438 等 4 处，低频手动操作）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>export 一次性 JSON.stringify(payload, null, 2) 物化全库，pretty-print 多付约 30% 体积与 CPU（export/route.ts:74,122）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>流式回复每帧对累计全文做 ReactMarkdown 重解析（已有 RAF 节流 + memo，长回复尾段低端移动设备可能掉帧，非必修）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证良好</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 消息列表虚拟化真实生效（react-virtual，overscan 8）；MessageBubble memo、action 回调 useCallback</div>
+        <div class="check-item"><span class="check">✓</span> 流式渲染有 RAF 节流（每帧最多一次 setState）</div>
+        <div class="check-item"><span class="check">✓</span> 检索关键词分词有 memoryTokenCache（FIFO 2000、djb2 按内容失效）</div>
+        <div class="check-item"><span class="check">✓</span> export 消息查询已用分批 IN 避免 N+1；embeddings 导出默认关闭（注释自认体积膨胀）</div>
+        <div class="check-item"><span class="check">✓</span> 前端 token 估算用独立字符估算模块（js-tiktoken 21.9MB 未混入客户端 bundle）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="testing">🧪 Testing 测试质量</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>Medium</p>
+      <p><strong>已检查证据：</strong>主审实跑 649/649、0 skipped；核心 DB、路由、hook、竞态与 SSE 测试精读；CI 门禁和 8 个 tracked regression 脚本逐一核对。</p>
+      <p><strong>排除项/局限：</strong>3 个大测试文件仅读片段；断言深度精读约覆盖测试代码量 40%，按抽样外推。既往决策：无浏览器 E2E 不计为发现。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 5 个（Medium 详见卡片 #20-#23）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>导入/导出从未串联，roundtrip 名不副实；import 回滚无行为测试（详见发现 #20）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>sse-parser 自声明关键不变量全部无测试（详见发现 #21）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>chat 路由 SSE 错误/中断防御零测试（详见发现 #22）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>summarize/maintenance/inline-image-prompt/角色卡导入/reranker 零或仅错误路径测试（详见发现 #23）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>image-gen 四后端中 SD WebUI 仅 1 个错误脱敏场景，txt2img 载荷构造无断言（image-gen-boundary.test.cjs；SD 是本地部署场景用户可较快察觉）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证扎实</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 649/649 测试通过（22.3s），0 skipped/todo；全量 runner 正常退出，无强杀假绿</div>
+        <div class="check-item"><span class="check">✓</span> proxy-auth / security-config(SSRF) / memory-retrieval(58 测) / chat-history-boundary / chat-message-cache 五个核心文件为真行为测试且质量优</div>
+        <div class="check-item"><span class="check">✓</span> 迁移测试是亮点：真实 getDb() 临时目录 + 旧库升级/幂等/FK 重建/注入失败回滚均覆盖</div>
+        <div class="check-item"><span class="check">✓</span> 三队列恢复测试合计完整（提取 2 用例 + 画像租约含他 worker 不抢占 + embedding 恢复）</div>
+        <div class="check-item"><span class="check">✓</span> mock 只压在外部边界（LLM API/undici），SQLite 用真 :memory:</div>
+        <div class="check-item"><span class="check">✓</span> CI 门禁真实：lint→test→regression→build 顺序执行无 continue-on-error，测试失败确实拦截合并</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="maintainability">📐 Maintainability 可维护性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>Medium</p>
+      <p><strong>已检查证据：</strong>全库行数排序；四份记忆规范化、五处 JSON 解析与注入契约字面量差异核对；大文件与既往决策对照（ChatView 已 hook 化）。</p>
+      <p><strong>排除项/局限：</strong>i18n.ts 是否混入逻辑未查；前端四大文件内部职责逐段分析未完成（行数证据完整）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 项（Low 详见 #27/#28）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>LLM JSON 提取 5 处实现存在容错差异（详见 #27）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>记忆注入契约重复字面量可造成标题重复/格式漂移（详见 #28）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>前端四大文件规模：settings/page.tsx 1189 行、ChatView 1071、MessageBubble 923、characters/[id] 709（wc 实测）——ChatView 相比 2026-06 审计已实质改善（4 个 hook 抽离），不判定为增量恶化；settings 页建议沿用同模式</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证良好</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> TODO/FIXME/HACK 在 src/lib 与 src/app/api 零命中，无烂尾标记</div>
+        <div class="check-item"><span class="check">✓</span> ChatView hook 化趋势良好：useChatMessageActions(231 行)/useChatScrollController(312)/useChatImageGeneration(403)/useMessagePaging(244) 已抽离</div>
+        <div class="check-item"><span class="check">✓</span> settings 目录已有 hook 抽离先例（useMemoryArchivePanel 468 行等 3 个）</div>
+        <div class="check-item"><span class="check">✓</span> 超时/上限常量各归属模块集中管理（REASONING_SAFE_MAX_TOKENS、MAX_MEMORY_CONTENT 等）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="design">📋 Design 设计原则符合度</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>Medium</p>
+      <p><strong>已检查证据：</strong>DRY/fail-fast/函数长度/吞错误/依赖规则逐原则核对；lib 全部 11 个 get* 导出的 CQS 签名抽查（其中 4 个实现精读）。</p>
+      <p><strong>排除项/局限：</strong>嵌套深度未做系统性扫描（无趁手静态工具，逐文件目检不经济）；队列 worker 函数长度未收敛到证据。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 项（Low，详见 #30）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>runChat / assemblePrompt 超长且职责密度较高，但已有直接行为测试（详见 #30）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证遵守</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> CQS 抽查通过：getDb 惰性副作用为文档化设计、getOrCreateMemoryProfile 命名诚实</div>
+        <div class="check-item"><span class="check">✓</span> 109 个 catch 抽样普遍带意图注释（"保存失败不应掩盖原始错误"等），非系统性吞错</div>
+        <div class="check-item"><span class="check">✓</span> KISS：无过度抽象，无一次性代码的 Factory/Visitor 类模式</div>
+        <div class="check-item"><span class="check">✓</span> 依赖注入实践：memory-archive 纯 db 参数、检索管线 deps 可注入（tokenCounter/rerank 可替换）</div>
+        <div class="check-item"><span class="check">✓</span> 防御性设计意识：chat-engine 对 $&amp; 替换模式的防护注释、schemas formatZodFieldErrors 防路径泄漏注释</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="release">🚢 Release 发布与部署</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>ci.yml / Dockerfile / docker-compose / entrypoint / dependabot / Start.bat / postbuild 脚本逐行；生产 build 通过；本地 Docker 等价 smoke 验证 readiness、UID 1001、四个持久化目录与完整 build SHA。</p>
+      <p><strong>排除项/局限：</strong>未执行公网反向代理部署验证；该项不影响本地镜像交付契约。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项（Medium #16；Low #17）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>应用运行时无法通过 health 自证构建版本（详见 #16）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>DB schema 无 user_version，未来非加法迁移缺少降级治理（详见 #17）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>CI 同一 commit 双跑全套流水线（push + pull_request 均无过滤、无 concurrency 组）——纯资源浪费无正确性问题（ci.yml:3-5）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>Dockerfile:12 npm ci --frozen-lockfile 是 yarn/pnpm 选项，npm 视为未知 config（无害冗余，暗示工具行为误解）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证扎实</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> CI docker-smoke 质量高：构建镜像 → named volume → readiness 轮询 → 非 root UID 1001 断言 → 失败打日志 → always 清理——"CI 绿但产物不可用"已实质封堵</div>
+        <div class="check-item"><span class="check">✓</span> 多阶段构建合格：deps 层缓存正确、runner 无构建工具链、.dockerignore 排除 node_modules/data/.env*、HEALTHCHECK 打 readiness</div>
+        <div class="check-item"><span class="check">✓</span> postbuild 失败正确传播（process.exitCode=1 → build 失败 → CI 红）</div>
+        <div class="check-item"><span class="check">✓</span> 生产 fail-fast：entrypoint 拒绝空/占位 ACCESS_PASSWORD</div>
+        <div class="check-item"><span class="check">✓</span> 备份指引完整：应用内导出 + 文件级两条路径；export-version 有版本门禁与递增约定</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="documentation">📚 Documentation 文档准确性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>README.md 全文 511 行；README.en.md 关键段对照 + 行数对齐校验；.env.local.example 对照全库 process.env 实际读取（16 处/6 变量，无遗漏无多余）；CLAUDE.md 环境变量表交叉。</p>
+      <p><strong>排除项/局限：</strong>AGENTS.md 未逐行；截图与实际 UI 一致性无法静态验证。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>Resolved：CLAUDE.md 已与无上限钳制设计对齐（历史记录 #9，不计当前风险）</td><td><span class="badge badge-info">Resolved</span></td><td><span class="badge badge-confirmed">Completed</span></td></tr>
+          <tr><td>中文 README"更新版本"章节（:322）备份清单漏 public/attachments/（英文版是全的；中文版自身 402/419-424 行又含 attachments——同文档内不一致）。照此操作的中文用户升级事故中丢失全部对话附件</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>运维文档缺口：/api/health 端点（含 ?ready=1）双语 README 零提及；FAQ 无"容器起不来排查"条目；开发章节验证序列缺 npm test（与 CLAUDE.md 不一致）；Start.bat 实为 dev 模式未说明</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证准确</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> .env.local.example 5 个变量全有中文说明、占位值安全、与实际读取清单逐一对上</div>
+        <div class="check-item"><span class="check">✓</span> 双语 README 结构逐节对齐（均 511 行），Docker 权限/fail-fast/项目结构等关键内容一致（仅上述一处实质差异）</div>
+        <div class="check-item"><span class="check">✓</span> Docker UID 1001 权限要求、volume 挂载清单文档化完整</div>
+        <div class="check-item"><span class="check">✓</span> CLAUDE.md 已明确记忆预算无上限钳制，禁止恢复聊天系统 cap（#9 已解决）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="configuration">⚙️ Configuration 配置安全</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>process.env 读取全景 grep；settings 深合并原型污染分析（spread 安全）；Zod schema 与 23 个 request.json 调用点交叉核对；entrypoint fail-fast 验证；布尔规范化与 legacy 迁移映射核对。</p>
+      <p><strong>排除项/局限：</strong>角色级覆盖配置（character_memory_configs）链路未逐项验证。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 无发现——预算无上界为有意设计（价值观确认）</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> memory_package_token_budget 无上界确认为有意设计（commit eee277f 移除钳制，测试断言守护），符合「严禁聊天系统 cap」价值观——初版曾误列为 Medium 并建议恢复钳制，已撤销；相关文档失真项见 documentation 分节（卡片 #9，已修正）</div>
+        <div class="check-item"><span class="check">✓</span> 生产缺 ACCESS_PASSWORD：entrypoint fail-fast 拒启 + getDb 启动警告双保险</div>
+        <div class="check-item"><span class="check">✓</span> env 变量文档与实际读取一致（含 TRUST_PROXY_HOPS 等全部 6 个）</div>
+        <div class="check-item"><span class="check">✓</span> settings 读取与默认值深合并 + 布尔 0/1 legacy 规范化 + retrieval_mode 迁移映射</div>
+        <div class="check-item"><span class="check">✓</span> AUTH_SECRET 弱兜底有一次性警告与文档说明（密码派生的权衡明示）</div>
+        <div class="check-item"><span class="check">✓</span> API 输入校验主链路过 Zod（23 个 request.json 中除 import/auth/models 外均过 safeParse，import 有手写防御）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="observability">🩺 Observability 可观测性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>structured-log.ts 全文 + 全部 8 处调用点；全库 console.* 统计（38 处/24 文件，区分服务端/前端）；readiness/health/requestId 链路全文；三队列可见性与前端消费面（useMemoryTaskPolling/TokenBreakdownModal）核对。</p>
+      <p><strong>排除项/局限：</strong>memory-embeddings 日志细节抽样（已足以定性双轨现状）。既往背景：41 处裸 console 曾判不修，2026-07-10 落地 structured-log 后现状为部分迁移，按新状态如实报告。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>结构化日志双轨并存：structuredLog 仅 8 处调用 vs 约 30 处服务端裸 console；serializeError 只留 error.name（防泄漏有意设计），drain/queue 级失败现场只剩 {"error":{"name":"SqliteError"}} 不可诊断——建议 message 过 sanitizeUpstreamError 脱敏后保留（structured-log.ts:20-28；单任务级失败有 DB error_message 兜底可见）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>memory-diagnostics 的 tasks 只覆盖 embedding 队列，提取/画像队列无全局积压视图；跨对话的历史失败提取无处汇总回看；检索完全失败档在 token 明细中反而无模式徽标（diagnostics route:91 + TokenBreakdownModal:112）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>docker-compose 无 logging 轮转配置，默认 json-file 无上限——常驻数月后日志吃掉数 GB 磁盘（compose 加 max-size/max-file 即可）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证可观测</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> /api/health 支持 ?ready=1 readiness 模式（DB + 目录可写检查），Dockerfile HEALTHCHECK 与 CI 轮询均在用</div>
+        <div class="check-item"><span class="check">✓</span> requestId 链路存在：proxy 为每请求生成/透传 x-request-id（image-gen 两路由已接入日志）</div>
+        <div class="check-item"><span class="check">✓</span> 单对话提取失败有 toast + errorMessage + retryCount + isStuck 卡死诊断 + 手动重试出口</div>
+        <div class="check-item"><span class="check">✓</span> embedding failed 在索引面板可见且有 retry_failed 出口；画像任务状态经 API 暴露、enqueue 失败返回详情</div>
+        <div class="check-item"><span class="check">✓</span> 已接入的 8 个结构化事件带 taskId/characterId/conversationId 关联字段</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="data-integrity">🧱 Data Integrity 数据完整性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>db.ts migrate 逐段幂等性/事务性核对；PRAGMA foreign_keys=ON 确认；import/export 全文（事务边界/往返一致性/字段归一）；级联删除 11 表清单核对；文件与 DB 双写顺序；memory-archive 归档/undo 校验链。</p>
+      <p><strong>排除项/局限：</strong>WAL checkpoint 依赖 SQLite 默认 autocheckpoint（无自定义备份逻辑可审）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 个（Medium 详见卡片 #4）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>导入端不归一 status/role，脏值造成幽灵记忆（详见发现 #4）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>db.ts 多步迁移（ALTER + 回填 UPDATE）未包事务：seq/sort_order/started_at 三处在两语句间崩溃（毫秒级窗口）后回填被永久跳过，历史消息同时间戳排序退化且无自愈路径（db.ts:346-351 等；修复：每组包 db.transaction 或回填条件独立于列存在性判断）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>conversations/[id]/duplicate 新会话 INSERT 在消息复制事务之外，复制失败留下空"(副本)"会话（duplicate/route.ts:35-72；对照 characters duplicate 是全量单事务的正确做法）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证完整</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> import 是单一大事务（事务内无异步），中途失败全回滚不留半成品</div>
+        <div class="check-item"><span class="check">✓</span> PRAGMA foreign_keys=ON + busy_timeout 5000；embedding 两表有 ON DELETE CASCADE 且旧库自动重建 FK</div>
+        <div class="check-item"><span class="check">✓</span> 删角色显式清 11 张表、删会话清 messages+memory_tasks——级联闭环（memory_tasks 无 FK 但孤儿被处理时自然标 done + maintenance 可清）</div>
+        <div class="check-item"><span class="check">✓</span> FTS 半损坏自愈：行数差检测即全量重灌（比旧的仅空表检测更幂等）</div>
+        <div class="check-item"><span class="check">✓</span> 文件/DB 双写方向一致正确：上传先文件后引用（孤儿方向可清理）、删除先 DB 后文件且失败有 warn</div>
+        <div class="check-item"><span class="check">✓</span> 归档 undo 按 metadata.previousStatus 还原，服务端拒绝 summary 二次归档</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="privacy">🛡 Privacy 隐私与数据治理</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>日志内容泄露全库 grep（console.* 无聊天/记忆/密钥输出，structured-log 字段白名单）；export 内容核实（不含 settings/api_providers 表，即不含 API key）；files 路由过 proxy 鉴权链验证；出站数据流全盘点（聊天/记忆/画像仅发往用户配置的 LLM/embedding/reranker/SD 上游，无第三方遥测代码）。</p>
+      <p><strong>排除项/局限：</strong>无遥测是静态结论，未做运行时抓包验证。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>CSP img-src 允许任意 https: 外链 + react-markdown 默认渲染 img——LLM 输出/导入角色卡中的 markdown 图片可让浏览器向任意 https 地址发请求（tracking pixel 泄露 IP/在线时间）。next.config.ts 注释说明这是远程头像/用户图片 URL 的有意权衡；单用户 local-first 影响有限，可选缓解为 img 组件加域名确认或代理加载</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证合规</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 数据全部留在本地/自有服务器：无分析 SDK、无遥测上报、无第三方 CDN 依赖（字体自托管 + Google Fonts 仅样式）</div>
+        <div class="check-item"><span class="check">✓</span> 聊天内容/记忆只发往用户显式配置的上游端点（15 处出站全盘点确认）</div>
+        <div class="check-item"><span class="check">✓</span> 导出文件不含 API key/密码/token（仅角色/对话/记忆/画像/向量数据）</div>
+        <div class="check-item"><span class="check">✓</span> 服务端日志不打印聊天内容与记忆正文（structured-log 字段白名单 + 裸 console 均只输出错误对象/ID）</div>
+        <div class="check-item"><span class="check">✓</span> 生成图/头像/附件均经 /api/files 鉴权路由服务（旧静态路径重写在认证之后）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="accessibility">⌨️ Accessibility 可访问性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High（纯静态审查）</p>
+      <p><strong>已检查证据：</strong>既有 2 个 a11y 测试先读确认已覆盖面；Modal/Toast/ChatInput/GlobalSearch/CharacterList 通读；settings 三大文件 label/htmlFor/input 全量计数；ChatHeader 16 个按钮逐个核对可访问名称；aria-live/role 全库 grep；对比度维护机制审查。</p>
+      <p><strong>排除项/局限：</strong>无真实屏幕阅读器实测；对比度未做数值计算。按"核心流程可用性"口径评估而非 WCAG 全面合规。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 个（Medium 详见卡片 #31/#32）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>设置页 79 个可见 label 未关联 86 个相邻表单控件（详见 #31）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>移动端发送/停止按钮无可访问名称（详见发现 #32）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>侧边栏拖拽排序键盘路径被覆盖失效：显式 onKeyDown 覆盖 dnd-kit listeners，KeyboardSensor 成死代码，而 aria-describedby 的"按空格拾起"SR 指令仍在——对 SR 用户构成虚假承诺（CharacterList.tsx:71-90）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>状态可感知杂项：错误 toast 用 role="status" 而非 alert 且无键盘关闭；全库 aria-live 为 0（流式生成/记忆提取状态对 SR 静默）；GlobalSearch 高亮项不 scrollIntoView；触控目标约 36px 低于 44px 建议</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证可用</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> Modal.tsx 完整实现焦点管理：记录原焦点/初始聚焦/Tab 陷阱/Esc/焦点归还，7 个弹窗全部复用</div>
+        <div class="check-item"><span class="check">✓</span> ChatHeader 移动端 10 个图标按钮全部带 aria-label；回形针按钮有完整可访问名称</div>
+        <div class="check-item"><span class="check">✓</span> GlobalSearch 键盘导航可用（已有测试覆盖 Tab 陷阱/Esc）</div>
+        <div class="check-item"><span class="check">✓</span> 对比度维护机制健全：语义 token CSS 变量 + dark: 变体统一维护</div>
+        <div class="check-item"><span class="check">✓</span> checkbox 类采用包裹式 label 关联正常</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="supply-chain">🔗 Supply Chain 供应链与可重现性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>13 个生产依赖逐个使用点核对；GitHub Actions 全部 pin 到 commit SHA、Node 镜像 pin 到 manifest digest 验证；dependabot 覆盖 github-actions + docker 生态确认；npm audit 实跑；package-lock 630 条 resolved 完整性；npm scripts 无可疑命令。</p>
+      <p><strong>排除项/局限：</strong>SBOM/签名/provenance 维持 2026-06 既往决策（local-first 无镜像分发，不适用；若未来分发 Docker 镜像应重评）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>npm audit 报 2 个漏洞，均在 devDependencies 链上不进生产产物：js-yaml 4.1.1（moderate，二次复杂度 DoS，经 eslint→@eslint/eslintrc）与 @babel/core ≤7.29.0（low，sourceMappingURL 任意文件读，构建工具链）。npm audit fix 可直接修复</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证可信</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> GitHub Actions 全部 pin 到 commit SHA（checkout/setup-node），runner pin 到 ubuntu-24.04</div>
+        <div class="check-item"><span class="check">✓</span> Node 基础镜像三阶段全部 pin 到多架构 manifest digest</div>
+        <div class="check-item"><span class="check">✓</span> dependabot 维护 github-actions + docker 两生态的 pin 更新；CI 有测试锁住 pin 状态（supply-chain-config.test.cjs）</div>
+        <div class="check-item"><span class="check">✓</span> npm ci 严格按 lockfile 安装（CI 用法正确）；无 postinstall 类可疑脚本</div>
+        <div class="check-item"><span class="check">✓</span> 生产依赖仅 13 个且各司其职，无重复功能依赖（见依赖重量分节）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="cost">💸 Cost 成本与资源经济性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High（按项目价值观调整口径）</p>
+      <p><strong>已检查证据：</strong>全部 8 类 LLM/embedding/reranker 调用点盘点（聊天/提取/画像/总结/query embedding/reranker/rebuild/inline-prompt）；三队列重试上限与去重事务核对。</p>
+      <p><strong>口径说明：</strong>项目价值观明确「角色表现高于所有，token 成本不是本项目关心的问题」——本维度<strong>不以 token 用量/账单为由立案任何发现</strong>；仅关注"零收益开销"（对角色表现无任何增益的浪费）与"调用失控风险"（重试风暴/误触）。初版曾报的"提取全量携带记忆""summarize 全量输入"两条已撤销为设计取舍记录（见卡片 #2/#7）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 无立案发现（相关项已按价值观撤销或改由稳定性立案）</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 提取入队有 DB 事务级去重 + 内存去重，无重复提取放大</div>
+        <div class="check-item"><span class="check">✓</span> 提取/画像失败不自动重试（标 failed 由用户手动触发），无重试风暴；embedding 重试 ≤3 次 + 30s 间隔</div>
+        <div class="check-item"><span class="check">✓</span> inline-image-prompt 复用聊天回复顺带产出，不额外调用</div>
+        <div class="check-item"><span class="check">✓</span> 真实 usage 有捕获展示（api-client onUsage + token 明细弹窗），用量对用户透明</div>
+        <div class="check-item"><span class="check">✓</span> 后台模型可独立配置，供应商失效回退主接口保持可用</div>
+        <div class="check-item"><span class="check">✓</span> 设计取舍记录：提取全量携带记忆（#2）与 summarize 全量输入（#7）为角色表现优先的有意设计，唯一保留提示是"超出后台模型上下文时调用会失败"——届时处置由 Owner 决策（如换更大窗口模型），审计不提供加 cap 方案</div>
+        <div class="check-item"><span class="check">✓</span> rebuild 非 active 记忆入队与缺 action 默认行为已由稳定性维度以 Low 登记（#11，与成本无关）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="ai-safety">🤖 AI / LLM Safety</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>Medium（子代理上下文中断后由主审接手完成）</p>
+      <p><strong>已检查证据：</strong>EXTRACTION_PROMPT/AI_ARCHIVE_PROMPT 全文；inline-image-prompt 解析全文；记忆污染链数据流追踪（对话→提取→固化→注入）；markdown 渲染 XSS 面；成本放大与畸形输出容错（repairable candidate 机制由稳定性组交叉验证）；出站数据流盘点。</p>
+      <p><strong>排除项/局限：</strong>附件进 prompt 的路径仅结构性检查；无对抗性注入实测（静态审计）。威胁模型校准：单用户工具，"用户攻击自己"不计；威胁面是不可信内容源（导入角色卡/LLM 输出）与数据/成本意外。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 2 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>记忆污染链无结构性防护：对话文本直接嵌入提取 prompt（{conversation_text}），提取结果直接 active 入库并注入未来所有对话的 system prompt——EXTRACTION_PROMPT 的"防污染规则"防幻觉不防注入，提取入库无人工审核关卡。产品语境校准：角色卡本就完全控制角色行为（设计功能），增量风险是恶意导入卡可将注入指令<strong>跨会话持久化</strong>为记忆且用户不易察觉；缓解面是记忆管理页全量可见可删。建议：导入角色卡时提示来源风险，或提供"新导入角色首批提取记忆需确认"的可选开关</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>stripInlinePrompt 只剥离第一个 [IMG] 块：LLM 违规输出两个完整块时第二块残留正文显示给用户（inline-image-prompt.ts:59-66 replace 非全局 + 尾部剥离被完整块短路）——纯显示瑕疵，无安全影响</td><td><span class="badge badge-info">Info</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证受控</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> LLM 能力边界窄：生图提示词是唯一"工具面"，无 function calling，[IMG] 内容仅作为 tag 串送用户自配的生图 API，无预期外副作用</div>
+        <div class="check-item"><span class="check">✓</span> LLM 输出经 react-markdown 安全渲染（无 HTML 解析、协议清洗），无 XSS 链</div>
+        <div class="check-item"><span class="check">✓</span> 畸形 LLM 输出容错：平衡扫描 JSON 提取 + repairable candidate 隔离（解析失败不炸管线、可修复候选留档）</div>
+        <div class="check-item"><span class="check">✓</span> REASONING_SAFE_MAX_TOKENS 防推理模型输出截断；deepseek 思考模式可为后台任务禁用</div>
+        <div class="check-item"><span class="check">✓</span> 提取指令仅请求时追加不落库（不污染对话记录/记忆提取/前端显示）</div>
+        <div class="check-item"><span class="check">✓</span> 聊天/记忆数据仅发往用户配置端点，无第三方遥测（与隐私分节交叉验证）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="fallback">🕳 Fallback 回退与防御性代码</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>catch 空块全库 grep（lib 内仅 3 处且均为 reader.cancel 类合理场景）；chat-engine 记忆三级回退、检索超时回退、models 缓存回退、token-counter 冷却重试逐级核对——每级均有可观测痕迹（console.warn + diagnostics 字段 + metadata.mode 落库）。</p>
+      <p><strong>排除项/局限：</strong>前端组件 catch→toast 链路抽查（服务端为审计重心）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 无发现——回退链全部可观测</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 记忆检索回退链完整可诊断：向量失败→本地（diagnostics.embeddingFailed）、reranker 失败→跳过（rerankerFailed）、总超时→本地包（totalRetrievalTimedOut）、工作包失败→legacy→空注入，最深回退也有 mode 标记落进消息 metadata</div>
+        <div class="check-item"><span class="check">✓</span> 不存在"级联静默"：每级回退均有 console.warn + UI 可见痕迹（token 明细弹窗显示检索模式）</div>
+        <div class="check-item"><span class="check">✓</span> models 拉取失败回退旧缓存（有明确注释与缓存时间戳）</div>
+        <div class="check-item"><span class="check">✓</span> token-counter 编码器初始化失败回退字符估算 + 冷却后自动重试恢复（有测试覆盖）</div>
+        <div class="check-item"><span class="check">✓</span> 空 catch 全库仅 3 处且均为非关键读取/取消场景，普遍带意图注释</div>
+        <div class="check-item"><span class="check">✓</span> settings 后台供应商失效回退主接口——注释明示"这是 local-first 可用性策略，不是静默绕过"</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="testing-authenticity">🎭 Testing Authenticity 测试真实性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>8 个已跟踪回归脚本逐一核对且全部进入 CI；另 8 个 ignored 本地工作脚本排除发布门禁统计；grep 型测试与真实 hook 行为测试交叉核对；恒真断言与 CI continue-on-error 排查。</p>
+      <p><strong>排除项/局限：</strong>断言质量精读约覆盖 40% 测试代码量，按抽样外推。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 项（Medium #19；Low #18）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>8 个 tracked 回归脚本均进 CI，但主要是源码契约检查（详见 #18）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>前端核心状态机"行为式命名"测试实为源码 grep（详见发现 #19）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>运行时 TS transpile（ts.transpileModule 无类型检查）与 SWC 构建产物存在 CJS/ESM 循环依赖初始化顺序差异的残余风险；约 40 行 loader 样板在 60+ 文件复制且 requireFreshWithMocks 有多个变体——建议收敛到 tests/helpers/（缓解因素：CI build 跑完整类型检查 + isolatedModules 保证语义安全）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证真实</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 生产代码无 NODE_ENV==='test' 分支；唯一测试导出 __migrateForTests 命名清晰、仅包装内部 migrate</div>
+        <div class="check-item"><span class="check">✓</span> 无恒真断言、无 skip/todo、无 try-catch 包断言模式</div>
+        <div class="check-item"><span class="check">✓</span> mock 边界正确：只 mock LLM API/undici 等外部边界，SQLite/模块执行全真实</div>
+        <div class="check-item"><span class="check">✓</span> chat-scroll-controller 测试有诚实的分层声明注释（helper 跑行为、职责归属用源码断言）——自觉的先例存在</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="type-safety">🔤 Type Safety 类型安全</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>as any / @ts-ignore / @ts-expect-error 全库 grep（零命中）；as unknown 18 处逐条上下文核对（15 处为 JSON.parse 安全收窄良性模式）；非空断言 6 处核对（均有守卫）；23 个 request.json 调用点与 Zod safeParse 清单交叉核对；DB 行规范化集中度分析。</p>
+      <p><strong>排除项/局限：</strong>3 处双重断言（ssrf-guard/settings/import）未逐一深挖运行时可达性（目测风险低）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 2 项（均为 Low）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>memories 行规范化四份实现行为已分叉（详见 #26）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>Memory/Message 领域类型带 [key: string]: unknown 索引签名（types/index.ts:79,110）——让 SELECT * as Memory[] 免检通过的有意宽容设计，代价是丢失 excess-property 检查；所有读取路径均过 normalize 兜底不构成运行时炸点。可选改进：MemoryRow（宽松）/Memory（严格）双类型 + normalize 作唯一转换点</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证严格</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> as any / @ts-ignore / @ts-expect-error 全库零命中（CLAUDE.md 禁 any 规范真实执行）</div>
+        <div class="check-item"><span class="check">✓</span> as unknown 18 处中 15 处是 JSON.parse(x) as unknown 安全收窄；非空断言仅 6 处且均有守卫</div>
+        <div class="check-item"><span class="check">✓</span> API 边界主链路过 Zod（除 import 手写防御/auth/models 外全部 safeParse）</div>
+        <div class="check-item"><span class="check">✓</span> normalizeMemoryRow 对 pinned(0/1→boolean)/status/usage_count 的规范化已落地（2026-06 审计修复项验证仍在位）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="frontend-state">🧩 Frontend State 前端状态</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High（核心聊天链路约 95%，设置面板约 50%）</p>
+      <p><strong>已检查证据：</strong>7 个 chat hooks + ChatView + page.tsx 全文通读；useEffect 全库分布统计（最高 7 个/文件，无链式 setState 风暴，普遍用 ref 镜像规避 stale closure）；竞态守卫体系逐条推演并排除 8 个疑点（双击重发/停止误停/删除竞态/PATCH 清空等均不成立）。</p>
+      <p><strong>排除项/局限：</strong>4 个设置面板 hook 抽样未通读（与已查 useSettingsProviders 同源模式）；settings/characters 页表单主体 grep 抽查。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 7 个（Medium 详见卡片 #5/#12/#13）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>裸 fetch 无 ok 检查→401/500 错误对象流入 setMemories→整页崩溃（详见发现 #5）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>并发生图 metadata 读改写竞态丢图（详见发现 #12）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>主页双赛道选择竞态互不感知（详见发现 #13）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>切走再切回正在生成的对话，流式文本不再显示（streamingConvId 无恢复路径，与代码注释承诺不符；数据无损，流结束落库后恢复）（useChatStreaming.ts:44-51）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>消息操作缓存失效三处自愈型不精确：regenerate 刷新目标是活跃对话而非流所属对话；DELETE 响应缺 conversation_id 致在途删除不失效原对话缓存；handleDeleteMessage 无 catch（失败无 toast + unhandled rejection）（useChatMessageActions.ts:73-150）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>serverUnextractedCount 无 convId 标签防串台（totalTokens 有），切对话瞬间短暂显示上一对话计数；删除用户消息不修正计数；useMessagePaging 在 setMessages updater 内调用缓存写（副作用进纯函数，幂等未爆雷）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>useMemoryTaskPolling 单一 abort ref：两对话并发提取时后启动轮询取消前者（toast 丢失）；非 abort 错误 rethrow 而调用点全是 void → unhandled rejection（useMemoryTaskPolling.ts:64,117）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证健壮（排除的疑点）</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 双击重复发送防抖闭环：beginStream 同步更新 ref + handleSend 入口守卫 + 新会话 creatingConversationRef 同步置位</div>
+        <div class="check-item"><span class="check">✓</span> 流式串台防护：双重 conv 守卫 + per-conversation AbortController，停止按钮仅在 isStreamingHere 时渲染</div>
+        <div class="check-item"><span class="check">✓</span> 删除对话竞态：快照 targetConvId + 失败回滚，设计正确</div>
+        <div class="check-item"><span class="check">✓</span> serverTotalTokens 带 convId 标签防串台（正确先例，unextractedCount 应看齐）</div>
+        <div class="check-item"><span class="check">✓</span> 轮询 hook 卸载清理完备（abort + 清定时器）</div>
+        <div class="check-item"><span class="check">✓</span> useEffect 纪律好：无链式 setState 风暴，派生值走 useMemo</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="backend-api">🔌 Backend API 后端接口</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High（REST 语义/校验/部分更新维度约 85%）</p>
+      <p><strong>已检查证据：</strong>40 个路由方法/Zod 调用全枚举；19 个路由通读；GET 写副作用扫描；PATCH/PUT 字段清空逐个排除（characters/memories/conversations/providers 全部字段级安全）；非整数 limit 用 :memory: SQLite 实测复现。</p>
+      <p><strong>排除项/局限：</strong>export/import/memory 系路由完整业务体由其他维度覆盖；image-gen 主路由 700 行生成逻辑未逐行。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 5 个（Medium 详见卡片 #14）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>conversations.updated_at 混用 datetime('now') 与 ISO 格式排序错乱（详见发现 #14）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>/api/messages 与 /search 的非整数 limit 触发 datatype mismatch → 500（实测复现；conversations 路由已有 Math.floor 正确实现可复用）（messages/route.ts:29-30）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>/api/models 三处 REST 不一致：错误以 200 + {models:[], error} 返回（前端被迫查 data.error）；GET ?refresh=1 写 model_cache（缓存性质幂等，实害小）；String(err) 透传</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>settings PUT 对 image_gen 整体替换 vs memory_engine 深合并不一致——部分对象 PUT 会清空 image_gen 其余字段（当前前端总发全量，latent；服务端比照 memory_engine 合并即可）（settings/route.ts:63-91）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>500 错误响应透传上游/内部 err.message（无 .stack 外传、无内部路径；单用户自托管下展示上游错误是排障刚需）——记录在案不建议修改，新路由勿引入 stack/路径即可</td><td><span class="badge badge-info">Info</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证一致</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> PATCH/PUT 字段级安全：characters/memories/conversations/providers 全部 ?? existing 回落或动态字段拼接，无清空面</div>
+        <div class="check-item"><span class="check">✓</span> settings/maintenance/memory-tasks 的 GET 实为只读（初步疑点经复核排除）</div>
+        <div class="check-item"><span class="check">✓</span> API key 掩码链路正确：GET 脱敏 + PUT 掩码回写保留（settings 与 providers 双路由验证）</div>
+        <div class="check-item"><span class="check">✓</span> 分页主实现有边界校验先例（conversations 的 parseBoundedInteger/parseOffset）</div>
+        <div class="check-item"><span class="check">✓</span> 无 .stack 泄露（全库 grep 零匹配），Zod 错误经 formatZodFieldErrors 收敛（注释明确防路径泄漏）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="dependency-weight">📦 Dependency Weight 依赖重量</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High（该维度覆盖完整）</p>
+      <p><strong>已检查证据：</strong>13 个生产依赖逐个使用点核对 + unpacked 体积实测（npm ls + du）；undici 必要性经 ssrf-guard 源码确认（buildConnector API 内置 fetch 不暴露）；devDependencies 与 overrides 评估。</p>
+      <p><strong>排除项/局限：</strong>无。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">发现 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 个</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>overrides.next.postcss = 8.5.15 的 pin 动机未在仓库内留说明（可能挡住未来 postcss 安全补丁，建议验证移除或补注释）；node_modules 有 extraneous 残留（@emnapi/* 等，npm prune 可清）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证精干</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 13 个生产依赖全部在用且各司其职，无重复功能依赖</div>
+        <div class="check-item"><span class="check">✓</span> js-tiktoken（21.9MB 最大依赖）服务端 only，lite + 显式 ranks 加载避免全 registry；前端用独立字符估算不进 bundle</div>
+        <div class="check-item"><span class="check">✓</span> undici 非冗余：ssrf-guard 的 socket 层防护必需其 buildConnector API</div>
+        <div class="check-item"><span class="check">✓</span> react-markdown 75KB + remark-gfm 32KB + react-virtual 40KB 均轻量且真实生效</div>
+        <div class="check-item"><span class="check">✓</span> devDependencies 合理（testing-library + jsdom 服务组件测试，@types 齐全）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="code-consistency">🧬 Code Consistency 代码一致性</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>错误响应格式全库对比；readJsonObject 采用率；84 个 fetch 调用点分类；src/lib/http.ts 共享 helper 与绕过点核对；持久化/JSON 命名边界抽查。</p>
+      <p><strong>排除项/局限：</strong>import 语句组织顺序主动放弃（纯风格不构成发现）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">维度登记 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 项（均为 Low）</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:110px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>少数 memory 调用点绕过现有 HTTP helper 并依赖 ok 字段（详见 #29）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>readJsonObject 统一封装仅 8/31 路由采用，另 23 处手写 request.json + try/catch，报错文案与状态码轻微漂移（不必回改存量，新路由强制走封装并写入贡献文档即可）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+          <tr><td>MessageMetadata 内 camelCase 与 snake_case 混用（isSummary/summarizedIds vs memory_extracted）——约定内的历史例外，已持久化不值得迁移，注释标注遗留命名即可（types/index.ts:66-76）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Resolved</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 已验证一致</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 整体命名约定清晰：持久化列 snake_case 与 DB 1:1、JSON metadata camelCase（仅一处历史例外）</div>
+        <div class="check-item"><span class="check">✓</span> 路径别名 @/* 统一使用，无相对路径穿透 src/</div>
+        <div class="check-item"><span class="check">✓</span> 测试文件 .cjs 约定、2 空格缩进、LF 全库一致（.editorconfig 强制）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="comment-coverage">💬 Comment Coverage 注释覆盖</h3>
+  <div class="card">
+    <div class="card-body">
+      <p><strong>Coverage：</strong>High</p>
+      <p><strong>已检查证据：</strong>三处核心算法（sse-parser 多字节不变量 / auth-token 签名方案 / memory-retrieval 二分装箱）注释与实现一致性全文验证；TODO/FIXME 全库 grep（零命中）；lib 层导出函数 JSDoc 抽查（route-auth/request-json/memory-normalization 均有）。</p>
+      <p><strong>排除项/局限：</strong>前端大文件过时注释系统性排查未完成（抽查质量高）。</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 无发现——注释文化是本项目亮点</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> sse-parser 五条关键不变量文档化且与实现一致（多字节边界、末段保留等）</div>
+        <div class="check-item"><span class="check">✓</span> auth-token 签名方案 + 撤销边界语义注释精确（含 Date.now()+1 的 off-by-one 说明）</div>
+        <div class="check-item"><span class="check">✓</span> memory-retrieval 二分装箱注释解释了"为何选前缀而非贪心装箱"的算法依据</div>
+        <div class="check-item"><span class="check">✓</span> proxy.ts 的 Next.js 16 约定防事故注释是"过时注释"的反面典范——主动防止未来错误修改</div>
+        <div class="check-item"><span class="check">✓</span> 大量"审查时不要把 X 当风险"类防误报注释（settings 回退策略、chat-engine $&amp; 防护）——注释在为维护者与审计者双向服务</div>
+        <div class="check-item"><span class="cross">✗</span> 唯一失真点：CLAUDE.md 记忆预算钳制描述过期（归入发现 #9 修正，不重复计数）</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="principles">📋 设计原则符合度总表</h3>
+  <div class="card">
+    <div class="card-header">违规汇总</div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>原则</th><th>违规数</th><th style="width:100px">最高严重度</th><th>区域</th></tr></thead>
+          <tbody>
+            <tr><td>4.1 DRY（同一知识单一表示）</td><td>4 组</td><td><span class="badge badge-low">Low</span></td><td>记忆行规范化 ×4 份（#26）、LLM JSON 提取 ×5 处（#27）、注入契约字面量 ×3 组（#28）、测试 loader 样板 ×60 文件</td></tr>
+            <tr><td>4.4 Fail-fast（尽早清晰失败）</td><td>1</td><td><span class="badge badge-medium">Medium</span></td><td>导入 status/role 穿透写入层，读取/检索层各自兜底且行为不一致（#4）</td></tr>
+            <tr><td>1.3 函数长度（&gt;100 行）</td><td>2</td><td><span class="badge badge-low">Low</span></td><td>runChat 约 272 行、assemblePrompt 约 208 行（#30，已有直接行为测试缓解）</td></tr>
+            <tr><td>5.4 共享可变状态无同步</td><td>2</td><td><span class="badge badge-medium">Medium</span></td><td>生图 metadata 并发覆盖（#12）、drain active 标志 stale 回调竞态（stability Low）</td></tr>
+            <tr><td>8.1 测试行为而非实现</td><td>5+ 文件</td><td><span class="badge badge-medium">Medium</span></td><td>前端 grep 型测试族断言私有变量名与源码字符串（#19）</td></tr>
+            <tr><td>1.2 文件规模（&gt;500 行）</td><td>4</td><td><span class="badge badge-low">Low</span></td><td>settings 页 1189 / ChatView 1071 / MessageBubble 923 / characters 页 709 行（趋势已改善，非增量恶化）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">✅ 良好遵守的原则</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 7.1 依赖规则 — lib 对上层零反向依赖，memory 子系统无环，server/client 边界干净</div>
+        <div class="check-item"><span class="check">✓</span> 6.1 不吞错误 — 109 个 catch 抽样均带意图注释与可观测痕迹，回退链全程可诊断</div>
+        <div class="check-item"><span class="check">✓</span> 4.3 KISS — 无为一次性代码建的抽象层，13 个依赖各司其职</div>
+        <div class="check-item"><span class="check">✓</span> 2.4 依赖倒置/注入 — memory-archive 纯参数注入、检索管线 deps 可替换</div>
+        <div class="check-item"><span class="check">✓</span> 3.1/3.2 最小惊讶与 CQS — get* 函数抽查全部命名诚实（getDb 惰性副作用有文档）</div>
+        <div class="check-item"><span class="check">✓</span> 9.1 配置外置 — 无硬编码部署值，env 文档与实际读取一致</div>
+        <div class="check-item"><span class="check">✓</span> 5.3 无隐藏副作用 — 防御性注释文化（$&amp; 替换防护、防改名事故注释）</div>
+        <div class="check-item"><span class="check">✓</span> 10.4 外呼超时 — 交互式与后台关键外呼均有 deadline/AbortSignal；#3 三处缺口已关闭并有 499/504 行为测试</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title" id="fix-order">✅ 整改关闭记录（原建议顺序）</h3>
+
+  <div class="card"><div class="card-body"><p>以下保留 r3 的原始排序与修复意图作为审计轨迹；列出的项目均已在本轮完成并通过对应行为测试、全量测试、regression 与生产 build。</p></div></div>
+
+  <div class="card">
+    <div class="card-header">
+      <span>⚡ 原立即处理项</span>
+      <span class="badge badge-confirmed">已完成</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>修复</th><th style="width:110px">工时</th><th>消除的风险</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>发现 #1：先补两种装箱模式的逐条等价测试，再仅优化已证明无语义作用的 ordinary 分支；默认 legacy 路径不得粗暴调序</td><td>0.5-2 天</td><td>在不改变任何注入记忆与顺序的前提下降低秒级同步 tokenize</td></tr>
+            <tr><td>2</td><td>npm audit fix（js-yaml + @babel/core 两个 dev 链漏洞）</td><td>5 分钟</td><td>清零已知 CVE</td></tr>
+            <tr><td>3</td><td>发现 #14：两处 datetime('now') 改 ISO</td><td>0.5 小时</td><td>消除对话列表排序错乱</td></tr>
+            <tr><td>4</td><td>发现 #4：导入边界区分缺失默认值与非法枚举；非法 status/role/memory_kind 返回定位明确的 400</td><td>0.5-1.5 小时</td><td>消除幽灵记忆并避免把非法归档状态静默复活为 active</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span>📅 原短期安排项</span>
+      <span class="badge badge-confirmed">已完成</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>修复</th><th style="width:110px">工时</th></tr></thead>
+          <tbody>
+            <tr><td>5</td><td>发现 #3：组合 request.signal 与服务器 deadline，保留客户端取消并将超时映射 504</td><td>1-2 小时</td></tr>
+            <tr><td>6</td><td>发现 #5：失败时保留旧 memories 并显示错误；禁止 Array.isArray 兜底静默清空</td><td>2-4 小时</td></tr>
+            <tr><td>7</td><td>发现 #6：保留 created_at,seq 语义并加复合索引；onDone 做等价 SQL 后缀过滤，禁止窗口/LIMIT</td><td>0.5-1 天</td></tr>
+            <tr><td>8</td><td>发现 #8：先建立 token_count 来源/算法版本/导入信任边界，再复用可信计数</td><td>0.5-1 天</td></tr>
+            <tr><td>9</td><td>发现 #21/#22：sse-parser 三条不变量用例 + chat SSE 错误路径用例</td><td>3-5 小时</td></tr>
+            <tr><td>10</td><td>发现 #12：生图 in-flight 守卫或服务端 generatedImages 按 id upsert</td><td>2-4 小时</td></tr>
+            <tr><td>11</td><td>发现 #16：构建元数据注入 health；#17 schema 版本门禁作为未来非加法迁移治理项另行规划</td><td>2-4 小时 + 规划</td></tr>
+            <tr><td>12</td><td>发现 #13：主页选择竞态共用代数计数器</td><td>1-2 小时</td></tr>
+            <tr><td>13</td><td>发现 #15a/#15b：畸形 multipart 改 400；不存在会话的未使用 POST 改 404（import 枚举校验归 #4）</td><td>1-2 小时</td></tr>
+            <tr><td>14</td><td>发现 #11：先确认 archive undo 索引语义，再决定仅 active 入队；action 必填按兼容性变更处理</td><td>0.25-0.5 天</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span>🗓 原规划处理项</span>
+      <span class="badge badge-confirmed">已完成</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>修复</th><th style="width:110px">工时</th></tr></thead>
+          <tbody>
+            <tr><td>15</td><td>发现 #18/#19：逐步以行为测试替换 8 个 tracked 源码契约检查，并迁移高风险前端不变量</td><td>2-3 天</td></tr>
+            <tr><td>16</td><td>发现 #26/#27/#28：四份规范化、JSON 解析与注入常量按触达渐进收敛</td><td>约 6 小时</td></tr>
+            <tr><td>17</td><td>发现 #10：FTS trigram 迁移 + created_at 索引（中文搜索）</td><td>1 天</td></tr>
+            <tr><td>18</td><td>发现 #20：export→import 真实串联测试 + 回滚行为测试</td><td>3-5 小时</td></tr>
+            <tr><td>19</td><td>发现 #23：maintenance/inline-image-prompt/summarize 主路径补测</td><td>1-1.5 天</td></tr>
+            <tr><td>20</td><td>发现 #31/#32：设置页 label 关联（先 API 区）+ 发送按钮 aria-label</td><td>2-3 小时</td></tr>
+            <tr><td>21</td><td>发现 #25 单独规划向量批处理优化；#24/#29/#30 与其余 Low 项按接触顺带修复</td><td>0.5 天 + 随迭代摊销</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <h3 class="section-title">✅ 快赢清单（9 项已完成）</h3>
+  <div class="win-grid">
+    <div class="win-card">
+      <div class="win-title">npm audit fix</div>
+      <div class="win-meta">5 分钟 · 清零 2 个 dev 链 CVE（js-yaml / @babel/core）</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">README.md:322 备份清单补 attachments</div>
+      <div class="win-meta">5 分钟 · 消除中文用户升级丢附件风险</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">Dockerfile 删 --frozen-lockfile</div>
+      <div class="win-meta">1 分钟 · 移除无效 flag 消歧义</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">updated_at 统一 ISO 格式</div>
+      <div class="win-meta">0.5 小时 · 修复对话列表排序错乱（发现 #14）</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">发送/停止按钮 aria-label</div>
+      <div class="win-meta">15 分钟 · 移动端 SR 核心操作可辨（发现 #32）</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">compose 日志轮转</div>
+      <div class="win-meta">10 分钟 · logging max-size/max-file 防磁盘蚕食</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">rebuild 加 status 过滤</div>
+      <div class="win-meta">2 行 SQL · 死记忆向量本就不参与检索，过滤零影响 + action 必填防误触（发现 #11）</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">limit 参数取整</div>
+      <div class="win-meta">0.5 小时 · 复用 parseBoundedInteger 消 500（backend-api Low）</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">CI concurrency 组</div>
+      <div class="win-meta">15 分钟 · 同 commit 不再双跑全套流水线</div>
+    </div>
+  </div>
+
+  <div style="text-align:center;padding:40px 0 20px;color:var(--text-secondary);font-size:12px">
+LumiMuse 全维度审计报告 · 2026-07-11 · r4 整改关闭版 · 基线 commit 0bcd321 · 完整验证快照 · 仅供项目维护者参考
+  </div>
+
+</div>
+
+<script>
+  const sections = document.querySelectorAll('[id]');
+  const navLinks = document.querySelectorAll('.sidebar-nav a');
+
+  const observer = new IntersectionObserver((entries) => {
+    let activeId = null;
+    entries.forEach(entry => {
+      if (entry.isIntersecting) activeId = entry.target.id;
+    });
+    if (activeId) {
+      navLinks.forEach(a => {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + activeId);
+      });
+    }
+  }, { rootMargin: '-10% 0px -60% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+
+  navLinks.forEach(a => {
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      const target = document.querySelector(this.getAttribute('href'));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+</script>
+
+</body>
+</html>

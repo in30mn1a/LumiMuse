@@ -30,6 +30,7 @@ interface Props {
   onRegenerateFromHere?: (id: string) => void;
   onSwitchVersion?: (id: string, versionIndex: number) => void;
   onGenerateImage?: (id: string, existingPrompt?: string, replaceImageId?: string) => void;
+  isGeneratingImage?: boolean;
   onDeleteImage?: (messageId: string, imgId: string, versionId?: string) => void;
   onEditImagePrompt?: (messageId: string, imgId: string, newPrompt: string) => void;
   onSetPrimaryImage?: (messageId: string, imgId: string, versionId: string) => void;
@@ -230,6 +231,7 @@ function MessageBubbleInner({
   onRegenerateFromHere,
   onSwitchVersion,
   onGenerateImage,
+  isGeneratingImage,
   onDeleteImage,
   onEditImagePrompt,
   onSetPrimaryImage,
@@ -406,7 +408,9 @@ function MessageBubbleInner({
               {!isUser && onGenerateImage && (
                 <button
                   onClick={() => onGenerateImage(message.id)}
-                  className={btnAssistant}
+                  disabled={isGeneratingImage}
+                  aria-busy={isGeneratingImage}
+                  className={`${btnAssistant} disabled:cursor-wait disabled:opacity-50`}
                   title={t('imageGen.button')}
                   aria-label={t('imageGen.button')}
                 >
@@ -564,6 +568,7 @@ function MessageBubbleInner({
                 initialIndex={getActiveImageIndex(img)}
                 messageId={message.id}
                 onRegenerate={onGenerateImage}
+                isGenerating={isGeneratingImage}
                 onDelete={onDeleteImage}
                 onEditPrompt={onEditImagePrompt}
                 onSetPrimary={(versionId) => onSetPrimaryImage?.(message.id, img.id, versionId)}
@@ -749,12 +754,13 @@ function ImageLightbox({
 }
 
 /** 单张生成图片卡片 */
-function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, onDelete, onEditPrompt, onSetPrimary }: {
+function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, isGenerating, onDelete, onEditPrompt, onSetPrimary }: {
   img: GeneratedImage;
   allImages: Array<GeneratedImageVersion>;
   initialIndex: number;
   messageId: string;
   onRegenerate?: (id: string, prompt?: string, replaceImageId?: string) => void;
+  isGenerating?: boolean;
   onDelete?: (messageId: string, imgId: string, versionId?: string) => void;
   onEditPrompt?: (messageId: string, imgId: string, newPrompt: string) => void;
   onSetPrimary?: (versionId: string) => void;
@@ -783,7 +789,7 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
         <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
           <button onClick={() => setEditingPrompt(false)} className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-black/5 dark:hover:bg-white/10">{t('message.promptEditCancel')}</button>
           <button onClick={handleSavePrompt} className="rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20">{t('message.promptEditSave')}</button>
-          <button onClick={() => { handleSavePrompt(); onRegenerate?.(messageId, promptValue, img.id); }} className="rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20">{t('message.promptEditSaveRegen')}</button>
+          <button disabled={isGenerating} aria-busy={isGenerating} onClick={() => { handleSavePrompt(); onRegenerate?.(messageId, promptValue, img.id); }} className="rounded-lg bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent-dark hover:bg-accent/20 disabled:cursor-wait disabled:opacity-50">{t('message.promptEditSaveRegen')}</button>
         </div>
       </div>
     );
@@ -824,7 +830,9 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
             {isFailed && (
               <button
                 onClick={handleRetry}
-                className="rounded-lg bg-accent/10 p-1.5 text-accent-dark transition-colors hover:bg-accent/20"
+                disabled={isGenerating}
+                aria-busy={isGenerating}
+                className="rounded-lg bg-accent/10 p-1.5 text-accent-dark transition-colors hover:bg-accent/20 disabled:cursor-wait disabled:opacity-50"
                 title={t('message.imageRetryTitle')}
                 aria-label={t('message.imageRetryTitle')}
               >
@@ -856,7 +864,9 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
             <span className="min-w-0 flex-1 truncate">{img.error || t('message.imageRegenFailed')}</span>
             <button
               onClick={handleRetry}
-              className="shrink-0 font-medium text-red-500 transition-colors hover:text-red-700"
+              disabled={isGenerating}
+              aria-busy={isGenerating}
+              className="shrink-0 font-medium text-red-500 transition-colors hover:text-red-700 disabled:cursor-wait disabled:opacity-50"
             >
               {t('message.imageRetry')}
             </button>
@@ -892,7 +902,9 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, o
           </button>
           <button
             onClick={() => { onRegenerate?.(messageId, img.prompt, img.id); setShowImgActions(false); }}
-            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            disabled={isGenerating}
+            aria-busy={isGenerating}
+            className="rounded-lg bg-black/50 p-1.5 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:cursor-wait disabled:opacity-50"
             title={t('message.regenerateTitle')}
           >
             <RefreshIcon className="h-3.5 w-3.5" />

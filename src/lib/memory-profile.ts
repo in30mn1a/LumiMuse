@@ -5,6 +5,7 @@ import { ensureMemoryProfileTables, getDb } from '@/lib/db';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
+import { extractBalancedJsonAt } from '@/lib/balanced-json';
 
 export interface CharacterMemoryProfile {
   character_id: string;
@@ -278,40 +279,6 @@ function hasProfileContent(profile: CharacterMemoryProfile): boolean {
   });
 }
 
-function findBalancedJsonSnippet(text: string, startIdx: number): string | null {
-  const first = text[startIdx];
-  if (first !== '{') return null;
-
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-
-  for (let i = startIdx; i < text.length; i += 1) {
-    const ch = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escape = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-
-    if (ch === '{') depth += 1;
-    if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) return text.slice(startIdx, i + 1);
-    }
-  }
-
-  return null;
-}
-
 export function parseMemoryProfilePatchResponse(response: string): MemoryProfilePatch {
   let text = response.trim();
   if (text.startsWith('```')) text = text.split('\n').slice(1).join('\n');
@@ -339,7 +306,7 @@ export function parseMemoryProfilePatchResponse(response: string): MemoryProfile
     if (!(error instanceof SyntaxError)) throw error;
     const objectIdx = text.indexOf('{');
     if (objectIdx === -1) throw parseError('response did not contain a JSON object', error);
-    const snippet = findBalancedJsonSnippet(text, objectIdx);
+    const snippet = extractBalancedJsonAt(text, objectIdx);
     if (!snippet) throw parseError('response did not contain a balanced JSON object', error);
     try {
       return normalizeParsedObject(JSON.parse(snippet));

@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type MutableRefObject } from 'react';
-import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { HttpResponseError, expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
 import type { ToastType } from '@/components/ui/Toast';
 
 export interface MemoryProfileResponse {
@@ -45,6 +45,10 @@ interface UseMemoryProfilePanelOptions {
   loadMemoryDiagnostics: () => Promise<void> | void;
   t: (key: string) => string;
   showToast: (message: string, type?: ToastType) => void;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function useMemoryProfilePanel({
@@ -113,28 +117,31 @@ export function useMemoryProfilePanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const result = await response.json().catch(() => null) as (MemoryProfileActionResponse & { memory_count?: number }) | null;
+      const data = await parseJsonResponse<unknown>(response);
+      if (!isRecord(data) || data.ok !== true) {
+        throw new HttpResponseError('Invalid memory profile action response', response.status, data);
+      }
+      const result = data as unknown as MemoryProfileActionResponse;
       if (characterId) await loadMemoryProfile(characterId);
       await loadMemoryDiagnostics();
-      if (!response.ok || !result || result.ok === false || result.error === 'no_active_memories') {
-        if (result?.error !== 'no_active_memories') {
-          const detail = typeof result?.detail === 'string' && result.detail ? result.detail
-            : typeof result?.error === 'string' && result.error ? result.error
-              : `HTTP ${response.status}`;
-          showToast(`${t('settings.memoryProfileActionFailed')}: ${detail}`, 'error');
-          return;
-        }
-        showToast(t('settings.memoryProfileInitFromMemoriesNoMemories'), 'error');
-      } else {
-        setEditingProfile(false);
-        setEditingProfileDraft({});
-        if (result.status === 'no_changes') {
-          showToast(t('settings.memoryProfileInitFromMemoriesNoChanges'), 'info');
-          return;
-        }
-        showToast(t('settings.memoryProfileInitFromMemoriesDone').replace('{count}', String(result.memory_count ?? 0)), 'success');
+      setEditingProfile(false);
+      setEditingProfileDraft({});
+      if (result.status === 'no_changes') {
+        showToast(t('settings.memoryProfileInitFromMemoriesNoChanges'), 'info');
+        return;
       }
+      showToast(t('settings.memoryProfileInitFromMemoriesDone').replace('{count}', String(result.memory_count ?? 0)), 'success');
     } catch (err) {
+      if (
+        err instanceof HttpResponseError
+        && isRecord(err.data)
+        && err.data.error === 'no_active_memories'
+      ) {
+        if (characterId) await loadMemoryProfile(characterId);
+        await loadMemoryDiagnostics();
+        showToast(t('settings.memoryProfileInitFromMemoriesNoMemories'), 'error');
+        return;
+      }
       showToast(`${t('settings.memoryProfileActionFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
       setMemoryProfileActionLoading(false);

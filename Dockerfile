@@ -1,5 +1,5 @@
 # ── 阶段一：安装依赖 ──────────────────────────────────────────
-FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS deps
+FROM node:26-slim@sha256:ffc78385a788964bb3cbab5e434ff79a10bdc25b8ae6db03fe5fe6cb14053c09 AS deps
 
 # better-sqlite3 需要编译原生模块，安装必要的构建工具
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +12,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # ── 阶段二：构建 ──────────────────────────────────────────────
-FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
+FROM node:26-slim@sha256:ffc78385a788964bb3cbab5e434ff79a10bdc25b8ae6db03fe5fe6cb14053c09 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ \
@@ -31,7 +31,7 @@ RUN npm run build
 RUN mkdir -p /app/public
 
 # ── 阶段三：运行时镜像（最小化） ─────────────────────────────
-FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS runner
+FROM node:26-slim@sha256:ffc78385a788964bb3cbab5e434ff79a10bdc25b8ae6db03fe5fe6cb14053c09 AS runner
 
 WORKDIR /app
 

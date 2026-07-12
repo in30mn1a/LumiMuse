@@ -59,7 +59,6 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.loadingOlder': '正在加载更早消息...',
     'chat.loadOlder': '↑ 加载更早消息',
 
-    'input.placeholder': '说点什么，让对方接住你的情绪...',
     'input.send': '发送',
     'input.stop': '停止',
     'input.modelSelect': '选择模型',
@@ -719,7 +718,6 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.attachTextWarn': '{name} 文本文件超过 200KB，可能导致 token 过多',
     'input.attachUnsupported': '{name} 不支持的格式（支持 JPG、PNG、TXT、MD、JSON 等文本文件）',
     'input.attachUploadFail': '{name} 上传失败',
-    'input.remoteMarkdownImagePrivacy': '隐私提示：聊天消息中的远程 Markdown 图片会让浏览器向第三方地址发起请求，可能暴露 IP 等网络信息。',
 
     // 全局搜索
     'search.dialogLabel': '搜索',
@@ -808,7 +806,6 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.loadingOlder': 'Loading earlier messages...',
     'chat.loadOlder': '↑ Load earlier messages',
 
-    'input.placeholder': 'Say something and let the other side hold the feeling...',
     'input.send': 'Send',
     'input.stop': 'Stop',
     'input.modelSelect': 'Select Model',
@@ -1468,7 +1465,6 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.attachTextWarn': '{name} text file exceeds 200KB and may use too many tokens',
     'input.attachUnsupported': '{name} unsupported format (supported: JPG, PNG, TXT, MD, JSON, etc.)',
     'input.attachUploadFail': '{name} upload failed',
-    'input.remoteMarkdownImagePrivacy': 'Privacy notice: remote Markdown images in chat messages make browser requests to third-party addresses and may expose network information such as your IP address.',
 
     // Global search
     'search.dialogLabel': 'Search',

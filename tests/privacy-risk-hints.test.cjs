@@ -21,14 +21,15 @@ test('character-card import warns about trusted sources without adding an import
   assert.doesNotMatch(importDialog, /useState[^\n]*(?:trust|risk)/i);
 });
 
-test('chat discloses remote Markdown image requests without blocking or proxying image URLs', () => {
+test('chat omits the input placeholder and remote Markdown image privacy notice', () => {
   const chatInput = read('src/components/chat/ChatInput.tsx');
   const messageBubble = read('src/components/chat/MessageBubble.tsx');
   const i18n = read('src/lib/i18n.ts');
 
-  assert.match(chatInput, /role="note"[^]*t\('input\.remoteMarkdownImagePrivacy'\)/);
-  assert.match(i18n, /'input\.remoteMarkdownImagePrivacy': '隐私提示：聊天消息中的远程 Markdown 图片会让浏览器向第三方地址发起请求，可能暴露 IP 等网络信息。'/);
-  assert.match(i18n, /'input\.remoteMarkdownImagePrivacy': 'Privacy notice: remote Markdown images in chat messages make browser requests to third-party addresses and may expose network information such as your IP address\.'/);
+  assert.doesNotMatch(chatInput, /placeholder=\{t\('input\.placeholder'\)\}/);
+  assert.doesNotMatch(chatInput, /t\('input\.remoteMarkdownImagePrivacy'\)/);
+  assert.doesNotMatch(i18n, /'input\.placeholder':/);
+  assert.doesNotMatch(i18n, /'input\.remoteMarkdownImagePrivacy':/);
   assert.match(messageBubble, /<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\} components=\{MD_COMPONENTS_(?:USER|ASSISTANT)\}>/);
   assert.doesNotMatch(messageBubble, /\bimg\s*:\s*\(/);
 });

@@ -348,7 +348,6 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
               value={text}
               onChange={e => setText(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={t('input.placeholder')}
               rows={1}
               className="textarea-rich min-h-[3.1rem] max-h-44 resize-none border-none bg-transparent px-1 py-1 shadow-none focus:ring-0"
               disabled={disabled}
@@ -493,9 +492,6 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             )}
           </div>
         </div>
-        <p className="mt-1 px-1 text-[10px] leading-relaxed text-text-muted" role="note">
-          {t('input.remoteMarkdownImagePrivacy')}
-        </p>
       </div>
     </div>
   );

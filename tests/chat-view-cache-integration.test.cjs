@@ -84,8 +84,10 @@ test('ChatView keeps stream chunks scoped to the active conversation and refresh
   assert.ok(sendBlock.includes('void pollMemoryTask(myConvId);'), 'send stream should still poll memory extraction tasks');
   assert.ok(callStreamBlock.includes('await refreshMessagesForConversation(streamConversationId);'), 'regeneration stream should refresh its owning conversation when finished');
   assert.ok(sendBlock.includes('await refreshMessagesForConversation(myConvId);'), 'send stream should refresh the generated conversation when finished');
-  assert.ok(callStreamBlock.includes('void refreshConversationState(undefined);'), 'regeneration stream should refresh conversations without changing active conversation');
-  assert.ok(sendBlock.includes('void refreshConversationState(undefined);'), 'send stream should refresh conversations without changing active conversation');
+  assert.ok(callStreamBlock.includes('touchConversation(streamConversationId)'), 'regeneration stream should only touch the current conversation summary');
+  assert.ok(sendBlock.includes('touchConversation(myConvId)'), 'send stream should only touch the current conversation summary');
+  assert.ok(!callStreamBlock.includes('refreshConversationState'), 'regeneration stream should not full-refresh conversations/memories');
+  assert.ok(!sendBlock.includes('refreshConversationState'), 'send stream should not full-refresh conversations/memories');
 });
 
 test('architecture contract: useChatStreaming only clears visible streaming state for the finished display owner', () => {

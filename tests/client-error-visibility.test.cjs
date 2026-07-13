@@ -153,3 +153,50 @@ test('character and memories pages validate initial loads and surface failures',
   assert.match(memoriesLoad, /showToast\(`\$\{t\('common\.loadFailed'\)\}: \$\{getErrorMessage\(error\)\}`, 'error'\)/);
   assert.doesNotMatch(memoriesLoad, /\.then\(r => r\.json\(\)\)/);
 });
+
+test('global message search surfaces non-abort failures instead of empty results', () => {
+  const hook = readProjectFile('src/hooks/use-message-search.ts');
+  const searchUi = readProjectFile('src/components/search/GlobalSearch.tsx');
+
+  assert.match(hook, /import \{ getErrorMessage, parseJsonResponse \} from '@\/lib\/http'/);
+  assert.match(hook, /const \[error, setError\] = useState<string \| null>\(null\);/);
+  assert.match(hook, /const data = await parseJsonResponse<unknown>\(response\);/);
+  assert.match(hook, /parseSearchPayload\(data\)/);
+  assert.match(hook, /if \(isAbortError\(err\)\) return;/);
+  assert.match(hook, /setError\(getErrorMessage\(err\)\);/);
+  assert.match(hook, /return \{ results, loading, loadingMore, hasMore, error, loadMore, clearSearch \};/);
+  // loadMore 重试前清旧错误，避免 loadingMore 期间错误条残留
+  assert.match(hook, /setLoadingMore\(true\);\s*setError\(null\);/);
+  assert.match(
+    hook,
+    /error instanceof DOMException \|\| error instanceof Error/,
+    'AbortError should also match plain Error instances',
+  );
+
+  assert.match(searchUi, /error,/);
+  assert.match(searchUi, /role="alert"/);
+  assert.match(searchUi, /\$\{t\('common\.loadFailed'\)\}: \$\{error\}/);
+  assert.match(searchUi, /!loading && !error && query && results\.length === 0/);
+});
+
+test('theme and language bootstrap retry once and log permanent settings failures', () => {
+  const i18n = readProjectFile('src/lib/i18n-context.tsx');
+  const theme = readProjectFile('src/lib/theme-provider.tsx');
+  const events = readProjectFile('src/lib/settings-bootstrap-events.ts');
+  const toastListener = readProjectFile('src/components/ui/SettingsBootstrapToast.tsx');
+  const layout = readProjectFile('src/app/layout.tsx');
+
+  assert.match(i18n, /SETTINGS_BOOTSTRAP_MAX_ATTEMPTS = 2/);
+  assert.match(i18n, /console\.warn\('\[i18n\] failed to load language from \/api\/settings; using default'/);
+  assert.match(i18n, /notifySettingsBootstrapFailed\('i18n'\)/);
+  assert.doesNotMatch(i18n, /\.catch\(\(\) => \{\}\)/);
+
+  assert.match(theme, /SETTINGS_BOOTSTRAP_MAX_ATTEMPTS = 2/);
+  assert.match(theme, /console\.warn\("\[theme\] failed to load theme from \/api\/settings; using current defaults"/);
+  assert.match(theme, /notifySettingsBootstrapFailed\("theme"\)/);
+  assert.doesNotMatch(theme, /\.catch\(\(\) => \{\}\)/);
+
+  assert.match(events, /SETTINGS_BOOTSTRAP_FAILED_EVENT/);
+  assert.match(toastListener, /showToast\(t\('settings\.loadFailed'\), 'error'\)/);
+  assert.match(layout, /SettingsBootstrapToast/);
+});

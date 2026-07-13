@@ -20,7 +20,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function parseConversation(data: unknown): Conversation {
+/** 校验 POST /api/conversations 响应形状；ChatView 自动建对话路径也复用此函数。 */
+export function parseConversation(data: unknown): Conversation {
   if (!isRecord(data)
     || typeof data.id !== 'string'
     || typeof data.character_id !== 'string'

@@ -435,6 +435,7 @@ test('memory-queue stores retry count and error message when extraction fails', 
     '@/lib/db': { getDb: () => db },
     '@/lib/settings': { loadSettings: () => ({}) },
     '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
       extractMemories: async () => {
         throw new Error('LLM 返回了无法解析的记忆 JSON');
       },
@@ -473,6 +474,7 @@ test('memory-queue records started_at while a background extraction is processin
     '@/lib/db': { getDb: () => db },
     '@/lib/settings': { loadSettings: () => ({}) },
     '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
       extractMemories: async () => new Promise(resolve => {
         releaseExtraction = () => resolve({ insertCount: 0, mergeCount: 0 });
       }),
@@ -546,6 +548,7 @@ test('memory-queue clears in-flight conversation when marking a task processing 
     '@/lib/db': { getDb: () => dbWithFailingProcessingUpdate },
     '@/lib/settings': { loadSettings: () => ({}) },
     '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
       extractMemories: async () => ({ insertCount: 0, mergeCount: 0 }),
     },
     '@/lib/memory-profile': {
@@ -580,6 +583,7 @@ test('memory-queue marks successful no-value extraction as processed noop metada
     '@/lib/db': { getDb: () => db },
     '@/lib/settings': { loadSettings: () => ({}) },
     '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
       extractMemories: async () => ({ insertCount: 0, mergeCount: 0 }),
     },
     '@/lib/memory-profile': {
@@ -611,6 +615,7 @@ test('memory-queue keeps parse failures retryable instead of marking noop metada
     '@/lib/db': { getDb: () => db },
     '@/lib/settings': { loadSettings: () => ({}) },
     '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
       extractMemories: async (characterId, conversationText, settings, options) => {
         const now = new Date().toISOString();
         db.prepare(`
@@ -836,6 +841,9 @@ test('real db migration creates memory task diagnostic columns', () => {
   assert.ok(columns.includes('retry_count'));
   assert.ok(columns.includes('error_message'));
   assert.ok(columns.includes('started_at'));
+  assert.ok(columns.includes('result_committed'));
+  assert.ok(columns.includes('result_insert_count'));
+  assert.ok(columns.includes('result_merge_count'));
 });
 
 test('real db migration backfills memory task diagnostic columns on legacy tables', () => {
@@ -872,6 +880,9 @@ test('real db migration backfills memory task diagnostic columns on legacy table
   assert.ok(columns.includes('retry_count'));
   assert.ok(columns.includes('error_message'));
   assert.ok(columns.includes('started_at'));
+  assert.ok(columns.includes('result_committed'));
+  assert.ok(columns.includes('result_insert_count'));
+  assert.ok(columns.includes('result_merge_count'));
   assert.equal(row.started_at, '2026-06-05T00:01:00.000Z');
 });
 
@@ -901,6 +912,7 @@ test('memory-queue keeps legacy task rows usable when diagnostic columns are abs
     '@/lib/db': { getDb: () => db },
     '@/lib/settings': { loadSettings: () => ({}) },
     '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
       extractMemories: async () => {
         throw new Error('legacy failure');
       },

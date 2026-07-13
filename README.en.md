@@ -176,7 +176,7 @@ English · [中文](README.md)
 - A model service compatible with the OpenAI Chat Completions API format
 - For Docker deployment: Docker and Docker Compose
 
-CI verifies the project on both Node **20.18** and **Node 24**; locally, use Node 20.18.1 or newer.
+CI verifies the project on Ubuntu with Node **20.18** / **Node 24**, plus Windows with Node **20.18** (covering the `Start.bat` surface and the better-sqlite3 native module); locally, use Node 20.18.1 or newer.
 
 ### Run Locally
 

@@ -147,11 +147,13 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
   }, [initialEditing, selectMode, syncEditDraft]);
 
   const tags = Array.isArray(memory.tags) ? memory.tags : [];
+  // selectMode 用 label 包裹整行，让鼠标点击非交互区域与键盘操作 checkbox 等价；
+  // 嵌套 button 自身接收点击，不会触发 label 关联控件。
+  const Root = selectMode ? 'label' : 'div';
 
   return (
-    <div
+    <Root
       className={`group border-b border-border-light px-4 py-3 transition-colors last:border-b-0 ${selectMode ? 'cursor-pointer' : 'hover:bg-white/70 dark:hover:bg-white/10'} ${editing ? 'bg-white/70 dark:bg-white/10' : ''} ${selectMode && selected ? 'bg-[rgba(155,124,240,0.06)] dark:bg-[rgba(155,124,240,0.15)]' : ''}`}
-      onClick={selectMode ? () => onSelect?.(memory.id) : undefined}
     >
       <div className="flex gap-3">
         {selectMode && (
@@ -160,7 +162,6 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
               type="checkbox"
               checked={selected}
               aria-label={memory.content}
-              onClick={e => e.stopPropagation()}
               onChange={() => onSelect?.(memory.id)}
               className="h-5 w-5 rounded-md border-2 border-border-heavy accent-accent-dark"
             />
@@ -241,7 +242,8 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                     </p>
                     {canExpand && (
                       <button
-                        onClick={e => { e.stopPropagation(); setExpanded(prev => !prev); }}
+                        type="button"
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); setExpanded(prev => !prev); }}
                         className="mt-1 text-[11px] text-accent-dark/70 hover:text-accent-dark transition-colors"
                       >
                         {expanded ? t('memory.collapse') : t('memory.expand')}
@@ -303,7 +305,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       <button
                         key={tag}
                         type="button"
-                        onClick={e => { e.stopPropagation(); onTagClick?.(tag); }}
+                        onClick={e => { e.preventDefault(); e.stopPropagation(); onTagClick?.(tag); }}
                         title={t('memory.filterByTag').replace('{tag}', tag)}
                         className="chip px-2 py-1 text-[11px] transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
                       >
@@ -317,6 +319,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                 {editing && (
                   <div className="ml-auto flex shrink-0 items-center gap-1.5 lg:hidden">
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); void handleSave(); }}
                       disabled={isPending}
                       aria-busy={pendingAction === 'save'}
@@ -324,7 +327,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                     >
                       {pendingAction === 'save' ? t('memory.saving') : t('memory.save')}
                     </button>
-                    <button onClick={e => { e.stopPropagation(); handleCancel(); }} disabled={isPending} className="soft-button soft-button-secondary h-8 min-h-0 px-3 py-0 text-xs">
+                    <button type="button" onClick={e => { e.stopPropagation(); handleCancel(); }} disabled={isPending} className="soft-button soft-button-secondary h-8 min-h-0 px-3 py-0 text-xs">
                       {t('memory.cancel')}
                     </button>
                   </div>
@@ -332,6 +335,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                 {!editing && !selectMode && (
                   <div className="ml-auto flex shrink-0 items-center gap-1.5 lg:hidden">
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); void handlePinToggle(); }}
                       disabled={isPending}
                       aria-busy={pendingAction === 'pin'}
@@ -342,6 +346,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       <PinIcon className="h-3.5 w-3.5" />
                     </button>
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); startEditing(); }}
                       disabled={isPending}
                       aria-label={t('memory.edit')}
@@ -351,6 +356,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       <PencilIcon className="h-3.5 w-3.5" />
                     </button>
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); void handleDelete(); }}
                       disabled={isPending}
                       aria-busy={pendingAction === 'delete'}
@@ -370,6 +376,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                 {editing ? (
                   <>
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); void handleSave(); }}
                       disabled={isPending}
                       aria-busy={pendingAction === 'save'}
@@ -377,13 +384,14 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                     >
                       {pendingAction === 'save' ? t('memory.saving') : t('memory.save')}
                     </button>
-                    <button onClick={e => { e.stopPropagation(); handleCancel(); }} disabled={isPending} className="soft-button soft-button-secondary px-3 py-2 text-xs">
+                    <button type="button" onClick={e => { e.stopPropagation(); handleCancel(); }} disabled={isPending} className="soft-button soft-button-secondary px-3 py-2 text-xs">
                       {t('memory.cancel')}
                     </button>
                   </>
                 ) : (
                   <>
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); void handlePinToggle(); }}
                       disabled={isPending}
                       aria-busy={pendingAction === 'pin'}
@@ -392,11 +400,12 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       <PinIcon className="h-3.5 w-3.5" />
                       {pendingAction === 'pin' ? t('memory.updating') : (memory.pinned ? t('memory.unpin') : t('memory.pin'))}
                     </button>
-                    <button onClick={e => { e.stopPropagation(); startEditing(); }} disabled={isPending} className="soft-button soft-button-secondary px-3 py-2 text-xs">
+                    <button type="button" onClick={e => { e.stopPropagation(); startEditing(); }} disabled={isPending} className="soft-button soft-button-secondary px-3 py-2 text-xs">
                       <PencilIcon className="h-3.5 w-3.5" />
                       {t('memory.edit')}
                     </button>
                     <button
+                      type="button"
                       onClick={e => { e.stopPropagation(); void handleDelete(); }}
                       disabled={isPending}
                       aria-busy={pendingAction === 'delete'}
@@ -412,6 +421,6 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
           </div>
         </div>
       </div>
-    </div>
+    </Root>
   );
 }

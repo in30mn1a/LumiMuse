@@ -25,6 +25,32 @@ test('CI pins action references and the Ubuntu runner to immutable versions', ()
 
   assert.doesNotMatch(ci, /runs-on:\s*ubuntu-latest\b/);
   assert.match(ci, /runs-on:\s*ubuntu-(?:22\.04|24\.04)\b/);
+  assert.doesNotMatch(ci, /runs-on:\s*windows-latest\b/);
+  assert.match(ci, /runs-on:\s*windows-2022\b/);
+});
+
+test('CI includes a Windows gate that does not block docker-smoke', () => {
+  const ci = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const windowsJob = extractWorkflowJob(ci, 'verify-windows');
+  const dockerJob = extractWorkflowJob(ci, 'docker-smoke');
+  const ubuntuJob = extractWorkflowJob(ci, 'verify');
+
+  assert.notEqual(windowsJob, '', 'expected a separate verify-windows job');
+  assert.match(windowsJob, /runs-on:\s*windows-2022\b/);
+  assert.match(windowsJob, /node-version:\s*['"]?20\.18['"]?\b/);
+  assert.match(windowsJob, /npm ci\b/);
+  assert.match(windowsJob, /npm run lint\b/);
+  assert.match(windowsJob, /npm test\b/);
+  assert.match(windowsJob, /npm run build\b/);
+  assert.doesNotMatch(windowsJob, /needs:\s*/);
+
+  // Ubuntu verify keeps the full Node matrix; Windows is a single LTS sample.
+  assert.match(ubuntuJob, /node-version:\s*\[20\.18,\s*24\]/);
+
+  // docker-smoke stays gated only on the Ubuntu verify matrix.
+  assert.match(dockerJob, /needs:\s*verify\b/);
+  assert.doesNotMatch(dockerJob, /needs:\s*\[[^\]]*verify-windows/);
+  assert.doesNotMatch(dockerJob, /needs:\s*verify-windows\b/);
 });
 
 test('Docker stages pin node:20-slim to one multi-architecture manifest digest', () => {
@@ -35,11 +61,12 @@ test('Docker stages pin node:20-slim to one multi-architecture manifest digest',
   assert.equal(new Set(fromReferences.map((match) => match[1])).size, 1);
 });
 
-test('Dependabot maintains GitHub Actions and Docker pinned references', () => {
+test('Dependabot maintains GitHub Actions, Docker, and npm pinned references', () => {
   const dependabot = fs.readFileSync(path.join(root, '.github', 'dependabot.yml'), 'utf8');
 
   assert.match(dependabot, /package-ecosystem:\s*["']github-actions["']/);
   assert.match(dependabot, /package-ecosystem:\s*["']docker["']/);
+  assert.match(dependabot, /package-ecosystem:\s*["']npm["']/);
   assert.match(dependabot, /directory:\s*["']\/["']/);
   assert.match(dependabot, /interval:\s*["']weekly["']/);
 });

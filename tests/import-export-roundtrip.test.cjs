@@ -271,7 +271,7 @@ test('/api/import accepts a real SillyTavern v2 character card fixture', async (
   assert.match(imported.other_info, /【历史后置指令】\n不要跳出角色。/);
 });
 
-test('/api/import round-trips memory v2 fields, source message ids, ignore_memory, and sparse seq', async () => {
+test('/api/import round-trips memory v2 fields, source message ids, ignore_memory, and rebuilds continuous seq', async () => {
   const db = createImportDb();
   const route = loadImportRoute(db);
   const archivedMetadata = {
@@ -362,8 +362,9 @@ test('/api/import round-trips memory v2 fields, source message ids, ignore_memor
   const userMessage = db.prepare('SELECT * FROM messages WHERE content = ?').get('用户原消息');
   const assistantMessage = db.prepare('SELECT * FROM messages WHERE content = ?').get('助手原回复');
   const { estimateTokens } = require('../src/lib/token-counter.ts');
-  assert.equal(userMessage.seq, 10);
-  assert.equal(assistantMessage.seq, 42);
+  // 外部稀疏/非连续 seq 必须重建为会话内 1..N，保证游标分页不漏消息。
+  assert.equal(userMessage.seq, 1);
+  assert.equal(assistantMessage.seq, 2);
   assert.notEqual(userMessage.id, 'old-user-msg');
   assert.notEqual(assistantMessage.id, 'old-assistant-msg');
   assert.equal(userMessage.token_count, estimateTokens('用户原消息'));
@@ -780,6 +781,97 @@ test('/api/import round-trips memory profile, profile versions, and embeddings w
   assert.ok(Math.abs(restoredBuffer.readFloatLE(4) - 0.2) < 1e-6);
   assert.ok(Math.abs(restoredBuffer.readFloatLE(8) - 0.3) < 1e-6);
   assert.ok(Math.abs(restoredBuffer.readFloatLE(12) - 0.4) < 1e-6);
+});
+
+test('/api/import rebuilds duplicate/non-integer seq into continuous 1..N order', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  const payload = {
+    version: 2,
+    conversations: [
+      {
+        id: 'seq-conv',
+        character_id: 'old-char',
+        title: 'seq 重建',
+        messages: [
+          { id: 'm1', role: 'user', content: '第一条', created_at: '2026-06-05T09:01:00.000Z', seq: 7 },
+          { id: 'm2', role: 'assistant', content: '重复 seq', created_at: '2026-06-05T09:02:00.000Z', seq: 7 },
+          { id: 'm3', role: 'user', content: '非整数', created_at: '2026-06-05T09:03:00.000Z', seq: 3.5 },
+          { id: 'm4', role: 'assistant', content: '缺失 seq', created_at: '2026-06-05T09:04:00.000Z' },
+        ],
+      },
+    ],
+  };
+
+  const response = await route.POST(importRequest(
+    payload,
+    'target_character_id=target-char&include_character=0',
+  ));
+  assert.equal(response.status, 200);
+
+  const rows = db.prepare(
+    'SELECT content, seq FROM messages ORDER BY seq ASC',
+  ).all();
+  assert.deepEqual(rows.map(r => r.seq), [1, 2, 3, 4]);
+  // 稳定顺序：合法整数 seq 优先，其次 created_at / 原下标
+  assert.deepEqual(rows.map(r => r.content), ['第一条', '重复 seq', '非整数', '缺失 seq']);
+});
+
+test('/api/import rejects invalid profile snapshot_json before any writes', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  const payload = {
+    version: 2,
+    character: {
+      id: 'snap-char',
+      name: '快照非法角色',
+    },
+    memory_profile_versions: [
+      {
+        character_id: 'snap-char',
+        version_number: 1,
+        snapshot_json: '{not-json',
+        reason: 'broken',
+        created_at: '2026-06-01T00:00:00.000Z',
+      },
+    ],
+  };
+
+  const response = await route.POST(importRequest(payload));
+  const body = await response.json();
+  assert.equal(response.status, 400);
+  assert.equal(body.error, '导入数据包含非法画像快照');
+  assert.equal(body.collection, 'memory_profile_versions');
+  assert.equal(body.index, 0);
+  assert.equal(body.field, 'snapshot_json');
+  assertImportTablesEmpty(db);
+});
+
+test('/api/export rejects invalid type and character export without id', async () => {
+  const db = createImportDb();
+  db.prepare(`
+    INSERT INTO characters (id, name, created_at, updated_at)
+    VALUES ('char-export', '导出角色', '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z')
+  `).run();
+  const route = loadExportRoute(db);
+
+  const badType = await route.GET({
+    nextUrl: new URL('http://test.local/api/export?type=everything'),
+  });
+  assert.equal(badType.status, 400);
+  assert.match((await badType.json()).error, /Invalid type/);
+
+  const missingId = await route.GET({
+    nextUrl: new URL('http://test.local/api/export?type=character'),
+  });
+  assert.equal(missingId.status, 400);
+  assert.match((await missingId.json()).error, /Missing id/);
+
+  // 合法单角色导出仍应成功，不得误伤
+  const ok = await route.GET({
+    nextUrl: new URL('http://test.local/api/export?type=character&id=char-export'),
+  });
+  assert.equal(ok.status ?? 200, 200);
 });
 
 test('/api/import skips embeddings whose memory was not imported (orphan vector)', async () => {
@@ -1201,7 +1293,8 @@ test('/api/export response imports unchanged into a second database with stable 
     estimateTokens('请记住我们的约定'),
     estimateTokens('我会一直记得'),
   ]);
-  assert.deepEqual(importedMessages.map(message => message.seq), [7, 19]);
+  // 导入端会把稀疏/导出 seq 重建为会话内连续 1..N，保证游标分页稳定。
+  assert.deepEqual(importedMessages.map(message => message.seq), [1, 2]);
   assert.notEqual(importedMessages[0].id, sourceUserMessageId);
   assert.notEqual(importedMessages[1].id, sourceAssistantMessageId);
   assert.deepEqual(

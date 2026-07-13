@@ -125,6 +125,7 @@ function loadGlobalSearch() {
         loading: false,
         loadingMore: false,
         hasMore: false,
+        error: null,
         loadMore,
         clearSearch,
       }),
@@ -168,6 +169,9 @@ test('MemoryCard selection uses a real checkbox and invokes onSelect once per ac
 
   const view = render(React.createElement(Harness));
   const checkbox = within(view.container).getByRole('checkbox');
+  const rowLabel = checkbox.closest('label');
+  assert.ok(rowLabel, 'select mode should wrap the row in a label for full-row activation');
+
   await user.click(checkbox);
   assert.equal(selectionCalls, 1, 'mouse activation should toggle exactly once');
   assert.equal(checkbox.checked, true);
@@ -176,6 +180,12 @@ test('MemoryCard selection uses a real checkbox and invokes onSelect once per ac
   await user.keyboard(' ');
   assert.equal(selectionCalls, 2, 'Space activation should toggle exactly once');
   assert.equal(checkbox.checked, false);
+
+  // Clicking non-interactive content inside the label should also toggle once via native label semantics.
+  const content = within(view.container).getByText('Alice likes blue scarves');
+  await user.click(content);
+  assert.equal(selectionCalls, 3, 'label content click should toggle exactly once');
+  assert.equal(checkbox.checked, true);
 });
 
 test('GlobalSearch traps Tab focus inside the dialog', async () => {

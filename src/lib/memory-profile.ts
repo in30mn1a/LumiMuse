@@ -221,9 +221,19 @@ function normalizeRow(row: MemoryProfileRow): CharacterMemoryProfile {
 }
 
 function normalizeVersionRow(row: MemoryProfileVersionRow): MemoryProfileVersion {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.snapshot_json);
+  } catch {
+    // 导入端已校验；历史脏数据兜底为空画像，避免整接口 500。
+    parsed = {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    parsed = {};
+  }
   return {
     ...row,
-    snapshot: normalizeRow(JSON.parse(row.snapshot_json) as MemoryProfileRow),
+    snapshot: normalizeRow(parsed as MemoryProfileRow),
   };
 }
 

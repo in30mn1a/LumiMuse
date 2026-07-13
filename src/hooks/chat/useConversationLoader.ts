@@ -173,6 +173,27 @@ export function useConversationLoader({
     }
   }, [selectActiveConvId]);
 
+  /**
+   * 聊天/重生成成功后的轻量更新：只 bump 当前对话的 updated_at 并置顶，
+   * 不重拉全部对话列表与 memories（记忆刷新走 pollMemoryTask 完成路径）。
+   */
+  const touchConversation = useCallback((conversationId: string, updatedAt?: string) => {
+    const nextUpdatedAt = updatedAt ?? new Date().toISOString();
+    setConversations(prev => {
+      const index = prev.findIndex(conversation => conversation.id === conversationId);
+      if (index === -1) return prev;
+      const next = { ...prev[index], updated_at: nextUpdatedAt };
+      if (index === 0 && prev[0].updated_at === nextUpdatedAt) return prev;
+      if (index === 0) {
+        const copy = prev.slice();
+        copy[0] = next;
+        return copy;
+      }
+      const rest = prev.slice(0, index).concat(prev.slice(index + 1));
+      return [next, ...rest];
+    });
+  }, []);
+
   return {
     conversations,
     setConversations,
@@ -187,6 +208,7 @@ export function useConversationLoader({
     setLoadingThread,
     characterRef,
     refreshConversationState,
+    touchConversation,
   };
 }
 

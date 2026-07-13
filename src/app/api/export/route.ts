@@ -21,8 +21,24 @@ import { EXPORT_VERSION } from '@/lib/export-version';
 export async function GET(request: NextRequest) {
   const db = getDb();
   const { searchParams } = request.nextUrl;
-  const type = searchParams.get('type') || 'all';
+  // 缺省 type 视为 all；显式传了未知 type 时必须 Fail-Fast，禁止静默扩大导出范围。
+  const typeParam = searchParams.get('type');
+  const type = typeParam || 'all';
   const id = searchParams.get('id');
+
+  if (type !== 'all' && type !== 'character') {
+    return NextResponse.json(
+      { error: 'Invalid type. Expected "all" or "character".' },
+      { status: 400 },
+    );
+  }
+
+  if (type === 'character' && !id) {
+    return NextResponse.json(
+      { error: 'Missing id. Character export requires type=character&id=...' },
+      { status: 400 },
+    );
+  }
 
   // 解析 include 参数，默认全部包含
   const includeCharacters = searchParams.get('include_characters') !== '0';
@@ -35,28 +51,30 @@ export async function GET(request: NextRequest) {
   const includeEmbeddings = includeMemories && searchParams.get('include_embeddings') === '1';
 
   // ── 单角色导出 ──────────────────────────────────────────────
-  if (type === 'character' && id) {
-    const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(id);
+  if (type === 'character') {
+    // 上方已保证 id 非空；此处再窄化类型给 SQLite 绑定使用。
+    const characterId = id as string;
+    const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(characterId);
     if (!character) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const memories = includeMemories
-      ? (db.prepare('SELECT * FROM memories WHERE character_id = ?').all(id) as Record<string, unknown>[])
+      ? (db.prepare('SELECT * FROM memories WHERE character_id = ?').all(characterId) as Record<string, unknown>[])
           .map(m => serializeMemory(m))
       : [];
 
     const conversations = includeConversations
-      ? buildConversationsForCharacter(db, id)
+      ? buildConversationsForCharacter(db, characterId)
       : [];
 
     // 画像与画像版本历史：跟角色绑定，导出后可在导入端直接还原，
     // 避免重新跑 LLM 画像提取（昂贵且会丢失人工 patch 历史）。
-    const profile = includeProfiles ? loadProfileForCharacter(db, id) : null;
-    const profileVersions = includeProfiles ? loadProfileVersionsForCharacter(db, id) : [];
+    const profile = includeProfiles ? loadProfileForCharacter(db, characterId) : null;
+    const profileVersions = includeProfiles ? loadProfileVersionsForCharacter(db, characterId) : [];
 
     // 向量索引：跟记忆绑定，导出后避免重新跑 embedding（API 调用 + 时间成本）。
     // 只导出 ready 状态的向量，failed/pending 的让导入端按需重建。
     const embeddings = includeEmbeddings
-      ? loadEmbeddingsForCharacter(db, id)
+      ? loadEmbeddingsForCharacter(db, characterId)
       : [];
 
     const payload = {
@@ -74,7 +92,7 @@ export async function GET(request: NextRequest) {
     return new Response(JSON.stringify(payload), {
       headers: {
         'Content-Type': 'application/json',
-        'Content-Disposition': `attachment; filename="lumimuse-character-${id}.json"`,
+        'Content-Disposition': `attachment; filename="lumimuse-character-${characterId}.json"`,
       },
     });
   }

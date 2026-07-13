@@ -5,6 +5,7 @@ import { Character } from '@/types';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import GlobalSearch from '@/components/search/GlobalSearch';
+import Modal from '@/components/ui/Modal';
 import { parseJsonResponse } from '@/lib/http';
 
 interface HomeSelection {
@@ -104,20 +105,23 @@ export default function Home() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // Modal 的焦点陷阱/Escape 只看 open，不看 CSS 断点。
+  // 移动端打开侧栏后扩到 md+ 时必须关掉，否则会「看不见 dialog 却困住 Tab」。
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 768px)');
+    const closeIfDesktop = () => {
+      if (mq.matches) setSidebarOpen(false);
+    };
+    closeIfDesktop();
+    mq.addEventListener('change', closeIfDesktop);
+    return () => mq.removeEventListener('change', closeIfDesktop);
+  }, []);
+
   return (
     <div className="app-shell flex h-dvh">
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-30 bg-black/35 backdrop-blur-[2px] md:hidden animate-fadeIn"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      <div
-        className={`fixed z-40 h-full py-4 pl-4 transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] will-change-transform md:static md:translate-x-0 ${
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-        }`}
-      >
+      {/* 桌面 md+：static 侧栏。移动抽屉仅在 sidebarOpen 时挂载，避免双 Sidebar 常驻分叉。 */}
+      <div className="hidden h-full py-4 pl-4 md:block md:static">
         <Sidebar
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
@@ -125,6 +129,22 @@ export default function Home() {
           onSearchOpen={() => setSearchOpen(true)}
         />
       </div>
+
+      <Modal
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        ariaLabel="角色列表"
+        padded={false}
+        overlayClassName="fixed inset-0 z-30 bg-black/35 backdrop-blur-[2px] animate-fadeIn md:hidden"
+        dialogClassName="fixed z-40 h-full py-4 pl-4 outline-none md:hidden"
+      >
+        <Sidebar
+          selectedCharacterId={selectedCharacterId}
+          onCharacterSelect={handleCharacterSelect}
+          onConversationSelect={handleConversationSelect}
+          onSearchOpen={() => setSearchOpen(true)}
+        />
+      </Modal>
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden md:min-h-[calc(100vh-2rem)]">
         <ChatView

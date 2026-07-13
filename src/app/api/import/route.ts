@@ -115,6 +115,89 @@ function findImportEnumValidationError(
   return undefined;
 }
 
+interface ImportProfileSnapshotValidationError {
+  collection: string;
+  index: number;
+  field: 'snapshot_json';
+  value: unknown;
+  reason: string;
+}
+
+/**
+ * 画像版本快照必须是可解析的 JSON 对象。
+ * 非法值会在读取接口 JSON.parse / normalizeRow 时炸掉，必须在导入前 Fail-Fast。
+ */
+function parseProfileSnapshotJson(raw: unknown): { ok: true; normalized: string } | { ok: false; reason: string; value: unknown } {
+  if (raw === undefined || raw === null || raw === '') {
+    return { ok: true, normalized: '{}' };
+  }
+
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { ok: false, reason: 'snapshot_json is not valid JSON', value: raw };
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, reason: 'snapshot_json must be a JSON object', value: raw };
+  }
+
+  return { ok: true, normalized: JSON.stringify(parsed) };
+}
+
+function findImportProfileSnapshotValidationError(
+  versions: Record<string, unknown>[],
+): ImportProfileSnapshotValidationError | undefined {
+  for (let index = 0; index < versions.length; index++) {
+    const version = versions[index];
+    const result = parseProfileSnapshotJson(version.snapshot_json);
+    if (!result.ok) {
+      return {
+        collection: 'memory_profile_versions',
+        index,
+        field: 'snapshot_json',
+        value: result.value,
+        reason: result.reason,
+      };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 导入消息时按稳定顺序重建连续 1..N 的 seq。
+ * 外部备份中的 seq 可能重复、非整数或稀疏；游标分页依赖严格递增的 conversation 内 seq。
+ * 排序键：显式合法 seq → created_at → 原数组下标。
+ */
+function resolveImportMessageSeq(
+  messages: Record<string, unknown>[],
+): number[] {
+  const indexed = messages.map((msg, index) => {
+    const explicit = asNumber(msg.seq);
+    const hasValidSeq = explicit !== undefined && Number.isInteger(explicit) && explicit > 0;
+    return {
+      index,
+      sortSeq: hasValidSeq ? explicit : Number.POSITIVE_INFINITY,
+      createdAt: asString(msg.created_at) || '',
+    };
+  });
+
+  indexed.sort((a, b) => {
+    if (a.sortSeq !== b.sortSeq) return a.sortSeq - b.sortSeq;
+    if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+    return a.index - b.index;
+  });
+
+  const seqByOriginalIndex = new Array<number>(messages.length);
+  indexed.forEach((item, order) => {
+    seqByOriginalIndex[item.index] = order + 1;
+  });
+  return seqByOriginalIndex;
+}
+
 function asFlag(v: unknown): number {
   if (typeof v === 'boolean') return v ? 1 : 0;
   const n = asNumber(v);
@@ -338,6 +421,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const snapshotValidationError = findImportProfileSnapshotValidationError(profileVersionsToImport);
+  if (snapshotValidationError) {
+    return NextResponse.json(
+      { error: '导入数据包含非法画像快照', ...snapshotValidationError },
+      { status: 400 },
+    );
+  }
+
   if (
     target_character_id &&
     !characterDraft &&
@@ -554,8 +645,10 @@ function importPayload({
 
       // 导入该对话的消息
       const messages = asArray<Record<string, unknown>>(conv.messages);
-      let fallbackSeq = 1;
-      for (const msg of messages) {
+      // 始终按稳定顺序重建 1..N，避免外部重复/非整数/稀疏 seq 破坏游标分页。
+      const seqByIndex = resolveImportMessageSeq(messages);
+      for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+        const msg = messages[messageIndex];
         const newMsgId = crypto.randomUUID().slice(0, 12);
         const originalMsgId = asString(msg.id);
         if (originalMsgId) messageIdMap.set(originalMsgId, newMsgId);
@@ -576,7 +669,7 @@ function importPayload({
           tokenResult.tokenCount,
           asString(msg.created_at) || now,
           metaStr,
-          asNumber(msg.seq) ?? fallbackSeq++,
+          seqByIndex[messageIndex],
         );
         results.messagesImported++;
       }
@@ -660,10 +753,17 @@ function importPayload({
       const existing = findProfileVersion.get(newCharId, versionNumber);
       if (existing) continue;
 
+      // 事务前已校验 snapshot_json；这里规范化后再写入，避免字符串/对象混用。
+      const snapshot = parseProfileSnapshotJson(version.snapshot_json);
+      if (!snapshot.ok) {
+        // 理论上不会到达：POST 入口已 Fail-Fast；作为防御保留。
+        throw new Error(`Invalid profile snapshot at import time: ${snapshot.reason}`);
+      }
+
       insertProfileVersion.run(
         newCharId,
         versionNumber,
-        asString(version.snapshot_json) || '{}',
+        snapshot.normalized,
         asString(version.reason) || 'imported',
         asNumber(version.task_id) ?? null,
         asString(version.created_at) || now,

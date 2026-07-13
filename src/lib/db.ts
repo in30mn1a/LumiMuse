@@ -22,6 +22,8 @@ function backfillMemoryDefaults(
   needsImportanceBackfill: boolean,
   needsEmotionalWeightBackfill: boolean,
 ): void {
+  // 始终可重复：NULL/空值必补；列默认值(general/0.5/0.0)在对应开关打开时按 category 重推断。
+  // 对已人工改过、且不是列默认值的行不会覆盖。
   const rows = db.prepare(`
     SELECT id, category, memory_kind, importance, emotional_weight
     FROM memories
@@ -55,12 +57,26 @@ function backfillMemoryDefaults(
   const writeDefaults = db.transaction(() => {
     for (const row of rows) {
       const defaults = inferMemoryDefaults(row.category);
-      update.run(
-        (!row.memory_kind || needsMemoryKindBackfill) ? defaults.memory_kind : row.memory_kind,
-        row.importance === null || needsImportanceBackfill ? defaults.importance : row.importance,
-        row.emotional_weight === null || needsEmotionalWeightBackfill ? defaults.emotional_weight : row.emotional_weight,
-        row.id,
-      );
+      const nextKind = (!row.memory_kind || row.memory_kind === '' || (needsMemoryKindBackfill && row.memory_kind === 'general'))
+        ? defaults.memory_kind
+        : row.memory_kind;
+      const nextImportance = (row.importance === null || (needsImportanceBackfill && row.importance === 0.5))
+        ? defaults.importance
+        : row.importance;
+      const nextEmotional = (row.emotional_weight === null || (needsEmotionalWeightBackfill && row.emotional_weight === 0.0))
+        ? defaults.emotional_weight
+        : row.emotional_weight;
+
+      // 跳过无变化的行，避免把已是正确 category 默认值的记忆反复 UPDATE
+      if (
+        nextKind === row.memory_kind
+        && nextImportance === row.importance
+        && nextEmotional === row.emotional_weight
+      ) {
+        continue;
+      }
+
+      update.run(nextKind, nextImportance, nextEmotional, row.id);
     }
   });
 
@@ -268,39 +284,71 @@ function migrate(db: Database.Database): void {
 
   ensureMemoryProfileTables(db);
 
-  // 增量迁移：memories 表补记忆系统升级字段，旧库无需重建表
+  // 增量迁移：memories 表补记忆系统升级字段，旧库无需重建表。
+  // 加列与「回填 pending 标记」同事务提交：若随后回填崩溃，下次启动看到 value='0' 仍会重跑 category 推断，
+  // 而不会因「列已存在」永久跳过。legacy 库无标记时不重推默认值，避免覆盖用户有意写的 general/0.5/0.0。
+  const MEMORY_DEFAULTS_BACKFILL_KEY = 'migration_memory_defaults_backfill_v1';
   const memoryCols = db.prepare("PRAGMA table_info(memories)").all() as { name: string }[];
   const hasMemoryCol = (name: string) => memoryCols.some(c => c.name === name);
   const needsMemoryKindBackfill = !hasMemoryCol('memory_kind');
   const needsImportanceBackfill = !hasMemoryCol('importance');
   const needsEmotionalWeightBackfill = !hasMemoryCol('emotional_weight');
+  const justAddedDefaultColumns =
+    needsMemoryKindBackfill || needsImportanceBackfill || needsEmotionalWeightBackfill;
 
-  if (needsMemoryKindBackfill) {
-    db.exec(`ALTER TABLE memories ADD COLUMN memory_kind TEXT NOT NULL DEFAULT 'general'`);
-  }
-  if (needsImportanceBackfill) {
-    db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`);
-  }
-  if (needsEmotionalWeightBackfill) {
-    db.exec(`ALTER TABLE memories ADD COLUMN emotional_weight REAL NOT NULL DEFAULT 0.0`);
-  }
-  if (!hasMemoryCol('status')) {
-    db.exec(`ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`);
-  }
-  if (!hasMemoryCol('pinned')) {
-    db.exec(`ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
-  }
-  if (!hasMemoryCol('last_used_at')) {
-    db.exec(`ALTER TABLE memories ADD COLUMN last_used_at TEXT`);
-  }
-  if (!hasMemoryCol('usage_count')) {
-    db.exec(`ALTER TABLE memories ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0`);
-  }
-  if (!hasMemoryCol('metadata')) {
-    db.exec(`ALTER TABLE memories ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`);
-  }
+  db.transaction(() => {
+    if (needsMemoryKindBackfill) {
+      db.exec(`ALTER TABLE memories ADD COLUMN memory_kind TEXT NOT NULL DEFAULT 'general'`);
+    }
+    if (needsImportanceBackfill) {
+      db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`);
+    }
+    if (needsEmotionalWeightBackfill) {
+      db.exec(`ALTER TABLE memories ADD COLUMN emotional_weight REAL NOT NULL DEFAULT 0.0`);
+    }
+    if (!hasMemoryCol('status')) {
+      db.exec(`ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`);
+    }
+    if (!hasMemoryCol('pinned')) {
+      db.exec(`ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!hasMemoryCol('last_used_at')) {
+      db.exec(`ALTER TABLE memories ADD COLUMN last_used_at TEXT`);
+    }
+    if (!hasMemoryCol('usage_count')) {
+      db.exec(`ALTER TABLE memories ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!hasMemoryCol('metadata')) {
+      db.exec(`ALTER TABLE memories ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`);
+    }
+    if (justAddedDefaultColumns) {
+      db.prepare(`
+        INSERT INTO settings (key, value) VALUES (?, '0')
+        ON CONFLICT(key) DO UPDATE SET value = '0'
+      `).run(MEMORY_DEFAULTS_BACKFILL_KEY);
+    }
+  })();
 
-  backfillMemoryDefaults(db, needsMemoryKindBackfill, needsImportanceBackfill, needsEmotionalWeightBackfill);
+  const backfillMarker = db.prepare('SELECT value FROM settings WHERE key = ?')
+    .get(MEMORY_DEFAULTS_BACKFILL_KEY) as { value: string } | undefined;
+  const backfillPending = backfillMarker?.value === '0';
+  const shouldInferColumnDefaults = justAddedDefaultColumns || backfillPending;
+
+  // NULL/空值始终可补；列默认值仅在刚加列或 pending 时按 category 推断。
+  backfillMemoryDefaults(
+    db,
+    shouldInferColumnDefaults,
+    shouldInferColumnDefaults,
+    shouldInferColumnDefaults,
+  );
+
+  // 回填成功后标完成；legacy 无标记库也写入 '1'，避免后续误判。
+  if (shouldInferColumnDefaults || !backfillMarker) {
+    db.prepare(`
+      INSERT INTO settings (key, value) VALUES (?, '1')
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(MEMORY_DEFAULTS_BACKFILL_KEY);
+  }
 
   // 旁路表：为后续 embedding、角色级覆盖配置和无效候选隔离提供数据基础
   db.exec(MEMORY_EMBEDDING_TABLE_DDL);
@@ -459,6 +507,9 @@ function migrate(db: Database.Database): void {
       retry_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
       started_at TEXT,
+      result_committed INTEGER NOT NULL DEFAULT 0,
+      result_insert_count INTEGER NOT NULL DEFAULT 0,
+      result_merge_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -476,6 +527,15 @@ function migrate(db: Database.Database): void {
   }
   if (taskCols.length > 0 && !taskCols.some(c => c.name === 'error_message')) {
     db.exec(`ALTER TABLE memory_tasks ADD COLUMN error_message TEXT`);
+  }
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'result_committed')) {
+    db.exec(`ALTER TABLE memory_tasks ADD COLUMN result_committed INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'result_insert_count')) {
+    db.exec(`ALTER TABLE memory_tasks ADD COLUMN result_insert_count INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'result_merge_count')) {
+    db.exec(`ALTER TABLE memory_tasks ADD COLUMN result_merge_count INTEGER NOT NULL DEFAULT 0`);
   }
   const migrateMemoryTaskStartedAt = db.transaction(() => {
     const currentTaskCols = db.prepare("PRAGMA table_info(memory_tasks)").all() as { name: string }[];

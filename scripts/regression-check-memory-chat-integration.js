@@ -7,6 +7,9 @@ const source = fs.readFileSync(chatEnginePath, 'utf8');
 const memoryPromptContractPath = path.join(root, 'src', 'lib', 'memory-prompt-contract.ts');
 const memoryPromptContractSource = fs.readFileSync(memoryPromptContractPath, 'utf8');
 
+const memoryRetrievalPath = path.join(root, 'src', 'lib', 'memory-retrieval.ts');
+const memoryRetrievalSource = fs.readFileSync(memoryRetrievalPath, 'utf8');
+
 const checks = [
   {
     name: 'chat-engine imports retrieveWorkingMemoryPackage',
@@ -17,8 +20,12 @@ const checks = [
     pass: /await\s+retrieveWorkingMemoryPackage\s*\(/.test(source),
   },
   {
-    name: 'limit_inject=false no longer selects all memory content for injection',
-    pass: !/SELECT\s+content\s+FROM\s+memories\s+WHERE\s+character_id\s*=\s*\?/i.test(source),
+    // 结构门禁：注入走 retrieval 分层装箱，而不是 chat-engine 直接 SELECT 全量 content。
+    // 真实行为由 tests/memory-retrieval.test.cjs 覆盖；此处只防接线回退。
+    name: 'chat-engine injects via retrieveWorkingMemoryPackage (not raw full-table content select)',
+    pass: /retrieveWorkingMemoryPackage/.test(source)
+      && !/SELECT\s+content\s+FROM\s+memories\s+WHERE\s+character_id\s*=\s*\?/i.test(source)
+      && /export\s+async\s+function\s+retrieveWorkingMemoryPackage/.test(memoryRetrievalSource),
   },
   {
     name: 'memory context uses the planned section title',

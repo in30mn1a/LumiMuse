@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { getDb } from '@/lib/db';
+import { structuredLog } from '@/lib/structured-log';
 
 export interface ReadinessChecks {
   database: boolean;
@@ -18,6 +19,21 @@ const PERSISTENT_DIRECTORIES = [
   ['attachments', path.join(process.cwd(), 'public', 'attachments')],
 ] as const;
 
+/** 限频：同一检查名在窗口内只记一次失败日志，避免健康探针刷屏。 */
+const FAILURE_LOG_COOLDOWN_MS = 60_000;
+const lastFailureLogAt = new Map<string, number>();
+
+function logReadinessFailure(check: string, error: unknown): void {
+  const now = Date.now();
+  const last = lastFailureLogAt.get(check) ?? 0;
+  if (now - last < FAILURE_LOG_COOLDOWN_MS) return;
+  lastFailureLogAt.set(check, now);
+  structuredLog('error', 'readiness.check_failed', {
+    operation: check,
+    status: 'failed',
+  }, error);
+}
+
 export async function checkReadiness(): Promise<ReadinessChecks> {
   const checks: ReadinessChecks = {
     database: false,
@@ -30,16 +46,18 @@ export async function checkReadiness(): Promise<ReadinessChecks> {
   try {
     getDb().prepare('SELECT 1').get();
     checks.database = true;
-  } catch {
-    // 响应只暴露检查结果，避免泄露数据库路径或内部错误。
+  } catch (error) {
+    // 公开响应只暴露布尔结果；内部脱敏日志记录根因，便于容器诊断。
+    logReadinessFailure('database', error);
   }
 
   await Promise.all(PERSISTENT_DIRECTORIES.map(async ([name, directoryPath]) => {
     try {
       await access(directoryPath, constants.W_OK);
       checks[name] = true;
-    } catch {
-      // 目录路径和权限错误仅保留在进程内部，不进入公开健康响应。
+    } catch (error) {
+      // 目录路径不进入公开响应；仅限频记录脱敏错误。
+      logReadinessFailure(name, error);
     }
   }));
 

@@ -28,7 +28,8 @@ type UseChatMessageActionsOptions = {
   setStreamingUsage: (usage: { convId: string; usage: StreamingUsage } | null) => void;
   pollMemoryTask: (convId: string) => void | Promise<void>;
   refreshMessagesForConversation: (conversationId: string) => Promise<void>;
-  refreshConversationState: (preferredActiveId?: string | null) => Promise<void>;
+  /** 聊天/重生成成功后局部更新对话摘要，避免全量重拉对话与记忆 */
+  touchConversation: (conversationId: string) => void;
   updateMessagesForConversation: UpdateMessagesForConversation;
   markSkipNextScroll: () => void;
   showToast: (message: string, type?: ToastType) => void;
@@ -45,7 +46,7 @@ export function useChatMessageActions({
   setStreamingUsage,
   pollMemoryTask,
   refreshMessagesForConversation,
-  refreshConversationState,
+  touchConversation,
   updateMessagesForConversation,
   markSkipNextScroll,
   showToast,
@@ -154,7 +155,8 @@ export function useChatMessageActions({
 
       if (regenerateAssistantId) markSkipNextScroll();
       await refreshMessagesForConversation(streamConversationId);
-      void refreshConversationState(undefined);
+      // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
+      touchConversation(streamConversationId);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         await refreshMessagesForConversation(streamConversationId);
@@ -173,12 +175,12 @@ export function useChatMessageActions({
     finishStream,
     markSkipNextScroll,
     pollMemoryTask,
-    refreshConversationState,
     refreshMessagesForConversation,
     scheduleStreamingText,
     setStreamingUsage,
     showToast,
     t,
+    touchConversation,
   ]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {

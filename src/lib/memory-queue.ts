@@ -5,7 +5,7 @@
  * 不再因热重载或进程崩溃而丢失。
  */
 import { backgroundTaskStaleCutoffIso } from '@/lib/background-task-recovery';
-import { extractMemories } from '@/lib/memory-engine';
+import { extractMemories, getCommittedExtractionResult } from '@/lib/memory-engine';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
@@ -204,11 +204,20 @@ async function processQueue(): Promise<void> {
           continue;
         }
 
-        const { mergeCount, insertCount } = await extractMemories(task.character_id, convText, settings, {
-          messageIds,
-          taskId: task.id,
-          conversationId: task.conversation_id,
-        });
+        // 崩溃恢复：若记忆结果已 durable 提交，只补齐 metadata 与 task 状态，不再次调用 LLM。
+        const alreadyCommitted = getCommittedExtractionResult(task.id, db);
+        let mergeCount = alreadyCommitted?.mergeCount ?? 0;
+        let insertCount = alreadyCommitted?.insertCount ?? 0;
+
+        if (!alreadyCommitted) {
+          const extracted = await extractMemories(task.character_id, convText, settings, {
+            messageIds,
+            taskId: task.id,
+            conversationId: task.conversation_id,
+          });
+          mergeCount = extracted.mergeCount;
+          insertCount = extracted.insertCount;
+        }
 
         if (insertCount === 0 && mergeCount === 0 && hasRepairableExtractionCandidate(db, task.id)) {
           throw new Error('repairable memory extraction candidate created; task remains retryable');
@@ -223,6 +232,7 @@ async function processQueue(): Promise<void> {
 
           // 提取产生了新记忆 → 入队角色画像更新（用本轮对话文本作为信号）并异步触发处理。
           // 画像 patch 是较慢的后台 LLM 调用，trigger 为 fire-and-forget；失败不得影响提取主流程。
+          // 已提交恢复路径也允许再入队：画像队列自身有去重/幂等保护，丢一次补一次更安全。
           try {
             enqueueMemoryProfilePatchExtraction(task.character_id, convText, 'memory_extraction', db);
             triggerMemoryProfileQueue();

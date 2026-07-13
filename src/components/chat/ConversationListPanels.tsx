@@ -4,6 +4,7 @@ import type { Conversation } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatDateTime, formatShortDate } from '@/lib/chat-view-utils';
 import { ClockIcon } from '@/components/ui/icons';
+import Modal from '@/components/ui/Modal';
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -79,48 +80,48 @@ interface DrawerProps {
 /** 移动端底部抽屉：最近对话 */
 export function ConversationMobileDrawer({ open, conversations, activeConvId, onSelect, onClose }: DrawerProps) {
   const { t } = useTranslation();
-  if (!open) return null;
   return (
-    <>
-      <div
-        className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
-        onClick={onClose}
-      />
-      <div className="fixed bottom-0 left-0 right-0 z-50 animate-slideUp lg:hidden">
-        <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4">
-          <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-border-light" />
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold text-text-primary">{t('chat.quickResume')}</p>
-            <button
-              onClick={onClose}
-              className="rounded-full p-1.5 text-text-muted hover:bg-warm-100"
-              aria-label={t('chat.closeDrawer')}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          <div className="max-h-[55dvh] space-y-2 overflow-y-auto pb-1">
-            {conversations.map(c => (
-              <ConversationItem
-                key={c.id}
-                conversation={c}
-                active={activeConvId === c.id}
-                onClick={() => {
-                  onSelect(c.id);
-                  onClose();
-                }}
-              />
-            ))}
-            {conversations.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
-                {t('chat.noConversationBody')}
-              </div>
-            )}
-          </div>
+    <Modal
+      open={open}
+      onClose={onClose}
+      ariaLabel={t('chat.quickResume')}
+      padded={false}
+      overlayClassName="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
+      dialogClassName="fixed bottom-0 left-0 right-0 z-50 animate-slideUp outline-none lg:hidden"
+    >
+      <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4">
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-border-light" />
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-sm font-semibold text-text-primary">{t('chat.quickResume')}</p>
+          <button
+            onClick={onClose}
+            className="rounded-full p-1.5 text-text-muted hover:bg-warm-100"
+            aria-label={t('chat.closeDrawer')}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="max-h-[55dvh] space-y-2 overflow-y-auto pb-1">
+          {conversations.map(c => (
+            <ConversationItem
+              key={c.id}
+              conversation={c}
+              active={activeConvId === c.id}
+              onClick={() => {
+                onSelect(c.id);
+                onClose();
+              }}
+            />
+          ))}
+          {conversations.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
+              {t('chat.noConversationBody')}
+            </div>
+          )}
         </div>
       </div>
-    </>
+    </Modal>
   );
 }

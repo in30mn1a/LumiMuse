@@ -20,7 +20,7 @@ import { useChatScrollController, type UseChatScrollControllerResult } from '@/h
 import { useMemoryTaskPolling } from '@/hooks/chat/useMemoryTaskPolling';
 import { useChatImageGeneration } from '@/hooks/chat/useChatImageGeneration';
 import { useChatMessageActions } from '@/hooks/chat/useChatMessageActions';
-import { useNewChat } from '@/hooks/chat/useNewChat';
+import { parseConversation, useNewChat } from '@/hooks/chat/useNewChat';
 import { canBeginChatSend } from '@/hooks/chat/chat-send-guard';
 import { formatTemplate } from '@/lib/i18n';
 import { estimateClientTokens } from '@/lib/token-counter-client';
@@ -86,6 +86,19 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
   // 移动端工具栏展开（拉片）
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
+
+  // ConversationMobileDrawer 的 Modal 焦点陷阱只看 open。
+  // 小屏打开后扩到 lg+ 时必须关掉，避免看不见 dialog 却困住 Tab。
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const closeIfDesktop = () => {
+      if (mq.matches) setConvDrawerOpen(false);
+    };
+    closeIfDesktop();
+    mq.addEventListener('change', closeIfDesktop);
+    return () => mq.removeEventListener('change', closeIfDesktop);
+  }, []);
   // 图片管理弹窗（仅保留开关；列表/选中/分页等已下沉到 ImageManagerModal 内部）
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
 
@@ -108,6 +121,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     conversationLoadError,
     characterRef,
     refreshConversationState,
+    touchConversation,
   } = useConversationLoader({
     character,
     conversationId,
@@ -242,7 +256,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     setStreamingUsage,
     pollMemoryTask,
     refreshMessagesForConversation,
-    refreshConversationState,
+    touchConversation,
     updateMessagesForConversation,
     markSkipNextScroll,
     showToast,
@@ -607,14 +621,15 @@ export default function ChatView({ character, conversationId, targetMessageId, o
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ character_id: character.id }),
         });
-        const conversation = await response.json();
+        // 与 useNewChat 一致：先校验状态码与响应形状，再写入状态 / beginStream。
+        const conversation = parseConversation(await parseJsonResponse<unknown>(response));
         setConversations(prev => [conversation, ...prev]);
         selectActiveConvId(conversation.id);
         convId = conversation.id;
       }
     } catch (error) {
       creatingConversationRef.current = false;
-      showToast(error instanceof Error ? error.message : t('chat.errorGeneral'));
+      showToast(getErrorMessage(error) || t('chat.errorGeneral'));
       return;
     }
 
@@ -682,8 +697,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       });
 
       await refreshMessagesForConversation(myConvId);
-      // 刷新列表但不重置 active
-      void refreshConversationState(undefined);
+      // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
+      touchConversation(myConvId);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         // 用户主动停止，刷新消息

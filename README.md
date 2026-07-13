@@ -176,7 +176,7 @@
 - 一个兼容 OpenAI Chat Completions API 格式的模型服务
 - 如需 Docker 部署，需要 Docker 和 Docker Compose
 
-CI 会在 Node **20.18** 和 **Node 24** 上运行验证；本地建议使用 Node 20.18.1 或更新版本。
+CI 会在 Ubuntu 上的 Node **20.18** / **Node 24**，以及 Windows 上的 Node **20.18** 运行验证（覆盖 `Start.bat` 使用面与 better-sqlite3 原生模块）；本地建议使用 Node 20.18.1 或更新版本。
 
 ### 本地使用
 

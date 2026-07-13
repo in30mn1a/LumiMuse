@@ -143,7 +143,11 @@ test('memory list accumulates clicked tag filters and shows removable tag chips 
   assert.doesNotMatch(memoryList, /memory\.activeTagFilter/);
   assert.doesNotMatch(i18n, /'memory\.activeTagFilter'/);
   assert.ok(memoryCard.includes('onTagClick?: (tag: string) => void;'));
-  assert.ok(memoryCard.includes('onClick={e => { e.stopPropagation(); onTagClick?.(tag); }}'));
+  // selectMode 下根节点可能是 label；标签点击需 preventDefault+stopPropagation，避免误触批选。
+  assert.ok(
+    memoryCard.includes('onClick={e => { e.preventDefault(); e.stopPropagation(); onTagClick?.(tag); }}')
+      || memoryCard.includes('onClick={e => { e.stopPropagation(); onTagClick?.(tag); }}'),
+  );
   assert.ok(memoryCard.includes("title={t('memory.filterByTag').replace('{tag}', tag)}"));
 
   for (const key of [

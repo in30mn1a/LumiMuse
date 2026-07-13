@@ -42,3 +42,17 @@ test('unpin button label is shortened to cancel', () => {
   assert.match(i18n, /'memory\.unpin': 'Cancel'/);
   assert.doesNotMatch(i18n, /'memory\.unpin': '取消钉选'/);
 });
+
+test('memory card select mode uses a label root so the whole row is keyboard-accessible with the checkbox', () => {
+  const memoryCard = readProjectFile('src/components/memories/MemoryCard.tsx');
+
+  assert.match(memoryCard, /const Root = selectMode \? 'label' : 'div'/);
+  assert.match(memoryCard, /<Root\b/);
+  assert.match(memoryCard, /type="checkbox"/);
+  assert.match(memoryCard, /onChange=\{\(\) => onSelect\?\.\(memory\.id\)\}/);
+  assert.doesNotMatch(
+    memoryCard,
+    /onClick=\{selectMode \? \(\) => onSelect\?\.\(memory\.id\) : undefined\}/,
+    'row-level mouse-only onClick should not be the selection surface',
+  );
+});

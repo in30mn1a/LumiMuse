@@ -62,6 +62,9 @@ function memoryTasksDb() {
       retry_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
       started_at TEXT,
+      result_committed INTEGER NOT NULL DEFAULT 0,
+      result_insert_count INTEGER NOT NULL DEFAULT 0,
+      result_merge_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -69,7 +72,10 @@ function memoryTasksDb() {
   return db;
 }
 
-const noopMemoryEngine = { extractMemories: async () => ({ mergeCount: 0, insertCount: 0 }) };
+const noopMemoryEngine = {
+  extractMemories: async () => ({ mergeCount: 0, insertCount: 0 }),
+  getCommittedExtractionResult: () => null,
+};
 const noopSettings = { loadSettings: () => ({}) };
 const noopProfile = {
   enqueueMemoryProfilePatchExtraction: () => {},
@@ -116,4 +122,65 @@ test('recoverStaleTasks resets processing task with stale started_at', () => {
   const row = db.prepare('SELECT status, started_at FROM memory_tasks WHERE id = 1').get();
   assert.equal(row.status, 'pending');
   assert.equal(row.started_at, null);
+});
+
+test('processQueue resumes committed task without re-calling extractMemories', async () => {
+  const db = memoryTasksDb();
+  db.exec(`
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      token_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      seq INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE characters (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
+  `);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO characters (id, name) VALUES ('c1', '角色A')`).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, created_at, metadata, seq)
+    VALUES ('m1', 'conv1', 'user', '用户消息足够长以便通过提取门槛检查', ?, '{}', 1)
+  `).run(now);
+  db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, started_at,
+      result_committed, result_insert_count, result_merge_count, created_at, updated_at
+    ) VALUES ('c1', 'conv1', ?, 'pending', NULL, 1, 2, 1, ?, ?)
+  `).run(JSON.stringify(['m1']), now, now);
+
+  let extractCalls = 0;
+  const { __processQueueForTest } = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/memory-engine': {
+      extractMemories: async () => {
+        extractCalls += 1;
+        return { mergeCount: 0, insertCount: 0 };
+      },
+      getCommittedExtractionResult: (taskId) => {
+        const row = db.prepare(
+          'SELECT result_committed, result_insert_count, result_merge_count FROM memory_tasks WHERE id = ?',
+        ).get(taskId);
+        if (!row || !row.result_committed) return null;
+        return { insertCount: row.result_insert_count, mergeCount: row.result_merge_count };
+      },
+    },
+    '@/lib/settings': noopSettings,
+    '@/lib/memory-profile': noopProfile,
+  });
+
+  await __processQueueForTest();
+
+  assert.equal(extractCalls, 0);
+  const task = db.prepare('SELECT status, merge_count FROM memory_tasks WHERE id = 1').get();
+  assert.equal(task.status, 'done');
+  assert.equal(task.merge_count, 1);
+  const msg = db.prepare('SELECT metadata FROM messages WHERE id = ?').get('m1');
+  assert.equal(JSON.parse(msg.metadata).memory_extracted, true);
 });

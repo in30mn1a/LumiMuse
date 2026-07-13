@@ -42,6 +42,7 @@ next-env.d.ts
 
 # Docs
 docs/
+/*.html
 
 # Temporary regression check scripts
 scripts/regression-check-*.js

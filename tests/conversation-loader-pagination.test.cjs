@@ -229,3 +229,73 @@ test('conversation loader paginates character conversations until the preferred 
     global.fetch = originalFetch;
   }
 });
+
+test('touchConversation bumps updated_at and reorders without fetching conversations or memories', async () => {
+  const originalFetch = global.fetch;
+  const fetchCalls = [];
+
+  global.fetch = async input => {
+    fetchCalls.push(String(input));
+    const url = new URL(String(input), 'http://test.local');
+    if (url.pathname === '/api/memories') {
+      return jsonResponse([]);
+    }
+    if (url.pathname === '/api/conversations') {
+      return jsonResponse([
+        {
+          id: 'conv-old',
+          character_id: 'char-a',
+          title: 'Older',
+          ignore_memory: 0,
+          created_at: '2026-07-01T00:00:00.000Z',
+          updated_at: '2026-07-01T00:00:00.000Z',
+        },
+        {
+          id: 'conv-target',
+          character_id: 'char-a',
+          title: 'Target',
+          ignore_memory: 0,
+          created_at: '2026-07-02T00:00:00.000Z',
+          updated_at: '2026-07-02T00:00:00.000Z',
+        },
+      ], {
+        headers: { 'X-Has-More': 'false' },
+      });
+    }
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+
+  try {
+    const character = { id: 'char-a', name: 'Alice' };
+    const clearMessagesRef = { current: () => {} };
+    const clearStreamingTextRef = { current: () => {} };
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useConversationLoader } = requireFreshWithMocks('../src/hooks/chat/useConversationLoader.ts', {
+          react: reactMock,
+        });
+        return useConversationLoader;
+      },
+      () => ({
+        character,
+        conversationId: 'conv-old',
+        clearMessagesRef,
+        clearStreamingTextRef,
+      }),
+    );
+
+    runtime.render();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const fetchesBeforeTouch = fetchCalls.length;
+
+    runtime.current.touchConversation('conv-target', '2026-07-13T12:00:00.000Z');
+
+    assert.equal(fetchCalls.length, fetchesBeforeTouch, 'touchConversation must not fetch conversations or memories');
+    assert.deepEqual(runtime.current.conversations.map(item => item.id), ['conv-target', 'conv-old']);
+    assert.equal(runtime.current.conversations[0].updated_at, '2026-07-13T12:00:00.000Z');
+    assert.equal(runtime.current.conversations[0].title, 'Target');
+    assert.equal(runtime.current.activeConvId, 'conv-old');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

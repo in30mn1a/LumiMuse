@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 
 export interface MessageSearchResult {
   messageId: string;
@@ -24,12 +25,34 @@ interface MessageSearchResponse {
   hasMore: boolean;
 }
 
+const isAbortError = (error: unknown) =>
+  (error instanceof DOMException || error instanceof Error) && error.name === 'AbortError';
+
+function parseSearchPayload(data: unknown): MessageSearchResponse {
+  if (Array.isArray(data)) {
+    return { results: data as MessageSearchResult[], hasMore: false };
+  }
+  if (
+    data
+    && typeof data === 'object'
+    && Array.isArray((data as MessageSearchResponse).results)
+  ) {
+    const payload = data as MessageSearchResponse;
+    return {
+      results: payload.results,
+      hasMore: Boolean(payload.hasMore),
+    };
+  }
+  throw new Error('Invalid search response');
+}
+
 export function useMessageSearch(query: string, options: UseMessageSearchOptions = {}) {
   const { limit = 15, debounceMs = 220 } = options;
   const [results, setResults] = useState<MessageSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const resultsRef = useRef<MessageSearchResult[]>([]);
 
@@ -40,8 +63,11 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
     if (reset) {
       setLoading(true);
       setLoadingMore(false);
+      setError(null);
     } else {
+      // loadMore 重试时先清旧错误，避免 loading 期间错误条残留
       setLoadingMore(true);
+      setError(null);
     }
 
     try {
@@ -51,9 +77,8 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
         offset: String(reset ? 0 : resultsRef.current.length),
       });
       const response = await fetch(`/api/messages/search?${params}`, { signal: controller.signal });
-      const data = await response.json() as MessageSearchResponse | MessageSearchResult[];
-      const nextResults = Array.isArray(data) ? data : data.results;
-      const nextHasMore = Array.isArray(data) ? false : data.hasMore;
+      const data = await parseJsonResponse<unknown>(response);
+      const { results: nextResults, hasMore: nextHasMore } = parseSearchPayload(data);
       if (!controller.signal.aborted) {
         setResults(prev => {
           const merged = reset ? nextResults : [...prev, ...nextResults];
@@ -61,14 +86,17 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
           return merged;
         });
         setHasMore(nextHasMore);
+        setError(null);
       }
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+    } catch (err) {
+      if (isAbortError(err)) return;
+      if (!controller.signal.aborted) {
         if (reset) {
           resultsRef.current = [];
           setResults([]);
           setHasMore(false);
         }
+        setError(getErrorMessage(err));
       }
     } finally {
       if (!controller.signal.aborted) {
@@ -87,6 +115,7 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
     setLoading(false);
     setLoadingMore(false);
     setHasMore(false);
+    setError(null);
   }, []);
 
   useEffect(() => {
@@ -100,6 +129,7 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
         setLoading(false);
         setLoadingMore(false);
         setHasMore(false);
+        setError(null);
       }, 0);
       return () => clearTimeout(timer);
     }
@@ -124,5 +154,5 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return { results, loading, loadingMore, hasMore, loadMore, clearSearch };
+  return { results, loading, loadingMore, hasMore, error, loadMore, clearSearch };
 }

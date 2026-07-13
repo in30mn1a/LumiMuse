@@ -41,6 +41,34 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Windows 门禁：覆盖 Start.bat 使用面与 better-sqlite3 native 模块；
+  # 独立于 docker-smoke 的 needs 链，避免拖慢 Linux 交付冒烟。
+  verify-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # 与 Ubuntu matrix 的 LTS 侧对齐；完整 20.18/24 矩阵仍由 verify 承担。
+          node-version: 20.18
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        # 含 tests/start-script-contract.test.cjs（Start.bat / start 脚本契约）
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
   docker-smoke:
     needs: verify
     runs-on: ubuntu-24.04

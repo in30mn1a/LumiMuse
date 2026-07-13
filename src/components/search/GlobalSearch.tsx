@@ -27,7 +27,7 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const { results: messageResults, loading, loadingMore, hasMore, loadMore, clearSearch } = useMessageSearch(open ? query : '', { limit: 30, debounceMs: 200 });
+  const { results: messageResults, loading, loadingMore, hasMore, error, loadMore, clearSearch } = useMessageSearch(open ? query : '', { limit: 30, debounceMs: 200 });
   const results = useMemo<SearchResult[]>(() => messageResults.map(m => ({
       id: m.messageId,
       title: m.snippet,
@@ -98,10 +98,15 @@ export default function GlobalSearch({ open, onClose, onConversationSelect }: Pr
           {loading && (
             <div className="px-4 py-6 text-center text-sm text-text-muted">{t('common.loading')}</div>
           )}
-          {!loading && query && results.length === 0 && (
+          {!loading && error && (
+            <div className="px-4 py-6 text-center text-sm text-red-600" role="alert">
+              {`${t('common.loadFailed')}: ${error}`}
+            </div>
+          )}
+          {!loading && !error && query && results.length === 0 && (
             <div className="px-4 py-6 text-center text-sm text-text-muted">{t('search.noResults')}</div>
           )}
-          {!loading && !query && (
+          {!loading && !error && !query && (
             <div className="px-4 py-6 text-center text-sm text-text-muted">{t('search.hint')}</div>
           )}
 

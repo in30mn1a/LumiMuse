@@ -3,6 +3,7 @@ import { I18nProvider } from '@/lib/i18n-context';
 import { ThemeProvider } from '@/lib/theme-provider';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
 import { ToastProvider } from '@/components/ui/Toast';
+import SettingsBootstrapToast from '@/components/ui/SettingsBootstrapToast';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -96,6 +97,7 @@ export default function RootLayout({
         <ThemeProvider>
           <I18nProvider>
             <ToastProvider>
+              <SettingsBootstrapToast />
               <ErrorBoundary>{children}</ErrorBoundary>
             </ToastProvider>
           </I18nProvider>

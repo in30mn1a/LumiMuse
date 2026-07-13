@@ -98,6 +98,23 @@ function createExtractionDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE memory_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      message_ids TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      merge_count INTEGER NOT NULL DEFAULT 0,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      started_at TEXT,
+      result_committed INTEGER NOT NULL DEFAULT 0,
+      result_insert_count INTEGER NOT NULL DEFAULT 0,
+      result_merge_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   return db;
 }
@@ -213,6 +230,67 @@ test('extractMemories 将队列提供的 messageIds 写入 source_msg_ids', asyn
 
   assert.equal(result.insertCount, 1);
   assert.deepEqual(JSON.parse(memory.source_msg_ids), ['msg-user-1', 'msg-assistant-1']);
+});
+
+test('extractMemories writes durable commit marker and skips re-apply when marker exists', async () => {
+  const db = createExtractionDb();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status,
+      result_committed, result_insert_count, result_merge_count, created_at, updated_at
+    ) VALUES ('char-a', 'conv-a', '[]', 'processing', 0, 0, 0, ?, ?)
+  `).run(now, now);
+
+  let llmCalls = 0;
+  const response = JSON.stringify({
+    memories: [{
+      category: '偏好习惯',
+      memory_kind: 'user_preference',
+      content: '主人难过时希望先被安静陪伴。',
+      tags: ['陪伴'],
+      importance: 0.8,
+      emotional_weight: 0.6,
+      lifecycle_action: 'insert',
+    }],
+  });
+  const { extractMemories } = requireFreshWithMocks('../src/lib/memory-engine.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/api-client': {
+      chatCompletion: async () => {
+        llmCalls += 1;
+        return response;
+      },
+      REASONING_SAFE_MAX_TOKENS: 16384,
+    },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const first = await extractMemories('char-a', longConversation(), settings(), {
+    messageIds: ['msg-1'],
+    taskId: 1,
+    conversationId: 'conv-a',
+  });
+  assert.equal(first.insertCount, 1);
+  assert.equal(llmCalls, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM memories').get().c, 1);
+
+  const marker = db.prepare(
+    'SELECT result_committed, result_insert_count, result_merge_count FROM memory_tasks WHERE id = 1',
+  ).get();
+  assert.equal(marker.result_committed, 1);
+  assert.equal(marker.result_insert_count, 1);
+  assert.equal(marker.result_merge_count, 0);
+
+  // 模拟崩溃恢复后再次执行同一 task：不得再调 LLM，也不得重复插入记忆。
+  const second = await extractMemories('char-a', longConversation(), settings(), {
+    messageIds: ['msg-1'],
+    taskId: 1,
+    conversationId: 'conv-a',
+  });
+  assert.equal(second.insertCount, 1);
+  assert.equal(llmCalls, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM memories').get().c, 1);
 });
 
 test('extractMemories 成功入队 embedding task 后触发索引处理', async () => {
@@ -566,11 +644,17 @@ test('memory-queue drain 会把任务来源 messageIds 传给 extractMemories', 
       '@/lib/db': { getDb: () => db },
       '@/lib/settings': { loadSettings: () => settings() },
       '@/lib/memory-engine': {
+        // 旧库 memory_tasks 可能无 result_committed 列；mock 需导出 getCommittedExtractionResult。
+        getCommittedExtractionResult: () => null,
         extractMemories: async (characterId, conversationText, loadedSettings, options) => {
           captured = { characterId, conversationText, loadedSettings, options };
           resolve();
           return { insertCount: 1, mergeCount: 0 };
         },
+      },
+      '@/lib/memory-profile': {
+        enqueueMemoryProfilePatchExtraction: () => {},
+        triggerMemoryProfileQueue: () => {},
       },
     });
 

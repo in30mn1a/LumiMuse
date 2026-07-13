@@ -507,6 +507,36 @@ function parseExtractionResponse(response: string): RawMemoryData[] {
   }
 }
 
+function hasMemoryTaskResultCommittedColumn(db: ReturnType<typeof getDb>): boolean {
+  const columns = db.prepare('PRAGMA table_info(memory_tasks)').all() as { name: string }[];
+  return columns.some(column => column.name === 'result_committed');
+}
+
+/**
+ * 读取任务级 durable commit marker。
+ * 若任务此前已成功提交记忆写入，崩溃恢复后不得再次 INSERT/UPDATE 同一批结果。
+ */
+export function getCommittedExtractionResult(
+  taskId: number | undefined,
+  db: ReturnType<typeof getDb> = getDb(),
+): { insertCount: number; mergeCount: number } | null {
+  if (taskId === undefined || !hasMemoryTaskResultCommittedColumn(db)) return null;
+  const row = db.prepare(`
+    SELECT result_committed, result_insert_count, result_merge_count
+    FROM memory_tasks
+    WHERE id = ?
+  `).get(taskId) as {
+    result_committed: number;
+    result_insert_count: number;
+    result_merge_count: number;
+  } | undefined;
+  if (!row || !row.result_committed) return null;
+  return {
+    insertCount: row.result_insert_count || 0,
+    mergeCount: row.result_merge_count || 0,
+  };
+}
+
 export async function extractMemories(
   characterId: string,
   conversationText: string,
@@ -516,6 +546,13 @@ export async function extractMemories(
   if (conversationText.length < 100) return { insertCount: 0, mergeCount: 0 };
 
   const db = getDb();
+
+  // 任务结果已 durable 提交时短路：只返回上次计数，不再次写记忆。
+  const committed = getCommittedExtractionResult(options.taskId, db);
+  if (committed) {
+    return committed;
+  }
+
   const existingMemories = db.prepare(
     "SELECT * FROM memories WHERE character_id = ? AND status = 'active' ORDER BY updated_at DESC"
   ).all(characterId) as Memory[];
@@ -634,8 +671,19 @@ export async function extractMemories(
 
   // 用事务包裹整个写入循环，保证多条 UPDATE/INSERT 原子提交，
   // 避免中途崩溃导致记忆部分写入、状态不一致。
+  // 同时在同一事务内写入 task 级 result_committed marker，使崩溃恢复可跳过重复应用。
   // 注意：chatCompletion 等异步调用已在事务外完成，事务函数内只放同步的写入与计数累加。
   db.transaction(() => {
+    // 事务内二次检查 marker，堵住「读 marker 后、写记忆前」的并发/恢复竞态。
+    if (options.taskId !== undefined && hasMemoryTaskResultCommittedColumn(db)) {
+      const again = getCommittedExtractionResult(options.taskId, db);
+      if (again) {
+        insertCount = again.insertCount;
+        mergeCount = again.mergeCount;
+        return;
+      }
+    }
+
     const insertMemory = (entry: NewMemoryEntry) => {
       insertCount++;
       db.prepare(`
@@ -729,7 +777,28 @@ export async function extractMemories(
         insertMemory(entry as NewMemoryEntry);
       }
     }
+
+    // 与记忆写入同事务提交 durable marker；恢复路径看到 marker 后只补 metadata/task 状态。
+    if (options.taskId !== undefined && hasMemoryTaskResultCommittedColumn(db)) {
+      db.prepare(`
+        UPDATE memory_tasks
+        SET result_committed = 1,
+            result_insert_count = ?,
+            result_merge_count = ?,
+            merge_count = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(insertCount, mergeCount, mergeCount, new Date().toISOString(), options.taskId);
+    }
   })();
+
+  // 若事务内因二次 marker 检查短路，embedding 队列无需再入。
+  if (options.taskId !== undefined && embeddingTasks.length === 0) {
+    const after = getCommittedExtractionResult(options.taskId, db);
+    if (after) {
+      return after;
+    }
+  }
 
   let queuedEmbeddingTasks = 0;
   for (const task of embeddingTasks) {

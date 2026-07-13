@@ -78,7 +78,7 @@ function jsonRequest(body) {
   };
 }
 
-test('Gemini image prompt generation strips kindergarten tags before the AI call and restores them in output', async () => {
+async function runSensitiveTagStripRouteTest(model) {
   let capturedPrompt = '';
   const route = requireFreshWithMocks('../src/app/api/image-gen/prompt/route.ts', {
     'next/server': jsonResponseMock(),
@@ -94,7 +94,7 @@ test('Gemini image prompt generation strips kindergarten tags before the AI call
                 name: 'Mira',
                 personality: '',
                 scenario: '',
-                image_tags: 'blue eyes, kindergarten, kindergarten uniform, red hair',
+                image_tags: 'blue eyes, 1.3::loli::, kindergarten uniform, red hair',
                 user_image_tags: '',
               }),
             };
@@ -110,7 +110,7 @@ test('Gemini image prompt generation strips kindergarten tags before the AI call
       loadSettings: () => ({
         api_base: 'https://llm.example/v1',
         api_key: 'secret',
-        model: 'gemini-3.1-pro-preview',
+        model,
       }),
       resolveBackgroundConfig: (s) => ({
         api_base: s.api_base,
@@ -130,7 +130,7 @@ test('Gemini image prompt generation strips kindergarten tags before the AI call
     '@/lib/api-client': {
       chatCompletion: async (_settings, messages) => {
         capturedPrompt = messages[1].content;
-        return 'POSITIVE: generated safe tags';
+        return 'POSITIVE: best quality, 1girl, blue hair';
       },
     },
   });
@@ -141,7 +141,18 @@ test('Gemini image prompt generation strips kindergarten tags before the AI call
   assert.equal(response.status, 200);
   assert.match(capturedPrompt, /blue eyes/);
   assert.match(capturedPrompt, /red hair/);
-  assert.doesNotMatch(capturedPrompt, /kindergarten/i);
+  assert.doesNotMatch(capturedPrompt, /loli/i);
   assert.doesNotMatch(capturedPrompt, /kindergarten uniform/i);
-  assert.equal(body.prompt, 'kindergarten, kindergarten uniform, generated safe tags');
+  assert.equal(
+    body.prompt,
+    'best quality, 1girl, 1.3::loli::, kindergarten uniform, blue hair',
+  );
+}
+
+test('Gemini image prompt generation strips kindergarten tags before the AI call and restores them in output', async () => {
+  await runSensitiveTagStripRouteTest('gemini-3.1-pro-preview');
+});
+
+test('Grok image prompt generation strips sensitive tags before the AI call and restores them in output', async () => {
+  await runSensitiveTagStripRouteTest('grok-4.5-fast');
 });

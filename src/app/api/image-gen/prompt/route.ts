@@ -6,6 +6,11 @@ import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
+import {
+  partitionSensitiveImageTags,
+  rejoinSensitiveTagsAfterSubject,
+  shouldStripSensitiveImagePromptTags,
+} from '@/lib/image-prompt-sensitive-tags';
 
 /**
  * AI 生成图片 prompt — 根据对话上下文和角色信息生成适合文生图的英文标签
@@ -98,8 +103,6 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 # 输出格式（严格遵守，不输出任何解释文字）
 POSITIVE: <所有正面 Tag，逗号分隔，70 - 300个>`;
 
-const GEMINI_IMAGE_PROMPT_SENSITIVE_TAG_PATTERN = /^(?:loli|shota|child|kindergarten|kindergarten uniform)$/i;
-
 export async function POST(request: NextRequest) {
   let rawBody: unknown;
   try {
@@ -182,16 +185,11 @@ export async function POST(request: NextRequest) {
       if (character.personality) context += `性格/外貌描述：${character.personality}\n`;
       if (character.scenario) context += `世界观/场景设定：${character.scenario}\n`;
       if (character.image_tags) {
-        const isGemini = /gemini/i.test(settings.model);
-        if (isGemini) {
-          // Gemini 安全过滤较严，先分离敏感标签，
-          // 生图时再拼回 prompt，确保角色外貌完整
-          const allTags = character.image_tags.split(',').map(t => t.trim()).filter(Boolean);
-          const sensitive = allTags.filter(t => GEMINI_IMAGE_PROMPT_SENSITIVE_TAG_PATTERN.test(t));
-          const safe = allTags.filter(t => !GEMINI_IMAGE_PROMPT_SENSITIVE_TAG_PATTERN.test(t));
-          strippedTags = sensitive.join(', ');
-          if (safe.length > 0) {
-            context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${safe.join(', ')}\n`;
+        if (shouldStripSensitiveImagePromptTags(settings.model)) {
+          const { safeForLlm, strippedForRejoin } = partitionSensitiveImageTags(character.image_tags);
+          strippedTags = strippedForRejoin;
+          if (safeForLlm) {
+            context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${safeForLlm}\n`;
           }
         } else {
           context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${character.image_tags}\n`;
@@ -240,9 +238,8 @@ export async function POST(request: NextRequest) {
       positive = result.replace(/POSITIVE:|NEGATIVE:.*$/gm, '').trim();
     }
 
-    // 将被过滤的敏感标签拼回 prompt 开头，确保生图时角色外貌完整
     if (strippedTags) {
-      positive = strippedTags + ', ' + positive;
+      positive = rejoinSensitiveTagsAfterSubject(positive, strippedTags);
     }
 
     return NextResponse.json({ prompt: positive, negative_prompt: negative });

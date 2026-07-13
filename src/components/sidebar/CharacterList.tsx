@@ -25,6 +25,12 @@ import { CSS } from '@dnd-kit/utilities';
 import { Character } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { parseJsonResponse } from '@/lib/http';
+import {
+  getCharacterListCache,
+  loadCharacterList,
+  setCharacterListCache,
+  subscribeCharacterList,
+} from '@/lib/character-list-cache';
 import { PencilIcon, PlusIcon, SparkIcon } from '@/components/ui/icons';
 
 interface Props {
@@ -130,7 +136,8 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
 
 export default function CharacterList({ selectedId, onSelect }: Props) {
   const router = useRouter();
-  const [characters, setCharacters] = useState<Character[]>([]);
+  // 优先用模块缓存做首屏，避免移动端 Modal 重挂载时空白闪一下
+  const [characters, setCharacters] = useState<Character[]>(() => getCharacterListCache() ?? []);
   const [listError, setListError] = useState('');
   const { t } = useTranslation();
 
@@ -149,14 +156,20 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
     }),
   );
 
+  useEffect(() => subscribeCharacterList(setCharacters), []);
+
   useEffect(() => {
-    fetch('/api/characters')
-      .then(r => parseJsonResponse<Character[]>(r))
-      .then(data => {
-        setListError('');
-        setCharacters(data);
+    let cancelled = false;
+    loadCharacterList()
+      .then(() => {
+        if (!cancelled) setListError('');
       })
-      .catch(() => setListError(t('common.loadFailed')));
+      .catch(() => {
+        if (!cancelled) setListError(t('common.loadFailed'));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [t]);
 
   const handleCreate = async () => {
@@ -167,7 +180,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: t('char.newCharacterName') }),
       }));
-      setCharacters(prev => [newCharacter, ...prev]);
+      setCharacterListCache([newCharacter, ...(getCharacterListCache() ?? characters)]);
       onSelect(newCharacter.id, newCharacter);
       router.push(`/characters/${newCharacter.id}`);
     } catch {
@@ -185,8 +198,8 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
 
     const previous = characters;
     const next = arrayMove(characters, oldIndex, newIndex);
-    // 乐观更新：先改本地，再 PUT；失败则回滚
-    setCharacters(next);
+    // 乐观更新：先改本地缓存（多实例同步），再 PUT；失败则回滚
+    setCharacterListCache(next);
     try {
       const res = await fetch('/api/characters/reorder', {
         method: 'PUT',
@@ -197,7 +210,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
     } catch (err) {
       console.warn('[character-reorder] 排序持久化失败，已回滚：', err);
       setListError(t('common.operationFailed'));
-      setCharacters(previous);
+      setCharacterListCache(previous);
     }
   };
 

@@ -69,9 +69,18 @@ function loadCharacterList() {
   };
 
   try {
-    const resolved = require.resolve('../src/components/sidebar/CharacterList.tsx');
-    delete require.cache[resolved];
-    return require(resolved).default;
+    // 清组件与列表缓存模块，避免模块级 character-list-cache 串测
+    for (const rel of [
+      '../src/components/sidebar/CharacterList.tsx',
+      '../src/lib/character-list-cache.ts',
+    ]) {
+      try {
+        delete require.cache[require.resolve(rel)];
+      } catch {
+        /* not loaded yet */
+      }
+    }
+    return require('../src/components/sidebar/CharacterList.tsx').default;
   } finally {
     Module._load = originalLoad;
   }

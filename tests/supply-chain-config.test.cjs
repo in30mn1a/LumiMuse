@@ -69,6 +69,14 @@ test('Dependabot maintains GitHub Actions, Docker, and npm pinned references', (
   assert.match(dependabot, /package-ecosystem:\s*["']npm["']/);
   assert.match(dependabot, /directory:\s*["']\/["']/);
   assert.match(dependabot, /interval:\s*["']weekly["']/);
+  // 分组 + major ignore：避免每个包单独开 PR，并挡住危险 major 自动升级。
+  assert.match(dependabot, /groups:/);
+  assert.match(dependabot, /production-deps:/);
+  assert.match(dependabot, /development-deps:/);
+  assert.match(dependabot, /dependency-name:\s*["']typescript["']/);
+  assert.match(dependabot, /dependency-name:\s*["']undici["']/);
+  assert.match(dependabot, /dependency-name:\s*["']node["']/);
+  assert.match(dependabot, /update-types:\s*\[["']version-update:semver-major["']\]/);
 });
 
 test('CI has an isolated Docker delivery smoke with readiness and unconditional cleanup', () => {

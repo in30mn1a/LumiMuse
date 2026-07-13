@@ -16,6 +16,18 @@ test('npm build prepares static assets for standalone startup', () => {
   assert.equal(pkg.scripts.postbuild, 'node scripts/prepare-standalone-assets.js');
 });
 
+test('npm test uses a cross-platform runner instead of shell globs', () => {
+  // Windows PowerShell/cmd 不会展开 tests/*.test.cjs；必须由脚本自行枚举文件。
+  assert.equal(pkg.scripts.test, 'node scripts/run-tests.js');
+  const runner = fs.readFileSync(path.join(root, 'scripts', 'run-tests.js'), 'utf8');
+  assert.match(runner, /readdirSync/);
+  assert.match(runner, /endsWith\('\.test\.cjs'\)/);
+  assert.match(runner, /endsWith\('-smoke\.cjs'\)/);
+  assert.match(runner, /\['--test', \.\.\.files\]/);
+  // package.json 不得再把 shell glob 直接交给 node --test
+  assert.doesNotMatch(pkg.scripts.test, /\*/);
+});
+
 test('README files document local and standalone start commands', () => {
   const readmeZh = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
   const readmeEn = fs.readFileSync(path.join(root, 'README.en.md'), 'utf8');

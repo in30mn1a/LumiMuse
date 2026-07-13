@@ -39,7 +39,9 @@ interface Props {
 
 /**
  * 聊天页顶部工具栏。
- * 移动端：紧凑栏 + 可展开二级操作；PC 端：完整一行铺满。
+ * 移动端(<md)：紧凑栏 + 可展开二级操作；PC 端(xl+)：完整一行铺满。
+ * 平板区间(md–xl)：角色信息与按钮分两行，按钮 lg 以下仅图标；lg 以下额外提供
+ * 「切换对话」按钮（该区间右侧最近对话面板不显示，抽屉是唯一入口）。
  * 数据来自 ChatView，所有交互通过 props 回调，无内部状态（除 toolbarExpanded 由父级管理）。
  */
 function ChatHeaderImpl({
@@ -184,8 +186,8 @@ function ChatHeaderImpl({
 
       {/* === PC 端：完整工具栏 === */}
       <section className="surface-hero hidden px-5 py-5 md:block">
-        <div className="flex items-center gap-3 lg:justify-between">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 xl:flex-nowrap xl:justify-between">
+          <div className="flex w-full min-w-0 items-center gap-3 xl:w-auto xl:flex-1">
             <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
               {character.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -203,52 +205,73 @@ function ChatHeaderImpl({
               </div>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button onClick={onNewChat} disabled={creating} className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 xl:flex-nowrap">
+            <button
+              onClick={onOpenConvDrawer}
+              className="soft-button soft-button-secondary px-4 py-2 text-sm lg:hidden"
+              title={t('chat.switchConversation')}
+              aria-label={t('chat.switchConversation')}
+            >
+              <ListIcon className="h-4 w-4" />
+            </button>
+            <button
+              onClick={onNewChat}
+              disabled={creating}
+              className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('chat.newChat')}
+              aria-label={t('chat.newChat')}
+            >
               {creating ? <span className="spinner-sm" aria-hidden="true" /> : <PlusIcon className="h-4 w-4" />}
-              <span>{t('chat.newChat')}</span>
+              <span className="hidden lg:inline">{t('chat.newChat')}</span>
             </button>
             <button
               onClick={onRename}
               disabled={!activeConversation}
               className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('common.edit')}
+              aria-label={t('common.edit')}
             >
               <PencilIcon className="h-4 w-4" />
-              <span>{t('common.edit')}</span>
+              <span className="hidden lg:inline">{t('common.edit')}</span>
             </button>
             <button
               onClick={onSummarize}
               disabled={!activeConversation || isStreamingHere || summarizing}
               className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
               title={t('chat.summarizeTitle')}
+              aria-label={t('chat.summarize')}
             >
               {summarizing ? <span className="spinner-sm" aria-hidden="true" /> : <SummaryIcon className="h-4 w-4" />}
-              <span>{summarizing ? t('chat.summarizing') : t('chat.summarize')}</span>
+              <span className="hidden lg:inline">{summarizing ? t('chat.summarizing') : t('chat.summarize')}</span>
             </button>
             <button
               onClick={onDuplicate}
               disabled={!activeConversation || duplicating}
               className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
               title={t('chat.duplicateTitle')}
+              aria-label={t('chat.duplicate')}
             >
               {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
-              <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
+              <span className="hidden lg:inline">{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
             </button>
             <button
               onClick={onOpenImageManager}
               className="soft-button soft-button-secondary px-4 py-2 text-sm"
               title={t('chat.imageManagerTitleHint')}
+              aria-label={t('chat.imageManagerTitle')}
             >
               <ImageIcon className="h-4 w-4" />
-              <span>{t('chat.imageManagerTitle')}</span>
+              <span className="hidden lg:inline">{t('chat.imageManagerTitle')}</span>
             </button>
             <button
               onClick={onRequestDelete}
               disabled={!activeConversation}
               className="soft-button soft-button-danger px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('common.delete')}
+              aria-label={t('common.delete')}
             >
               <TrashIcon className="h-4 w-4" />
-              <span>{t('common.delete')}</span>
+              <span className="hidden lg:inline">{t('common.delete')}</span>
             </button>
           </div>
         </div>

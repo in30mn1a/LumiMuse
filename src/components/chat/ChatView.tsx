@@ -809,7 +809,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         onRequestDelete={() => { setDeleteOpen(true); setToolbarExpanded(false); }}
       />
 
-      <div className="grid min-h-0 flex-1 gap-2 md:gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="grid min-h-0 flex-1 gap-2 md:gap-4 lg:grid-cols-[minmax(0,1fr)_12rem] xl:grid-cols-[minmax(0,1fr)_22rem]">
         <section className="surface-panel flex min-h-0 flex-col overflow-hidden">
           <ChatToolbar
             activeConversation={activeConversation}

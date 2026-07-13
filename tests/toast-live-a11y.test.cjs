@@ -176,6 +176,9 @@ test('explicit mobile chat icon controls expose 44px touch targets', () => {
     onRequestDelete() {},
   }));
 
+  // 平板工具栏也有同名 aria-label 按钮（soft-button 自带 44px 高度），此处只查移动端紧凑栏
+  const mobileHeader = headerView.container.querySelector('section.md\\:hidden');
+  assert.ok(mobileHeader, 'mobile compact header section should exist');
   for (const name of [
     'chat.openCharacterList',
     'chat.switchConversation',
@@ -183,7 +186,7 @@ test('explicit mobile chat icon controls expose 44px touch targets', () => {
     'chat.searchMessages',
     'chat.expandToolbar',
   ]) {
-    const button = within(headerView.container).getByRole('button', { name });
+    const button = within(mobileHeader).getByRole('button', { name });
     assert.match(button.className, /min-h-11/, `${name} needs a 44px minimum height`);
     assert.match(button.className, /min-w-11/, `${name} needs a 44px minimum width`);
   }

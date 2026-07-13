@@ -19,7 +19,7 @@ Module._resolveFilename = function resolveFilename(request, parent, isMain, opti
   return originalResolveFilename.call(this, request, parent, isMain, options);
 };
 
-function loadTypeScript(module, filename) {
+function loadTypeScript(loadedModule, filename) {
   const source = fs.readFileSync(filename, 'utf8');
   const output = ts.transpileModule(source, {
     compilerOptions: {
@@ -30,7 +30,7 @@ function loadTypeScript(module, filename) {
     },
     fileName: filename,
   });
-  module._compile(output.outputText, filename);
+  loadedModule._compile(output.outputText, filename);
 }
 
 Module._load = function load(request, parent, isMain) {
@@ -38,13 +38,13 @@ Module._load = function load(request, parent, isMain) {
   if (resolved.endsWith('.ts') || resolved.endsWith('.tsx')) {
     const cached = require.cache[resolved];
     if (cached) return cached.exports;
-    const module = new Module(resolved, parent);
-    module.filename = resolved;
-    module.paths = Module._nodeModulePaths(path.dirname(resolved));
-    require.cache[resolved] = module;
-    loadTypeScript(module, resolved);
-    module.loaded = true;
-    return module.exports;
+    const loadedModule = new Module(resolved, parent);
+    loadedModule.filename = resolved;
+    loadedModule.paths = Module._nodeModulePaths(path.dirname(resolved));
+    require.cache[resolved] = loadedModule;
+    loadTypeScript(loadedModule, resolved);
+    loadedModule.loaded = true;
+    return loadedModule.exports;
   }
   return originalLoad.apply(this, arguments);
 };

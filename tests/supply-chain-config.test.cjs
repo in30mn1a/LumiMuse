@@ -76,6 +76,9 @@ test('Dependabot maintains GitHub Actions, Docker, and npm pinned references', (
   assert.match(dependabot, /dependency-name:\s*["']typescript["']/);
   assert.match(dependabot, /dependency-name:\s*["']undici["']/);
   assert.match(dependabot, /dependency-name:\s*["']node["']/);
+  assert.match(dependabot, /dependency-name:\s*["']react-markdown["']/);
+  assert.match(dependabot, /dependency-name:\s*["']eslint["']/);
+  assert.match(dependabot, /dependency-name:\s*["']@types\/node["']/);
   assert.match(dependabot, /update-types:\s*\[["']version-update:semver-major["']\]/);
 });
 

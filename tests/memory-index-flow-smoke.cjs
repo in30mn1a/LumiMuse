@@ -27,9 +27,36 @@ function assertInsideWorkspace(targetPath) {
   );
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function removeDirIfExists(targetPath) {
   assertInsideWorkspace(targetPath);
-  fs.rmSync(targetPath, { recursive: true, force: true });
+  // Windows: better-sqlite3 / Next 进程退出后，.db-shm/.db-wal 可能仍短暂占锁。
+  // 清理失败不应把已成功的 smoke 断言变成整文件失败；重试后再尽力删除。
+  const maxAttempts = process.platform === 'win32' ? 8 : 1;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = error && error.code;
+      if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY') {
+        throw error;
+      }
+      if (attempt < maxAttempts) {
+        sleepSync(150 * attempt);
+      }
+    }
+  }
+  if (process.platform === 'win32' && lastError) {
+    console.warn(`[memory-index-flow-smoke] cleanup skipped after lock: ${lastError.message}`);
+    return;
+  }
+  throw lastError;
 }
 
 function copyFile(name) {
@@ -336,7 +363,11 @@ async function main() {
     throw error;
   } finally {
     terminateProcessTree(server.child);
-    await waitForDoneWithTimeout(server.done, 5_000).catch(() => {});
+    // 给 Windows 一点时间释放 SQLite WAL/SHM 句柄，再删临时目录。
+    await waitForDoneWithTimeout(server.done, process.platform === 'win32' ? 15_000 : 5_000).catch(() => {});
+    if (process.platform === 'win32') {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
     if (!KEEP_TMP) {
       removeDirIfExists(tmpRoot);
     }

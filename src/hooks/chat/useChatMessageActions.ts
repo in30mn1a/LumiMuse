@@ -116,7 +116,10 @@ export function useChatMessageActions({
     skipUserInsert?: boolean,
     insertAssistantAfterUserId?: string,
   ) => {
-    const controller = beginStream(convId, { regenerateAssistantId });
+    const controller = beginStream(convId, {
+      regenerateAssistantId,
+      insertAfterUserMessageId: !regenerateAssistantId ? insertAssistantAfterUserId : undefined,
+    });
     const streamConversationId = convId;
 
     try {
@@ -229,9 +232,9 @@ export function useChatMessageActions({
     const userMessageIndex = currentMessages.findIndex(message => message.id === userMessageId);
     if (userMessageIndex === -1) return;
     const userContent = currentMessages[userMessageIndex].content;
-    const nextAssistant = currentMessages
-      .slice(userMessageIndex + 1)
-      .find(message => message.role === 'assistant');
+    // 只认「紧挨着的下一条」是否为 assistant；中间角色被删后下一条往往是 user，不能误抓更后面的 assistant
+    const immediateNext = currentMessages[userMessageIndex + 1];
+    const nextAssistant = immediateNext?.role === 'assistant' ? immediateNext : undefined;
 
     await callChatStream(
       convId,

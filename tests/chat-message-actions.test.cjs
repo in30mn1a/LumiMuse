@@ -203,6 +203,36 @@ test('regenerate-from-here without a following assistant inserts after the selec
   assert.equal(requestBody.regenerate_assistant_id, undefined);
 });
 
+test('regenerate-from-here ignores a later assistant when the next message is another user', async () => {
+  const useChatMessageActions = loadHook();
+  let requestBody;
+  global.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return new Response(JSON.stringify({ error: 'stop after capture' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const options = createOptions({
+    messagesRef: {
+      current: [
+        message('user-gap', 'user', 'gap question'),
+        message('user-after', 'user', 'later question'),
+        message('assistant-bottom', 'assistant', 'bottom answer'),
+      ],
+    },
+  });
+
+  const { result } = renderHook(() => useChatMessageActions(options));
+  await act(async () => {
+    await result.current.handleRegenerateFromHere('user-gap');
+  });
+
+  assert.equal(requestBody.insert_assistant_after_user_id, 'user-gap');
+  assert.equal(requestBody.regenerate_assistant_id, undefined);
+});
+
 test('regenerate refreshes the stream owner even when the active conversation changes', async () => {
   const useChatMessageActions = loadHook();
   const options = createOptions();

@@ -18,6 +18,7 @@ interface Props {
   visibleMessages: Message[];
   hiddenMessageId: string | null;
   streamingTargetId: string | null;
+  streamingInsertAfterUserId: string | null;
   highlightedId: string | null;
   isStreamingHere: boolean;
   hasOlderMessages: boolean;
@@ -66,6 +67,7 @@ function ChatMessageList(
     visibleMessages,
     hiddenMessageId,
     streamingTargetId,
+    streamingInsertAfterUserId,
     highlightedId,
     isStreamingHere,
     hasOlderMessages,
@@ -277,6 +279,10 @@ function ChatMessageList(
                       onSetPrimaryImage={onSetPrimaryImage}
                     />
                   )}
+                  {isStreamingHere
+                    && !streamingTargetId
+                    && streamingInsertAfterUserId === message.id
+                    && streamingBubble}
                 </div>
               </div>
             );
@@ -285,7 +291,7 @@ function ChatMessageList(
       )}
 
       {/* 正在生成时显示占位气泡（仅当没有对应已存在的目标消息时；否则气泡由列表内的 streamingTarget 行渲染） */}
-      {isStreamingHere && !streamingTargetId && streamingBubble}
+      {isStreamingHere && !streamingTargetId && !streamingInsertAfterUserId && streamingBubble}
 
       {/* 底部锚点：由 useChatScrollController 控制滚动到底部。 */}
       <div ref={messagesEndRef} />

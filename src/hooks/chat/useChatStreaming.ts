@@ -6,6 +6,7 @@ type UseChatStreamingOptions = {
 
 type BeginStreamOptions = {
   regenerateAssistantId?: string;
+  insertAfterUserMessageId?: string;
 };
 
 type FinishStreamOptions = {
@@ -13,10 +14,12 @@ type FinishStreamOptions = {
 };
 
 type RegenerationTargetsByConversation = Record<string, string>;
+type InsertStreamAfterUserByConversation = Record<string, string>;
 
 export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
   const [streamingText, setStreamingText] = useState('');
   const [regenerationTargetIdsByConv, setRegenerationTargetIdsByConv] = useState<RegenerationTargetsByConversation>({});
+  const [insertStreamAfterUserIdsByConv, setInsertStreamAfterUserIdsByConv] = useState<InsertStreamAfterUserByConversation>({});
   const [isLoading, setIsLoading] = useState(false);
   // 记录当前正在流式显示的对话 ID（最后一个发起流的对话）
   const [streamingConvId, setStreamingConvId] = useState<string | null>(null);
@@ -35,6 +38,9 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
   const streamingBuffersRef = useRef<Map<string, string>>(new Map());
   const activeStreamsRef = useRef<Set<string>>(activeStreams);
   const streamingTargetId = activeConvId ? regenerationTargetIdsByConv[activeConvId] ?? null : null;
+  const streamingInsertAfterUserId = activeConvId
+    ? insertStreamAfterUserIdsByConv[activeConvId] ?? null
+    : null;
   const hiddenMessageId = streamingTargetId;
 
   useLayoutEffect(() => {
@@ -105,13 +111,37 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
     activeStreamsRef.current = next;
     setActiveStreams(next);
     const targetId = options?.regenerateAssistantId;
+    const insertAfterUserId = options?.insertAfterUserMessageId;
     if (targetId) {
       setRegenerationTargetIdsByConv(prev => ({
         ...prev,
         [convId]: targetId,
       }));
+      setInsertStreamAfterUserIdsByConv(prev => {
+        if (!prev[convId]) return prev;
+        const next = { ...prev };
+        delete next[convId];
+        return next;
+      });
+    } else if (insertAfterUserId) {
+      setInsertStreamAfterUserIdsByConv(prev => ({
+        ...prev,
+        [convId]: insertAfterUserId,
+      }));
+      setRegenerationTargetIdsByConv(prev => {
+        if (!prev[convId]) return prev;
+        const next = { ...prev };
+        delete next[convId];
+        return next;
+      });
     } else {
       setRegenerationTargetIdsByConv(prev => {
+        if (!prev[convId]) return prev;
+        const next = { ...prev };
+        delete next[convId];
+        return next;
+      });
+      setInsertStreamAfterUserIdsByConv(prev => {
         if (!prev[convId]) return prev;
         const next = { ...prev };
         delete next[convId];
@@ -141,6 +171,12 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
         delete next[convId];
         return next;
       });
+      setInsertStreamAfterUserIdsByConv(prev => {
+        if (!prev[convId]) return prev;
+        const next = { ...prev };
+        delete next[convId];
+        return next;
+      });
     }
     const next = new Set(activeStreamsRef.current);
     next.delete(convId);
@@ -154,6 +190,7 @@ export function useChatStreaming({ activeConvId }: UseChatStreamingOptions) {
     streamingText,
     hiddenMessageId,
     streamingTargetId,
+    streamingInsertAfterUserId,
     isLoading,
     streamingConvId,
     activeStreams,

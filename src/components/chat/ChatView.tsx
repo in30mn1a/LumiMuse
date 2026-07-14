@@ -132,6 +132,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     streamingText,
     hiddenMessageId,
     streamingTargetId,
+    streamingInsertAfterUserId,
     isLoading,
     streamingConvId,
     activeStreams,
@@ -834,6 +835,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
               visibleMessages={visibleMessages}
               hiddenMessageId={hiddenMessageId}
               streamingTargetId={streamingTargetId}
+              streamingInsertAfterUserId={streamingInsertAfterUserId}
               highlightedId={highlightedId}
               isStreamingHere={isStreamingHere}
               hasOlderMessages={hasOlderMessages}

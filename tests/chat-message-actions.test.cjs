@@ -90,6 +90,8 @@ function createOptions(overrides = {}) {
     t: key => key,
     pageSize: 60,
     maybeAutoGenerateImageFromMessages: () => {},
+    markStreamAutoImageHandled: () => {},
+    clearStreamAutoImageHandled: () => {},
     ...overrides,
   };
 }

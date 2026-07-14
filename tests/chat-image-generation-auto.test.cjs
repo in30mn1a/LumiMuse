@@ -43,7 +43,27 @@ test('auto image gen can target a specific assistant message on regenerate retry
   assert.match(hookSource, /if \(options\?\.retry\) \{\s*autoImagedMsgIdsRef\.current\.delete\(targetAssistant\.id\);/);
   assert.match(
     messageActionsSource,
-    /maybeAutoGenerateImageFromMessages\(streamConversationId, response\.messages, \{\s*assistantMessageId: regenerateAssistantId,\s*retry: true,/,
+    /maybeAutoGenerateImageFromMessages\(streamConversationId, response\.messages, \{\s*assistantMessageId: targetAssistantId,\s*retry: Boolean\(regenerateAssistantId\),/,
+  );
+});
+
+test('mid-insert and regenerate both target auto image by assistant id and mark stream handled', () => {
+  assert.match(
+    messageActionsSource,
+    /if \(regenerateAssistantId \|\| insertAssistantAfterUserId\)/,
+  );
+  assert.match(messageActionsSource, /findAssistantInsertedAfterUser/);
+  assert.match(messageActionsSource, /markStreamAutoImageHandled\(streamConversationId\)/);
+  assert.match(messageActionsSource, /clearStreamAutoImageHandled\(streamConversationId\)/);
+  assert.match(hookSource, /streamAutoImageHandledConvIdsRef/);
+  assert.match(
+    hookSource,
+    /if \(!options\?\.assistantMessageId && streamAutoImageHandledConvIdsRef\.current\.has\(cid\)\)/,
+  );
+  // 有目标 id 的调用不得清 mark（留给 ChatView 无目标 effect 消费）
+  assert.doesNotMatch(
+    hookSource,
+    /if \(options\?\.assistantMessageId\) \{\s*streamAutoImageHandledConvIdsRef\.current\.delete/,
   );
 });
 

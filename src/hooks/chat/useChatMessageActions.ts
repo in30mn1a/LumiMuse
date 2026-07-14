@@ -19,6 +19,14 @@ type StreamingUsage = {
   total_tokens: number;
 };
 
+/** 中段 insert 落库后：锚点 user 之后紧邻的第一条 assistant（按列表顺序） */
+function findAssistantInsertedAfterUser(messages: Message[], userMessageId: string): string | undefined {
+  const userIndex = messages.findIndex(message => message.id === userMessageId && message.role === 'user');
+  if (userIndex < 0) return undefined;
+  const next = messages[userIndex + 1];
+  return next?.role === 'assistant' ? next.id : undefined;
+}
+
 type UseChatMessageActionsOptions = {
   activeConvIdRef: MutableRefObject<string | null>;
   activeStreamsRef: MutableRefObject<Set<string>>;
@@ -41,6 +49,9 @@ type UseChatMessageActionsOptions = {
     freshMessages: Message[],
     options?: { assistantMessageId?: string; retry?: boolean },
   ) => void | Promise<void>;
+  /** 标记本轮流已由 callChatStream 按目标 id 处理自动出图，避免 ChatView 无目标 effect 误打末尾气泡 */
+  markStreamAutoImageHandled: (cid: string) => void;
+  clearStreamAutoImageHandled: (cid: string) => void;
 };
 
 export function useChatMessageActions({
@@ -60,6 +71,8 @@ export function useChatMessageActions({
   t,
   pageSize,
   maybeAutoGenerateImageFromMessages,
+  markStreamAutoImageHandled,
+  clearStreamAutoImageHandled,
 }: UseChatMessageActionsOptions) {
   const handleEditMessage = useCallback(async (
     id: string,
@@ -121,6 +134,8 @@ export function useChatMessageActions({
       insertAfterUserMessageId: !regenerateAssistantId ? insertAssistantAfterUserId : undefined,
     });
     const streamConversationId = convId;
+    // 新流开始：清掉上一轮残留的 handled 标记
+    clearStreamAutoImageHandled(streamConversationId);
 
     try {
       const response = await fetch('/api/chat', {
@@ -169,14 +184,23 @@ export function useChatMessageActions({
 
       if (regenerateAssistantId) markSkipNextScroll();
       await refreshMessagesForConversation(streamConversationId);
-      if (regenerateAssistantId) {
+
+      // regenerate：目标 id 已知；mid-insert：新 assistant 落在锚点 user 之后，需从刷新结果定位
+      // 两种路径都按目标 id 触发自动出图，并 mark 掉 ChatView 无目标 effect，避免 reverse().find 误打末尾旧气泡
+      if (regenerateAssistantId || insertAssistantAfterUserId) {
         const response = await fetchMessagesPage(streamConversationId, {
           limit: Math.max(pageSize, messagesRef.current.length),
         });
-        void maybeAutoGenerateImageFromMessages(streamConversationId, response.messages, {
-          assistantMessageId: regenerateAssistantId,
-          retry: true,
-        });
+        const targetAssistantId = regenerateAssistantId
+          ?? findAssistantInsertedAfterUser(response.messages, insertAssistantAfterUserId!);
+        if (targetAssistantId) {
+          // 仅在成功定位目标时 mark，避免定位失败还挡住 ChatView 兜底
+          markStreamAutoImageHandled(streamConversationId);
+          void maybeAutoGenerateImageFromMessages(streamConversationId, response.messages, {
+            assistantMessageId: targetAssistantId,
+            retry: Boolean(regenerateAssistantId),
+          });
+        }
       }
       // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
       touchConversation(streamConversationId);
@@ -206,6 +230,8 @@ export function useChatMessageActions({
     touchConversation,
     pageSize,
     maybeAutoGenerateImageFromMessages,
+    markStreamAutoImageHandled,
+    clearStreamAutoImageHandled,
     messagesRef,
   ]);
 

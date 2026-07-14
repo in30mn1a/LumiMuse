@@ -227,6 +227,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     handleGenerateImage,
     generatingImageMessageIds,
     maybeAutoGenerateImageFromMessages,
+    markStreamAutoImageHandled,
+    clearStreamAutoImageHandled,
     handleDeleteImage,
     handleEditImagePrompt,
     handleSetPrimaryImage,
@@ -264,6 +266,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     t,
     pageSize: PAGE_SIZE,
     maybeAutoGenerateImageFromMessages,
+    markStreamAutoImageHandled,
+    clearStreamAutoImageHandled,
   });
 
   const versionInfoByMessageId = useMemo(() => {
@@ -639,6 +643,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     const ctl = beginStream(convId!);
     // 闭包内捕获本次流的 convId
     const myConvId = convId!;
+    // 新普通发送：清掉上一轮 regenerate/insert 残留的 handled 标记，避免误跳过本轮自动出图
+    clearStreamAutoImageHandled(myConvId);
 
     const displayAttachments = attachments?.map(att => (
       att.type === 'image'
@@ -727,9 +733,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   if (!hasCharacter) {
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center px-4 py-4">
-        {/* 移动端侧边栏入口 */}
+        {/* 移动/平板竖屏侧边栏入口（lg 以下） */}
         {onOpenSidebar && (
-          <div className="absolute left-4 top-4 md:hidden">
+          <div className="absolute left-4 top-4 lg:hidden">
             <button
               onClick={onOpenSidebar}
               className="rounded-xl bg-white/80 p-2.5 text-text-secondary shadow-sm ring-1 ring-border-light backdrop-blur-sm hover:bg-white"
@@ -812,8 +818,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         onRequestDelete={() => { setDeleteOpen(true); setToolbarExpanded(false); }}
       />
 
-      <div className="grid min-h-0 flex-1 gap-2 md:gap-4 lg:grid-cols-[minmax(0,1fr)_12rem] xl:grid-cols-[minmax(0,1fr)_22rem]">
-        <section className="surface-panel flex min-h-0 flex-col overflow-hidden">
+      {/* 最近对话默认收起：不占固定列宽；展开时由 aside 自带宽度（见 ConversationDesktopAside） */}
+      <div className="flex min-h-0 flex-1 gap-2 md:gap-4">
+        <section className="surface-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ChatToolbar
             activeConversation={activeConversation}
             unextractedCount={unextractedCount}

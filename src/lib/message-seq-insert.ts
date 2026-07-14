@@ -6,7 +6,13 @@ export type AssistantInsertSlot = {
 };
 
 /**
- * 在指定用户消息之后插入新的 assistant：后移更大 seq，并给出介于锚点与下一条之间的 created_at。
+ * 在指定用户消息之后为新 assistant 腾出 seq 槽位，并给出介于锚点与下一条之间的 created_at。
+ *
+ * 注意：本函数会执行 `UPDATE seq = seq + 1`，**不**自开事务。
+ * 调用方必须把本函数与后续 INSERT 包在同一个 `db.transaction(...)` 里，
+ * 避免 shift 已提交而 INSERT 失败留下永久空洞。
+ *
+ * 锚点不存在或不是 user 时返回 null（不做任何写操作）。
  */
 export function allocateAssistantInsertAfterUser(
   db: Database.Database,
@@ -30,13 +36,11 @@ export function allocateAssistantInsertAfterUser(
 
   const createdAt = resolveCreatedAtBetween(anchor.created_at, nextMessage?.created_at);
 
-  db.transaction(() => {
-    db.prepare(`
-      UPDATE messages
-      SET seq = seq + 1
-      WHERE conversation_id = ? AND seq > ?
-    `).run(conversationId, anchor.seq);
-  })();
+  db.prepare(`
+    UPDATE messages
+    SET seq = seq + 1
+    WHERE conversation_id = ? AND seq > ?
+  `).run(conversationId, anchor.seq);
 
   return {
     seq: anchor.seq + 1,

@@ -122,3 +122,26 @@ test('loadCharacterList after success starts a new revalidation fetch', async ()
   assert.equal(fetchCount, 2);
   assert.deepEqual(getCharacterListCache()?.map((c) => c.id), ['round-2']);
 });
+
+test('in-flight loadCharacterList does not overwrite optimistic setCharacterListCache', async () => {
+  let releaseFetch;
+  const fetchGate = new Promise((resolve) => {
+    releaseFetch = resolve;
+  });
+  let fetchCount = 0;
+  global.fetch = async () => {
+    fetchCount += 1;
+    await fetchGate;
+    return jsonResponse(sampleCharacters(['stale-a', 'stale-b']));
+  };
+
+  const loadPromise = loadCharacterList();
+  // 在飞 GET 尚未返回时做乐观 create
+  setCharacterListCache(sampleCharacters(['new-char', 'stale-a', 'stale-b']));
+  releaseFetch();
+  await loadPromise;
+
+  assert.equal(fetchCount, 1);
+  // 陈旧 GET 不得盖掉乐观列表
+  assert.deepEqual(getCharacterListCache()?.map((c) => c.id), ['new-char', 'stale-a', 'stale-b']);
+});

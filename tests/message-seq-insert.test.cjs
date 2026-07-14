@@ -59,8 +59,17 @@ test('allocateAssistantInsertAfterUser shifts later messages and returns slot af
   const db = new Database(':memory:');
   seedConversation(db);
 
-  const slot = allocateAssistantInsertAfterUser(db, 'conv-a', 'user-1');
-  assert.ok(slot);
+  // 调用方必须把 allocate 与 INSERT 包在同一事务里（本测试模拟完整插入）
+  let slot;
+  db.transaction(() => {
+    slot = allocateAssistantInsertAfterUser(db, 'conv-a', 'user-1');
+    assert.ok(slot);
+    db.prepare(`
+      INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+      VALUES ('asst-mid', 'conv-a', 'assistant', 'inserted', 1, ?, ?, '{}')
+    `).run(slot.createdAt, slot.seq);
+  })();
+
   assert.equal(slot.seq, 2);
 
   const rows = db.prepare(`
@@ -70,8 +79,19 @@ test('allocateAssistantInsertAfterUser shifts later messages and returns slot af
     ORDER BY seq ASC
   `).all();
 
-  assert.deepEqual(rows.map(row => row.id), ['user-1', 'user-2']);
-  assert.deepEqual(rows.map(row => row.seq), [1, 4]);
+  assert.deepEqual(rows.map(row => row.id), ['user-1', 'asst-mid', 'user-2']);
+  assert.deepEqual(rows.map(row => row.seq), [1, 2, 4]);
   assert.ok(Date.parse(slot.createdAt) > Date.parse('2026-07-10T10:00:00.000Z'));
   assert.ok(Date.parse(slot.createdAt) < Date.parse('2026-07-10T10:10:00.000Z'));
+});
+
+test('allocateAssistantInsertAfterUser returns null for missing or non-user anchor without writing', () => {
+  const db = new Database(':memory:');
+  seedConversation(db);
+
+  const missing = allocateAssistantInsertAfterUser(db, 'conv-a', 'no-such-user');
+  assert.equal(missing, null);
+
+  const seqsBefore = db.prepare(`SELECT id, seq FROM messages WHERE conversation_id = 'conv-a' ORDER BY seq ASC`).all();
+  assert.deepEqual(seqsBefore.map(row => row.seq), [1, 3]);
 });

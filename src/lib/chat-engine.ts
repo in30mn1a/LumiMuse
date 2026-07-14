@@ -716,19 +716,43 @@ export async function runChat(
       if (lastMemoryInjection) {
         meta.last_memory_injection = lastMemoryInjection;
       }
-      const insertSlot = options?.insertAssistantAfterUserId
-        ? allocateAssistantInsertAfterUser(db, conversationId, options.insertAssistantAfterUserId)
-        : null;
-      const asstSeq = insertSlot?.seq
-        ?? (((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1);
-      const asstCreatedAt = insertSlot?.createdAt ?? asstNow;
-      db.transaction(() => {
-        db.prepare(`
-          INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)
-        `).run(asstId, conversationId, fullText, tokenCount, asstCreatedAt, asstSeq, JSON.stringify(meta));
-        db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
-      })();
+      // insert-after-user：shift + INSERT 必须同一事务；锚点失效时抛错拒绝静默尾插
+      // （流式/非流式路径会把异常传到 route 的 onError 或 catch，向前端发 error 事件）
+      if (options?.insertAssistantAfterUserId) {
+        db.transaction(() => {
+          const insertSlot = allocateAssistantInsertAfterUser(
+            db,
+            conversationId,
+            options.insertAssistantAfterUserId!,
+          );
+          if (!insertSlot) {
+            throw new Error('Insert anchor user message not found');
+          }
+          db.prepare(`
+            INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+            VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)
+          `).run(
+            asstId,
+            conversationId,
+            fullText,
+            tokenCount,
+            insertSlot.createdAt,
+            insertSlot.seq,
+            JSON.stringify(meta),
+          );
+          db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
+        })();
+      } else {
+        // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
+        db.transaction(() => {
+          const asstSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
+          db.prepare(`
+            INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+            VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)
+          `).run(asstId, conversationId, fullText, tokenCount, asstNow, asstSeq, JSON.stringify(meta));
+          db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
+        })();
+      }
       await callbacks.onDone(fullText, tokenCount);
     }
   };

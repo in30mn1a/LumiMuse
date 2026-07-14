@@ -114,6 +114,7 @@ export function useChatMessageActions({
     userContent: string,
     regenerateAssistantId?: string,
     skipUserInsert?: boolean,
+    insertAssistantAfterUserId?: string,
   ) => {
     const controller = beginStream(convId, { regenerateAssistantId });
     const streamConversationId = convId;
@@ -127,6 +128,7 @@ export function useChatMessageActions({
           content: userContent,
           ...buildClientTimePayload(),
           ...(regenerateAssistantId ? { regenerate_assistant_id: regenerateAssistantId } : {}),
+          ...(insertAssistantAfterUserId ? { insert_assistant_after_user_id: insertAssistantAfterUserId } : {}),
           ...(skipUserInsert ? { skip_user_insert: true } : {}),
         }),
         signal: controller.signal,
@@ -231,7 +233,13 @@ export function useChatMessageActions({
       .slice(userMessageIndex + 1)
       .find(message => message.role === 'assistant');
 
-    await callChatStream(convId, userContent, nextAssistant?.id, true);
+    await callChatStream(
+      convId,
+      userContent,
+      nextAssistant?.id,
+      true,
+      nextAssistant ? undefined : userMessageId,
+    );
   }, [activeConvIdRef, activeStreamsRef, callChatStream, messagesRef]);
 
   const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {

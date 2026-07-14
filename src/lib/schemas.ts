@@ -303,6 +303,7 @@ export const chatBodySchema = z.object({
   conversation_id: z.string().min(1).max(64),
   content: z.string().max(MAX_MESSAGE_CONTENT).optional().default(''),
   regenerate_assistant_id: z.string().min(1).max(64).optional(),
+  insert_assistant_after_user_id: z.string().min(1).max(64).optional(),
   skip_user_insert: z.boolean().optional(),
   attachments: z.array(attachmentSchema).max(50).optional(),
   client_now_iso: z.string().max(64).optional(),

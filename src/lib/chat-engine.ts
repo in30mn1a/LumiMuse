@@ -21,6 +21,7 @@ import {
   MEMORY_CONTEXT_TITLE,
   MEMORY_USAGE_PRINCIPLES,
 } from '@/lib/memory-prompt-contract';
+import { allocateAssistantInsertAfterUser } from '@/lib/message-seq-insert';
 
 /**
  * 消息附件类型。重新导出 MessageAttachment 别名以保持外部 API 不变
@@ -445,7 +446,14 @@ export async function runChat(
   userContent: string,
   settings: Settings,
   callbacks: ChatEngineCallbacks,
-  options?: { regenerateAssistantId?: string; skipUserInsert?: boolean; attachments?: AttachmentItem[]; signal?: AbortSignal; timeContext?: ChatTimeContext },
+  options?: {
+    regenerateAssistantId?: string;
+    insertAssistantAfterUserId?: string;
+    skipUserInsert?: boolean;
+    attachments?: AttachmentItem[];
+    signal?: AbortSignal;
+    timeContext?: ChatTimeContext;
+  },
 ): Promise<void> {
   const db = getDb();
 
@@ -499,31 +507,47 @@ export async function runChat(
         .get(options.regenerateAssistantId, conversationId) as { created_at: string; seq: number } | undefined
     : undefined;
 
-  // 正常聊天定位全局最后一条 summary；重新生成则只定位目标消息之前的最后 summary。
-  // 这样既保持有界读取，也不会把目标之后的“未来消息”错误送入重新生成上下文。
+  const insertAfterUserMessage = options?.insertAssistantAfterUserId
+    ? db.prepare('SELECT created_at, seq FROM messages WHERE id = ? AND conversation_id = ? AND role = ?')
+        .get(options.insertAssistantAfterUserId, conversationId, 'user') as { created_at: string; seq: number } | undefined
+    : undefined;
+
+  const historyUpperBound = regenerateTargetMessage
+    ? { seq: regenerateTargetMessage.seq, inclusive: false as const }
+    : insertAfterUserMessage
+      ? { seq: insertAfterUserMessage.seq, inclusive: true as const }
+      : undefined;
+  const historyUpperSql = historyUpperBound
+    ? (historyUpperBound.inclusive ? 'AND seq <= ?' : 'AND seq < ?')
+    : '';
+  const summaryUpperSql = historyUpperBound
+    ? (historyUpperBound.inclusive ? 'AND seq <= ?' : 'AND seq < ?')
+    : '';
+
+  // 正常聊天定位全局最后一条 summary；分支生成则只取锚点之前的 summary，且不把锚点之后的消息送入上下文。
   const summarySql = `
     SELECT seq
     FROM messages
     WHERE conversation_id = ?
-      ${regenerateTargetMessage ? 'AND seq < ?' : ''}
+      ${summaryUpperSql}
       AND CASE WHEN json_valid(metadata)
                THEN json_extract(metadata, '$.isSummary') = 1
                ELSE 0 END
     ORDER BY seq DESC
     LIMIT 1
   `;
-  const lastSummary = (regenerateTargetMessage
-    ? db.prepare(summarySql).get(conversationId, regenerateTargetMessage.seq)
+  const lastSummary = (historyUpperBound
+    ? db.prepare(summarySql).get(conversationId, historyUpperBound.seq)
     : db.prepare(summarySql).get(conversationId)) as { seq: number } | undefined;
   const historySql = [
     'SELECT * FROM messages WHERE conversation_id = ?',
     lastSummary ? 'AND seq >= ?' : '',
-    regenerateTargetMessage ? 'AND seq < ?' : '',
+    historyUpperSql,
     'ORDER BY created_at ASC, seq ASC',
   ].filter(Boolean).join(' ');
   const historyParams: Array<string | number> = [conversationId];
   if (lastSummary) historyParams.push(lastSummary.seq);
-  if (regenerateTargetMessage) historyParams.push(regenerateTargetMessage.seq);
+  if (historyUpperBound) historyParams.push(historyUpperBound.seq);
   const history = serializeTypedMessages(
     db.prepare(historySql).all(...historyParams) as Message[]
   );
@@ -540,7 +564,7 @@ export async function runChat(
 
   const effectiveTimeContext = resolveCurrentTimeContext(
     options?.timeContext,
-    regenerateTargetMessage?.created_at,
+    regenerateTargetMessage?.created_at ?? insertAfterUserMessage?.created_at,
   );
 
   let memoryContents: string[] | string = [];
@@ -682,13 +706,17 @@ export async function runChat(
       if (lastMemoryInjection) {
         meta.last_memory_injection = lastMemoryInjection;
       }
-      // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
+      const insertSlot = options?.insertAssistantAfterUserId
+        ? allocateAssistantInsertAfterUser(db, conversationId, options.insertAssistantAfterUserId)
+        : null;
+      const asstSeq = insertSlot?.seq
+        ?? (((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1);
+      const asstCreatedAt = insertSlot?.createdAt ?? asstNow;
       db.transaction(() => {
-        const asstSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
         db.prepare(`
           INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
           VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)
-        `).run(asstId, conversationId, fullText, tokenCount, asstNow, asstSeq, JSON.stringify(meta));
+        `).run(asstId, conversationId, fullText, tokenCount, asstCreatedAt, asstSeq, JSON.stringify(meta));
         db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
       })();
       await callbacks.onDone(fullText, tokenCount);

@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
     conversation_id,
     content,
     regenerate_assistant_id,
+    insert_assistant_after_user_id,
     skip_user_insert,
     attachments,
     client_now_iso,
@@ -119,7 +120,13 @@ export async function POST(request: NextRequest) {
         const options = regenerate_assistant_id
           ? { regenerateAssistantId: regenerate_assistant_id, skipUserInsert: true, signal: request.signal }
           : skip_user_insert
-            ? { skipUserInsert: true, signal: request.signal }
+            ? {
+                skipUserInsert: true,
+                ...(insert_assistant_after_user_id
+                  ? { insertAssistantAfterUserId: insert_assistant_after_user_id }
+                  : {}),
+                signal: request.signal,
+              }
             : attachments && attachments.length > 0
               ? { attachments, signal: request.signal }
               : { signal: request.signal };

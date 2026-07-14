@@ -8,6 +8,14 @@ const hookSource = fs.readFileSync(
   path.join(root, 'src/hooks/chat/useChatImageGeneration.ts'),
   'utf8',
 );
+const messageActionsSource = fs.readFileSync(
+  path.join(root, 'src/hooks/chat/useChatMessageActions.ts'),
+  'utf8',
+);
+const chatEngineSource = fs.readFileSync(
+  path.join(root, 'src/lib/chat-engine.ts'),
+  'utf8',
+);
 
 test('auto image gen uses server message snapshot and only marks autoImaged after start', () => {
   assert.match(hookSource, /messageSnapshot\?: Message/);
@@ -17,15 +25,33 @@ test('auto image gen uses server message snapshot and only marks autoImaged afte
   );
   assert.match(
     hookSource,
-    /const started = await generateImageRef\.current\?\.\([\s\S]*lastAssistant,/,
+    /const started = await generateImageRef\.current\?\.\([\s\S]*targetAssistant,/,
   );
   assert.match(
     hookSource,
-    /if \(started\) \{\s*autoImagedMsgIdsRef\.current\.add\(lastAssistant\.id\);/,
+    /if \(started\) \{\s*autoImagedMsgIdsRef\.current\.add\(targetAssistant\.id\);/,
   );
   assert.doesNotMatch(
     hookSource,
-    /autoImagedMsgIdsRef\.current\.add\(lastAssistant\.id\);\s*generateImageRef/,
+    /autoImagedMsgIdsRef\.current\.add\(targetAssistant\.id\);\s*generateImageRef/,
+  );
+});
+
+test('auto image gen can target a specific assistant message on regenerate retry', () => {
+  assert.match(hookSource, /assistantMessageId\?: string/);
+  assert.match(hookSource, /options\?\.assistantMessageId/);
+  assert.match(hookSource, /if \(options\?\.retry\) \{\s*autoImagedMsgIdsRef\.current\.delete\(targetAssistant\.id\);/);
+  assert.match(
+    messageActionsSource,
+    /maybeAutoGenerateImageFromMessages\(streamConversationId, response\.messages, \{\s*assistantMessageId: regenerateAssistantId,\s*retry: true,/,
+  );
+});
+
+test('regenerate retry keeps old images but still allows a new auto image run', () => {
+  assert.doesNotMatch(chatEngineSource, /delete meta\.generatedImages;/);
+  assert.match(
+    hookSource,
+    /if \(!options\?\.retry && existingImgs\.length > 0\) return;/,
   );
 });
 

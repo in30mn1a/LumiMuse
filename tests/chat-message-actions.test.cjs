@@ -88,6 +88,8 @@ function createOptions(overrides = {}) {
     markSkipNextScroll: () => {},
     showToast: () => {},
     t: key => key,
+    pageSize: 60,
+    maybeAutoGenerateImageFromMessages: () => {},
     ...overrides,
   };
 }

@@ -4,6 +4,7 @@ import type { ToastType } from '@/components/ui/Toast';
 import { parseJsonResponse } from '@/lib/http';
 import {
   buildClientTimePayload,
+  fetchMessagesPage,
   readChatSseStream,
 } from '@/lib/chat-stream-client';
 
@@ -34,6 +35,12 @@ type UseChatMessageActionsOptions = {
   markSkipNextScroll: () => void;
   showToast: (message: string, type?: ToastType) => void;
   t: (key: string) => string;
+  pageSize: number;
+  maybeAutoGenerateImageFromMessages: (
+    cid: string,
+    freshMessages: Message[],
+    options?: { assistantMessageId?: string; retry?: boolean },
+  ) => void | Promise<void>;
 };
 
 export function useChatMessageActions({
@@ -51,6 +58,8 @@ export function useChatMessageActions({
   markSkipNextScroll,
   showToast,
   t,
+  pageSize,
+  maybeAutoGenerateImageFromMessages,
 }: UseChatMessageActionsOptions) {
   const handleEditMessage = useCallback(async (
     id: string,
@@ -155,6 +164,15 @@ export function useChatMessageActions({
 
       if (regenerateAssistantId) markSkipNextScroll();
       await refreshMessagesForConversation(streamConversationId);
+      if (regenerateAssistantId) {
+        const response = await fetchMessagesPage(streamConversationId, {
+          limit: Math.max(pageSize, messagesRef.current.length),
+        });
+        void maybeAutoGenerateImageFromMessages(streamConversationId, response.messages, {
+          assistantMessageId: regenerateAssistantId,
+          retry: true,
+        });
+      }
       // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
       touchConversation(streamConversationId);
     } catch (error) {
@@ -181,6 +199,9 @@ export function useChatMessageActions({
     showToast,
     t,
     touchConversation,
+    pageSize,
+    maybeAutoGenerateImageFromMessages,
+    messagesRef,
   ]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {

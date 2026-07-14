@@ -261,6 +261,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     markSkipNextScroll,
     showToast,
     t,
+    pageSize: PAGE_SIZE,
+    maybeAutoGenerateImageFromMessages,
   });
 
   const versionInfoByMessageId = useMemo(() => {

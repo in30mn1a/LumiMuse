@@ -282,26 +282,39 @@ export function useChatImageGeneration({
     generateImageRef.current = handleGenerateImage;
   }, [handleGenerateImage]);
 
-  const maybeAutoGenerateImageFromMessages = useCallback(async (cid: string, freshMessages: Message[]) => {
+  const maybeAutoGenerateImageFromMessages = useCallback(async (
+    cid: string,
+    freshMessages: Message[],
+    options?: { assistantMessageId?: string; retry?: boolean },
+  ) => {
     try {
       const settingsRes = await fetch('/api/settings');
       const s = await parseJsonResponse<Partial<Settings>>(settingsRes);
       const imgCfg = s.image_gen;
       if (!imgCfg?.enabled) return;
 
-      const lastAssistant = [...freshMessages].reverse().find(m => m.role === 'assistant');
-      if (!lastAssistant) return;
-      if (autoImagedMsgIdsRef.current.has(lastAssistant.id)) return;
-      if (inFlightMessageIdsRef.current.has(lastAssistant.id)) return;
-      const existingImgs = sanitizeGeneratedImages((lastAssistant.metadata as Record<string, unknown> | undefined)?.generatedImages);
-      if (existingImgs.length > 0) return;
+      const targetAssistant = options?.assistantMessageId
+        ? freshMessages.find(m => m.id === options.assistantMessageId && m.role === 'assistant')
+        : [...freshMessages].reverse().find(m => m.role === 'assistant');
+      if (!targetAssistant) return;
 
-      const inlinePrompt = (lastAssistant.metadata as Record<string, unknown> | undefined)?.inlineImagePrompt;
+      if (options?.retry) {
+        autoImagedMsgIdsRef.current.delete(targetAssistant.id);
+      }
+      if (autoImagedMsgIdsRef.current.has(targetAssistant.id)) return;
+      if (inFlightMessageIdsRef.current.has(targetAssistant.id)) return;
+      const existingImgs = sanitizeGeneratedImages((targetAssistant.metadata as Record<string, unknown> | undefined)?.generatedImages);
+      // 重新生成（retry）时保留旧图，仍可为新版本追加 pending/新图
+      if (!options?.retry && existingImgs.length > 0) return;
+
+      const inlinePrompt = (targetAssistant.metadata as Record<string, unknown> | undefined)?.inlineImagePrompt;
       let triggerPrompt: string | undefined;
       if (imgCfg.inline_prompt && typeof inlinePrompt === 'string' && inlinePrompt.trim()) {
         triggerPrompt = inlinePrompt.trim();
       } else if (imgCfg.auto_generate) {
-        const lastUser = [...freshMessages].reverse().find(m => m.role === 'user');
+        const targetIdx = freshMessages.findIndex(m => m.id === targetAssistant.id);
+        const context = targetIdx >= 0 ? freshMessages.slice(0, targetIdx + 1) : freshMessages;
+        const lastUser = [...context].reverse().find(m => m.role === 'user');
         const keywords = (imgCfg.auto_generate_keywords || '').split(',').map((k: string) => k.trim()).filter(Boolean);
         if (!lastUser || keywords.length === 0 || !keywords.some((kw: string) => lastUser.content.includes(kw))) return;
         triggerPrompt = undefined;
@@ -309,16 +322,15 @@ export function useChatImageGeneration({
         return;
       }
 
-      // 只有 handleGenerateImage 真正占坑后才记入 autoImaged，避免「找不到消息」静默失败后永远不再出图
       const started = await generateImageRef.current?.(
-        lastAssistant.id,
+        targetAssistant.id,
         triggerPrompt,
         undefined,
         cid,
-        lastAssistant,
+        targetAssistant,
       );
       if (started) {
-        autoImagedMsgIdsRef.current.add(lastAssistant.id);
+        autoImagedMsgIdsRef.current.add(targetAssistant.id);
       }
     } catch (err) {
       showToast(`${t('chat.autoImageGenFailed')}: ${getErrorMessage(err)}`, 'error');

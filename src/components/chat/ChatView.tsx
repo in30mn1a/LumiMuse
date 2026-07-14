@@ -11,7 +11,7 @@ import ChatMessageList from './ChatMessageList';
 import RenameConvModal from './RenameConvModal';
 import DeleteConvModal from './DeleteConvModal';
 import type { TokenBreakdownItem, RealUsage, MemoryInjectionInfo } from './TokenBreakdownModal';
-import { ConversationDesktopAside, ConversationMobileDrawer } from './ConversationListPanels';
+import { ConversationDrawer } from './ConversationListPanels';
 import { useTranslation } from '@/lib/i18n-context';
 import { useConversationLoader } from '@/hooks/chat/useConversationLoader';
 import { useChatStreaming } from '@/hooks/chat/useChatStreaming';
@@ -82,23 +82,10 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [duplicating, setDuplicating] = useState(false);
   // 重置提取状态弹窗
   const [resetExtractionOpen, setResetExtractionOpen] = useState(false);
-  // 移动端对话列表抽屉
+  // 对话切换抽屉：全断点渲染（<lg 底部抽屉，lg+ 居中弹窗），跨断点仍可见，无需强制关闭
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
-  // 移动端工具栏展开（拉片）
-  const [toolbarExpanded, setToolbarExpanded] = useState(false);
-
-  // ConversationMobileDrawer 的 Modal 焦点陷阱只看 open。
-  // 小屏打开后扩到 lg+ 时必须关掉，避免看不见 dialog 却困住 Tab。
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(min-width: 1024px)');
-    const closeIfDesktop = () => {
-      if (mq.matches) setConvDrawerOpen(false);
-    };
-    closeIfDesktop();
-    mq.addEventListener('change', closeIfDesktop);
-    return () => mq.removeEventListener('change', closeIfDesktop);
-  }, []);
+  // 移动/平板竖屏工具栏二级操作：默认展开，可手动收起
+  const [toolbarExpanded, setToolbarExpanded] = useState(true);
   // 图片管理弹窗（仅保留开关；列表/选中/分页等已下沉到 ImageManagerModal 内部）
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
 
@@ -811,14 +798,13 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         onOpenSearch={onOpenSearch}
         onOpenConvDrawer={() => setConvDrawerOpen(true)}
         onNewChat={handleNewChat}
-        onRename={() => { openRename(); setToolbarExpanded(false); }}
-        onSummarize={() => { handleSummarize(); setToolbarExpanded(false); }}
-        onDuplicate={() => { handleDuplicateConv(); setToolbarExpanded(false); }}
-        onOpenImageManager={() => { setImageManagerOpen(true); setToolbarExpanded(false); }}
-        onRequestDelete={() => { setDeleteOpen(true); setToolbarExpanded(false); }}
+        onRename={() => openRename()}
+        onSummarize={() => handleSummarize()}
+        onDuplicate={() => handleDuplicateConv()}
+        onOpenImageManager={() => setImageManagerOpen(true)}
+        onRequestDelete={() => setDeleteOpen(true)}
       />
 
-      {/* 最近对话默认收起：不占固定列宽；展开时由 aside 自带宽度（见 ConversationDesktopAside） */}
       <div className="flex min-h-0 flex-1 gap-2 md:gap-4">
         <section className="surface-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ChatToolbar
@@ -907,12 +893,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
             }}
           />
         </section>
-
-        <ConversationDesktopAside
-          conversations={conversations}
-          activeConvId={activeConvId}
-          onSelect={selectActiveConvId}
-        />
       </div>
 
       {renameOpen && (
@@ -972,8 +952,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         />
       )}
 
-      {/* 移动端对话列表抽屉（lg 以下显示） */}
-      <ConversationMobileDrawer
+      {/* 对话切换抽屉（全断点：<lg 底部抽屉，lg+ 居中弹窗） */}
+      <ConversationDrawer
         open={convDrawerOpen}
         conversations={conversations}
         activeConvId={activeConvId}

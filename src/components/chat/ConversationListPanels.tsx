@@ -1,10 +1,9 @@
 'use client';
 
-import { useState } from 'react';
 import type { Conversation } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatDateTime, formatShortDate } from '@/lib/chat-view-utils';
-import { ChevronDownIcon, ClockIcon } from '@/components/ui/icons';
+import { ClockIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
 
 interface ConversationItemProps {
@@ -35,69 +34,6 @@ function ConversationItem({ conversation, active, onClick }: ConversationItemPro
   );
 }
 
-interface DesktopProps {
-  conversations: Conversation[];
-  activeConvId: string | null;
-  onSelect: (id: string) => void;
-}
-
-/**
- * 桌面/平板横屏(lg+)：最近对话侧栏。
- * 默认收起，只占一条标题栏；展开后占 18rem/22rem 列宽（由父 grid 控制）。
- */
-export function ConversationDesktopAside({ conversations, activeConvId, onSelect }: DesktopProps) {
-  const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <aside
-      className={`hidden min-h-0 flex-col lg:flex ${
-        expanded
-          ? 'w-[18rem] shrink-0 self-stretch xl:w-[22rem]'
-          : 'w-auto shrink-0 self-start'
-      }`}
-    >
-      <div className={`surface-panel flex min-h-0 flex-col overflow-hidden ${expanded ? 'h-full flex-1' : ''}`}>
-        <button
-          type="button"
-          onClick={() => setExpanded(prev => !prev)}
-          className="flex shrink-0 items-center justify-between gap-2 border-b border-border-light px-4 py-4 text-left transition-colors hover:bg-warm-50/60 dark:hover:bg-white/5"
-          aria-expanded={expanded}
-          aria-label={expanded ? t('chat.collapseRecent') : t('chat.expandRecent')}
-        >
-          <p className="label-small">
-            {t('chat.quickResume')}
-            <span className="ml-1.5 font-normal text-text-muted">({conversations.length})</span>
-          </p>
-          <ChevronDownIcon
-            className={`h-4 w-4 shrink-0 text-text-muted transition-transform duration-200 ${
-              expanded ? 'rotate-180' : '-rotate-90'
-            }`}
-            aria-hidden="true"
-          />
-        </button>
-        {expanded && (
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4">
-            {conversations.map(c => (
-              <ConversationItem
-                key={c.id}
-                conversation={c}
-                active={activeConvId === c.id}
-                onClick={() => onSelect(c.id)}
-              />
-            ))}
-            {conversations.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
-                {t('chat.noConversationBody')}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </aside>
-  );
-}
-
 interface DrawerProps {
   open: boolean;
   conversations: Conversation[];
@@ -106,8 +42,11 @@ interface DrawerProps {
   onClose: () => void;
 }
 
-/** 移动/平板竖屏底部抽屉：最近对话（lg 以下） */
-export function ConversationMobileDrawer({ open, conversations, activeConvId, onSelect, onClose }: DrawerProps) {
+/**
+ * 对话切换抽屉（全断点）：
+ * <lg 从底部滑出的抽屉；lg+ 居中弹窗（入口在 ChatHeader 的「最近对话」按钮）。
+ */
+export function ConversationDrawer({ open, conversations, activeConvId, onSelect, onClose }: DrawerProps) {
   const { t } = useTranslation();
   return (
     <Modal
@@ -115,13 +54,16 @@ export function ConversationMobileDrawer({ open, conversations, activeConvId, on
       onClose={onClose}
       ariaLabel={t('chat.quickResume')}
       padded={false}
-      overlayClassName="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
-      dialogClassName="fixed bottom-0 left-0 right-0 z-50 animate-slideUp outline-none lg:hidden"
+      overlayClassName="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px] animate-fadeIn"
+      dialogClassName="fixed inset-x-0 bottom-0 z-50 animate-slideUp outline-none lg:bottom-auto lg:left-1/2 lg:right-auto lg:top-[16dvh] lg:w-[26rem] lg:max-w-[calc(100vw-3rem)] lg:-translate-x-1/2 lg:animate-fadeIn"
     >
-      <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4">
-        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-border-light" />
+      <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4 lg:rounded-[28px] lg:pb-5">
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-border-light lg:hidden" />
         <div className="mb-3 flex items-center justify-between">
-          <p className="text-sm font-semibold text-text-primary">{t('chat.quickResume')}</p>
+          <p className="text-sm font-semibold text-text-primary">
+            {t('chat.quickResume')}
+            <span className="ml-1.5 font-normal text-text-muted">({conversations.length})</span>
+          </p>
           <button
             onClick={onClose}
             className="rounded-full p-1.5 text-text-muted hover:bg-warm-100"

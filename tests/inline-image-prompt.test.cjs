@@ -34,3 +34,16 @@ test('multiple inline image blocks keep the current first-block-only behavior', 
   assert.equal(extractInlinePrompt(text), 'first, prompt');
   assert.equal(stripInlinePrompt(text), '正文\n\n补充\n[IMG]second, prompt[/IMG]');
 });
+
+test('chat-engine wires sensitive tag strip/rejoin for inline prompts on grok/gemini', () => {
+  const fs = require('node:fs');
+  const chatEngine = fs.readFileSync(
+    path.resolve(__dirname, '../src/lib/chat-engine.ts'),
+    'utf8',
+  );
+  assert.match(chatEngine, /prepareImageTagsForSensitiveModel\(settings\.model, character\.image_tags\)/);
+  assert.match(
+    chatEngine,
+    /restoreSensitiveImageTagsToPrompt\(settings\.model, rawInlinePrompt, character\.image_tags\)/,
+  );
+});

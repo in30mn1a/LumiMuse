@@ -33,9 +33,12 @@ require.extensions['.ts'] = function loadTs(module, filename) {
 
 const {
   partitionSensitiveImageTags,
+  rejoinSensitiveTagsFromOriginalOrder,
   rejoinSensitiveTagsAfterSubject,
   isSensitiveImageTag,
   imageTagCoreForSensitivity,
+  prepareImageTagsForSensitiveModel,
+  restoreSensitiveImageTagsToPrompt,
 } = require('../src/lib/image-prompt-sensitive-tags.ts');
 
 test('imageTagCoreForSensitivity unwraps weighted tags', () => {
@@ -60,7 +63,56 @@ test('partitionSensitiveImageTags preserves original weighted spelling for rejoi
   assert.equal(strippedForRejoin, '1.3::loli::, 1.2::kindergarten uniform::');
 });
 
-test('rejoinSensitiveTagsAfterSubject inserts stripped tags after 1girl', () => {
+test('rejoinSensitiveTagsFromOriginalOrder inserts after left neighbor from image_tags', () => {
+  const joined = rejoinSensitiveTagsFromOriginalOrder(
+    'masterpiece, 1girl, blue eyes, long hair, red hair',
+    'blue eyes, 1.3::loli::, red hair',
+  );
+  assert.equal(
+    joined,
+    'masterpiece, 1girl, blue eyes, 1.3::loli::, long hair, red hair',
+  );
+});
+
+test('rejoinSensitiveTagsFromOriginalOrder inserts before right neighbor when left is missing', () => {
+  const joined = rejoinSensitiveTagsFromOriginalOrder(
+    '1girl, blue eyes, red hair',
+    '1.3::loli::, blue eyes, red hair',
+  );
+  assert.equal(joined, '1girl, 1.3::loli::, blue eyes, red hair');
+});
+
+test('rejoinSensitiveTagsFromOriginalOrder keeps consecutive sensitive tags in original order', () => {
+  const joined = rejoinSensitiveTagsFromOriginalOrder(
+    'best quality, 1girl, blue eyes, red hair',
+    'blue eyes, 1.3::loli::, kindergarten uniform, red hair',
+  );
+  assert.equal(
+    joined,
+    'best quality, 1girl, blue eyes, 1.3::loli::, kindergarten uniform, red hair',
+  );
+});
+
+test('rejoinSensitiveTagsFromOriginalOrder falls back after 1girl when no neighbors present', () => {
+  const joined = rejoinSensitiveTagsFromOriginalOrder(
+    'masterpiece, 1girl, long hair',
+    '1.3::loli::, kindergarten uniform',
+  );
+  assert.equal(
+    joined,
+    'masterpiece, 1girl, 1.3::loli::, kindergarten uniform, long hair',
+  );
+});
+
+test('rejoinSensitiveTagsFromOriginalOrder skips tags already present by core', () => {
+  const joined = rejoinSensitiveTagsFromOriginalOrder(
+    '1girl, loli, blue eyes',
+    '1.3::loli::, blue eyes',
+  );
+  assert.equal(joined, '1girl, loli, blue eyes');
+});
+
+test('legacy rejoinSensitiveTagsAfterSubject still inserts after 1girl', () => {
   const joined = rejoinSensitiveTagsAfterSubject(
     'masterpiece, 1girl, long hair, smile',
     '1.3::loli::, kindergarten uniform',
@@ -71,15 +123,34 @@ test('rejoinSensitiveTagsAfterSubject inserts stripped tags after 1girl', () => 
   );
 });
 
-test('rejoinSensitiveTagsAfterSubject unwraps weighted subject anchor', () => {
-  const joined = rejoinSensitiveTagsAfterSubject(
-    'best quality, 1.2::1girl::, blue eyes',
-    'shota',
+test('prepareImageTagsForSensitiveModel strips only for gemini/grok', () => {
+  const grok = prepareImageTagsForSensitiveModel(
+    'grok-4.5',
+    'blue eyes, 1.3::loli::, red hair',
   );
-  assert.equal(joined, 'best quality, 1.2::1girl::, shota, blue eyes');
+  assert.equal(grok.tagsForLlm, 'blue eyes, red hair');
+  assert.equal(grok.strippedForRejoin, '1.3::loli::');
+
+  const deepseek = prepareImageTagsForSensitiveModel(
+    'deepseek-chat',
+    'blue eyes, 1.3::loli::, red hair',
+  );
+  assert.equal(deepseek.tagsForLlm, 'blue eyes, 1.3::loli::, red hair');
+  assert.equal(deepseek.strippedForRejoin, '');
 });
 
-test('rejoinSensitiveTagsAfterSubject falls back after first tag when no subject tag', () => {
-  const joined = rejoinSensitiveTagsAfterSubject('solo, standing', 'child');
-  assert.equal(joined, 'solo, child, standing');
+test('restoreSensitiveImageTagsToPrompt uses original order for grok/gemini', () => {
+  const restored = restoreSensitiveImageTagsToPrompt(
+    'gemini-3.1-pro',
+    'masterpiece, 1girl, blue eyes, long hair',
+    'blue eyes, 1.3::loli::, red hair',
+  );
+  assert.equal(restored, 'masterpiece, 1girl, blue eyes, 1.3::loli::, long hair');
+
+  const untouched = restoreSensitiveImageTagsToPrompt(
+    'deepseek-chat',
+    'masterpiece, 1girl, long hair',
+    '1.3::loli::, blue eyes',
+  );
+  assert.equal(untouched, 'masterpiece, 1girl, long hair');
 });

@@ -130,7 +130,7 @@ async function runSensitiveTagStripRouteTest(model) {
     '@/lib/api-client': {
       chatCompletion: async (_settings, messages) => {
         capturedPrompt = messages[1].content;
-        return 'POSITIVE: best quality, 1girl, blue hair';
+        return 'POSITIVE: best quality, 1girl, blue eyes, red hair';
       },
     },
   });
@@ -143,9 +143,10 @@ async function runSensitiveTagStripRouteTest(model) {
   assert.match(capturedPrompt, /red hair/);
   assert.doesNotMatch(capturedPrompt, /loli/i);
   assert.doesNotMatch(capturedPrompt, /kindergarten uniform/i);
+  // 按 image_tags 原顺序：blue eyes, 1.3::loli::, kindergarten uniform, red hair
   assert.equal(
     body.prompt,
-    'best quality, 1girl, 1.3::loli::, kindergarten uniform, blue hair',
+    'best quality, 1girl, blue eyes, 1.3::loli::, kindergarten uniform, red hair',
   );
 }
 

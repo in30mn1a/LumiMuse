@@ -23,7 +23,7 @@ type UseChatMessageActionsOptions = {
   activeConvIdRef: MutableRefObject<string | null>;
   activeStreamsRef: MutableRefObject<Set<string>>;
   messagesRef: MutableRefObject<Message[]>;
-  beginStream: (convId: string, options?: { regenerateAssistantId?: string }) => AbortController;
+  beginStream: (convId: string, options?: { regenerateAssistantId?: string; insertAfterUserMessageId?: string }) => AbortController;
   finishStream: (convId: string, options?: { clearRegenerationState?: boolean }) => void;
   scheduleStreamingText: (convId: string, text: string) => void;
   setStreamingUsage: (usage: { convId: string; usage: StreamingUsage } | null) => void;

@@ -106,10 +106,11 @@ export default function Home() {
   }, []);
 
   // Modal 的焦点陷阱/Escape 只看 open，不看 CSS 断点。
-  // 移动端打开侧栏后扩到 md+ 时必须关掉，否则会「看不见 dialog 却困住 Tab」。
+  // 移动/平板竖屏打开侧栏后扩到 lg+ 时必须关掉，否则会「看不见 dialog 却困住 Tab」。
+  // 断点用 1024（lg）：iPad 竖屏 ~768–834 走抽屉；横屏 ≥1024 走常驻侧栏。
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(min-width: 768px)');
+    const mq = window.matchMedia('(min-width: 1024px)');
     const closeIfDesktop = () => {
       if (mq.matches) setSidebarOpen(false);
     };
@@ -120,8 +121,8 @@ export default function Home() {
 
   return (
     <div className="app-shell flex h-dvh">
-      {/* 桌面 md+：static 侧栏。移动抽屉仅在 sidebarOpen 时挂载，避免双 Sidebar 常驻分叉。 */}
-      <div className="hidden h-full py-4 pl-4 md:block md:static">
+      {/* 桌面 lg+：static 侧栏。移动/平板竖屏抽屉仅在 sidebarOpen 时挂载，避免双 Sidebar 常驻分叉。 */}
+      <div className="hidden h-full min-h-0 py-4 pl-4 lg:block lg:static">
         <Sidebar
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
@@ -135,8 +136,8 @@ export default function Home() {
         onClose={() => setSidebarOpen(false)}
         ariaLabel="角色列表"
         padded={false}
-        overlayClassName="fixed inset-0 z-30 bg-black/35 backdrop-blur-[2px] animate-fadeIn md:hidden"
-        dialogClassName="fixed z-40 h-full py-4 pl-4 outline-none md:hidden"
+        overlayClassName="fixed inset-0 z-30 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
+        dialogClassName="fixed z-40 h-full min-h-0 py-4 pl-4 outline-none lg:hidden"
       >
         <Sidebar
           selectedCharacterId={selectedCharacterId}
@@ -146,7 +147,8 @@ export default function Home() {
         />
       </Modal>
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden md:min-h-[calc(100vh-2rem)]">
+      {/* 与侧栏同用父级 h-dvh + py-4 内边距由 ChatView 自管，避免 100vh/100dvh 混用导致底边错位 */}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <ChatView
           character={selectedCharacter}
           conversationId={selectedConversationId}

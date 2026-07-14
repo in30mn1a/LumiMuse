@@ -125,7 +125,8 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
         onMouseDown={e => e.stopPropagation()}
         onTouchStart={e => e.stopPropagation()}
         onClick={e => e.stopPropagation()}
-        className="rounded-full p-2 text-text-muted transition-all duration-200 hover:bg-warm-100 hover:text-accent opacity-60 md:opacity-0 md:group-hover:opacity-100"
+        // 触控设备没有可靠 hover：始终显示编辑按钮，避免平板侧栏变窄后「消失」
+        className="shrink-0 rounded-full p-2 text-text-muted opacity-80 transition-all duration-200 hover:bg-warm-100 hover:text-accent hover:opacity-100"
         aria-label={editLabel}
       >
         <PencilIcon className="h-4 w-4" />

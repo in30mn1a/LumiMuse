@@ -61,15 +61,17 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
 
   const showPanel = focused && (query.trim().length > 0);
 
+  // 高度跟父级 h-full（= 视口 - 外层 py-4），避免再写 100dvh 与主栏 100vh 错位；
+  // 宽度：抽屉 72vw；lg 起常驻侧栏用 18rem 保证角色卡编辑按钮可见，xl 回到 21rem
   return (
-    <aside className="surface-panel flex h-[calc(100dvh-2rem)] w-[72vw] flex-col overflow-hidden md:w-[16rem] lg:w-[12rem] xl:w-[21rem]">
+    <aside className="surface-panel flex h-full min-h-0 w-[72vw] max-w-[21rem] flex-col overflow-hidden lg:w-[18rem] xl:w-[21rem]">
       <div className="border-b border-border-light p-4">
         <div className="surface-hero p-4">
-          <div className="flex items-center gap-3 lg:gap-2 xl:gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[1.1rem] bg-gradient-to-br from-accent to-accent-dark text-white shadow-sm lg:h-9 lg:w-9 xl:h-12 xl:w-12">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[1.1rem] bg-gradient-to-br from-accent to-accent-dark text-white shadow-sm">
               <SparkIcon className="h-5 w-5" />
             </div>
-            <h1 className="text-[1.5rem] font-semibold tracking-tight text-text-primary lg:text-base xl:text-[1.5rem]" style={{ fontFamily: 'var(--font-display)' }}>
+            <h1 className="text-[1.5rem] font-semibold tracking-tight text-text-primary" style={{ fontFamily: 'var(--font-display)' }}>
               LumiMuse
             </h1>
           </div>

@@ -1,9 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import type { Conversation } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatDateTime, formatShortDate } from '@/lib/chat-view-utils';
-import { ClockIcon } from '@/components/ui/icons';
+import { ChevronDownIcon, ClockIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
 
 interface ConversationItemProps {
@@ -40,30 +41,58 @@ interface DesktopProps {
   onSelect: (id: string) => void;
 }
 
-/** 桌面侧栏：最近对话 */
+/**
+ * 桌面/平板横屏(lg+)：最近对话侧栏。
+ * 默认收起，只占一条标题栏；展开后占 18rem/22rem 列宽（由父 grid 控制）。
+ */
 export function ConversationDesktopAside({ conversations, activeConvId, onSelect }: DesktopProps) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <aside className="hidden min-h-0 flex-col gap-4 lg:flex">
-      <div className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 border-b border-border-light px-4 py-4">
-          <p className="label-small">{t('chat.quickResume')}</p>
-        </div>
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4">
-          {conversations.map(c => (
-            <ConversationItem
-              key={c.id}
-              conversation={c}
-              active={activeConvId === c.id}
-              onClick={() => onSelect(c.id)}
-            />
-          ))}
-          {conversations.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
-              {t('chat.noConversationBody')}
-            </div>
-          )}
-        </div>
+    <aside
+      className={`hidden min-h-0 flex-col lg:flex ${
+        expanded
+          ? 'w-[18rem] shrink-0 self-stretch xl:w-[22rem]'
+          : 'w-auto shrink-0 self-start'
+      }`}
+    >
+      <div className={`surface-panel flex min-h-0 flex-col overflow-hidden ${expanded ? 'h-full flex-1' : ''}`}>
+        <button
+          type="button"
+          onClick={() => setExpanded(prev => !prev)}
+          className="flex shrink-0 items-center justify-between gap-2 border-b border-border-light px-4 py-4 text-left transition-colors hover:bg-warm-50/60 dark:hover:bg-white/5"
+          aria-expanded={expanded}
+          aria-label={expanded ? t('chat.collapseRecent') : t('chat.expandRecent')}
+        >
+          <p className="label-small">
+            {t('chat.quickResume')}
+            <span className="ml-1.5 font-normal text-text-muted">({conversations.length})</span>
+          </p>
+          <ChevronDownIcon
+            className={`h-4 w-4 shrink-0 text-text-muted transition-transform duration-200 ${
+              expanded ? 'rotate-180' : '-rotate-90'
+            }`}
+            aria-hidden="true"
+          />
+        </button>
+        {expanded && (
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4">
+            {conversations.map(c => (
+              <ConversationItem
+                key={c.id}
+                conversation={c}
+                active={activeConvId === c.id}
+                onClick={() => onSelect(c.id)}
+              />
+            ))}
+            {conversations.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
+                {t('chat.noConversationBody')}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -77,7 +106,7 @@ interface DrawerProps {
   onClose: () => void;
 }
 
-/** 移动端底部抽屉：最近对话 */
+/** 移动/平板竖屏底部抽屉：最近对话（lg 以下） */
 export function ConversationMobileDrawer({ open, conversations, activeConvId, onSelect, onClose }: DrawerProps) {
   const { t } = useTranslation();
   return (

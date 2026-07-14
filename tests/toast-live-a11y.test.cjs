@@ -176,9 +176,9 @@ test('explicit mobile chat icon controls expose 44px touch targets', () => {
     onRequestDelete() {},
   }));
 
-  // 平板工具栏也有同名 aria-label 按钮（soft-button 自带 44px 高度），此处只查移动端紧凑栏
-  const mobileHeader = headerView.container.querySelector('section.md\\:hidden');
-  assert.ok(mobileHeader, 'mobile compact header section should exist');
+  // 桌面工具栏也有同名 aria-label 按钮（soft-button 自带 44px 高度），此处只查移动/平板竖屏紧凑栏
+  const mobileHeader = headerView.container.querySelector('section.lg\\:hidden');
+  assert.ok(mobileHeader, 'mobile/tablet-portrait compact header section should exist');
   for (const name of [
     'chat.openCharacterList',
     'chat.switchConversation',

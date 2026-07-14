@@ -21,19 +21,30 @@ type UseChatImageGenerationOptions = {
 
 type ImageEntry = GeneratedImage;
 
+type GenerateImageFn = (
+  messageId: string,
+  existingPrompt?: string,
+  replaceImageId?: string,
+  conversationIdOverride?: string,
+  /** 流刚结束后 messagesRef 可能尚未同步；自动出图传入服务端快照避免找不到消息 */
+  messageSnapshot?: Message,
+) => Promise<boolean>;
+
 const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 
 export function useChatImageGeneration({
   activeConvId,
   activeConvIdRef,
-  characterRef,
+  characterRef: _characterRef,
   messagesRef,
   updateMessagesForConversation,
   markSkipNextScroll,
   showToast,
   t,
 }: UseChatImageGenerationOptions) {
-  const generateImageRef = useRef<((messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => void) | null>(null);
+  // characterRef 仍由 ChatView 传入以保持 hook 签名稳定；生图链路不依赖角色对象
+  void _characterRef;
+  const generateImageRef = useRef<GenerateImageFn | null>(null);
   const autoImagedMsgIdsRef = useRef<Set<string>>(new Set());
   const imageRequestSeqRef = useRef(0);
   const activeImageRequestsRef = useRef<Map<number, { controller: AbortController; conversationId: string }>>(new Map());
@@ -66,15 +77,23 @@ export function useChatImageGeneration({
       && !controller.signal.aborted;
   }, [activeConvIdRef]);
 
-  const handleGenerateImage = useCallback(async (messageId: string, existingPrompt?: string, replaceImageId?: string, conversationIdOverride?: string) => {
+  const handleGenerateImage = useCallback<GenerateImageFn>(async (
+    messageId,
+    existingPrompt,
+    replaceImageId,
+    conversationIdOverride,
+    messageSnapshot,
+  ) => {
     const targetConversationId = conversationIdOverride || activeConvIdRef.current;
-    if (!targetConversationId || !characterRef.current) return;
+    if (!targetConversationId) return false;
 
     const currentMessages = messagesRef.current;
-    const targetIdx = currentMessages.findIndex(m => m.id === messageId);
-    if (targetIdx < 0) return;
+    const targetFromList = currentMessages.find(m => m.id === messageId);
+    const targetMsg = targetFromList
+      ?? (messageSnapshot?.id === messageId ? messageSnapshot : undefined);
+    if (!targetMsg) return false;
 
-    if (inFlightMessageIdsRef.current.has(messageId)) return;
+    if (inFlightMessageIdsRef.current.has(messageId)) return false;
     inFlightMessageIdsRef.current.add(messageId);
     setGeneratingImageMessageIds(current => {
       const next = new Set(current);
@@ -83,7 +102,6 @@ export function useChatImageGeneration({
     });
     showToast(t('chat.imageGenStart'), 'info');
 
-    const targetMsg = currentMessages[targetIdx];
     let workingMeta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
     const placeholderId = replaceImageId || Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const requestId = ++imageRequestSeqRef.current;
@@ -115,9 +133,19 @@ export function useChatImageGeneration({
 
       workingMeta = nextMeta;
       markSkipNextScroll();
-      updateMessagesForConversation(targetConversationId, messages => (
-        messages.map(m => m.id === messageId ? { ...m, metadata: nextMeta } : m)
-      ));
+      updateMessagesForConversation(targetConversationId, messages => {
+        let found = false;
+        const next = messages.map(m => {
+          if (m.id !== messageId) return m;
+          found = true;
+          return { ...m, metadata: nextMeta };
+        });
+        // messagesRef 尚未同步新消息时，用快照补一条，否则 pending 气泡永远不出现
+        if (!found && messageSnapshot?.id === messageId) {
+          return [...next, { ...messageSnapshot, metadata: nextMeta }];
+        }
+        return next;
+      });
       return nextMeta;
     };
 
@@ -151,7 +179,7 @@ export function useChatImageGeneration({
           signal: controller.signal,
         });
         const promptData = await parseJsonResponse<{ prompt?: string; error?: string }>(promptRes);
-        if (!isCurrentImageRequest(requestId, targetConversationId, controller)) return;
+        if (!isCurrentImageRequest(requestId, targetConversationId, controller)) return true;
         if (promptData.error) throw new Error(promptData.error);
         generatedPrompt = promptData.prompt || '';
         if (!generatedPrompt) throw new Error(t('chat.imageGenPromptFail'));
@@ -170,7 +198,7 @@ export function useChatImageGeneration({
         signal: controller.signal,
       });
       const imgData = await parseJsonResponse<{ url?: string; error?: string }>(imgRes);
-      if (!isCurrentImageRequest(requestId, targetConversationId, controller)) return;
+      if (!isCurrentImageRequest(requestId, targetConversationId, controller)) return true;
       if (imgData.error) throw new Error(imgData.error);
       if (!imgData.url) throw new Error(t('chat.imageGenNoUrl'));
 
@@ -194,8 +222,10 @@ export function useChatImageGeneration({
 
         return images.map(img => img.id === placeholderId ? newImage : img);
       });
+      return true;
     } catch (err) {
-      if (isAbortError(err) || !isCurrentImageRequest(requestId, targetConversationId, controller)) return;
+      // 已占坑：无论成败都返回 true，避免 auto 路径反复重试同一条消息
+      if (isAbortError(err) || !isCurrentImageRequest(requestId, targetConversationId, controller)) return true;
       const message = err instanceof Error ? err.message : t('chat.imageGenGeneric');
       try {
         await upsertPlaceholder({
@@ -233,6 +263,7 @@ export function useChatImageGeneration({
           }
         }, 5000);
       }
+      return true;
     } finally {
       const request = activeImageRequestsRef.current.get(requestId);
       if (request?.controller === controller) {
@@ -245,7 +276,7 @@ export function useChatImageGeneration({
         return next;
       });
     }
-  }, [activeConvIdRef, characterRef, isCurrentImageRequest, markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
+  }, [activeConvIdRef, isCurrentImageRequest, markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
 
   useEffect(() => {
     generateImageRef.current = handleGenerateImage;
@@ -261,6 +292,7 @@ export function useChatImageGeneration({
       const lastAssistant = [...freshMessages].reverse().find(m => m.role === 'assistant');
       if (!lastAssistant) return;
       if (autoImagedMsgIdsRef.current.has(lastAssistant.id)) return;
+      if (inFlightMessageIdsRef.current.has(lastAssistant.id)) return;
       const existingImgs = sanitizeGeneratedImages((lastAssistant.metadata as Record<string, unknown> | undefined)?.generatedImages);
       if (existingImgs.length > 0) return;
 
@@ -277,8 +309,17 @@ export function useChatImageGeneration({
         return;
       }
 
-      autoImagedMsgIdsRef.current.add(lastAssistant.id);
-      generateImageRef.current?.(lastAssistant.id, triggerPrompt, undefined, cid);
+      // 只有 handleGenerateImage 真正占坑后才记入 autoImaged，避免「找不到消息」静默失败后永远不再出图
+      const started = await generateImageRef.current?.(
+        lastAssistant.id,
+        triggerPrompt,
+        undefined,
+        cid,
+        lastAssistant,
+      );
+      if (started) {
+        autoImagedMsgIdsRef.current.add(lastAssistant.id);
+      }
     } catch (err) {
       showToast(`${t('chat.autoImageGenFailed')}: ${getErrorMessage(err)}`, 'error');
     }

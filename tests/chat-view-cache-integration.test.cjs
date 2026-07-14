@@ -174,7 +174,10 @@ test('ChatView delegates message actions and the hook owns a dependency-aware st
   assert.ok(!source.includes('const handleRegenerate = useCallback'));
   assert.ok(!hook.includes('ref-only helper'));
   assert.ok(!hook.includes('eslint-disable-next-line react-hooks/exhaustive-deps'));
-  assert.match(callStreamBlock, /beginStream\(convId, \{ regenerateAssistantId \}\)/);
+  assert.match(
+    callStreamBlock,
+    /beginStream\(convId, \{\s*regenerateAssistantId,\s*insertAfterUserMessageId:/,
+  );
   assert.match(callStreamBlock, /showToast,/);
   assert.match(callStreamBlock, /t,/);
 });

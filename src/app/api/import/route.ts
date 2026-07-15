@@ -20,11 +20,14 @@ interface ImportPayload {
   memory_profile?: Record<string, unknown> | null;
   memory_profile_versions?: Record<string, unknown>[];
   memory_embeddings?: Record<string, unknown>[];
+  // 单角色导出：角色级记忆引擎覆盖（可选）
+  character_memory_config?: Record<string, unknown> | null;
   // 全量导出格式
   characters?: Record<string, unknown>[];
   // 全量导出：画像、画像版本、embedding 均为数组
   memory_profiles?: Record<string, unknown>[];
   // memory_profile_versions 和 memory_embeddings 在两种格式下字段名相同
+  character_memory_configs?: Record<string, unknown>[];
 }
 
 interface ConversationWithMessages {
@@ -317,6 +320,7 @@ function createEmptyResults() {
     profilesImported: 0,
     profileVersionsImported: 0,
     embeddingsImported: 0,
+    memoryConfigsImported: 0,
     // 同名冲突重命名后的角色列表，便于前端提示用户「这些角色已重命名导入」。
     warnings: [] as { type: 'character_renamed'; originalName: string; newName: string }[],
   };
@@ -412,6 +416,12 @@ export async function POST(request: NextRequest) {
   const embeddingsToImport: Record<string, unknown>[] = includeEmbeddings
     ? asArray<Record<string, unknown>>(payload.memory_embeddings)
     : [];
+  // 角色级记忆配置：单角色字段 character_memory_config，全量 character_memory_configs。
+  // 与角色绑定；导入时按 idMap / target_character_id 重映射。可选字段，旧备份无此字段则空数组。
+  const configsToImport: Record<string, unknown>[] = [
+    ...asArray<Record<string, unknown>>(payload.character_memory_configs),
+    ...(payload.character_memory_config ? [payload.character_memory_config] : []),
+  ];
 
   const enumValidationError = findImportEnumValidationError(conversationsToImport, memoriesToImport);
   if (enumValidationError) {
@@ -436,7 +446,8 @@ export async function POST(request: NextRequest) {
     conversationsToImport.length === 0 &&
     profilesToImport.length === 0 &&
     profileVersionsToImport.length === 0 &&
-    embeddingsToImport.length === 0
+    embeddingsToImport.length === 0 &&
+    configsToImport.length === 0
   ) {
     return NextResponse.json({ error: '没有可导入的内容' }, { status: 400 });
   }
@@ -459,6 +470,7 @@ export async function POST(request: NextRequest) {
     profilesToImport,
     profileVersionsToImport,
     embeddingsToImport,
+    configsToImport,
     target_character_id,
   });
 
@@ -490,6 +502,7 @@ function importPayload({
   profilesToImport,
   profileVersionsToImport,
   embeddingsToImport,
+  configsToImport,
   target_character_id,
 }: {
   db: ReturnType<typeof getDb>;
@@ -500,6 +513,7 @@ function importPayload({
   profilesToImport: Record<string, unknown>[];
   profileVersionsToImport: Record<string, unknown>[];
   embeddingsToImport: Record<string, unknown>[];
+  configsToImport: Record<string, unknown>[];
   target_character_id?: string;
 }) {
   const now = new Date().toISOString();
@@ -567,6 +581,31 @@ function importPayload({
       embedding_text_hash = excluded.embedding_text_hash,
       status = excluded.status,
       error_message = excluded.error_message,
+      updated_at = excluded.updated_at
+  `);
+  const upsertMemoryConfig = db.prepare(`
+    INSERT INTO character_memory_configs (
+      character_id, enabled, memory_package_token_budget, profile_token_budget,
+      pinned_token_budget, open_threads_token_budget, retrieval_token_budget,
+      memory_max_inject_override, vector_enabled_override, reranker_enabled_override,
+      vector_top_k_override, reranker_top_k_override, embedding_model_override,
+      reranker_model_override, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(character_id) DO UPDATE SET
+      enabled = excluded.enabled,
+      memory_package_token_budget = excluded.memory_package_token_budget,
+      profile_token_budget = excluded.profile_token_budget,
+      pinned_token_budget = excluded.pinned_token_budget,
+      open_threads_token_budget = excluded.open_threads_token_budget,
+      retrieval_token_budget = excluded.retrieval_token_budget,
+      memory_max_inject_override = excluded.memory_max_inject_override,
+      vector_enabled_override = excluded.vector_enabled_override,
+      reranker_enabled_override = excluded.reranker_enabled_override,
+      vector_top_k_override = excluded.vector_top_k_override,
+      reranker_top_k_override = excluded.reranker_top_k_override,
+      embedding_model_override = excluded.embedding_model_override,
+      reranker_model_override = excluded.reranker_model_override,
       updated_at = excluded.updated_at
   `);
 
@@ -795,7 +834,10 @@ function importPayload({
         asString(embedding.model) || 'unknown',
         asNumber(embedding.dimension) ?? 0,
         embeddingBlob,
-        asFlag(embedding.normalized) || 1,
+        // 仅缺省时默认 1；显式 0/false 必须保留，否则往返会把未归一化向量标成已归一化。
+        embedding.normalized === undefined || embedding.normalized === null
+          ? 1
+          : asFlag(embedding.normalized),
         asString(embedding.embedding_text_hash) || '',
         asString(embedding.status) || 'ready',
         asString(embedding.error_message) || null,
@@ -803,6 +845,33 @@ function importPayload({
         asString(embedding.updated_at) || now,
       );
       results.embeddingsImported++;
+    }
+
+    // ── 导入角色级记忆配置 ──────────────────────────────────────
+    // 按 character_id 重映射；目标角色不存在则跳过。可空字段保持 null。
+    for (const config of configsToImport) {
+      const originalCharId = asString(config.character_id);
+      const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
+      if (!characterExists(newCharId)) continue;
+
+      upsertMemoryConfig.run(
+        newCharId,
+        asNumber(config.enabled) ?? null,
+        asNumber(config.memory_package_token_budget) ?? null,
+        asNumber(config.profile_token_budget) ?? null,
+        asNumber(config.pinned_token_budget) ?? null,
+        asNumber(config.open_threads_token_budget) ?? null,
+        asNumber(config.retrieval_token_budget) ?? null,
+        asNumber(config.memory_max_inject_override) ?? null,
+        asNumber(config.vector_enabled_override) ?? null,
+        asNumber(config.reranker_enabled_override) ?? null,
+        asNumber(config.vector_top_k_override) ?? null,
+        asNumber(config.reranker_top_k_override) ?? null,
+        asString(config.embedding_model_override) || null,
+        asString(config.reranker_model_override) || null,
+        asString(config.updated_at) || now,
+      );
+      results.memoryConfigsImported++;
     }
   });
 

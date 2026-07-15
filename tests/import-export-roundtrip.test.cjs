@@ -195,6 +195,24 @@ function createImportDb() {
     );
     CREATE UNIQUE INDEX idx_memory_embeddings_unique_model
       ON memory_embeddings(memory_id, provider, model, dimension);
+
+    CREATE TABLE character_memory_configs (
+      character_id TEXT PRIMARY KEY,
+      enabled INTEGER,
+      memory_package_token_budget INTEGER,
+      profile_token_budget INTEGER,
+      pinned_token_budget INTEGER,
+      open_threads_token_budget INTEGER,
+      retrieval_token_budget INTEGER,
+      memory_max_inject_override INTEGER,
+      vector_enabled_override INTEGER,
+      reranker_enabled_override INTEGER,
+      vector_top_k_override INTEGER,
+      reranker_top_k_override INTEGER,
+      embedding_model_override TEXT,
+      reranker_model_override TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
   db.prepare('INSERT INTO characters (id, name) VALUES (?, ?)').run('target-char', '目标角色');
   return db;
@@ -215,6 +233,7 @@ function loadExportRoute(db) {
   return requireFreshWithMocks('../src/app/api/export/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    '@/lib/route-auth': { requireAuth: async () => null },
   });
 }
 
@@ -781,6 +800,97 @@ test('/api/import round-trips memory profile, profile versions, and embeddings w
   assert.ok(Math.abs(restoredBuffer.readFloatLE(4) - 0.2) < 1e-6);
   assert.ok(Math.abs(restoredBuffer.readFloatLE(8) - 0.3) < 1e-6);
   assert.ok(Math.abs(restoredBuffer.readFloatLE(12) - 0.4) < 1e-6);
+});
+
+test('/api/import preserves explicit embedding normalized=0', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  const embeddingBuffer = Buffer.alloc(8);
+  embeddingBuffer.writeFloatLE(1, 0);
+  embeddingBuffer.writeFloatLE(0, 4);
+
+  const response = await route.POST(importRequest(
+    {
+      version: 2,
+      memories: [{
+        id: 'mem-unnorm',
+        character_id: 'old-char',
+        category: '话题历史',
+        content: '未归一化向量的记忆',
+        created_at: '2026-06-01T00:00:00.000Z',
+        updated_at: '2026-06-01T00:00:00.000Z',
+      }],
+      memory_embeddings: [{
+        memory_id: 'mem-unnorm',
+        character_id: 'old-char',
+        provider: 'openai-compatible',
+        model: 'raw-vec',
+        dimension: 2,
+        embedding_blob: embeddingBuffer,
+        normalized: 0,
+        embedding_text_hash: 'hash-unnorm',
+        status: 'ready',
+        created_at: '2026-06-01T00:00:00.000Z',
+        updated_at: '2026-06-01T00:00:00.000Z',
+      }],
+    },
+    'target_character_id=target-char&include_character=0&include_embeddings=1',
+  ));
+  const body = await response.json();
+  assert.equal(response.status, 200, body.error);
+  assert.equal(body.embeddingsImported, 1);
+
+  const mem = db.prepare("SELECT id FROM memories WHERE content = ?").get('未归一化向量的记忆');
+  const emb = db.prepare('SELECT normalized FROM memory_embeddings WHERE memory_id = ?').get(mem.id);
+  assert.equal(emb.normalized, 0);
+});
+
+test('/api/export and /api/import round-trip character_memory_configs with id remapping', async () => {
+  const exportDb = createImportDb();
+  exportDb.prepare(`
+    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
+    VALUES (?, ?, NULL, '', '', '', '', '', '', '', '[]', '[]', ?, ?)
+  `).run('char-cfg', '配置角色', '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z');
+  exportDb.prepare(`
+    INSERT INTO character_memory_configs (
+      character_id, enabled, memory_package_token_budget, profile_token_budget,
+      pinned_token_budget, open_threads_token_budget, retrieval_token_budget,
+      memory_max_inject_override, vector_enabled_override, reranker_enabled_override,
+      vector_top_k_override, reranker_top_k_override, embedding_model_override,
+      reranker_model_override, updated_at
+    ) VALUES (?, 1, 30000, 2000, 1000, 500, 8000, 40, 1, 1, 20, 10, 'emb-model', 'rr-model', ?)
+  `).run('char-cfg', '2026-06-01T00:00:00.000Z');
+
+  const exportRoute = loadExportRoute(exportDb);
+  const exportResponse = await exportRoute.GET({
+    nextUrl: new URL('http://test.local/api/export?type=character&id=char-cfg'),
+  });
+  assert.equal(exportResponse.status, 200);
+  const exportPayload = JSON.parse(await exportResponse.text());
+  assert.ok(exportPayload.character_memory_config);
+  assert.equal(exportPayload.character_memory_config.memory_package_token_budget, 30000);
+  assert.equal(exportPayload.character_memory_config.reranker_enabled_override, 1);
+
+  const importDb = createImportDb();
+  const importRoute = loadImportRoute(importDb);
+  const importResponse = await importRoute.POST(importRequest(
+    exportPayload,
+    'target_character_id=target-char&include_character=0',
+  ));
+  const importBody = await importResponse.json();
+  assert.equal(importResponse.status, 200, importBody.error);
+  assert.equal(importBody.memoryConfigsImported, 1);
+
+  const config = importDb.prepare(
+    'SELECT * FROM character_memory_configs WHERE character_id = ?',
+  ).get('target-char');
+  assert.ok(config);
+  assert.equal(config.memory_package_token_budget, 30000);
+  assert.equal(config.profile_token_budget, 2000);
+  assert.equal(config.vector_enabled_override, 1);
+  assert.equal(config.reranker_enabled_override, 1);
+  assert.equal(config.embedding_model_override, 'emb-model');
+  assert.equal(config.reranker_model_override, 'rr-model');
 });
 
 test('/api/import rebuilds duplicate/non-integer seq into continuous 1..N order', async () => {

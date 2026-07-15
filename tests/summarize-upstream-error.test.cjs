@@ -126,6 +126,15 @@ function createSummarizeDb() {
   };
 }
 
+test('summarize route wraps MAX(seq)+INSERT in a transaction', () => {
+  const source = fs.readFileSync(path.join(root, 'src/app/api/summarize/route.ts'), 'utf8');
+  // 事务内必须同时包含 nextSeq 分配与 INSERT，避免与聊天并发抢 seq
+  assert.match(
+    source,
+    /db\.transaction\(\(\)\s*=>\s*\{[\s\S]*MAX\(seq\)[\s\S]*INSERT INTO messages[\s\S]*UPDATE conversations[\s\S]*\}\)\(\)/,
+  );
+});
+
 test('/api/summarize POST redacts sensitive upstream error details', async () => {
   const route = requireFreshWithMocks('../src/app/api/summarize/route.ts', {
     'next/server': jsonResponseMock(),

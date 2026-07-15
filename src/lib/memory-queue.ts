@@ -64,8 +64,21 @@ function markIncludedUserMessagesProcessed(
 ): void {
   for (const msg of messages) {
     if (msg.role !== 'user' || !includedCompleteUserIds.has(msg.id)) continue;
+    // 写前重读最新 metadata：提取 LLM 窗口可达秒~分钟级，期间用户可能补附件/切版本/PATCH metadata。
+    // 若用调用前快照整包覆写，会静默丢掉这些字段；只合并提取标记字段。
+    const row = db.prepare('SELECT metadata FROM messages WHERE id = ?').get(msg.id) as
+      | { metadata: string | null }
+      | undefined;
+    if (!row) continue;
     let meta: Record<string, unknown> = {};
-    try { meta = JSON.parse(msg.metadata); } catch { meta = {}; }
+    try {
+      const parsed = JSON.parse(row.metadata || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        meta = parsed as Record<string, unknown>;
+      }
+    } catch {
+      meta = {};
+    }
     meta.memory_extracted = true;
     if (noopExtractedAt) {
       meta.memory_noop_extracted_at = noopExtractedAt;

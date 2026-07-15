@@ -748,10 +748,14 @@ export async function extractMemories(
           // 此处主动清理是对「同事务内该 id 先被 supersede、又作为 merged upsert 目标」
           // 等边界的兜底，避免任何残留旧 token 集被后续检索误用。
           invalidateMemoryTokenCache(entry.id);
+          // 乐观锁：守卫 LLM 前快照的 updated_at。
+          // - status 已非 active（同事务 supersede）→ 落空，插入新 active 行
+          // - 用户在 LLM 窗口内手工改过该记忆 → updated_at 变了，落空，不覆盖用户版本，
+          //   把本轮合并信息作为新 active 记忆插入，双保留、不丢内容
           const result = db.prepare(`
             UPDATE memories
             SET content = ?, confidence = ?, tags = ?, source_msg_ids = ?, memory_kind = ?, importance = ?, emotional_weight = ?, updated_at = ?
-            WHERE id = ? AND status = 'active'
+            WHERE id = ? AND status = 'active' AND updated_at = ?
           `).run(
             entry.content,
             entry.confidence,
@@ -762,14 +766,13 @@ export async function extractMemories(
             entry.emotional_weight,
             entry.updated_at,
             entry.id,
+            existing.updated_at,
           );
           if (result.changes > 0) {
             mergeCount++;
             embeddingTasks.push({ memoryId: entry.id, characterId: entry.character_id, reason: 'updated' });
           } else {
-            // 该旧记忆已在本事务内被同批 supersede(不再 active),带 status 守卫的 UPDATE 落空。
-            // 把这条 upsert 的新信息作为全新 active 记忆插入(用新 id,避免与 superseded 行主键冲突),
-            // 否则 upsert 的增量会被折进一条废弃、检索不可见的行而静默丢失。
+            // UPDATE 落空：supersede 或用户并发编辑。新信息作为全新 active 记忆插入，避免静默丢失。
             insertMemory({ ...entry, id: crypto.randomUUID().slice(0, 12), created_at: entry.updated_at } as NewMemoryEntry);
           }
         }

@@ -87,6 +87,14 @@ export function __migrateForTests(db: Database.Database): void {
   migrate(db);
 }
 
+/** 测试专用：关闭并清空模块级单例，避免用例之间串库。 */
+export function __resetDbForTests(): void {
+  if (_db) {
+    try { _db.close(); } catch { /* ignore close errors in tests */ }
+  }
+  _db = null;
+}
+
 export function getDb(): Database.Database {
   if (_db) return _db;
 
@@ -94,13 +102,22 @@ export function getDb(): Database.Database {
     fs.mkdirSync(DB_DIR, { recursive: true });
   }
 
-  _db = new Database(DB_PATH);
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('foreign_keys = ON');
-  // 记忆系统有多处后台并发写（embedding drain、profile 队列、提取队列，甚至跨进程）。
-  // 默认 busy_timeout=0 会在撞写锁时立即抛 SQLITE_BUSY；设为 5s 让写入短暂等待重试而非直接失败。
-  _db.pragma('busy_timeout = 5000');
-  migrate(_db);
+  // 先用局部变量建连并 migrate；全部成功后再赋给 _db。
+  // 若 migrate 中途抛错（含 user_version 前向拒绝），不得把半迁移连接留在单例里，
+  // 否则后续 getDb() 会直接返回坏连接，fail-fast 只挡第一个请求。
+  const db = new Database(DB_PATH);
+  try {
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    // 记忆系统有多处后台并发写（embedding drain、profile 队列、提取队列，甚至跨进程）。
+    // 默认 busy_timeout=0 会在撞写锁时立即抛 SQLITE_BUSY；设为 5s 让写入短暂等待重试而非直接失败。
+    db.pragma('busy_timeout = 5000');
+    migrate(db);
+  } catch (err) {
+    try { db.close(); } catch { /* ignore */ }
+    throw err;
+  }
+  _db = db;
 
   // 生产环境未设置访问密码时发出警告：proxy.ts 与 /api/auth 都会在 ACCESS_PASSWORD 缺失时直接放行，
   // 这是本地开发模式的有意设计；但生产部署若忘记配置，会导致整个应用无鉴权暴露。
@@ -133,11 +150,19 @@ export function getDb(): Database.Database {
         operation: 'recover_and_drain', status: 'failed',
       }, err);
     });
-    // 向量索引任务没有租约机制,崩溃遗留的 processing 只能靠启动恢复(与上面两个队列对称);
-    // 实际处理仍由 memory-index 路由按需驱动,这里只把卡死的 processing 重置为可领取的 pending——
-    // 否则该记忆的 embedding 任务会永久卡死(既不被 drain 领取,也无法 rebuild/retry/重新入队)。
-    import('@/lib/memory-embeddings').then(({ recoverStaleMemoryEmbeddingTasks }) => {
+    // 向量索引任务：启动时回收过期 processing，并像提取/画像队列一样尝试触发 drain。
+    // 仅 recover 不 trigger 时，若用户之后只聊天不产生新记忆写入，pending 可能长期闲置。
+    // drain 自带 config 缺失短路与 claim_token 守卫，启动触发是安全的。
+    import('@/lib/memory-embeddings').then(async ({ recoverStaleMemoryEmbeddingTasks }) => {
       recoverStaleMemoryEmbeddingTasks();
+      try {
+        const { triggerMemoryIndexProcessing } = await import('@/lib/memory-index-trigger');
+        triggerMemoryIndexProcessing();
+      } catch (triggerErr) {
+        structuredLog('error', 'memory.embedding.boot_trigger_failed', {
+          operation: 'trigger_drain', status: 'failed',
+        }, triggerErr);
+      }
     }).catch((err) => {
       structuredLog('error', 'memory.embedding.recovery_failed', {
         operation: 'recover_stale', status: 'failed',
@@ -471,11 +496,10 @@ function migrate(db: Database.Database): void {
 
   const ftsCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts').get() as { count: number }).count;
   const messageCount = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
-  // 旧条件 `ftsCount === 0 && messageCount > 0` 不幂等：
-  // 若 FTS 处于"半损坏"状态（部分丢失但非全空），永远走不到重建分支。
-  // 改为「FTS 行数少于消息数」即视为损坏：触发器同步下两者应严格相等，
-  // 任何缺失都说明索引落后或损坏，需要全量回灌。
-  if (messageCount > 0 && ftsCount < messageCount) {
+  // 触发器同步下 FTS 与 messages 行数应严格相等。
+  // 用 !== 同时覆盖「缺失」与「多出/重复」损坏；旧条件 ftsCount < messageCount
+  // 无法自愈「孤儿 FTS 行数恰好补齐」的半损坏状态（与 messages_fts_trigram 对齐）。
+  if (messageCount > 0 && ftsCount !== messageCount) {
     // 重建前先清空，避免与残留索引行冲突 / 产生重复
     db.exec(`DELETE FROM messages_fts`);
     db.exec(`

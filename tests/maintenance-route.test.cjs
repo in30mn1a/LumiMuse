@@ -158,6 +158,16 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
     })) {
       for (const filename of filenames) writeFixtureFile(workspace, dirName, filename);
     }
+    // 孤儿清理有 24h mtime 宽限期；把孤儿文件 mtime 回拨，避免误删刚上传文件的保护挡住本用例。
+    const oldMtime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    for (const [dirName, filename] of [
+      ['avatars', 'avatar-orphan.png'],
+      ['attachments', 'attachment-orphan.png'],
+      ['generated', 'generated-orphan.png'],
+    ]) {
+      const filepath = path.join(workspace, 'public', dirName, filename);
+      fs.utimesSync(filepath, oldMtime, oldMtime);
+    }
 
     process.chdir(workspace);
     const route = requireFreshWithMocks('../src/app/api/maintenance/route.ts', {
@@ -242,6 +252,42 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
     ]) {
       assert.equal(fs.existsSync(path.join(workspace, 'public', dirName, filename)), false);
     }
+  } finally {
+    process.chdir(previousCwd);
+    db.close();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('maintenance cleanup skips fresh orphan files within mtime grace period', async () => {
+  const tempRoot = path.join(root, '.tmp-tests');
+  fs.mkdirSync(tempRoot, { recursive: true });
+  const workspace = fs.mkdtempSync(path.join(tempRoot, 'maintenance-grace-'));
+  const previousCwd = process.cwd();
+  const db = createMaintenanceDb();
+
+  try {
+    writeFixtureFile(workspace, 'attachments', 'fresh-orphan.png');
+    writeFixtureFile(workspace, 'attachments', 'stale-orphan.png');
+    const oldMtime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(workspace, 'public', 'attachments', 'stale-orphan.png'), oldMtime, oldMtime);
+
+    process.chdir(workspace);
+    const route = requireFreshWithMocks('../src/app/api/maintenance/route.ts', {
+      '@/lib/db': { getDb: () => db },
+      '@/lib/route-auth': { requireAuth: async () => null },
+      'next/server': jsonResponseMock(),
+    });
+
+    const preview = await (await route.GET({})).json();
+    // total 含目录内所有文件；orphanCount 仅计超过宽限期的无引用文件
+    assert.equal(preview.orphanFiles.attachments.total, 2);
+    assert.equal(preview.orphanFiles.attachments.orphanCount, 1);
+
+    const cleanup = await (await route.POST({})).json();
+    assert.equal(cleanup.fileResults.attachments.deleted, 1);
+    assert.equal(fs.existsSync(path.join(workspace, 'public', 'attachments', 'fresh-orphan.png')), true);
+    assert.equal(fs.existsSync(path.join(workspace, 'public', 'attachments', 'stale-orphan.png')), false);
   } finally {
     process.chdir(previousCwd);
     db.close();

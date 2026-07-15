@@ -142,15 +142,21 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { password?: string };
+  // 仅接受 JSON 对象；null/数组/字面量合法 JSON 但不是登录 body，须 400 而非 500。
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: '请求格式错误' }, { status: 400 });
   }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return NextResponse.json({ error: '请求格式错误' }, { status: 400 });
+  }
 
   // 常量时间比较，避免通过响应耗时差推测密码
-  const submitted = typeof body.password === 'string' ? body.password : '';
+  const submitted = typeof (body as { password?: unknown }).password === 'string'
+    ? (body as { password: string }).password
+    : '';
   if (!timingSafeEqualString(submitted, password)) {
     if (ip) {
       recordFailure(ip);

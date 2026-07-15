@@ -696,3 +696,163 @@ test('extractMemories 为推理模型把 max_tokens 抬到安全下限', async (
 
   assert.equal(capturedMaxTokens, 16384);
 });
+
+test('memory-queue 标记已提取时保留 LLM 窗口内用户新增的 metadata 字段', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE memory_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      message_ids TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      merge_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      seq INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE characters (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
+  `);
+  db.prepare("INSERT INTO characters (id, name) VALUES ('char-a', '艾莉丝')").run();
+  // content 足够长，保证 buildExtractionText 产出有效对话文本
+  const longUser = '请记住我难过时希望先被安静陪伴，再慢慢分析问题。'.repeat(6);
+  db.prepare(`
+    INSERT INTO messages (id, role, content, metadata, created_at, seq)
+    VALUES
+      ('msg-user-meta', 'user', ?, '{}', '2026-06-02T00:00:00.000Z', 1),
+      ('msg-assistant-meta', 'assistant', '我会记得，以后会先安静陪伴主人。', '{}', '2026-06-02T00:00:01.000Z', 2)
+  `).run(longUser);
+
+  let releaseExtract;
+  const extractGate = new Promise(resolve => { releaseExtract = resolve; });
+  let extractStarted;
+  const started = new Promise(resolve => { extractStarted = resolve; });
+
+  const done = new Promise((resolve, reject) => {
+    const queue = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+      '@/lib/db': { getDb: () => db },
+      '@/lib/settings': { loadSettings: () => settings() },
+      '@/lib/memory-engine': {
+        getCommittedExtractionResult: () => null,
+        extractMemories: async () => {
+          extractStarted();
+          await extractGate;
+          return { insertCount: 1, mergeCount: 0 };
+        },
+      },
+      '@/lib/memory-profile': {
+        enqueueMemoryProfilePatchExtraction: () => {},
+        triggerMemoryProfileQueue: () => {},
+      },
+    });
+
+    // 轮询任务完成
+    const timer = setInterval(() => {
+      const task = db.prepare('SELECT status FROM memory_tasks WHERE id = 1').get();
+      if (task && task.status === 'done') {
+        clearInterval(timer);
+        resolve();
+      } else if (task && task.status === 'failed') {
+        clearInterval(timer);
+        reject(new Error('task failed'));
+      }
+    }, 20);
+
+    queue.enqueueExtraction('char-a', 'conv-meta', [
+      { id: 'msg-user-meta' },
+      { id: 'msg-assistant-meta' },
+    ]);
+  });
+
+  await started;
+  // 模拟提取 LLM 窗口内用户补了附件
+  db.prepare(`
+    UPDATE messages SET metadata = ?
+    WHERE id = 'msg-user-meta'
+  `).run(JSON.stringify({
+    attachments: [{ id: 'att-1', name: 'note.txt' }],
+    custom_flag: true,
+  }));
+  releaseExtract();
+  await done;
+
+  const row = db.prepare("SELECT metadata FROM messages WHERE id = 'msg-user-meta'").get();
+  const meta = JSON.parse(row.metadata);
+  assert.equal(meta.memory_extracted, true);
+  assert.equal(meta.custom_flag, true);
+  assert.deepEqual(meta.attachments, [{ id: 'att-1', name: 'note.txt' }]);
+});
+
+test('extractMemories upsert 遇用户并发编辑时不覆盖用户版本，改为插入新记忆', async () => {
+  const db = createExtractionDb();
+  const snapshotUpdatedAt = '2026-06-01T00:00:00.000Z';
+  insertExisting(db, {
+    id: 'mem-concurrent',
+    content: '角色承诺以后主人难过时，会先安静陪伴主人。',
+    updated_at: snapshotUpdatedAt,
+    created_at: snapshotUpdatedAt,
+  });
+
+  let releaseLlm;
+  const llmGate = new Promise(resolve => { releaseLlm = resolve; });
+  let llmStarted;
+  const started = new Promise(resolve => { llmStarted = resolve; });
+
+  const { extractMemories } = requireFreshWithMocks('../src/lib/memory-engine.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/api-client': {
+      chatCompletion: async () => {
+        llmStarted();
+        await llmGate;
+        // 与已有记忆高度相似且更长 → mergeMemories 走 upsert 合并到 mem-concurrent
+        return JSON.stringify({
+          memories: [{
+            category: '关系动态',
+            memory_kind: 'character_promise',
+            content: '角色承诺以后主人难过时，会先安静陪伴主人，再询问是否需要分析。',
+            tags: ['陪伴'],
+            importance: 0.9,
+            emotional_weight: 0.85,
+            lifecycle_action: 'upsert',
+          }],
+        });
+      },
+      REASONING_SAFE_MAX_TOKENS: 16384,
+    },
+    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+  });
+
+  const pending = extractMemories('char-a', longConversation(), settings(), {
+    messageIds: ['msg-user-concurrent'],
+  });
+
+  await started;
+  // 用户在 LLM 窗口内手工修正该记忆
+  const userEditedAt = '2026-06-02T12:00:00.000Z';
+  db.prepare(`
+    UPDATE memories SET content = ?, updated_at = ? WHERE id = 'mem-concurrent'
+  `).run('用户手工修正：难过时先递纸巾再安静陪伴。', userEditedAt);
+  releaseLlm();
+
+  const result = await pending;
+  const userRow = db.prepare("SELECT content, updated_at, status FROM memories WHERE id = 'mem-concurrent'").get();
+  const activeRows = db.prepare("SELECT id, content, status FROM memories WHERE status = 'active' ORDER BY id").all();
+
+  assert.equal(userRow.content, '用户手工修正：难过时先递纸巾再安静陪伴。');
+  assert.equal(userRow.updated_at, userEditedAt);
+  assert.equal(userRow.status, 'active');
+  // 用户版保留 + 提取合并信息作为新 active 插入
+  assert.ok(activeRows.length >= 2);
+  assert.ok(activeRows.some(row => row.content.includes('再询问是否需要分析')));
+  assert.ok(result.insertCount >= 1);
+});

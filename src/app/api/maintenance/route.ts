@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { readdir, unlink } from 'fs/promises';
+import { readdir, unlink, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+
+/** 孤儿文件最短存活时间：避免误删「已写盘、消息尚未落库」窗口内的上传/生图文件。 */
+const ORPHAN_FILE_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 import {
   collectLocalAssetUrlsFromMetadata,
   collectLocalAssetUrlsFromContent,
@@ -221,7 +224,20 @@ async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphan
   const files = entries.filter(e => e.isFile()).map(e => e.name);
 
   const referenced = getReferencedFiles(dirName);
-  const orphans = files.filter(f => !referenced.has(f));
+  const now = Date.now();
+  const orphans: string[] = [];
+  for (const filename of files) {
+    if (referenced.has(filename)) continue;
+    try {
+      const info = await stat(path.join(dir, filename));
+      // 只清理「够老」的无引用文件，给上传→落库两阶段操作留出宽限期。
+      if (now - info.mtimeMs >= ORPHAN_FILE_MIN_AGE_MS) {
+        orphans.push(filename);
+      }
+    } catch {
+      // 竞态删除/权限问题：跳过，下次再扫
+    }
+  }
 
   return { total: files.length, orphans };
 }

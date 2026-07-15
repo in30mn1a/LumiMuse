@@ -86,6 +86,7 @@ function resetModules(extra = []) {
     'src/app/api/maintenance/route.ts',
     'src/app/api/import/route.ts',
     'src/app/api/settings/route.ts',
+    'src/app/api/export/route.ts',
     ...extra,
   ]) {
     deleteIfCached(relativePath);
@@ -370,6 +371,7 @@ test('sensitive route-level auth rejects tokens issued before current min_iat', 
   const maintenance = requireFreshWithMocks('../src/app/api/maintenance/route.ts', mocks);
   const importRoute = requireFreshWithMocks('../src/app/api/import/route.ts', mocks);
   const settings = requireFreshWithMocks('../src/app/api/settings/route.ts', mocks);
+  const exportRoute = requireFreshWithMocks('../src/app/api/export/route.ts', mocks);
 
   const cases = [
     ['providers GET', () => providers.GET(makeRequest('/api/providers', oldToken))],
@@ -379,6 +381,7 @@ test('sensitive route-level auth rejects tokens issued before current min_iat', 
     ['maintenance GET', () => maintenance.GET(makeRequest('/api/maintenance', oldToken))],
     ['import POST', () => importRoute.POST(jsonRequest('/api/import', oldToken, { version: 2 }))],
     ['settings GET', () => settings.GET(makeRequest('/api/settings', oldToken))],
+    ['export GET', () => exportRoute.GET(makeRequest('/api/export?type=all', oldToken))],
   ];
 
   for (const [name, call] of cases) {
@@ -403,10 +406,43 @@ test('sensitive route-level auth allows local mode when ACCESS_PASSWORD is unset
 
   const providers = requireFreshWithMocks('../src/app/api/providers/route.ts', mocks);
   const settings = requireFreshWithMocks('../src/app/api/settings/route.ts', mocks);
+  const exportRoute = requireFreshWithMocks('../src/app/api/export/route.ts', mocks);
 
   const providersResponse = await providers.GET(makeRequest('/api/providers'));
   const settingsResponse = await settings.GET(makeRequest('/api/settings'));
+  const exportResponse = await exportRoute.GET(makeRequest('/api/export?type=all'));
 
   assert.equal(providersResponse.status, 200);
   assert.equal(settingsResponse.status, 200);
+  assert.equal(exportResponse.status, 200);
+});
+
+test('/api/export GET rejects unauthenticated requests when ACCESS_PASSWORD is set', async () => {
+  setAuthEnv();
+  const mocks = {
+    '@/lib/db': { getDb: getDbMock },
+    '@/lib/settings': settingsMock(0),
+  };
+  const exportRoute = requireFreshWithMocks('../src/app/api/export/route.ts', mocks);
+  const response = await exportRoute.GET(makeRequest('/api/export?type=all'));
+  assert.equal(response.status, 401);
+  const body = await response.json();
+  assert.equal(body.error, '未授权');
+});
+
+test('/api/auth POST returns 400 for non-object JSON bodies instead of 500', async () => {
+  setAuthEnv();
+  const route = loadAuthRoute();
+
+  for (const payload of [null, [], 'not-an-object', 42]) {
+    const request = new NextRequest('http://test.local/api/auth', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const response = await route.POST(request);
+    assert.equal(response.status, 400, `payload ${JSON.stringify(payload)} should be 400`);
+    const body = await response.json();
+    assert.equal(body.error, '请求格式错误');
+  }
 });

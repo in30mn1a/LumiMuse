@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { normalizeMemoryCategory } from '@/lib/memory-category';
 import { EXPORT_VERSION } from '@/lib/export-version';
+import { requireAuth } from '@/lib/route-auth';
 
 /**
  * GET /api/export?type=character&id=xxx  — 导出单个角色（含记忆和对话）
@@ -17,8 +18,15 @@ import { EXPORT_VERSION } from '@/lib/export-version';
  * 单角色导出（type=character）始终尝试带上画像 / 画像版本 / embedding，
  * 并受 include_profiles / include_embeddings 控制；include_memories=0 时
  * embedding 自动跳过（没有记忆就没有向量索引）。
+ *
+ * 路由内 requireAuth：与 import/maintenance/settings 对称的防御纵深。
+ * export 是单请求即可拿走全部角色/对话/记忆/画像的最大批量读路径，
+ * proxy matcher 若未来误配，未授权用户不得直接下载。
  */
 export async function GET(request: NextRequest) {
+  const unauthorized = await requireAuth(request);
+  if (unauthorized) return unauthorized;
+
   const db = getDb();
   const { searchParams } = request.nextUrl;
   // 缺省 type 视为 all；显式传了未知 type 时必须 Fail-Fast，禁止静默扩大导出范围。
@@ -76,6 +84,8 @@ export async function GET(request: NextRequest) {
     const embeddings = includeEmbeddings
       ? loadEmbeddingsForCharacter(db, characterId)
       : [];
+    // 角色级记忆引擎覆盖（token 预算 / 向量 / reranker 等），与角色绑定导出。
+    const memoryConfig = loadMemoryConfigForCharacter(db, characterId);
 
     const payload = {
       version: EXPORT_VERSION,
@@ -87,6 +97,7 @@ export async function GET(request: NextRequest) {
       memory_profile: profile,
       memory_profile_versions: profileVersions,
       memory_embeddings: embeddings,
+      character_memory_config: memoryConfig,
     };
 
     return new Response(JSON.stringify(payload), {
@@ -115,6 +126,8 @@ export async function GET(request: NextRequest) {
   const profiles = includeProfiles ? loadAllProfiles(db) : [];
   const profileVersions = includeProfiles ? loadAllProfileVersions(db) : [];
   const embeddings = includeEmbeddings ? loadAllEmbeddings(db) : [];
+  // 角色级记忆配置随角色导出；include_characters=0 时也不带配置行。
+  const memoryConfigs = includeCharacters ? loadAllMemoryConfigs(db) : [];
 
   const payload = {
     version: EXPORT_VERSION,
@@ -125,6 +138,7 @@ export async function GET(request: NextRequest) {
     memory_profiles: profiles,
     memory_profile_versions: profileVersions,
     memory_embeddings: embeddings,
+    character_memory_configs: memoryConfigs,
   };
 
   // 根据实际包含内容生成文件名
@@ -242,6 +256,24 @@ function loadAllEmbeddings(db: ReturnType<typeof getDb>): Record<string, unknown
   return (db.prepare(
     "SELECT * FROM memory_embeddings WHERE status = 'ready' ORDER BY character_id, memory_id",
   ).all() as Record<string, unknown>[]).map(serializeEmbedding);
+}
+
+function loadMemoryConfigForCharacter(
+  db: ReturnType<typeof getDb>,
+  characterId: string,
+): Record<string, unknown> | null {
+  if (!tableExists(db, 'character_memory_configs')) return null;
+  const row = db.prepare(
+    'SELECT * FROM character_memory_configs WHERE character_id = ?',
+  ).get(characterId) as Record<string, unknown> | undefined;
+  return row ? { ...row } : null;
+}
+
+function loadAllMemoryConfigs(db: ReturnType<typeof getDb>): Record<string, unknown>[] {
+  if (!tableExists(db, 'character_memory_configs')) return [];
+  return (db.prepare(
+    'SELECT * FROM character_memory_configs ORDER BY character_id',
+  ).all() as Record<string, unknown>[]).map(row => ({ ...row }));
 }
 
 function buildConversationsForCharacter(db: ReturnType<typeof import('@/lib/db').getDb>, characterId: string) {

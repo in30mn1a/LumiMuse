@@ -165,24 +165,27 @@ ${convText}`;
     }
 
     // 将总结作为特殊消息存入数据库（role = 'summary'）
+    // MAX(seq)+INSERT 必须与 chat-engine 一样包在事务里，避免总结进行中用户继续聊天时拿到重复 seq。
+    // LLM 调用已在事务外完成；事务内只做同步 DB 写入。
     const summaryId = crypto.randomUUID().slice(0, 12);
     const now = new Date().toISOString();
     const tokenResult = createMessageTokenCount(summaryContent, 'system');
     const tokenCount = tokenResult.tokenCount;
-    const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
-
     const summarizedIds = messagesToSummarize.map(m => m.id);
     const meta = metadataWithTokenCountProvenance(
       { summarizedIds, isSummary: true },
       tokenResult.provenance,
     );
 
-    db.prepare(`
-      INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
-      VALUES (?, ?, 'system', ?, ?, ?, ?, ?)
-    `).run(summaryId, conversation_id, summaryContent, tokenCount, now, nextSeq, JSON.stringify(meta));
-
-    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
+    let nextSeq = 0;
+    db.transaction(() => {
+      nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
+      db.prepare(`
+        INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+        VALUES (?, ?, 'system', ?, ?, ?, ?, ?)
+      `).run(summaryId, conversation_id, summaryContent, tokenCount, now, nextSeq, JSON.stringify(meta));
+      db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
+    })();
 
     const summaryMessage: Message = {
       id: summaryId,

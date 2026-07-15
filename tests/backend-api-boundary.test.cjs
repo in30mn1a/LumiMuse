@@ -548,6 +548,9 @@ test('/api/summarize uses one ISO timestamp for the summary message and conversa
       }
       throw new Error(`unexpected SQL: ${sql}`);
     },
+    transaction(fn) {
+      return (...args) => fn(...args);
+    },
   };
   const route = requireFreshWithMocks('../src/app/api/summarize/route.ts', {
     'next/server': jsonResponseMock(),

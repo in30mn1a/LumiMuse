@@ -292,7 +292,7 @@ LumiMuse 做了响应式布局。
 - 兼容 OpenAI Chat Completions API 格式的模型服务
 - Docker 部署还需 Docker 与 Docker Compose
 
-CI 会在 Ubuntu（Node **20.18** / **24**）与 Windows（Node **20.18**）上验证；本地建议使用 Node 20.18.1 或更新版本。
+CI 会在 Ubuntu（Node **20.18** / **Node 24**）与 Windows（Node **20.18**）上验证；本地建议使用 Node 20.18.1 或更新版本。
 
 ### 本地开发
 

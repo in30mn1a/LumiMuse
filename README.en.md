@@ -292,7 +292,7 @@ Import/export makes backup and migration easy; Docker lets you deploy on hardwar
 - A model service compatible with the OpenAI Chat Completions API format
 - Docker & Docker Compose for container deployment
 
-CI verifies Ubuntu (Node **20.18** / **24**) and Windows (Node **20.18**). Locally, use Node 20.18.1 or newer.
+CI verifies Ubuntu (Node **20.18** / **Node 24**) and Windows (Node **20.18**). Locally, use Node 20.18.1 or newer.
 
 ### Run Locally
 

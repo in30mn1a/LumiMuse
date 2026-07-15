@@ -151,6 +151,7 @@ export const settingsUpdateSchema = z.looseObject({
   limit_inject: z.boolean().optional(),
   language: z.enum(['zh', 'en']).optional(),
   font_style: z.enum(['wenkai', 'system', 'serif']).optional(),
+  font_size: z.enum(['small', 'medium', 'large']).optional(),
   active_provider_id: z.string().max(64).optional(),
   image_gen: imageGenSettingsSchema.optional(),
   memory_engine: memoryEngineSettingsSchema.optional(),

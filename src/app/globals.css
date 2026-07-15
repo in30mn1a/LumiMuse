@@ -65,8 +65,10 @@
     background: #171321;
   }
 
-  /* 字体变量默认值（霞鹜文楷） — 通过 JS 动态修改 --font-sans 来切换字体 */
+  /* 字体变量默认值（霞鹜文楷） — 通过 JS 动态修改 --font-sans 来切换字体；
+     根 font-size 默认 16px（medium），由 applyFontSize 动态覆盖以缩放 rem */
   html {
+    font-size: 16px;
     --font-sans: 'LXGW WenKai Screen', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
   }
 

@@ -68,6 +68,7 @@ function createPageHarness() {
     setEditing: createSpy(),
   };
   const fontCalls = [];
+  const fontSizeCalls = [];
   const themeStorageCalls = [];
   const toastCalls = [];
   const asyncNoop = async () => {};
@@ -178,7 +179,12 @@ function createPageHarness() {
     if (request === '@/components/ui/icons') {
       return new Proxy({}, { get: () => () => React.createElement('span', { 'aria-hidden': 'true' }) });
     }
-    if (request === '@/lib/font-stacks') return { applyFontStyle: value => fontCalls.push(value) };
+    if (request === '@/lib/font-stacks') {
+      return {
+        applyFontStyle: value => fontCalls.push(value),
+        applyFontSize: value => fontSizeCalls.push(value),
+      };
+    }
     if (request === '@/lib/theme-provider') return { writeThemeStorage: value => themeStorageCalls.push(value) };
     if (request === '@/hooks/settings/useSettingsAuth') {
       return { useSettingsAuth: () => ({ authEnabled: false, handleLogout: noop }) };
@@ -221,6 +227,7 @@ function createPageHarness() {
       SettingsPage,
       editingProvider,
       fontCalls,
+      fontSizeCalls,
       providerCalls,
       requests,
       themeStorageCalls,
@@ -273,6 +280,7 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   const view = render(React.createElement(harness.SettingsPage));
   await waitFor(() => assert.equal(view.container.querySelector('#settings-api-base').value, 'https://initial.example/v1'));
   harness.fontCalls.length = 0;
+  harness.fontSizeCalls.length = 0;
   harness.themeStorageCalls.length = 0;
 
   fireEvent.change(view.container.querySelector('#settings-api-base'), { target: { value: 'https://changed.example/v1' } });
@@ -308,6 +316,8 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   fireEvent.change(view.getByLabelText('settings.language'), { target: { value: 'en' } });
   fireEvent.click(view.getByRole('button', { name: /settings\.fontNameSystem/ }));
   assert.deepEqual(harness.fontCalls, ['system']);
+  fireEvent.click(view.getByRole('button', { name: /settings\.fontSizeLarge/ }));
+  assert.deepEqual(harness.fontSizeCalls, ['large']);
 
   await act(async () => {
     fireEvent.click(view.getByRole('button', { name: 'settings.save' }));
@@ -329,7 +339,9 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   assert.equal(saveRequest.body.theme, 'dark');
   assert.equal(saveRequest.body.language, 'en');
   assert.equal(saveRequest.body.font_style, 'system');
+  assert.equal(saveRequest.body.font_size, 'large');
   assert.deepEqual(harness.themeStorageCalls, ['dark']);
   assert.deepEqual(harness.fontCalls, ['system', 'system']);
+  assert.deepEqual(harness.fontSizeCalls, ['large', 'large']);
   assert.deepEqual(harness.toastCalls.at(-1), ['settings.saveSuccess', 'success']);
 });

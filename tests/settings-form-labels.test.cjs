@@ -119,7 +119,7 @@ function loadSettingsPage() {
     if (request === '@/components/ui/icons') {
       return new Proxy({}, { get: () => () => React.createElement('span', { 'aria-hidden': 'true' }) });
     }
-    if (request === '@/lib/font-stacks') return { applyFontStyle: noop };
+    if (request === '@/lib/font-stacks') return { applyFontStyle: noop, applyFontSize: noop };
     if (request === '@/lib/theme-provider') return { writeThemeStorage: noop };
     if (request === '@/hooks/settings/useSettingsAuth') {
       return { useSettingsAuth: () => ({ authEnabled: false, handleLogout: noop }) };

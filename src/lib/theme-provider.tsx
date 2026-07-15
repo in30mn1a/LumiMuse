@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect } from "react";
-import { applyFontStyle } from "@/lib/font-stacks";
+import { applyFontSize, applyFontStyle } from "@/lib/font-stacks";
 import { notifySettingsBootstrapFailed } from "@/lib/settings-bootstrap-events";
-import { FontStyle } from "@/types";
+import { FontSize, FontStyle } from "@/types";
 
 const THEME_STORAGE_KEY = "lumimuse_theme";
 const SETTINGS_BOOTSTRAP_MAX_ATTEMPTS = 2;
@@ -20,12 +20,12 @@ function writeThemeStorage(theme: string | undefined) {
   }
 }
 
-async function fetchThemeSettings(signal?: AbortSignal): Promise<{ theme?: unknown; font_style?: unknown }> {
+async function fetchThemeSettings(signal?: AbortSignal): Promise<{ theme?: unknown; font_style?: unknown; font_size?: unknown }> {
   const response = await fetch("/api/settings", { signal });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
-  return await response.json() as { theme?: unknown; font_style?: unknown };
+  return await response.json() as { theme?: unknown; font_style?: unknown; font_size?: unknown };
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
@@ -48,8 +48,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
           }
           // 同步写入 localStorage，供下次刷新时 inline script 使用
           writeThemeStorage(typeof settings.theme === "string" ? settings.theme : undefined);
-          // 应用字体风格
+          // 应用字体风格与大小
           applyFontStyle((typeof settings.font_style === "string" ? settings.font_style : "wenkai") as FontStyle);
+          applyFontSize((typeof settings.font_size === "string" ? settings.font_size : "medium") as FontSize);
           return;
         } catch (error) {
           if (controller.signal.aborted || cancelled) return;

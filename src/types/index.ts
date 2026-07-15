@@ -250,6 +250,9 @@ export interface ArtistString {
 
 export type FontStyle = 'wenkai' | 'system' | 'serif';
 
+/** 全局字体大小档位：通过修改 html 根 font-size 缩放 rem 体系 */
+export type FontSize = 'small' | 'medium' | 'large';
+
 // 思考强度（reasoning effort）：'default' 表示不在请求体里发送该字段，交给上游默认行为。
 export type ReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'max';
 
@@ -354,6 +357,7 @@ export interface Settings {
   limit_inject: boolean;
   language: 'zh' | 'en';
   font_style: FontStyle;
+  font_size: FontSize;
   active_provider_id: string;
   // 高级采样参数：null 表示未设置，请求体中不会包含该字段（部分模型不支持）。
   top_p: number | null;
@@ -400,6 +404,7 @@ export const DEFAULT_SETTINGS: Settings = {
   limit_inject: false,
   language: 'zh',
   font_style: 'wenkai',
+  font_size: 'medium',
   active_provider_id: '',
   top_p: null,
   frequency_penalty: null,

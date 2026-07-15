@@ -5,10 +5,11 @@ import {
   DEFAULT_MEMORY_ENGINE_SETTINGS,
   DEFAULT_SETTINGS,
   Settings,
+  FontSize,
   FontStyle,
   MemoryEngineSettings,
 } from '@/types';
-import { applyFontStyle } from '@/lib/font-stacks';
+import { applyFontSize, applyFontStyle } from '@/lib/font-stacks';
 import { writeThemeStorage } from '@/lib/theme-provider';
 import { API_KEY_MASK } from '@/lib/constants';
 import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
@@ -353,6 +354,7 @@ export default function SettingsPage() {
       document.documentElement.classList.toggle('dark', settings.theme === 'dark');
       writeThemeStorage(settings.theme);
       applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
+      applyFontSize((settings.font_size || 'medium') as FontSize);
       showToast(t('settings.saveSuccess'), 'success');
     } catch (err) {
       showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
@@ -382,6 +384,7 @@ export default function SettingsPage() {
         document.documentElement.classList.toggle('dark', s.theme === 'dark');
         writeThemeStorage(merged.theme);
         applyFontStyle((merged.font_style || 'wenkai') as FontStyle);
+        applyFontSize((merged.font_size || 'medium') as FontSize);
       })
       .catch(err => {
         showToast(`${tRef.current('settings.loadFailed')}: ${getErrorMessage(err)}`, 'error');
@@ -790,6 +793,40 @@ export default function SettingsPage() {
                           {f === 'wenkai' ? t('settings.fontNameWenkai') : f === 'system' ? t('settings.fontNameSystem') : t('settings.fontNameSerif')}
                         </span>
                         <span className="mt-0.5 block text-xs text-text-muted">{t(`settings.font${f.charAt(0).toUpperCase() + f.slice(1)}`)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
+                  <span className="mb-2 block">{t('settings.fontSize')}</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { id: 'small' as const, labelKey: 'settings.fontSizeSmall', sample: '14' },
+                      { id: 'medium' as const, labelKey: 'settings.fontSizeMedium', sample: '16' },
+                      { id: 'large' as const, labelKey: 'settings.fontSizeLarge', sample: '18' },
+                    ]).map(option => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          update('font_size', option.id);
+                          // 实时预览
+                          applyFontSize(option.id);
+                        }}
+                        className={`rounded-xl border px-3 py-2.5 text-center text-sm transition-colors ${
+                          (settings.font_size || 'medium') === option.id
+                            ? 'border-accent bg-accent/10 text-accent-dark font-medium'
+                            : 'border-border-light bg-white/50 text-text-secondary hover:border-accent/40 hover:bg-accent/5'
+                        }`}
+                      >
+                        <span
+                          className="block leading-snug"
+                          style={{ fontSize: option.id === 'small' ? '0.875rem' : option.id === 'large' ? '1.125rem' : '1rem' }}
+                        >
+                          {t(option.labelKey)}
+                        </span>
+                        <span className="mt-0.5 block text-xs text-text-muted">{option.sample}px</span>
                       </button>
                     ))}
                   </div>

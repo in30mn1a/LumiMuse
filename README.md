@@ -262,7 +262,7 @@ LumiMuse 做了响应式布局。
 - 公网部署强烈建议设置访问密码
 - 登录后下发 HMAC-SHA256 签名 token；可选 `AUTH_SECRET` 让 token 在多副本部署时通用
 - 密码校验使用常量时间比较
-- 默认不信任 `X-Forwarded-For`；仅在可信反向代理会覆盖转发头且应用端口不得绕过代理时设置 `TRUST_PROXY=1`
+- 默认不信任 `X-Forwarded-For`；只有可信反向代理会覆盖转发头且应用端口不得绕过代理直连时才设置 `TRUST_PROXY=1`
 - 出站请求（生图、模型列表、总结、对话补全）经过 SSRF 防护
 - 自部署本地 LLM / SD WebUI 时可设置 `ALLOW_LOCAL_NETWORK=1` 显式放开内网地址
 
@@ -392,6 +392,7 @@ ACCESS_PASSWORD=your_password_here
 # AUTH_SECRET=use_a_long_random_string_here
 
 # 可选：仅在可信反向代理覆盖 X-Forwarded-For 时启用
+# 应用端口不得绕过可信代理直接暴露到公网
 # TRUST_PROXY=1
 
 # 可选：多级代理时设置可信 hop 数（默认 1）
@@ -531,7 +532,7 @@ LumiMuse 的记忆不是简单把所有聊天塞回上下文，而是：
 
 - 设置 `ACCESS_PASSWORD`（不要用空值或示例占位值）
 - 使用 HTTPS，建议放在反向代理后面
-- 仅在可信代理覆盖转发头时设置 `TRUST_PROXY=1`
+- 只有可信反向代理会覆盖客户端转发头且应用端口不得绕过代理直连时，才设置 `TRUST_PROXY=1`；多级代理用 `TRUST_PROXY_HOPS` 配置可信 hop 数
 - 定期备份 `data/` 与 `public/{generated,avatars,attachments}/`
 - 不要把 `.env.local`、数据库或个人备份提交到公开仓库
 

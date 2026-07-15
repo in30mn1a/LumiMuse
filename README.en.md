@@ -262,7 +262,7 @@ Import/export makes backup and migration easy; Docker lets you deploy on hardwar
 - Strongly recommended when deploying to the public internet
 - After login, issues an HMAC-SHA256 signed token; set `AUTH_SECRET` for multi-replica token stability
 - Constant-time password comparison
-- `X-Forwarded-For` is not trusted by default; set `TRUST_PROXY=1` only when a trusted reverse proxy overwrites forwarded headers and the app port is not directly reachable
+- `X-Forwarded-For` is not trusted by default; set `TRUST_PROXY=1` only when a trusted reverse proxy overwrites forwarded headers and the application port must not be reachable directly
 - Outbound requests (image gen, model list, summarization, chat completion) go through an SSRF guard
 - Self-hosting local LLM / SD WebUI? Set `ALLOW_LOCAL_NETWORK=1` to allow private network addresses
 
@@ -392,6 +392,7 @@ ACCESS_PASSWORD=your_password_here
 # AUTH_SECRET=use_a_long_random_string_here
 
 # Optional: enable only when a trusted reverse proxy overwrites X-Forwarded-For
+# The application port must not be reachable directly around the trusted proxy
 # TRUST_PROXY=1
 
 # Optional: number of trusted proxy hops (default 1)
@@ -531,7 +532,7 @@ When deploying publicly:
 
 - Set `ACCESS_PASSWORD` (not empty, not a placeholder)
 - Use HTTPS, preferably behind a reverse proxy
-- Set `TRUST_PROXY=1` only when a trusted proxy overwrites forwarded headers
+- Set `TRUST_PROXY=1` only when your trusted reverse proxy overwrites forwarded headers and the application port must not be reachable directly; configure multiple trusted hops with `TRUST_PROXY_HOPS`
 - Regularly back up `data/` and `public/{generated,avatars,attachments}/`
 - Never commit `.env.local`, database files, or personal backups to a public repo
 

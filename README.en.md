@@ -317,7 +317,7 @@ npm run start:local
 | Command | Purpose |
 |:---|:---|
 | `npm run start:local` | Uses `next start` — local source-tree production check |
-| `npm start` / `npm run start:standalone` | Runs `.next/standalone/server.js` — same path Docker uses |
+| `npm start` / `npm run start:standalone` | Runs `.next/standalone/server.js`; Docker copies that folder into the container workdir and runs `node server.js` |
 
 ### Windows Quick Start
 

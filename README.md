@@ -317,7 +317,7 @@ npm run start:local
 | 命令 | 说明 |
 |:---|:---|
 | `npm run start:local` | 使用 `next start`，适合在源码工作区检查生产构建 |
-| `npm start` / `npm run start:standalone` | 运行 `.next/standalone/server.js`，与 Docker 镜像启动方式一致 |
+| `npm start` / `npm run start:standalone` | 运行 `.next/standalone/server.js`；Docker 镜像会把该目录复制为容器工作目录并执行 `node server.js` |
 
 ### Windows 快速启动
 

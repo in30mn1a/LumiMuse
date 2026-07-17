@@ -4,6 +4,7 @@ import { fetchMessagesPage, type MessagesResponse } from '@/lib/chat-stream-clie
 import {
   applyMessagesResponseToState,
   readCachedMessages,
+  readCachedMessagesAsync,
   uniqueMessagesById,
   updateCachedMessages,
   updateMessagesForConversationState,
@@ -125,6 +126,8 @@ export function useMessagePaging({
     const ctl = new AbortController();
     const needsTarget = Boolean(targetMessageId);
     const loadingConvId = activeConvId;
+    // stale-while-revalidate 竞态守卫：网络响应已应用后，迟到的本地持久快照不得再覆盖
+    let networkApplied = false;
     if (!needsTarget) {
       const cached = readCachedMessages(loadingConvId);
       if (cached) {
@@ -132,10 +135,19 @@ export function useMessagePaging({
         queueMicrotask(() => {
           applyMessagesResponse(loadingConvId, cached);
         });
+      } else {
+        // 重开浏览器后内存缓存为空：尝试用 IndexedDB 里上次的快照即时渲染，网络照常刷新
+        void readCachedMessagesAsync(loadingConvId).then(persisted => {
+          if (!persisted || networkApplied || ctl.signal.aborted) return;
+          if (applyMessagesResponse(loadingConvId, persisted)) {
+            onInitialMessagesLoadedRef.current();
+          }
+        });
       }
     }
     fetchMessagesPage(loadingConvId, { limit: pageSize, all: needsTarget, signal: ctl.signal })
       .then(response => {
+        networkApplied = true;
         setMessagePagingError(null);
         if (!applyMessagesResponse(loadingConvId, response)) return;
 

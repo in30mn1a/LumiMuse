@@ -1,11 +1,17 @@
 import type Database from 'better-sqlite3';
-import { randomUUID } from 'crypto';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { ensureMemoryProfileTables, getDb } from '@/lib/db';
+import { createDbTaskQueue } from '@/lib/db-task-queue';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
 import { extractBalancedJsonAt } from '@/lib/balanced-json';
+
+/** 画像更新任务队列：租约/认领/完成走统一 DbTaskQueue，业务 process 仍在本文件 */
+const profileTaskQueue = createDbTaskQueue({
+  table: 'character_memory_profile_update_tasks',
+  timestampMode: 'sqlite_now',
+});
 
 export interface CharacterMemoryProfile {
   character_id: string;
@@ -538,16 +544,21 @@ export function enqueueMemoryProfileUpdate(
   db: Database.Database = getDb(),
 ): MemoryProfileUpdateTask {
   ensureMemoryProfileTables(db);
-  const result = db.prepare(`
-    INSERT INTO character_memory_profile_update_tasks (
-      character_id, reason, patch_json, status, retry_count, created_at, updated_at
-    )
-    VALUES (?, ?, ?, 'pending', 0, datetime('now'), datetime('now'))
-  `).run(characterId, reason, JSON.stringify(patch));
-
+  // 画像有意不去重：每次 patch 都入队，由 process 按序应用
+  const enqueued = profileTaskQueue.enqueue(db, {
+    columns: {
+      character_id: characterId,
+      reason,
+      patch_json: JSON.stringify(patch),
+      retry_count: 0,
+    },
+  });
+  if (enqueued.id == null) {
+    throw new Error(`failed to enqueue memory profile update for character ${characterId}`);
+  }
   const row = db
     .prepare('SELECT * FROM character_memory_profile_update_tasks WHERE id = ?')
-    .get(result.lastInsertRowid) as MemoryProfileUpdateTaskRow | undefined;
+    .get(enqueued.id) as MemoryProfileUpdateTaskRow | undefined;
   if (!row) throw new Error(`failed to enqueue memory profile update for character ${characterId}`);
   return normalizeTaskRow(row);
 }
@@ -559,16 +570,20 @@ export function enqueueMemoryProfilePatchExtraction(
   db: Database.Database = getDb(),
 ): MemoryProfileUpdateTask {
   ensureMemoryProfileTables(db);
-  const result = db.prepare(`
-    INSERT INTO character_memory_profile_update_tasks (
-      character_id, reason, patch_json, status, retry_count, created_at, updated_at
-    )
-    VALUES (?, ?, ?, 'pending', 0, datetime('now'), datetime('now'))
-  `).run(characterId, reason, JSON.stringify({ source_text: sourceText }));
-
+  const enqueued = profileTaskQueue.enqueue(db, {
+    columns: {
+      character_id: characterId,
+      reason,
+      patch_json: JSON.stringify({ source_text: sourceText }),
+      retry_count: 0,
+    },
+  });
+  if (enqueued.id == null) {
+    throw new Error(`failed to enqueue memory profile patch extraction for character ${characterId}`);
+  }
   const row = db
     .prepare('SELECT * FROM character_memory_profile_update_tasks WHERE id = ?')
-    .get(result.lastInsertRowid) as MemoryProfileUpdateTaskRow | undefined;
+    .get(enqueued.id) as MemoryProfileUpdateTaskRow | undefined;
   if (!row) throw new Error(`failed to enqueue memory profile patch extraction for character ${characterId}`);
   return normalizeTaskRow(row);
 }
@@ -604,90 +619,32 @@ function claimMemoryProfileUpdateTasks(
   leaseSeconds: number,
   options: { taskId?: number; throughTaskId?: number; characterId?: string } = {},
 ): MemoryProfileUpdateTask[] {
-  const claimToken = randomUUID();
+  const filters: Array<{ sql: string; params?: unknown[] }> = [];
+  let unlimited = false;
+  if (options.characterId) {
+    filters.push({ sql: 'character_id = ?', params: [options.characterId] });
+  }
+  if (Number.isInteger(options.taskId)) {
+    filters.push({ sql: 'id = ?', params: [options.taskId] });
+  } else if (Number.isInteger(options.throughTaskId)) {
+    filters.push({ sql: 'id <= ?', params: [options.throughTaskId] });
+    unlimited = true;
+  }
 
-  db.transaction(() => {
-    const claimableFilter = `(
-        status = 'pending'
-        OR (
-          status = 'processing'
-          AND lease_expires_at IS NOT NULL
-          AND lease_expires_at <= datetime('now')
-        )
-      )`;
-    const params: unknown[] = [];
-    const filters = [claimableFilter];
-    let limitSql = 'LIMIT ?';
-    if (options.characterId) {
-      filters.push('character_id = ?');
-      params.push(options.characterId);
-    }
-    if (Number.isInteger(options.taskId)) {
-      filters.push('id = ?');
-      params.push(options.taskId);
-    } else if (Number.isInteger(options.throughTaskId)) {
-      filters.push('id <= ?');
-      params.push(options.throughTaskId);
-      limitSql = '';
-    }
-    const rows = db.prepare(`
-      SELECT id FROM character_memory_profile_update_tasks
-      WHERE ${filters.join(' AND ')}
-      ORDER BY id ASC
-      ${limitSql}
-    `).all(...params, ...(limitSql ? [limit] : [])) as Array<{ id: number }>;
-
-    for (const row of rows) {
-      db.prepare(`
-        UPDATE character_memory_profile_update_tasks
-        SET status = 'processing',
-            claim_token = ?,
-            lease_expires_at = datetime('now', ?),
-            error_message = NULL,
-            updated_at = datetime('now')
-        WHERE id = ?
-          AND (
-            status = 'pending'
-            OR (
-              status = 'processing'
-              AND lease_expires_at IS NOT NULL
-              AND lease_expires_at <= datetime('now')
-            )
-          )
-      `).run(claimToken, `+${leaseSeconds} seconds`, row.id);
-    }
-  })();
-
-  return (db.prepare(`
-    SELECT * FROM character_memory_profile_update_tasks
-    WHERE claim_token = ?
-    ORDER BY id ASC
-  `).all(claimToken) as MemoryProfileUpdateTaskRow[]).map(normalizeTaskRow);
+  const rows = profileTaskQueue.claim<MemoryProfileUpdateTaskRow>(db, {
+    limit,
+    leaseSeconds,
+    filters,
+    unlimited,
+  });
+  return rows.map(normalizeTaskRow);
 }
 
 function countClaimableMemoryProfileUpdateTasks(db: Database.Database, characterId?: string): number {
-  const characterFilter = characterId ? 'AND character_id = ?' : '';
-  return (db.prepare(`
-    SELECT COUNT(*) as count FROM character_memory_profile_update_tasks
-    WHERE (
-        status = 'pending'
-      OR (
-        status = 'processing'
-        AND lease_expires_at IS NOT NULL
-        AND lease_expires_at <= datetime('now')
-      )
-    )
-    ${characterFilter}
-  `).get(...(characterId ? [characterId] : [])) as { count: number }).count;
-}
-
-function confirmTaskClaimForWrite(db: Database.Database, task: MemoryProfileUpdateTask): boolean {
-  const result = db.prepare(`
-    UPDATE character_memory_profile_update_tasks
-    SET lease_expires_at = lease_expires_at
-    WHERE id = ? AND claim_token = ? AND status = 'processing'
-  `).run(task.id, task.claim_token);
-  return result.changes > 0;
+  return profileTaskQueue.countClaimable(
+    db,
+    characterId ? [{ sql: 'character_id = ?', params: [characterId] }] : [],
+  );
 }
 
 export async function processMemoryProfileUpdateTasks(options: {
@@ -724,19 +681,13 @@ export async function processMemoryProfileUpdateTasks(options: {
 
       if (!hasPatchChanges(patch)) {
         const result = db.transaction(() => {
-          if (!confirmTaskClaimForWrite(db, task)) {
+          if (!profileTaskQueue.confirmClaim(db, task)) {
             return { applied: false, profile: getOrCreateMemoryProfile(task.character_id, db) };
           }
 
-          db.prepare(`
-            UPDATE character_memory_profile_update_tasks
-            SET status = 'done',
-                claim_token = NULL,
-                lease_expires_at = NULL,
-                error_message = ?,
-                updated_at = datetime('now')
-            WHERE id = ? AND claim_token = ?
-          `).run('empty profile patch skipped', task.id, task.claim_token);
+          profileTaskQueue.complete(db, task, {
+            errorMessage: 'empty profile patch skipped',
+          });
           return { applied: true, profile: getOrCreateMemoryProfile(task.character_id, db) };
         })();
         skipped += 1;
@@ -745,21 +696,13 @@ export async function processMemoryProfileUpdateTasks(options: {
       }
 
       const result = db.transaction(() => {
-        if (!confirmTaskClaimForWrite(db, task)) {
+        if (!profileTaskQueue.confirmClaim(db, task)) {
           return { applied: false, profile: getOrCreateMemoryProfile(task.character_id, db) };
         }
 
         const updated = patchMemoryProfile(task.character_id, patch, db);
         createMemoryProfileVersion(task.character_id, task.reason, task.id, db);
-        db.prepare(`
-          UPDATE character_memory_profile_update_tasks
-          SET status = 'done',
-              claim_token = NULL,
-              lease_expires_at = NULL,
-              error_message = NULL,
-              updated_at = datetime('now')
-          WHERE id = ? AND claim_token = ?
-        `).run(task.id, task.claim_token);
+        profileTaskQueue.complete(db, task);
         return { applied: true, profile: updated };
       })();
       if (result.applied) {
@@ -777,16 +720,7 @@ export async function processMemoryProfileUpdateTasks(options: {
         operation: task.reason,
         status: 'failed',
       }, error);
-      db.prepare(`
-        UPDATE character_memory_profile_update_tasks
-        SET status = 'failed',
-            claim_token = NULL,
-            lease_expires_at = NULL,
-            retry_count = retry_count + 1,
-            error_message = ?,
-            updated_at = datetime('now')
-        WHERE id = ? AND claim_token = ?
-      `).run(message, task.id, task.claim_token);
+      profileTaskQueue.fail(db, task, message);
     }
   }
 
@@ -804,47 +738,36 @@ export async function processMemoryProfileUpdateTasks(options: {
   };
 }
 
-// ── 画像更新队列的后台驱动（与 memory-queue.ts 的 triggerQueue / recoverStaleTasks 对称）──
+// ── 画像更新队列的后台驱动（简单 drain 闸门由 DbTaskQueue 提供）──
 // 画像 patch 生成是较慢的后台 LLM 调用，必须异步排空、不阻塞调用方（提取队列 / 启动流程）。
-let profileQueueProcessing = false;
+const profileDrainGate = profileTaskQueue.createDrainGate(
+  async () => {
+    const result = await processMemoryProfileUpdateTasks({ limit: 5 });
+    return { claimed: result.claimed };
+  },
+  {
+    maxRounds: 1000,
+    onError: (err) => {
+      structuredLog('error', 'memory.profile.queue_failed', {
+        operation: 'drain',
+        status: 'failed',
+      }, err);
+    },
+  },
+);
 
 /**
  * 触发画像更新队列处理：异步循环排空队列，不阻塞调用方。若已在处理则直接返回
  * （处理中新入队的任务会被同一循环的后续轮次领取；极端竞态下也由下次触发兜底）。
  */
 export function triggerMemoryProfileQueue(): void {
-  if (profileQueueProcessing) return;
-  profileQueueProcessing = true;
-  void (async () => {
-    try {
-      // 持续处理直到没有可领取的任务；上限保护避免异常情况下死循环。
-      for (let i = 0; i < 1000; i += 1) {
-        const result = await processMemoryProfileUpdateTasks({ limit: 5 });
-        if (result.claimed === 0) break;
-      }
-    } catch (err) {
-      structuredLog('error', 'memory.profile.queue_failed', {
-        operation: 'drain',
-        status: 'failed',
-      }, err);
-    } finally {
-      profileQueueProcessing = false;
-    }
-  })();
+  profileDrainGate.trigger();
 }
 
 /** 服务启动时调用：仅回收租约已过期或缺失的 processing 画像任务，不抢另一实例 in-flight 任务。 */
 export function recoverStaleMemoryProfileTasks(db: Database.Database = getDb()): void {
   ensureMemoryProfileTables(db);
-  db.prepare(`
-    UPDATE character_memory_profile_update_tasks
-    SET status = 'pending', claim_token = NULL, lease_expires_at = NULL, updated_at = datetime('now')
-    WHERE status = 'processing'
-      AND (
-        lease_expires_at IS NULL
-        OR lease_expires_at <= datetime('now')
-      )
-  `).run();
+  profileTaskQueue.recoverStale(db);
 }
 
 export function rollbackMemoryProfile(

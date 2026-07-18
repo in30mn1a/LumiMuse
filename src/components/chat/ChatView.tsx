@@ -27,11 +27,7 @@ import { estimateClientTokens } from '@/lib/token-counter-client';
 import { getVersionInfo } from '@/lib/chat-view-utils';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
 import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
-import {
-  buildClientTimePayload,
-  fetchMessagesPage,
-  readChatSseStream,
-} from '@/lib/chat-stream-client';
+import { fetchMessagesPage } from '@/lib/chat-stream-client';
 import {
   clearCachedMessages,
   readCachedMessages,
@@ -214,8 +210,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     handleGenerateImage,
     generatingImageMessageIds,
     maybeAutoGenerateImageFromMessages,
-    markStreamAutoImageHandled,
-    clearStreamAutoImageHandled,
     handleDeleteImage,
     handleEditImagePrompt,
     handleSetPrimaryImage,
@@ -231,6 +225,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   });
 
   const {
+    sendChatStream,
     handleEditMessage,
     handleDeleteMessage,
     handleRegenerate,
@@ -253,8 +248,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     t,
     pageSize: PAGE_SIZE,
     maybeAutoGenerateImageFromMessages,
-    markStreamAutoImageHandled,
-    clearStreamAutoImageHandled,
   });
 
   const versionInfoByMessageId = useMemo(() => {
@@ -390,28 +383,6 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         showToast(`${t('settings.loadFailed')}: ${getErrorMessage(err)}`, 'error');
       });
   }, [showToast, t]);
-
-  // 后台流完成时，如果用户正在看那个对话，刷新消息列表
-  const prevActiveStreamsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const prev = prevActiveStreamsRef.current;
-    // 找到从 prev 中消失的 convId（即刚完成的流）
-    if (activeConvId && prev.has(activeConvId) && !activeStreams.has(activeConvId)) {
-      // 当前对话的流刚完成，刷新消息
-      const cid = activeConvId;
-      fetchMessagesPage(cid, { limit: Math.max(PAGE_SIZE, messages.length) })
-        .then(response => {
-          if (!applyMessagesResponse(cid, response)) return;
-          // 自动生图：流刚完成，用服务端最新数据（含 metadata.inlineImagePrompt）直接触发，
-          // 这里 freshMessages 已是权威数据，无需等 messagesRef 同步，规避了竞态。
-          void maybeAutoGenerateImageFromMessages(cid, response.messages);
-        })
-        .catch(err => {
-          showToast(`${t('chat.messageLoadFailed')}: ${getErrorMessage(err)}`, 'error');
-        });
-    }
-    prevActiveStreamsRef.current = activeStreams;
-  }, [activeStreams, activeConvId, applyMessagesResponse, maybeAutoGenerateImageFromMessages, messages.length, showToast, t]);
 
   const openRename = () => {
     if (!activeConversation) return;
@@ -627,11 +598,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       return;
     }
 
-    const ctl = beginStream(convId!);
-    // 闭包内捕获本次流的 convId
     const myConvId = convId!;
-    // 新普通发送：清掉上一轮 regenerate/insert 残留的 handled 标记，避免误跳过本轮自动出图
-    clearStreamAutoImageHandled(myConvId);
 
     const displayAttachments = attachments?.map(att => (
       att.type === 'image'
@@ -641,7 +608,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
     const tempUserMessage: Message = {
       id: 'temp-user',
-      conversation_id: convId!,
+      conversation_id: myConvId,
       role: 'user',
       content,
       token_count: 0,
@@ -653,64 +620,17 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     updateMessagesForConversation(myConvId, messages => uniqueMessagesById([...messages, tempUserMessage]));
 
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversation_id: convId,
-          content,
-          ...buildClientTimePayload(),
-          ...(attachments && attachments.length > 0 ? { attachments } : {}),
-        }),
-        signal: ctl.signal,
+      // 流协议 + 显式目标自动生图统一走 sendChatStream；本处只负责 UI 前奏
+      await sendChatStream({
+        mode: 'new',
+        convId: myConvId,
+        content,
+        attachments,
+        onFailureCleanup: () => {
+          updateMessagesForConversation(myConvId, messages => messages.filter(message => message.id !== 'temp-user'));
+        },
       });
-
-      if (!response.ok || !response.body) {
-        let errMsg = `HTTP ${response.status}`;
-        try {
-          // 尝试读取服务端返回的具体错误信息
-          const errBody = await response.json();
-          if (errBody.error || errBody.message) errMsg = errBody.error || errBody.message || errMsg;
-        } catch { /* 响应体不是 JSON，保留状态码信息 */ }
-        throw new Error(errMsg);
-      }
-
-      let fullText = '';
-      await readChatSseStream(response.body, {
-        onChunk: text => {
-          fullText += text;
-          scheduleStreamingText(myConvId, fullText);
-        },
-        onUsage: (usage) => {
-          if (activeConvIdRef.current === myConvId) {
-            setStreamingUsage({ convId: myConvId, usage });
-          }
-        },
-        onMemoryExtracting: () => {
-          void pollMemoryTask(myConvId);
-        },
-        getErrorMessage: () => t('chat.errorGeneral'),
-      });
-
-      await refreshMessagesForConversation(myConvId);
-      // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
-      touchConversation(myConvId);
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        // 用户主动停止，刷新消息
-        await refreshMessages();
-      } else {
-        const isNetwork = error instanceof TypeError;
-        if (isNetwork) {
-          showToast(t('chat.errorNetwork'));
-        } else {
-          const msg = error instanceof Error ? error.message : String(error);
-          showToast(msg || t('chat.errorGeneral'));
-        }
-        updateMessagesForConversation(myConvId, messages => messages.filter(message => message.id !== 'temp-user'));
-      }
     } finally {
-      finishStream(myConvId);
       if (createdNewConversation) {
         creatingConversationRef.current = false;
       }

@@ -1,6 +1,7 @@
 import { useCallback, type MutableRefObject } from 'react';
 import type { Message } from '@/types';
 import type { ToastType } from '@/components/ui/Toast';
+import type { AttachmentItem } from '@/lib/chat-engine';
 import { parseJsonResponse } from '@/lib/http';
 import {
   buildClientTimePayload,
@@ -27,6 +28,32 @@ function findAssistantInsertedAfterUser(messages: Message[], userMessageId: stri
   return next?.role === 'assistant' ? next.id : undefined;
 }
 
+function findLastAssistantId(messages: Message[]): string | undefined {
+  return [...messages].reverse().find(message => message.role === 'assistant')?.id;
+}
+
+export type SendChatStreamOpts =
+  | {
+      mode: 'new';
+      convId: string;
+      content: string;
+      attachments?: AttachmentItem[];
+      /** 非 Abort 失败时回滚 UI（如删除 temp-user） */
+      onFailureCleanup?: () => void;
+    }
+  | {
+      mode: 'regenerate';
+      convId: string;
+      content: string;
+      regenerateAssistantId: string;
+    }
+  | {
+      mode: 'insert';
+      convId: string;
+      content: string;
+      insertAfterUserMessageId: string;
+    };
+
 type UseChatMessageActionsOptions = {
   activeConvIdRef: MutableRefObject<string | null>;
   activeStreamsRef: MutableRefObject<Set<string>>;
@@ -49,9 +76,6 @@ type UseChatMessageActionsOptions = {
     freshMessages: Message[],
     options?: { assistantMessageId?: string; retry?: boolean },
   ) => void | Promise<void>;
-  /** 标记本轮流已由 callChatStream 按目标 id 处理自动出图，避免 ChatView 无目标 effect 误打末尾气泡 */
-  markStreamAutoImageHandled: (cid: string) => void;
-  clearStreamAutoImageHandled: (cid: string) => void;
 };
 
 export function useChatMessageActions({
@@ -71,8 +95,6 @@ export function useChatMessageActions({
   t,
   pageSize,
   maybeAutoGenerateImageFromMessages,
-  markStreamAutoImageHandled,
-  clearStreamAutoImageHandled,
 }: UseChatMessageActionsOptions) {
   const handleEditMessage = useCallback(async (
     id: string,
@@ -122,20 +144,22 @@ export function useChatMessageActions({
     }
   }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
-  const callChatStream = useCallback(async (
-    convId: string,
-    userContent: string,
-    regenerateAssistantId?: string,
-    skipUserInsert?: boolean,
-    insertAssistantAfterUserId?: string,
-  ) => {
+  /**
+   * 一次聊天流的完整生命周期：begin → fetch/SSE → refresh → 按 mode 显式目标自动生图 → touch → finish。
+   * new / regenerate / insert 共用，避免协议双份与共享 Set 暗协议。
+   */
+  const sendChatStream = useCallback(async (opts: SendChatStreamOpts) => {
+    const { mode, convId, content } = opts;
+    const regenerateAssistantId = mode === 'regenerate' ? opts.regenerateAssistantId : undefined;
+    const insertAfterUserMessageId = mode === 'insert' ? opts.insertAfterUserMessageId : undefined;
+    const attachments = mode === 'new' ? opts.attachments : undefined;
+    const onFailureCleanup = mode === 'new' ? opts.onFailureCleanup : undefined;
+
     const controller = beginStream(convId, {
       regenerateAssistantId,
-      insertAfterUserMessageId: !regenerateAssistantId ? insertAssistantAfterUserId : undefined,
+      insertAfterUserMessageId,
     });
     const streamConversationId = convId;
-    // 新流开始：清掉上一轮残留的 handled 标记
-    clearStreamAutoImageHandled(streamConversationId);
 
     try {
       const response = await fetch('/api/chat', {
@@ -143,11 +167,12 @@ export function useChatMessageActions({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           conversation_id: convId,
-          content: userContent,
+          content,
           ...buildClientTimePayload(),
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
           ...(regenerateAssistantId ? { regenerate_assistant_id: regenerateAssistantId } : {}),
-          ...(insertAssistantAfterUserId ? { insert_assistant_after_user_id: insertAssistantAfterUserId } : {}),
-          ...(skipUserInsert ? { skip_user_insert: true } : {}),
+          ...(insertAfterUserMessageId ? { insert_assistant_after_user_id: insertAfterUserMessageId } : {}),
+          ...(mode !== 'new' ? { skip_user_insert: true } : {}),
         }),
         signal: controller.signal,
       });
@@ -182,26 +207,25 @@ export function useChatMessageActions({
         getErrorMessage: () => t('chat.errorGeneral'),
       });
 
-      if (regenerateAssistantId) markSkipNextScroll();
+      if (mode === 'regenerate') markSkipNextScroll();
       await refreshMessagesForConversation(streamConversationId);
 
-      // regenerate：目标 id 已知；mid-insert：新 assistant 落在锚点 user 之后，需从刷新结果定位
-      // 两种路径都按目标 id 触发自动出图，并 mark 掉 ChatView 无目标 effect，避免 reverse().find 误打末尾旧气泡
-      if (regenerateAssistantId || insertAssistantAfterUserId) {
-        const response = await fetchMessagesPage(streamConversationId, {
-          limit: Math.max(pageSize, messagesRef.current.length),
+      // 三种 mode 均按显式目标 id 触发自动出图；定位失败则不触发（不再靠 effect 兜底）
+      const page = await fetchMessagesPage(streamConversationId, {
+        limit: Math.max(pageSize, messagesRef.current.length),
+      });
+      const targetAssistantId = mode === 'regenerate'
+        ? regenerateAssistantId
+        : mode === 'insert'
+          ? findAssistantInsertedAfterUser(page.messages, insertAfterUserMessageId!)
+          : findLastAssistantId(page.messages);
+      if (targetAssistantId) {
+        void maybeAutoGenerateImageFromMessages(streamConversationId, page.messages, {
+          assistantMessageId: targetAssistantId,
+          retry: mode === 'regenerate',
         });
-        const targetAssistantId = regenerateAssistantId
-          ?? findAssistantInsertedAfterUser(response.messages, insertAssistantAfterUserId!);
-        if (targetAssistantId) {
-          // 仅在成功定位目标时 mark，避免定位失败还挡住 ChatView 兜底
-          markStreamAutoImageHandled(streamConversationId);
-          void maybeAutoGenerateImageFromMessages(streamConversationId, response.messages, {
-            assistantMessageId: targetAssistantId,
-            retry: Boolean(regenerateAssistantId),
-          });
-        }
       }
+
       // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
       touchConversation(streamConversationId);
     } catch (error) {
@@ -209,12 +233,14 @@ export function useChatMessageActions({
         await refreshMessagesForConversation(streamConversationId);
       } else if (error instanceof TypeError) {
         showToast(t('chat.errorNetwork'));
+        onFailureCleanup?.();
       } else {
         const message = error instanceof Error ? error.message : String(error);
         showToast(message || t('chat.errorGeneral'));
+        onFailureCleanup?.();
       }
     } finally {
-      finishStream(streamConversationId, { clearRegenerationState: true });
+      finishStream(streamConversationId, { clearRegenerationState: mode !== 'new' });
     }
   }, [
     activeConvIdRef,
@@ -230,8 +256,6 @@ export function useChatMessageActions({
     touchConversation,
     pageSize,
     maybeAutoGenerateImageFromMessages,
-    markStreamAutoImageHandled,
-    clearStreamAutoImageHandled,
     messagesRef,
   ]);
 
@@ -247,8 +271,13 @@ export function useChatMessageActions({
       .find(message => message.role === 'user');
     if (!userMessage) return;
 
-    await callChatStream(convId, userMessage.content, messageId, true);
-  }, [activeConvIdRef, activeStreamsRef, callChatStream, messagesRef]);
+    await sendChatStream({
+      mode: 'regenerate',
+      convId,
+      content: userMessage.content,
+      regenerateAssistantId: messageId,
+    });
+  }, [activeConvIdRef, activeStreamsRef, sendChatStream, messagesRef]);
 
   const handleRegenerateFromHere = useCallback(async (userMessageId: string) => {
     const convId = activeConvIdRef.current;
@@ -262,14 +291,22 @@ export function useChatMessageActions({
     const immediateNext = currentMessages[userMessageIndex + 1];
     const nextAssistant = immediateNext?.role === 'assistant' ? immediateNext : undefined;
 
-    await callChatStream(
-      convId,
-      userContent,
-      nextAssistant?.id,
-      true,
-      nextAssistant ? undefined : userMessageId,
-    );
-  }, [activeConvIdRef, activeStreamsRef, callChatStream, messagesRef]);
+    if (nextAssistant) {
+      await sendChatStream({
+        mode: 'regenerate',
+        convId,
+        content: userContent,
+        regenerateAssistantId: nextAssistant.id,
+      });
+    } else {
+      await sendChatStream({
+        mode: 'insert',
+        convId,
+        content: userContent,
+        insertAfterUserMessageId: userMessageId,
+      });
+    }
+  }, [activeConvIdRef, activeStreamsRef, sendChatStream, messagesRef]);
 
   const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {
     try {
@@ -288,6 +325,7 @@ export function useChatMessageActions({
   }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
   return {
+    sendChatStream,
     handleEditMessage,
     handleDeleteMessage,
     handleRegenerate,

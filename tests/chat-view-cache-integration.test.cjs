@@ -64,30 +64,30 @@ test('ChatView keeps stream chunks scoped to the active conversation and refresh
   const source = readChatView();
   const messageActionsHook = readProjectFile('src/hooks/chat/useChatMessageActions.ts');
 
-  const callStreamStart = messageActionsHook.indexOf('const callChatStream = useCallback');
-  const regenerateStart = messageActionsHook.indexOf('const handleRegenerate = useCallback', callStreamStart);
+  const sendStreamStart = messageActionsHook.indexOf('const sendChatStream = useCallback');
+  const regenerateStart = messageActionsHook.indexOf('const handleRegenerate = useCallback', sendStreamStart);
   const sendStart = source.indexOf('const handleSend = async');
   const noCharacterStart = source.indexOf('if (!hasCharacter)', sendStart);
 
-  assert.notEqual(callStreamStart, -1, 'missing callChatStream');
-  assert.notEqual(regenerateStart, -1, 'missing callChatStream end marker');
+  assert.notEqual(sendStreamStart, -1, 'missing sendChatStream');
+  assert.notEqual(regenerateStart, -1, 'missing sendChatStream end marker');
   assert.notEqual(sendStart, -1, 'missing handleSend');
   assert.notEqual(noCharacterStart, -1, 'missing handleSend end marker');
 
-  const callStreamBlock = messageActionsHook.slice(callStreamStart, regenerateStart);
+  const sendStreamBlock = messageActionsHook.slice(sendStreamStart, regenerateStart);
   const sendBlock = source.slice(sendStart, noCharacterStart);
   const streamingHook = readProjectFile('src/hooks/chat/useChatStreaming.ts');
-  assert.ok(callStreamBlock.includes('scheduleStreamingText(streamConversationId, fullText)'), 'regeneration chunks should be tagged with their conversation');
-  assert.ok(sendBlock.includes('scheduleStreamingText(myConvId, fullText)'), 'send chunks should be tagged with their conversation');
+  assert.ok(sendStreamBlock.includes('scheduleStreamingText(streamConversationId, fullText)'), 'stream chunks should be tagged with their conversation');
   assert.match(streamingHook, /if \(currentActiveConvIdRef\.current !== convId\) return;/, 'the streaming hook should guard old callbacks with the current active conversation ref');
-  assert.ok(callStreamBlock.includes('void pollMemoryTask(streamConversationId);'), 'regeneration stream should still poll memory extraction tasks');
-  assert.ok(sendBlock.includes('void pollMemoryTask(myConvId);'), 'send stream should still poll memory extraction tasks');
-  assert.ok(callStreamBlock.includes('await refreshMessagesForConversation(streamConversationId);'), 'regeneration stream should refresh its owning conversation when finished');
-  assert.ok(sendBlock.includes('await refreshMessagesForConversation(myConvId);'), 'send stream should refresh the generated conversation when finished');
-  assert.ok(callStreamBlock.includes('touchConversation(streamConversationId)'), 'regeneration stream should only touch the current conversation summary');
-  assert.ok(sendBlock.includes('touchConversation(myConvId)'), 'send stream should only touch the current conversation summary');
-  assert.ok(!callStreamBlock.includes('refreshConversationState'), 'regeneration stream should not full-refresh conversations/memories');
-  assert.ok(!sendBlock.includes('refreshConversationState'), 'send stream should not full-refresh conversations/memories');
+  assert.ok(sendStreamBlock.includes('void pollMemoryTask(streamConversationId);'), 'stream should still poll memory extraction tasks');
+  assert.ok(sendStreamBlock.includes('await refreshMessagesForConversation(streamConversationId);'), 'stream should refresh its owning conversation when finished');
+  assert.ok(sendStreamBlock.includes('touchConversation(streamConversationId)'), 'stream should only touch the current conversation summary');
+  assert.ok(!sendStreamBlock.includes('refreshConversationState'), 'stream should not full-refresh conversations/memories');
+  // handleSend 只做 UI 前奏，流本体委托给 sendChatStream
+  assert.ok(sendBlock.includes("mode: 'new'"), 'handleSend should call sendChatStream in new mode');
+  assert.ok(sendBlock.includes('sendChatStream('), 'handleSend should delegate the stream protocol');
+  assert.ok(!sendBlock.includes('readChatSseStream'), 'handleSend must not re-implement the SSE protocol');
+  assert.ok(!sendBlock.includes('refreshConversationState'), 'send path should not full-refresh conversations/memories');
 });
 
 test('architecture contract: useChatStreaming only clears visible streaming state for the finished display owner', () => {
@@ -164,22 +164,25 @@ test('architecture contract: ChatView delegates existing-conversation guard to t
 test('ChatView delegates message actions and the hook owns a dependency-aware stream callback', () => {
   const source = readChatView();
   const hook = readProjectFile('src/hooks/chat/useChatMessageActions.ts');
-  const callStreamStart = hook.indexOf('const callChatStream = useCallback');
-  const regenerateStart = hook.indexOf('const handleRegenerate = useCallback', callStreamStart);
-  assert.notEqual(callStreamStart, -1, 'missing callChatStream');
-  assert.notEqual(regenerateStart, -1, 'missing callChatStream end marker');
+  const sendStreamStart = hook.indexOf('const sendChatStream = useCallback');
+  const regenerateStart = hook.indexOf('const handleRegenerate = useCallback', sendStreamStart);
+  assert.notEqual(sendStreamStart, -1, 'missing sendChatStream');
+  assert.notEqual(regenerateStart, -1, 'missing sendChatStream end marker');
 
-  const callStreamBlock = hook.slice(callStreamStart, regenerateStart);
+  const sendStreamBlock = hook.slice(sendStreamStart, regenerateStart);
   assert.match(source, /useChatMessageActions\(/);
   assert.ok(!source.includes('const handleRegenerate = useCallback'));
   assert.ok(!hook.includes('ref-only helper'));
   assert.ok(!hook.includes('eslint-disable-next-line react-hooks/exhaustive-deps'));
   assert.match(
-    callStreamBlock,
-    /beginStream\(convId, \{\s*regenerateAssistantId,\s*insertAfterUserMessageId:/,
+    sendStreamBlock,
+    /beginStream\(convId, \{\s*regenerateAssistantId,\s*insertAfterUserMessageId,/,
   );
-  assert.match(callStreamBlock, /showToast,/);
-  assert.match(callStreamBlock, /t,/);
+  assert.match(sendStreamBlock, /showToast,/);
+  assert.match(sendStreamBlock, /t,/);
+  assert.match(sendStreamBlock, /mode === 'new'/);
+  assert.match(sendStreamBlock, /mode === 'regenerate'/);
+  assert.match(sendStreamBlock, /mode === 'insert'/);
 });
 
 test('useChatStreaming scopes regeneration hidden targets by conversation', () => {

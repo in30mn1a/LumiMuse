@@ -12,6 +12,10 @@ const messageActionsSource = fs.readFileSync(
   path.join(root, 'src/hooks/chat/useChatMessageActions.ts'),
   'utf8',
 );
+const chatViewSource = fs.readFileSync(
+  path.join(root, 'src/components/chat/ChatView.tsx'),
+  'utf8',
+);
 const chatEngineSource = fs.readFileSync(
   path.join(root, 'src/lib/chat-engine.ts'),
   'utf8',
@@ -43,27 +47,32 @@ test('auto image gen can target a specific assistant message on regenerate retry
   assert.match(hookSource, /if \(options\?\.retry\) \{\s*autoImagedMsgIdsRef\.current\.delete\(targetAssistant\.id\);/);
   assert.match(
     messageActionsSource,
-    /maybeAutoGenerateImageFromMessages\(streamConversationId, response\.messages, \{\s*assistantMessageId: targetAssistantId,\s*retry: Boolean\(regenerateAssistantId\),/,
+    /maybeAutoGenerateImageFromMessages\(streamConversationId, page\.messages, \{\s*assistantMessageId: targetAssistantId,\s*retry: mode === 'regenerate',/,
   );
 });
 
-test('mid-insert and regenerate both target auto image by assistant id and mark stream handled', () => {
+test('sendChatStream targets auto image by explicit assistant id for all modes without mark protocol', () => {
+  assert.match(messageActionsSource, /const sendChatStream = useCallback/);
+  assert.match(messageActionsSource, /mode === 'regenerate'/);
+  assert.match(messageActionsSource, /mode === 'insert'/);
+  assert.match(messageActionsSource, /findAssistantInsertedAfterUser/);
+  assert.match(messageActionsSource, /findLastAssistantId/);
   assert.match(
     messageActionsSource,
-    /if \(regenerateAssistantId \|\| insertAssistantAfterUserId\)/,
+    /assistantMessageId: targetAssistantId,\s*retry: mode === 'regenerate'/,
   );
-  assert.match(messageActionsSource, /findAssistantInsertedAfterUser/);
-  assert.match(messageActionsSource, /markStreamAutoImageHandled\(streamConversationId\)/);
-  assert.match(messageActionsSource, /clearStreamAutoImageHandled\(streamConversationId\)/);
-  assert.match(hookSource, /streamAutoImageHandledConvIdsRef/);
-  assert.match(
-    hookSource,
-    /if \(!options\?\.assistantMessageId && streamAutoImageHandledConvIdsRef\.current\.has\(cid\)\)/,
-  );
-  // 有目标 id 的调用不得清 mark（留给 ChatView 无目标 effect 消费）
+  // 共享 Set 暗协议已删除
+  assert.doesNotMatch(messageActionsSource, /markStreamAutoImageHandled/);
+  assert.doesNotMatch(messageActionsSource, /clearStreamAutoImageHandled/);
+  assert.doesNotMatch(hookSource, /streamAutoImageHandledConvIdsRef/);
+  assert.doesNotMatch(hookSource, /markStreamAutoImageHandled/);
+  assert.doesNotMatch(chatViewSource, /streamAutoImageHandledConvIdsRef/);
+  assert.doesNotMatch(chatViewSource, /prevActiveStreamsRef/);
+  // 无目标 id 时不猜末尾气泡
+  assert.match(hookSource, /if \(!options\?\.assistantMessageId\) return;/);
   assert.doesNotMatch(
     hookSource,
-    /if \(options\?\.assistantMessageId\) \{\s*streamAutoImageHandledConvIdsRef\.current\.delete/,
+    /reverse\(\)\.find\(m => m\.role === 'assistant'\)/,
   );
 });
 

@@ -46,8 +46,6 @@ export function useChatImageGeneration({
   void _characterRef;
   const generateImageRef = useRef<GenerateImageFn | null>(null);
   const autoImagedMsgIdsRef = useRef<Set<string>>(new Set());
-  /** callChatStream 已按目标 id 处理过自动出图的对话；ChatView 无目标 effect 应跳过，避免中段 insert 误打末尾气泡 */
-  const streamAutoImageHandledConvIdsRef = useRef<Set<string>>(new Set());
   const imageRequestSeqRef = useRef(0);
   const activeImageRequestsRef = useRef<Map<number, { controller: AbortController; conversationId: string }>>(new Map());
   const inFlightMessageIdsRef = useRef<Set<string>>(new Set());
@@ -284,36 +282,22 @@ export function useChatImageGeneration({
     generateImageRef.current = handleGenerateImage;
   }, [handleGenerateImage]);
 
-  const markStreamAutoImageHandled = useCallback((cid: string) => {
-    streamAutoImageHandledConvIdsRef.current.add(cid);
-  }, []);
-
-  /** 新流开始时清掉上一轮残留，避免误跳过本次无目标自动出图 */
-  const clearStreamAutoImageHandled = useCallback((cid: string) => {
-    streamAutoImageHandledConvIdsRef.current.delete(cid);
-  }, []);
-
   const maybeAutoGenerateImageFromMessages = useCallback(async (
     cid: string,
     freshMessages: Message[],
     options?: { assistantMessageId?: string; retry?: boolean },
   ) => {
     try {
-      // regenerate / mid-insert 已在 callChatStream 按目标 id 处理过时，跳过无目标的兜底触发。
-      // 注意：有目标 id 的调用不得清 mark，留给随后的 ChatView 无目标 effect 消费。
-      if (!options?.assistantMessageId && streamAutoImageHandledConvIdsRef.current.has(cid)) {
-        streamAutoImageHandledConvIdsRef.current.delete(cid);
-        return;
-      }
-
       const settingsRes = await fetch('/api/settings');
       const s = await parseJsonResponse<Partial<Settings>>(settingsRes);
       const imgCfg = s.image_gen;
       if (!imgCfg?.enabled) return;
 
-      const targetAssistant = options?.assistantMessageId
-        ? freshMessages.find(m => m.id === options.assistantMessageId && m.role === 'assistant')
-        : [...freshMessages].reverse().find(m => m.role === 'assistant');
+      // 发送链路统一传入显式 assistantMessageId；无目标时不猜末尾气泡，避免 mid-insert 误打
+      if (!options?.assistantMessageId) return;
+      const targetAssistant = freshMessages.find(
+        m => m.id === options.assistantMessageId && m.role === 'assistant',
+      );
       if (!targetAssistant) return;
 
       if (options?.retry) {
@@ -482,8 +466,6 @@ export function useChatImageGeneration({
     handleGenerateImage,
     generatingImageMessageIds,
     maybeAutoGenerateImageFromMessages,
-    markStreamAutoImageHandled,
-    clearStreamAutoImageHandled,
     handleDeleteImage,
     handleEditImagePrompt,
     handleSetPrimaryImage,

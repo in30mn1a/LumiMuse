@@ -161,6 +161,31 @@ export function useChatMessageActions({
     });
     const streamConversationId = convId;
 
+    // 三种 mode 均按显式目标 id 触发自动出图；定位失败则不触发（不再靠 effect 兜底）。
+    // 属收尾装饰步骤：拉页失败只提示加载失败，不得误报为发送失败；
+    // new 模式沿用旧行为，仅在用户仍停留在该对话时出图。
+    const triggerAutoImage = async () => {
+      if (mode === 'new' && activeConvIdRef.current !== streamConversationId) return;
+      try {
+        const page = await fetchMessagesPage(streamConversationId, {
+          limit: Math.max(pageSize, messagesRef.current.length),
+        });
+        const targetAssistantId = mode === 'regenerate'
+          ? regenerateAssistantId
+          : mode === 'insert'
+            ? findAssistantInsertedAfterUser(page.messages, insertAfterUserMessageId!)
+            : findLastAssistantId(page.messages);
+        if (targetAssistantId) {
+          void maybeAutoGenerateImageFromMessages(streamConversationId, page.messages, {
+            assistantMessageId: targetAssistantId,
+            retry: mode === 'regenerate',
+          });
+        }
+      } catch {
+        showToast(t('chat.messageLoadFailed'), 'error');
+      }
+    };
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -210,27 +235,15 @@ export function useChatMessageActions({
       if (mode === 'regenerate') markSkipNextScroll();
       await refreshMessagesForConversation(streamConversationId);
 
-      // 三种 mode 均按显式目标 id 触发自动出图；定位失败则不触发（不再靠 effect 兜底）
-      const page = await fetchMessagesPage(streamConversationId, {
-        limit: Math.max(pageSize, messagesRef.current.length),
-      });
-      const targetAssistantId = mode === 'regenerate'
-        ? regenerateAssistantId
-        : mode === 'insert'
-          ? findAssistantInsertedAfterUser(page.messages, insertAfterUserMessageId!)
-          : findLastAssistantId(page.messages);
-      if (targetAssistantId) {
-        void maybeAutoGenerateImageFromMessages(streamConversationId, page.messages, {
-          assistantMessageId: targetAssistantId,
-          retry: mode === 'regenerate',
-        });
-      }
-
       // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
       touchConversation(streamConversationId);
+
+      await triggerAutoImage();
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
+        // 中止的部分回复已落库，仍尝试自动出图（尾部 [IMG] 块可能已流完）
         await refreshMessagesForConversation(streamConversationId);
+        await triggerAutoImage();
       } else if (error instanceof TypeError) {
         showToast(t('chat.errorNetwork'));
         onFailureCleanup?.();

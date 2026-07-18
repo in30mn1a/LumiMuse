@@ -108,6 +108,8 @@ function createExtractionDb() {
       merge_count INTEGER NOT NULL DEFAULT 0,
       retry_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
+      claim_token TEXT,
+      lease_expires_at TEXT,
       started_at TEXT,
       result_committed INTEGER NOT NULL DEFAULT 0,
       result_insert_count INTEGER NOT NULL DEFAULT 0,
@@ -614,6 +616,11 @@ test('memory-queue drain 会把任务来源 messageIds 传给 extractMemories', 
       message_ids TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'pending',
       merge_count INTEGER NOT NULL DEFAULT 0,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      claim_token TEXT,
+      lease_expires_at TEXT,
+      started_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -707,6 +714,11 @@ test('memory-queue 标记已提取时保留 LLM 窗口内用户新增的 metadat
       message_ids TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'pending',
       merge_count INTEGER NOT NULL DEFAULT 0,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      claim_token TEXT,
+      lease_expires_at TEXT,
+      started_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );

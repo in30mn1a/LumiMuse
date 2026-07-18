@@ -61,6 +61,8 @@ function memoryTasksDb() {
       merge_count INTEGER NOT NULL DEFAULT 0,
       retry_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
+      claim_token TEXT,
+      lease_expires_at TEXT,
       started_at TEXT,
       result_committed INTEGER NOT NULL DEFAULT 0,
       result_insert_count INTEGER NOT NULL DEFAULT 0,
@@ -82,12 +84,16 @@ const noopProfile = {
   triggerMemoryProfileQueue: () => {},
 };
 
-test('recoverStaleTasks leaves processing task with recent started_at', () => {
+test('recoverStaleTasks leaves processing task with future lease', () => {
   const db = memoryTasksDb();
   const now = new Date().toISOString();
+  // SQLite datetime('+5 minutes') 相对 'now'；ISO 写入后比较用 lease 语义
   db.prepare(`
-    INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, started_at, created_at, updated_at)
-    VALUES ('c1', 'conv1', '[]', 'processing', ?, ?, ?)
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, claim_token, lease_expires_at,
+      started_at, created_at, updated_at
+    )
+    VALUES ('c1', 'conv1', '[]', 'processing', 'live-token', datetime('now', '+5 minutes'), ?, ?, ?)
   `).run(now, now, now);
 
   const { recoverStaleTasks } = requireFreshWithMocks('../src/lib/memory-queue.ts', {
@@ -98,17 +104,21 @@ test('recoverStaleTasks leaves processing task with recent started_at', () => {
   });
   recoverStaleTasks();
 
-  const row = db.prepare('SELECT status, started_at FROM memory_tasks WHERE id = 1').get();
+  const row = db.prepare('SELECT status, claim_token, started_at FROM memory_tasks WHERE id = 1').get();
   assert.equal(row.status, 'processing');
+  assert.equal(row.claim_token, 'live-token');
   assert.ok(row.started_at);
 });
 
-test('recoverStaleTasks resets processing task with stale started_at', () => {
+test('recoverStaleTasks resets processing task with expired lease', () => {
   const db = memoryTasksDb();
   const stale = new Date(Date.now() - 400_000).toISOString();
   db.prepare(`
-    INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, started_at, created_at, updated_at)
-    VALUES ('c1', 'conv1', '[]', 'processing', ?, ?, ?)
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, claim_token, lease_expires_at,
+      started_at, created_at, updated_at
+    )
+    VALUES ('c1', 'conv1', '[]', 'processing', 'stale-token', datetime('now', '-1 minute'), ?, ?, ?)
   `).run(stale, stale, stale);
 
   const { recoverStaleTasks } = requireFreshWithMocks('../src/lib/memory-queue.ts', {
@@ -119,8 +129,10 @@ test('recoverStaleTasks resets processing task with stale started_at', () => {
   });
   recoverStaleTasks();
 
-  const row = db.prepare('SELECT status, started_at FROM memory_tasks WHERE id = 1').get();
+  const row = db.prepare('SELECT status, claim_token, lease_expires_at, started_at FROM memory_tasks WHERE id = 1').get();
   assert.equal(row.status, 'pending');
+  assert.equal(row.claim_token, null);
+  assert.equal(row.lease_expires_at, null);
   assert.equal(row.started_at, null);
 });
 

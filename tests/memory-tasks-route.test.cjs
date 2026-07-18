@@ -96,6 +96,8 @@ function createMemoryTasksDb() {
       merge_count INTEGER NOT NULL DEFAULT 0,
       retry_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
+      claim_token TEXT,
+      lease_expires_at TEXT,
       started_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -527,7 +529,12 @@ test('memory-queue clears in-flight conversation when marking a task processing 
   const dbWithFailingProcessingUpdate = {
     prepare(sql) {
       const statement = db.prepare(sql);
-      if (sql.includes("UPDATE memory_tasks SET status = 'processing'")) {
+      // DbTaskQueue claim 写入 status=processing + claim_token + lease_expires_at
+      if (
+        sql.includes('UPDATE "memory_tasks"')
+        && sql.includes("status = 'processing'")
+        && sql.includes('claim_token')
+      ) {
         return {
           run(...args) {
             if (failProcessingUpdate) {
@@ -840,6 +847,8 @@ test('real db migration creates memory task diagnostic columns', () => {
 
   assert.ok(columns.includes('retry_count'));
   assert.ok(columns.includes('error_message'));
+  assert.ok(columns.includes('claim_token'));
+  assert.ok(columns.includes('lease_expires_at'));
   assert.ok(columns.includes('started_at'));
   assert.ok(columns.includes('result_committed'));
   assert.ok(columns.includes('result_insert_count'));
@@ -879,6 +888,8 @@ test('real db migration backfills memory task diagnostic columns on legacy table
 
   assert.ok(columns.includes('retry_count'));
   assert.ok(columns.includes('error_message'));
+  assert.ok(columns.includes('claim_token'));
+  assert.ok(columns.includes('lease_expires_at'));
   assert.ok(columns.includes('started_at'));
   assert.ok(columns.includes('result_committed'));
   assert.ok(columns.includes('result_insert_count'));
@@ -887,8 +898,22 @@ test('real db migration backfills memory task diagnostic columns on legacy table
 });
 
 test('memory-queue keeps legacy task rows usable when diagnostic columns are absent', async () => {
-  const db = createLegacyMemoryTasksDb();
+  // 旧库可无 retry_count/error_message/started_at，但 claim/lease 列由 migrate 保证存在；
+  // 此处模拟「有 claim 列、无部分诊断列」的最小可用表。
+  const db = new Database(':memory:');
   db.exec(`
+    CREATE TABLE memory_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      message_ids TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      merge_count INTEGER NOT NULL DEFAULT 0,
+      claim_token TEXT,
+      lease_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
       role TEXT NOT NULL,
@@ -926,7 +951,7 @@ test('memory-queue keeps legacy task rows usable when diagnostic columns are abs
   queue.enqueueExtraction('char-a', 'conv-legacy-fail', [{ id: 'msg-user-legacy-fail' }]);
 
   let row;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
     row = db.prepare('SELECT status FROM memory_tasks WHERE conversation_id = ?').get('conv-legacy-fail');
     if (row?.status === 'failed') break;
     await new Promise(resolve => setTimeout(resolve, 10));

@@ -533,6 +533,8 @@ function migrate(db: Database.Database): void {
       merge_count INTEGER NOT NULL DEFAULT 0,
       retry_count INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
+      claim_token TEXT,
+      lease_expires_at TEXT,
       started_at TEXT,
       result_committed INTEGER NOT NULL DEFAULT 0,
       result_insert_count INTEGER NOT NULL DEFAULT 0,
@@ -564,6 +566,17 @@ function migrate(db: Database.Database): void {
   if (taskCols.length > 0 && !taskCols.some(c => c.name === 'result_merge_count')) {
     db.exec(`ALTER TABLE memory_tasks ADD COLUMN result_merge_count INTEGER NOT NULL DEFAULT 0`);
   }
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'claim_token')) {
+    db.exec(`ALTER TABLE memory_tasks ADD COLUMN claim_token TEXT`);
+  }
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'lease_expires_at')) {
+    db.exec(`ALTER TABLE memory_tasks ADD COLUMN lease_expires_at TEXT`);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_memory_tasks_claim
+      ON memory_tasks(claim_token)
+      WHERE claim_token IS NOT NULL;
+  `);
   const migrateMemoryTaskStartedAt = db.transaction(() => {
     const currentTaskCols = db.prepare("PRAGMA table_info(memory_tasks)").all() as { name: string }[];
     if (currentTaskCols.length > 0 && !currentTaskCols.some(c => c.name === 'started_at')) {

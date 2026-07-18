@@ -3,8 +3,11 @@
  *
  * 任务写入 memory_tasks 表，服务重启后自动恢复 pending/processing 任务，
  * 不再因热重载或进程崩溃而丢失。
+ *
+ * claim/lease/recover/drain 走 DbTaskQueue；同对话串行仍由进程内 inFlightConversations 负责。
  */
-import { backgroundTaskStaleCutoffIso } from '@/lib/background-task-recovery';
+import { DEFAULT_BACKGROUND_TASK_LEASE_SECONDS } from '@/lib/background-task-recovery';
+import { createDbTaskQueue } from '@/lib/db-task-queue';
 import { extractMemories, getCommittedExtractionResult } from '@/lib/memory-engine';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
@@ -12,9 +15,27 @@ import { loadSettings } from '@/lib/settings';
 import { enqueueMemoryProfilePatchExtraction, triggerMemoryProfileQueue } from '@/lib/memory-profile';
 import { structuredLog } from '@/lib/structured-log';
 
-let processing = false;
-// 正在处理中的 conversationId，防止同一对话并发重复提取
+const extractionTaskQueue = createDbTaskQueue({
+  table: 'memory_tasks',
+  timestampMode: 'iso',
+  defaultLeaseSeconds: DEFAULT_BACKGROUND_TASK_LEASE_SECONDS,
+});
+
+// 正在处理中的 conversationId，防止同一对话并发重复提取（业务层策略，非通用队列原语）
 const inFlightConversations = new Set<string>();
+
+type ExtractionTaskRow = {
+  id: number;
+  character_id: string;
+  conversation_id: string;
+  message_ids: string;
+  claim_token: string | null;
+  lease_expires_at: string | null;
+  merge_count: number;
+  retry_count: number;
+  error_message: string | null;
+  status: string;
+};
 
 function formatExtractionMessage(
   message: { role: string; content: string; created_at: string },
@@ -42,11 +63,6 @@ function buildExtractionText(
   }
 
   return { text: lines.join('\n'), includedCompleteUserIds };
-}
-
-function hasColumn(db: ReturnType<typeof getDb>, tableName: string, columnName: string): boolean {
-  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
-  return columns.some(column => column.name === columnName);
 }
 
 function hasTable(db: ReturnType<typeof getDb>, tableName: string): boolean {
@@ -98,6 +114,16 @@ function hasRepairableExtractionCandidate(db: ReturnType<typeof getDb>, taskId: 
   return Boolean(row);
 }
 
+function markTaskStartedAt(db: ReturnType<typeof getDb>, task: ExtractionTaskRow): void {
+  if (!task.claim_token) return;
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE memory_tasks
+    SET started_at = ?, updated_at = ?
+    WHERE id = ? AND claim_token = ? AND status = 'processing'
+  `).run(now, now, task.id, task.claim_token);
+}
+
 /** 把任务写入数据库，如果该对话已有 pending/processing 任务则跳过 */
 export function enqueueExtraction(
   characterId: string,
@@ -113,205 +139,187 @@ export function enqueueExtraction(
   const messageIds = JSON.stringify(messages.map(m => m.id));
   const now = new Date().toISOString();
 
-  // TOCTOU 保护：SELECT + INSERT 必须在同一事务内原子执行
-  // 否则两个并发请求可能同时通过 SELECT 检查、各自插入，造成重复任务
-  const insertIfAbsent = db.transaction(() => {
-    const existing = db.prepare(
-      "SELECT id FROM memory_tasks WHERE conversation_id = ? AND status IN ('pending','processing') LIMIT 1"
-    ).get(conversationId);
-    if (existing) return false;
-
-    db.prepare(`
-      INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', ?, ?)
-    `).run(characterId, conversationId, messageIds, now, now);
-    return true;
+  const enqueued = extractionTaskQueue.enqueue(db, {
+    columns: {
+      character_id: characterId,
+      conversation_id: conversationId,
+      message_ids: messageIds,
+      created_at: now,
+      updated_at: now,
+    },
+    dedupeKey: { column: 'conversation_id', value: conversationId },
   });
+  if (!enqueued.inserted) return;
 
-  const inserted = insertIfAbsent();
-  if (!inserted) return;
-
-  if (!processing) void processQueue();
+  extractionDrainGate.trigger();
 }
 
-/** 服务启动时调用：仅回收 processing 且已超过租约窗口的任务（崩溃孤儿），不抢另一实例 in-flight 任务 */
+/** 服务启动时调用：仅回收租约已过期/缺失的 processing（崩溃孤儿），不抢另一实例 in-flight 任务 */
 export function recoverStaleTasks(): void {
   const db = getDb();
-  const now = new Date().toISOString();
-  const staleBefore = backgroundTaskStaleCutoffIso();
-  if (hasColumn(db, 'memory_tasks', 'started_at')) {
-    db.prepare(
-      `UPDATE memory_tasks SET status = 'pending', started_at = NULL, updated_at = ?
-       WHERE status = 'processing'
-         AND (started_at IS NULL OR started_at <= ?)`
-    ).run(now, staleBefore);
-  } else {
-    db.prepare(
-      "UPDATE memory_tasks SET status = 'pending', updated_at = ? WHERE status = 'processing'"
-    ).run(now);
-  }
+  extractionTaskQueue.recoverStale(db);
+  // 诊断字段 started_at：过期回收后清掉，避免 UI 把孤儿当仍在跑
+  db.prepare(`
+    UPDATE memory_tasks
+    SET started_at = NULL
+    WHERE status = 'pending'
+      AND claim_token IS NULL
+      AND started_at IS NOT NULL
+  `).run();
 }
 
-async function processQueue(): Promise<void> {
-  if (processing) return;
-  processing = true;
-
+/**
+ * 领取并处理至多一条提取任务。
+ * 同对话串行：SQL 层排除 inFlightConversations，避免误标 done 丢新消息。
+ */
+async function processOneExtractionTask(): Promise<{ claimed: number }> {
   const db = getDb();
+  const inFlightList = [...inFlightConversations];
+  const filters = inFlightList.length > 0
+    ? [{
+        sql: `conversation_id NOT IN (${inFlightList.map(() => '?').join(',')})`,
+        params: inFlightList,
+      }]
+    : [];
 
-  // 顶层 try/finally：保证无论循环体内任何位置（包括 try/catch 之外的 SELECT、
-  // inFlightConversations.add 等）抛出异常，processing 都会被复位为 false，
-  // 避免标志永久卡在 true 导致整个记忆提取队列瘫痪。
+  const tasks = extractionTaskQueue.claim<ExtractionTaskRow>(db, {
+    limit: 1,
+    filters,
+  });
+  const task = tasks[0];
+  if (!task) return { claimed: 0 };
+
+  inFlightConversations.add(task.conversation_id);
+
   try {
-    while (true) {
-    // 取一条 pending 任务，并在 SQL 层直接排除 inFlightConversations 中的对话。
-    // 之前的做法是先 SELECT 再判断，若命中内存去重就把任务标记为 'done' 以避免无限循环；
-    // 但这会丢消息——较新任务的 message_ids 可能包含尚未被前一任务覆盖的新消息，
-    // 一旦标 done，这些新消息将永远不再被提取。
-    // 改为 SQL 层排除：既不会无限循环（同对话任务不会再被取到），也不会误标 done；
-    // 前一任务在 finally 中 delete 后，下一轮循环会自然取到同对话的新任务。
-    const inFlightList = [...inFlightConversations];
-    const task = db.prepare(
-      `SELECT * FROM memory_tasks
-       WHERE status = 'pending'
-       ${inFlightList.length > 0 ? `AND conversation_id NOT IN (${inFlightList.map(() => '?').join(',')})` : ''}
-       ORDER BY id ASC LIMIT 1`
-    ).get(...inFlightList) as { id: number; character_id: string; conversation_id: string; message_ids: string } | undefined;
-
-    if (!task) break;
-
-    inFlightConversations.add(task.conversation_id);
-
-    // 标记为 processing，并记录后台任务开始时间供 stuck 诊断使用
+    // started_at 仅诊断用；写失败不得阻断提取（旧库/精简测试 fixture 可能无该列）
     try {
-      const processingStartedAt = new Date().toISOString();
-      if (hasColumn(db, 'memory_tasks', 'started_at')) {
-        db.prepare("UPDATE memory_tasks SET status = 'processing', started_at = ?, updated_at = ? WHERE id = ?")
-          .run(processingStartedAt, processingStartedAt, task.id);
-      } else {
-        db.prepare("UPDATE memory_tasks SET status = 'processing', updated_at = ? WHERE id = ?")
-          .run(processingStartedAt, task.id);
-      }
-    } catch (err) {
-      inFlightConversations.delete(task.conversation_id);
-      throw err;
+      markTaskStartedAt(db, task);
+    } catch {
+      // ignore diagnostic column write failures
     }
 
-    try {
-      const settings = loadSettings();
-      const messageIds: string[] = JSON.parse(task.message_ids);
+    const settings = loadSettings();
+    const messageIds: string[] = JSON.parse(task.message_ids);
 
-      // 从数据库重新读取消息内容（防止内容已被编辑），含 created_at 用于拼时间戳
-      const messages = db.prepare(
-        `SELECT * FROM messages WHERE id IN (${messageIds.map(() => '?').join(',')}) ORDER BY seq ASC, created_at ASC`
-      ).all(...messageIds) as Array<{ id: string; role: string; content: string; metadata: string; created_at: string }>;
+    // 从数据库重新读取消息内容（防止内容已被编辑），含 created_at 用于拼时间戳
+    const messages = db.prepare(
+      `SELECT * FROM messages WHERE id IN (${messageIds.map(() => '?').join(',')}) ORDER BY seq ASC, created_at ASC`
+    ).all(...messageIds) as Array<{ id: string; role: string; content: string; metadata: string; created_at: string }>;
 
-      if (messages.length > 0) {
-        // 查询角色名称，用于拼装对话文本
-        const charRow = db.prepare('SELECT name FROM characters WHERE id = ?').get(task.character_id) as { name: string } | undefined;
-        const characterName = charRow?.name || '角色';
+    if (messages.length > 0) {
+      // 查询角色名称，用于拼装对话文本
+      const charRow = db.prepare('SELECT name FROM characters WHERE id = ?').get(task.character_id) as { name: string } | undefined;
+      const characterName = charRow?.name || '角色';
 
-        const { text: convText, includedCompleteUserIds } = buildExtractionText(messages, characterName);
-        if (!convText) {
-          db.prepare("UPDATE memory_tasks SET status = 'done', updated_at = ? WHERE id = ?")
-            .run(new Date().toISOString(), task.id);
-          continue;
-        }
+      const { text: convText, includedCompleteUserIds } = buildExtractionText(messages, characterName);
+      if (!convText) {
+        extractionTaskQueue.complete(db, task);
+        return { claimed: 1 };
+      }
 
-        // 崩溃恢复：若记忆结果已 durable 提交，只补齐 metadata 与 task 状态，不再次调用 LLM。
-        const alreadyCommitted = getCommittedExtractionResult(task.id, db);
-        let mergeCount = alreadyCommitted?.mergeCount ?? 0;
-        let insertCount = alreadyCommitted?.insertCount ?? 0;
+      // 崩溃恢复：若记忆结果已 durable 提交，只补齐 metadata 与 task 状态，不再次调用 LLM。
+      const alreadyCommitted = getCommittedExtractionResult(task.id, db);
+      let mergeCount = alreadyCommitted?.mergeCount ?? 0;
+      let insertCount = alreadyCommitted?.insertCount ?? 0;
 
-        if (!alreadyCommitted) {
-          const extracted = await extractMemories(task.character_id, convText, settings, {
-            messageIds,
+      if (!alreadyCommitted) {
+        const extracted = await extractMemories(task.character_id, convText, settings, {
+          messageIds,
+          taskId: task.id,
+          conversationId: task.conversation_id,
+        });
+        mergeCount = extracted.mergeCount;
+        insertCount = extracted.insertCount;
+      }
+
+      if (insertCount === 0 && mergeCount === 0 && hasRepairableExtractionCandidate(db, task.id)) {
+        throw new Error('repairable memory extraction candidate created; task remains retryable');
+      }
+
+      // 只有实际产生了提取结果（新条目或合并）才标记消息为已提取
+      // 这里的判断使用真实的 insertCount（实际写入 DB 的新记忆数）和
+      // mergeCount（实际更新的已有记忆数），而不是 LLM 解析出的原始条目数；
+      // 后者会在 LLM 反复返回与已有记忆完全等同内容时虚报"提取成功"。
+      if (insertCount > 0 || mergeCount > 0) {
+        markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds);
+
+        // 提取产生了新记忆 → 入队角色画像更新（用本轮对话文本作为信号）并异步触发处理。
+        // 画像 patch 是较慢的后台 LLM 调用，trigger 为 fire-and-forget；失败不得影响提取主流程。
+        // 已提交恢复路径也允许再入队：画像队列自身有去重/幂等保护，丢一次补一次更安全。
+        try {
+          enqueueMemoryProfilePatchExtraction(task.character_id, convText, 'memory_extraction', db);
+          triggerMemoryProfileQueue();
+        } catch (profileErr) {
+          structuredLog('error', 'memory.profile.enqueue_failed', {
             taskId: task.id,
+            characterId: task.character_id,
             conversationId: task.conversation_id,
-          });
-          mergeCount = extracted.mergeCount;
-          insertCount = extracted.insertCount;
-        }
-
-        if (insertCount === 0 && mergeCount === 0 && hasRepairableExtractionCandidate(db, task.id)) {
-          throw new Error('repairable memory extraction candidate created; task remains retryable');
-        }
-
-        // 只有实际产生了提取结果（新条目或合并）才标记消息为已提取
-        // 这里的判断使用真实的 insertCount（实际写入 DB 的新记忆数）和
-        // mergeCount（实际更新的已有记忆数），而不是 LLM 解析出的原始条目数；
-        // 后者会在 LLM 反复返回与已有记忆完全等同内容时虚报"提取成功"。
-        if (insertCount > 0 || mergeCount > 0) {
-          markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds);
-
-          // 提取产生了新记忆 → 入队角色画像更新（用本轮对话文本作为信号）并异步触发处理。
-          // 画像 patch 是较慢的后台 LLM 调用，trigger 为 fire-and-forget；失败不得影响提取主流程。
-          // 已提交恢复路径也允许再入队：画像队列自身有去重/幂等保护，丢一次补一次更安全。
-          try {
-            enqueueMemoryProfilePatchExtraction(task.character_id, convText, 'memory_extraction', db);
-            triggerMemoryProfileQueue();
-          } catch (profileErr) {
-            structuredLog('error', 'memory.profile.enqueue_failed', {
-              taskId: task.id,
-              characterId: task.character_id,
-              conversationId: task.conversation_id,
-              operation: 'enqueue_profile_update',
-              status: 'failed',
-            }, profileErr);
-          }
-        } else {
-          markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds, new Date().toISOString());
-        }
-
-        // 把合并数量写回任务，供外部轮询
-        if (mergeCount > 0) {
-          db.prepare("UPDATE memory_tasks SET status = 'done', updated_at = ?, merge_count = ? WHERE id = ?")
-            .run(new Date().toISOString(), mergeCount, task.id);
-        } else {
-          db.prepare("UPDATE memory_tasks SET status = 'done', updated_at = ? WHERE id = ?")
-            .run(new Date().toISOString(), task.id);
+            operation: 'enqueue_profile_update',
+            status: 'failed',
+          }, profileErr);
         }
       } else {
-        db.prepare("UPDATE memory_tasks SET status = 'done', updated_at = ? WHERE id = ?")
-          .run(new Date().toISOString(), task.id);
+        markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds, new Date().toISOString());
       }
-    } catch (err) {
-      structuredLog('error', 'memory.extraction.failed', {
-        taskId: task.id,
-        characterId: task.character_id,
-        conversationId: task.conversation_id,
-        operation: 'extract',
-        status: 'failed',
-      }, err);
-      // 标记失败，不阻塞后续任务
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      const taskColumns = db.prepare("PRAGMA table_info(memory_tasks)").all() as { name: string }[];
-      const hasRetryCount = taskColumns.some(column => column.name === 'retry_count');
-      const hasErrorMessage = taskColumns.some(column => column.name === 'error_message');
-      if (hasRetryCount && hasErrorMessage) {
+
+      // 把合并数量写回任务，供外部轮询
+      if (mergeCount > 0) {
+        extractionTaskQueue.complete(db, task, { columns: { merge_count: mergeCount } });
+      } else {
+        extractionTaskQueue.complete(db, task);
+      }
+    } else {
+      extractionTaskQueue.complete(db, task);
+    }
+  } catch (err) {
+    structuredLog('error', 'memory.extraction.failed', {
+      taskId: task.id,
+      characterId: task.character_id,
+      conversationId: task.conversation_id,
+      operation: 'extract',
+      status: 'failed',
+    }, err);
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    try {
+      extractionTaskQueue.fail(db, task, errorMessage);
+    } catch {
+      // 极旧 schema 可能缺 retry_count/error_message：降级为按 claim 清状态
+      try {
         db.prepare(`
           UPDATE memory_tasks
-          SET status = 'failed',
-              retry_count = retry_count + 1,
-              error_message = ?,
-              updated_at = ?
-          WHERE id = ?
-        `).run(errorMessage, new Date().toISOString(), task.id);
-      } else {
-        db.prepare("UPDATE memory_tasks SET status = 'failed', updated_at = ? WHERE id = ?")
-          .run(new Date().toISOString(), task.id);
+          SET status = 'failed', claim_token = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE id = ? AND claim_token = ?
+        `).run(new Date().toISOString(), task.id, task.claim_token);
+      } catch {
+        db.prepare(`
+          UPDATE memory_tasks SET status = 'failed', updated_at = ? WHERE id = ?
+        `).run(new Date().toISOString(), task.id);
       }
-    } finally {
-      inFlightConversations.delete(task.conversation_id);
-    }
     }
   } finally {
-    processing = false;
+    inFlightConversations.delete(task.conversation_id);
   }
+
+  return { claimed: 1 };
 }
+
+const extractionDrainGate = extractionTaskQueue.createDrainGate(
+  () => processOneExtractionTask(),
+  {
+    maxRounds: 100_000,
+    onError: (err) => {
+      structuredLog('error', 'memory.extraction.queue_failed', {
+        operation: 'drain',
+        status: 'failed',
+      }, err);
+    },
+  },
+);
 
 /** 手动触发队列处理（用于外部调用） */
 export function triggerQueue(): void {
-  if (!processing) void processQueue();
+  extractionDrainGate.trigger();
 }
 
 export function getQueueLength(): number {
@@ -323,9 +331,15 @@ export function getQueueLength(): number {
 }
 
 export function isProcessing(): boolean {
-  return processing;
+  return extractionDrainGate.isActive();
 }
 
 export function __processQueueForTest(): Promise<void> {
-  return processQueue();
+  // 测试用：同步排空一轮（drain gate 是 fire-and-forget，这里直接循环）
+  return (async () => {
+    for (let i = 0; i < 1000; i += 1) {
+      const result = await processOneExtractionTask();
+      if (result.claimed === 0) break;
+    }
+  })();
 }

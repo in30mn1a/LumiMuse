@@ -231,12 +231,13 @@ export function createDbTaskQueue(config: DbTaskQueueConfig) {
 
       const now = bindNow(db);
       for (const row of rows) {
+        // 不在 claim 时清 error_message：部分旧表/精简 fixture 可能无该列；
+        // 完成/失败路径会写入最终诊断字段。
         db.prepare(
           `UPDATE ${table}
            SET status = 'processing',
                claim_token = ?,
                lease_expires_at = datetime('now', ?),
-               error_message = NULL,
                updated_at = ${now.sql}
            WHERE id = ?
              AND ${claimablePredicate()}`,
@@ -269,20 +270,29 @@ export function createDbTaskQueue(config: DbTaskQueueConfig) {
   function complete(
     db: Database.Database,
     task: { id: number; claim_token: string | null },
-    options: { errorMessage?: string | null } = {},
+    options: {
+      errorMessage?: string | null;
+      /** 业务列（如 merge_count），在完成时一并写入 */
+      columns?: Record<string, unknown>;
+    } = {},
   ): boolean {
     if (!task.claim_token) return false;
+    const extra = Object.entries(options.columns || {});
+    for (const [key] of extra) assertSafeIdent(key, 'column');
     const now = bindNow(db);
+    const extraSql = extra.map(([key]) => `${quoteIdent(key)} = ?`).join(', ');
     const result = db.prepare(
       `UPDATE ${table}
        SET status = 'done',
            claim_token = NULL,
            lease_expires_at = NULL,
            error_message = ?,
+           ${extraSql ? `${extraSql},` : ''}
            updated_at = ${now.sql}
        WHERE id = ? AND claim_token = ?`,
     ).run(
       options.errorMessage === undefined ? null : options.errorMessage,
+      ...extra.map(([, value]) => value),
       ...now.params,
       task.id,
       task.claim_token,

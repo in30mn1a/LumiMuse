@@ -128,32 +128,58 @@ export function getDb(): Database.Database {
     );
   }
 
-  // 服务启动时把上次崩溃遗留的 processing 任务重置为 pending
-  // 延迟 import 避免循环依赖（memory-queue → db → memory-queue）
+  // 服务启动时把上次崩溃遗留的 processing 任务重置为 pending，并触发 drain。
+  // 延迟 import 避免循环依赖（memory-queue → db → memory-queue）。
   // recoverStale* 仅回收已超过租约窗口的 processing（崩溃孤儿）；另一实例 in-flight 任务不会被抢回。
+  // 各队列独立 boot：一条失败不得拖垮其余队列。
   setImmediate(() => {
-    import('@/lib/memory-queue').then(({ recoverStaleTasks, triggerQueue }) => {
+    for (const entry of BACKGROUND_QUEUE_BOOT) {
+      void entry.run().catch(entry.onError);
+    }
+  });
+
+  return _db;
+}
+
+/**
+ * 后台队列启动注册表：每条独立 import + recover + trigger。
+ * 新增队列时在此追加一项即可，不要再往 getDb 里堆 setImmediate 分支。
+ */
+const BACKGROUND_QUEUE_BOOT: Array<{
+  run: () => Promise<void>;
+  onError: (err: unknown) => void;
+}> = [
+  {
+    run: async () => {
+      const { recoverStaleTasks, triggerQueue } = await import('@/lib/memory-queue');
       recoverStaleTasks();
       triggerQueue();
-    }).catch((err) => {
+    },
+    onError: (err) => {
       // 不静默吞错：启动期失败必须可见，否则记忆队列恢复出问题用户根本无从察觉
       structuredLog('error', 'memory.queue.boot_failed', {
         operation: 'recover_and_drain', status: 'failed',
       }, err);
-    });
-    // 画像更新队列同样需要启动恢复 + 触发处理（与提取队列对称），独立 import 避免互相影响
-    import('@/lib/memory-profile').then(({ recoverStaleMemoryProfileTasks, triggerMemoryProfileQueue }) => {
+    },
+  },
+  {
+    run: async () => {
+      const { recoverStaleMemoryProfileTasks, triggerMemoryProfileQueue } = await import('@/lib/memory-profile');
       recoverStaleMemoryProfileTasks();
       triggerMemoryProfileQueue();
-    }).catch((err) => {
+    },
+    onError: (err) => {
       structuredLog('error', 'memory.profile.boot_failed', {
         operation: 'recover_and_drain', status: 'failed',
       }, err);
-    });
-    // 向量索引任务：启动时回收过期 processing，并像提取/画像队列一样尝试触发 drain。
-    // 仅 recover 不 trigger 时，若用户之后只聊天不产生新记忆写入，pending 可能长期闲置。
-    // drain 自带 config 缺失短路与 claim_token 守卫，启动触发是安全的。
-    import('@/lib/memory-embeddings').then(async ({ recoverStaleMemoryEmbeddingTasks }) => {
+    },
+  },
+  {
+    // 向量索引：recover 后必须 trigger（仅 recover 时 pending 可能长期闲置）。
+    // drain 自带 config 缺失短路与 claim 守卫，启动触发是安全的。
+    // trigger 单独 try/catch：recover 成功但 trigger 失败时保留 recovery_failed / boot_trigger_failed 分流。
+    run: async () => {
+      const { recoverStaleMemoryEmbeddingTasks } = await import('@/lib/memory-embeddings');
       recoverStaleMemoryEmbeddingTasks();
       try {
         const { triggerMemoryIndexProcessing } = await import('@/lib/memory-index-trigger');
@@ -163,15 +189,14 @@ export function getDb(): Database.Database {
           operation: 'trigger_drain', status: 'failed',
         }, triggerErr);
       }
-    }).catch((err) => {
+    },
+    onError: (err) => {
       structuredLog('error', 'memory.embedding.recovery_failed', {
         operation: 'recover_stale', status: 'failed',
       }, err);
-    });
-  });
-
-  return _db;
-}
+    },
+  },
+];
 
 export function ensureMemoryProfileTables(db: Database.Database): void {
   db.exec(`

@@ -71,6 +71,9 @@ test('getDb boot recovery triggers embedding drain after recover', () => {
     source,
     /recoverStaleMemoryEmbeddingTasks[\s\S]{0,400}triggerMemoryIndexProcessing/,
   );
+  // 三条队列启动接线走统一注册表，避免 getDb 内再堆独立 setImmediate 分支
+  assert.match(source, /BACKGROUND_QUEUE_BOOT/);
+  assert.match(source, /for \(const entry of BACKGROUND_QUEUE_BOOT\)/);
 });
 
 test('messages_fts heal condition rebuilds when fts has extra rows', () => {

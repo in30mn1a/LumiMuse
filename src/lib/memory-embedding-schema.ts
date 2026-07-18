@@ -23,6 +23,7 @@ export const MEMORY_EMBEDDING_TABLE_DDL = `
     reason TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     claim_token TEXT,
+    lease_expires_at TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,
     created_at TEXT NOT NULL,

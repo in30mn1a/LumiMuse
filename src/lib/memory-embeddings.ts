@@ -1,6 +1,7 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import type Database from 'better-sqlite3';
-import { backgroundTaskStaleCutoffIso } from '@/lib/background-task-recovery';
+import { DEFAULT_BACKGROUND_TASK_LEASE_SECONDS } from '@/lib/background-task-recovery';
+import { createDbTaskQueue } from '@/lib/db-task-queue';
 import { getDb } from '@/lib/db';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { Memory } from '@/types';
@@ -9,6 +10,13 @@ import {
   MEMORY_EMBEDDING_INDEX_DDL,
   MEMORY_EMBEDDING_TABLE_DDL,
 } from '@/lib/memory-embedding-schema';
+
+/** embedding 任务队列：claim/lease/recover 走 DbTaskQueue；复杂 drain 仍在 memory-index-trigger */
+const embeddingTaskQueue = createDbTaskQueue({
+  table: 'memory_embedding_tasks',
+  timestampMode: 'iso',
+  defaultLeaseSeconds: DEFAULT_BACKGROUND_TASK_LEASE_SECONDS,
+});
 
 export interface EmbeddingAdapterConfig {
   api_base?: string;
@@ -42,6 +50,7 @@ export interface MemoryEmbeddingTask {
   reason: string;
   status: 'pending' | 'processing' | 'done' | 'failed';
   claim_token: string | null;
+  lease_expires_at: string | null;
   retry_count: number;
   error_message: string | null;
   created_at: string;
@@ -354,6 +363,9 @@ export function ensureMemoryEmbeddingTables(db: Database.Database = getDb()): vo
   if (taskCols.length > 0 && !taskCols.some(c => c.name === 'claim_token')) {
     db.exec(`ALTER TABLE memory_embedding_tasks ADD COLUMN claim_token TEXT`);
   }
+  if (taskCols.length > 0 && !taskCols.some(c => c.name === 'lease_expires_at')) {
+    db.exec(`ALTER TABLE memory_embedding_tasks ADD COLUMN lease_expires_at TEXT`);
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_claim
       ON memory_embedding_tasks(claim_token)
@@ -457,36 +469,23 @@ export function enqueueMemoryEmbeddingTask(
 ): boolean {
   ensureMemoryEmbeddingTables(db);
   const now = new Date().toISOString();
-
-  return db.transaction(() => {
-    const existing = db.prepare(
-      "SELECT id FROM memory_embedding_tasks WHERE memory_id = ? AND status IN ('pending','processing') LIMIT 1",
-    ).get(memoryId);
-    if (existing) return false;
-
-    const failed = db.prepare(`
-      SELECT id
-      FROM memory_embedding_tasks
-      WHERE memory_id = ? AND status = 'failed'
-      ORDER BY updated_at DESC, id DESC
-      LIMIT 1
-    `).get(memoryId) as { id: number } | undefined;
-    if (failed) {
-      db.prepare(`
-        UPDATE memory_embedding_tasks
-        SET character_id = ?, reason = ?, status = 'pending', claim_token = NULL,
-            retry_count = 0, error_message = NULL, updated_at = ?
-        WHERE id = ?
-      `).run(characterId, reason, now, failed.id);
-      return true;
-    }
-
-    db.prepare(`
-      INSERT INTO memory_embedding_tasks (memory_id, character_id, reason, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', ?, ?)
-    `).run(memoryId, characterId, reason, now, now);
-    return true;
-  })();
+  const result = embeddingTaskQueue.enqueue(db, {
+    columns: {
+      memory_id: memoryId,
+      character_id: characterId,
+      reason,
+      created_at: now,
+      updated_at: now,
+    },
+    dedupeKey: { column: 'memory_id', value: memoryId },
+    reviveFailed: true,
+    reviveColumns: {
+      character_id: characterId,
+      reason,
+      retry_count: 0,
+    },
+  });
+  return result.inserted || result.revived;
 }
 
 export function enqueueRebuildMemoryEmbeddings(
@@ -597,14 +596,8 @@ export function stopCurrentMemoryIndexTasks(
 
 export function recoverStaleMemoryEmbeddingTasks(db: Database.Database = getDb()): number {
   ensureMemoryEmbeddingTables(db);
-  const now = new Date().toISOString();
-  const staleBefore = backgroundTaskStaleCutoffIso();
-  // 仅回收 updated_at 已超过租约窗口的 processing（崩溃孤儿）；另一实例刚 claim 的任务不抢。
-  const result = db.prepare(
-    `UPDATE memory_embedding_tasks SET status = 'pending', claim_token = NULL, updated_at = ?
-     WHERE status = 'processing' AND updated_at <= ?`,
-  ).run(now, staleBefore);
-  return result.changes;
+  // 仅回收 lease_expires_at 已过期/缺失的 processing（崩溃孤儿）；另一实例 in-flight 不抢。
+  return embeddingTaskQueue.recoverStale(db);
 }
 
 export function retryFailedMemoryEmbeddings(
@@ -655,7 +648,7 @@ export function retryFailedMemoryEmbeddings(
     const update = db.prepare(`
       UPDATE memory_embedding_tasks
       SET reason = 'retry_failed', status = 'pending', claim_token = NULL,
-          retry_count = 0, error_message = NULL, updated_at = ?
+          lease_expires_at = NULL, retry_count = 0, error_message = NULL, updated_at = ?
       WHERE id = ?
     `);
     for (const row of rows) {
@@ -749,6 +742,7 @@ export async function processMemoryEmbeddingTasks(
   config: EmbeddingAdapterConfig,
   options: {
     limit?: number;
+    leaseSeconds?: number;
     db?: Database.Database;
     embed?: (text: string, config: EmbeddingAdapterConfig) => Promise<ArrayLike<number>>;
     embedBatch?: (texts: string[], config: EmbeddingAdapterConfig) => Promise<ArrayLike<number>[]>;
@@ -757,43 +751,30 @@ export async function processMemoryEmbeddingTasks(
   const db = options.db || getDb();
   ensureMemoryEmbeddingTables(db);
   const limit = Math.max(1, Math.min(options.limit || 8, 64));
+  const leaseSeconds = Math.max(
+    1,
+    Math.floor(options.leaseSeconds ?? DEFAULT_BACKGROUND_TASK_LEASE_SECONDS),
+  );
   const provider = config.provider || 'openai-compatible';
   const model = config.model?.trim() || '';
   const embed = options.embed || embedText;
   const embedBatch = options.embedBatch || (options.embed ? null : embedTexts);
   let processed = 0;
   let failed = 0;
-  const claimToken = randomUUID();
 
-  const tasks = db.transaction(() => {
-    const now = new Date().toISOString();
-    const retryReadyBefore = new Date(Date.now() - RECOVERABLE_EMBEDDING_RETRY_DELAY_MS).toISOString();
-    db.prepare(`
-      UPDATE memory_embedding_tasks
-      SET status = 'processing', claim_token = ?, updated_at = ?
-      WHERE id IN (
-        SELECT id FROM memory_embedding_tasks
-        WHERE status = 'pending'
-          AND (retry_count = 0 OR updated_at <= ?)
-        ORDER BY id ASC
-        LIMIT ?
-      )
-    `).run(claimToken, now, retryReadyBefore, limit);
-
-    return db.prepare(`
-      SELECT * FROM memory_embedding_tasks
-      WHERE status = 'processing' AND claim_token = ?
-      ORDER BY id ASC
-    `).all(claimToken) as MemoryEmbeddingTask[];
-  })();
+  // 可恢复失败后的冷却：retry_count>0 时需等 updated_at 过了延迟才可再 claim
+  const retryReadyBefore = new Date(Date.now() - RECOVERABLE_EMBEDDING_RETRY_DELAY_MS).toISOString();
+  const tasks = embeddingTaskQueue.claim<MemoryEmbeddingTask>(db, {
+    limit,
+    leaseSeconds,
+    filters: [{
+      sql: `(retry_count = 0 OR updated_at <= ?)`,
+      params: [retryReadyBefore],
+    }],
+  });
 
   const finishMissingMemoryTask = (task: MemoryEmbeddingTask) => {
-    const result = db.prepare(`
-      UPDATE memory_embedding_tasks
-      SET status = 'done', claim_token = NULL, updated_at = ?
-      WHERE id = ? AND status = 'processing' AND claim_token = ?
-    `).run(new Date().toISOString(), task.id, claimToken);
-    if (result.changes > 0) processed += 1;
+    if (embeddingTaskQueue.complete(db, task)) processed += 1;
   };
 
   const failTask = (task: MemoryEmbeddingTask, error: unknown) => {
@@ -801,29 +782,19 @@ export async function processMemoryEmbeddingTasks(
     const nextRetryCount = task.retry_count + 1;
     const shouldRetry = isRecoverableEmbeddingError(errorMessage)
       && nextRetryCount < MAX_RECOVERABLE_EMBEDDING_ATTEMPTS;
-    const result = db.prepare(`
-      UPDATE memory_embedding_tasks
-      SET status = ?, claim_token = NULL, retry_count = ?, error_message = ?, updated_at = ?
-      WHERE id = ? AND status = 'processing' AND claim_token = ?
-    `).run(
-      shouldRetry ? 'pending' : 'failed',
-      nextRetryCount,
-      errorMessage,
-      new Date().toISOString(),
-      task.id,
-      claimToken,
-    );
-    if (result.changes > 0 && !shouldRetry) failed += 1;
+    if (shouldRetry) {
+      embeddingTaskQueue.requeue(db, task, {
+        errorMessage,
+        incrementRetry: true,
+      });
+      return;
+    }
+    if (embeddingTaskQueue.fail(db, task, errorMessage)) failed += 1;
   };
 
   const completeTask = (task: MemoryEmbeddingTask, memory: Memory, text: string, embedding: ArrayLike<number>) => {
     const completed = db.transaction(() => {
-      const activeTask = db.prepare(`
-        SELECT id
-        FROM memory_embedding_tasks
-        WHERE id = ? AND status = 'processing' AND claim_token = ?
-      `).get(task.id, claimToken);
-      if (!activeTask) return false;
+      if (!embeddingTaskQueue.confirmClaim(db, task)) return false;
 
       upsertMemoryEmbedding({
         memoryId: task.memory_id,
@@ -835,12 +806,7 @@ export async function processMemoryEmbeddingTasks(
         db,
       });
 
-      const result = db.prepare(`
-        UPDATE memory_embedding_tasks
-        SET status = 'done', claim_token = NULL, error_message = NULL, updated_at = ?
-        WHERE id = ? AND status = 'processing' AND claim_token = ?
-      `).run(new Date().toISOString(), task.id, claimToken);
-      return result.changes > 0;
+      return embeddingTaskQueue.complete(db, task);
     })();
     if (completed) processed += 1;
   };

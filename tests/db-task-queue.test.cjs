@@ -160,6 +160,24 @@ test('confirmClaim / complete / fail honor claim_token', () => {
   assert.equal(failed.claim_token, null);
 });
 
+test('requeue returns processing task to pending with optional retry increment', () => {
+  const { createDbTaskQueue } = loadQueueModule();
+  const queue = createDbTaskQueue({ table: 'sample_tasks' });
+  const db = createTasksDb();
+  queue.enqueue(db, { columns: { entity_id: 'retry-me', payload: 'p' } });
+  const [task] = queue.claim(db, { limit: 1 });
+  assert.equal(queue.requeue(db, task, {
+    errorMessage: 'timeout',
+    incrementRetry: true,
+  }), true);
+  const row = db.prepare('SELECT status, retry_count, error_message, claim_token, lease_expires_at FROM sample_tasks WHERE id = ?').get(task.id);
+  assert.equal(row.status, 'pending');
+  assert.equal(row.retry_count, 1);
+  assert.equal(row.error_message, 'timeout');
+  assert.equal(row.claim_token, null);
+  assert.equal(row.lease_expires_at, null);
+});
+
 test('createDrainGate is mutually exclusive and stops when claimed is 0', async () => {
   const { createDbTaskQueue } = loadQueueModule();
   const queue = createDbTaskQueue({ table: 'sample_tasks' });

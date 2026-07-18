@@ -422,6 +422,9 @@ function migrate(db: Database.Database): void {
   if (embeddingTaskCols.length > 0 && !embeddingTaskCols.some(c => c.name === 'claim_token')) {
     db.exec(`ALTER TABLE memory_embedding_tasks ADD COLUMN claim_token TEXT`);
   }
+  if (embeddingTaskCols.length > 0 && !embeddingTaskCols.some(c => c.name === 'lease_expires_at')) {
+    db.exec(`ALTER TABLE memory_embedding_tasks ADD COLUMN lease_expires_at TEXT`);
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_memory_embedding_tasks_claim
       ON memory_embedding_tasks(claim_token)

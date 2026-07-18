@@ -311,6 +311,45 @@ export function createDbTaskQueue(config: DbTaskQueueConfig) {
     return result.changes > 0;
   }
 
+  /**
+   * 释放 claim 并回到 pending（可恢复错误的延迟重试）。
+   * 与 fail 不同：不进入 failed，可选递增 retry_count。
+   */
+  function requeue(
+    db: Database.Database,
+    task: { id: number; claim_token: string | null },
+    options: {
+      errorMessage?: string | null;
+      incrementRetry?: boolean;
+      columns?: Record<string, unknown>;
+    } = {},
+  ): boolean {
+    if (!task.claim_token) return false;
+    const extra = Object.entries(options.columns || {});
+    for (const [key] of extra) assertSafeIdent(key, 'column');
+    const now = bindNow(db);
+    const retrySql = options.incrementRetry ? 'retry_count = retry_count + 1,' : '';
+    const extraSql = extra.map(([key]) => `${quoteIdent(key)} = ?`).join(', ');
+    const result = db.prepare(
+      `UPDATE ${table}
+       SET status = 'pending',
+           claim_token = NULL,
+           lease_expires_at = NULL,
+           ${retrySql}
+           error_message = ?,
+           ${extraSql ? `${extraSql},` : ''}
+           updated_at = ${now.sql}
+       WHERE id = ? AND claim_token = ? AND status = 'processing'`,
+    ).run(
+      options.errorMessage === undefined ? null : options.errorMessage,
+      ...extra.map(([, value]) => value),
+      ...now.params,
+      task.id,
+      task.claim_token,
+    );
+    return result.changes > 0;
+  }
+
   function recoverStale(db: Database.Database): number {
     const now = bindNow(db);
     const result = db.prepare(
@@ -383,6 +422,7 @@ export function createDbTaskQueue(config: DbTaskQueueConfig) {
     confirmClaim,
     complete,
     fail,
+    requeue,
     recoverStale,
     countClaimable,
     createDrainGate,

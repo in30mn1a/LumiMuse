@@ -8,6 +8,7 @@ import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { clearCharacterContext } from '@/lib/character-context-cache';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -289,6 +290,8 @@ export default function CharacterEditor({ params }: Props) {
         const data = await response.json().catch(() => ({}));
         throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
       }
+      // 删除成功后清掉该角色的本地上下文缓存（内存 + IndexedDB），避免同 id 重建/导入时闪幽灵快照
+      clearCharacterContext(id);
       // 删除成功后离开页面前清除 dirty，避免触发 beforeunload
       setDirty(false);
       router.push('/');

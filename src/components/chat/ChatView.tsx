@@ -33,6 +33,11 @@ import {
   readCachedMessages,
   uniqueMessagesById,
 } from '@/lib/chat-message-cache';
+import {
+  patchCharacterConversation,
+  prependCharacterConversation,
+  removeCharacterConversation,
+} from '@/lib/character-context-cache';
 import { MenuIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
@@ -402,6 +407,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       setConversations(prev => prev.map(conversation => (
         conversation.id === activeConvId ? { ...conversation, title: finalTitle } : conversation
       )));
+      // 缓存内部按会话 id 定向修补，避免把 React state 列表（可能已属于别的角色）整体写入缓存
+      if (character?.id) patchCharacterConversation(character.id, activeConvId, { title: finalTitle });
       setRenameOpen(false);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
@@ -430,6 +437,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       }));
       clearCachedMessages(targetConvId);
       setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
+      if (character?.id) removeCharacterConversation(character.id, targetConvId);
       void refreshConversationState(next?.id || null);
     } catch (err) {
       selectActiveConvId(previousActiveConvId);
@@ -589,6 +597,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         // 与 useNewChat 一致：先校验状态码与响应形状，再写入状态 / beginStream。
         const conversation = parseConversation(await parseJsonResponse<unknown>(response));
         setConversations(prev => [conversation, ...prev]);
+        prependCharacterConversation(character.id, conversation);
         selectActiveConvId(conversation.id);
         convId = conversation.id;
       }
@@ -859,6 +868,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
               setConversations(prev => prev.map(c =>
                 c.id === activeConvId ? { ...c, ignore_memory: isIgnored ? 0 : 1 } : c
               ));
+              if (character?.id) {
+                patchCharacterConversation(character.id, activeConvId, { ignore_memory: isIgnored ? 0 : 1 });
+              }
               showToast(isIgnored ? t('chat.ignoreOff') : t('chat.ignoreOn'), 'info');
             } catch (err) {
               showToast(err instanceof Error ? err.message : t('chat.ignoreToggleFail'), 'error');

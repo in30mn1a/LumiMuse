@@ -299,3 +299,403 @@ test('touchConversation bumps updated_at and reorders without fetching conversat
     global.fetch = originalFetch;
   }
 });
+
+test('conversation loader applies character context cache before network resolves', async () => {
+  const originalFetch = global.fetch;
+  const {
+    clearCharacterContext,
+    writeCharacterContext,
+  } = require(path.resolve(__dirname, '../src/lib/character-context-cache.ts'));
+
+  clearCharacterContext();
+  writeCharacterContext('char-cached', {
+    conversations: [
+      {
+        id: 'conv-cached',
+        character_id: 'char-cached',
+        title: 'Cached',
+        ignore_memory: 0,
+        created_at: '2026-07-01T00:00:00.000Z',
+        updated_at: '2026-07-01T00:00:00.000Z',
+      },
+    ],
+    memories: [
+      {
+        id: 'mem-cached',
+        character_id: 'char-cached',
+        content: 'from cache',
+        category: 'fact',
+        tags: [],
+        importance: 1,
+        status: 'active',
+        pinned: 0,
+        metadata: {},
+        created_at: '2026-07-01T00:00:00.000Z',
+        updated_at: '2026-07-01T00:00:00.000Z',
+      },
+    ],
+  });
+
+  let releaseNetwork;
+  const networkGate = new Promise(resolve => {
+    releaseNetwork = resolve;
+  });
+  let networkReached = false;
+
+  global.fetch = async input => {
+    const url = new URL(String(input), 'http://test.local');
+    await networkGate;
+    networkReached = true;
+    if (url.pathname === '/api/memories') {
+      return jsonResponse([{
+        id: 'mem-network',
+        character_id: 'char-cached',
+        content: 'from network',
+        category: 'fact',
+        tags: [],
+        importance: 1,
+        status: 'active',
+        pinned: 0,
+        metadata: {},
+        created_at: '2026-07-02T00:00:00.000Z',
+        updated_at: '2026-07-02T00:00:00.000Z',
+      }]);
+    }
+    if (url.pathname === '/api/conversations') {
+      return jsonResponse([
+        {
+          id: 'conv-network',
+          character_id: 'char-cached',
+          title: 'Network',
+          ignore_memory: 0,
+          created_at: '2026-07-02T00:00:00.000Z',
+          updated_at: '2026-07-02T00:00:00.000Z',
+        },
+      ], {
+        headers: { 'X-Has-More': 'false' },
+      });
+    }
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+
+  try {
+    const character = { id: 'char-cached', name: 'Cached Char' };
+    const clearMessagesRef = { current: () => {} };
+    const clearStreamingTextRef = { current: () => {} };
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useConversationLoader } = requireFreshWithMocks('../src/hooks/chat/useConversationLoader.ts', {
+          react: reactMock,
+        });
+        return useConversationLoader;
+      },
+      () => ({
+        character,
+        conversationId: null,
+        clearMessagesRef,
+        clearStreamingTextRef,
+      }),
+    );
+
+    runtime.render();
+    // 缓存应用走 queueMicrotask，再 render 读取结果；网络仍被 gate 拦住
+    await new Promise(resolve => queueMicrotask(resolve));
+    runtime.render();
+
+    assert.equal(networkReached, false, 'network must still be gated');
+    assert.equal(runtime.current.activeConvId, 'conv-cached');
+    assert.equal(runtime.current.conversations[0]?.id, 'conv-cached');
+    assert.equal(runtime.current.memories[0]?.id, 'mem-cached');
+    assert.equal(runtime.current.loadingThread, false);
+
+    releaseNetwork();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    runtime.render();
+
+    assert.equal(runtime.current.activeConvId, 'conv-network');
+    assert.equal(runtime.current.conversations[0]?.id, 'conv-network');
+    assert.equal(runtime.current.memories[0]?.id, 'mem-network');
+  } finally {
+    global.fetch = originalFetch;
+    clearCharacterContext();
+  }
+});
+
+test('conversation loader ignores stale network when character switches quickly', async () => {
+  const originalFetch = global.fetch;
+  const {
+    clearCharacterContext,
+  } = require(path.resolve(__dirname, '../src/lib/character-context-cache.ts'));
+  clearCharacterContext();
+
+  /** @type {Record<string, () => void>} */
+  const releasers = {};
+  /** @type {Record<string, Promise<void>>} */
+  const gates = {
+    'char-a': new Promise(resolve => { releasers['char-a'] = resolve; }),
+    'char-b': new Promise(resolve => { releasers['char-b'] = resolve; }),
+  };
+
+  global.fetch = async input => {
+    const url = new URL(String(input), 'http://test.local');
+    const characterId = url.searchParams.get('character_id') || 'unknown';
+    await gates[characterId];
+    if (url.pathname === '/api/memories') {
+      return jsonResponse([]);
+    }
+    if (url.pathname === '/api/conversations') {
+      return jsonResponse([
+        {
+          id: `conv-${characterId}`,
+          character_id: characterId,
+          title: characterId,
+          ignore_memory: 0,
+          created_at: '2026-07-01T00:00:00.000Z',
+          updated_at: '2026-07-01T00:00:00.000Z',
+        },
+      ], {
+        headers: { 'X-Has-More': 'false' },
+      });
+    }
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+
+  try {
+    let selected = { id: 'char-a', name: 'A' };
+    const clearMessagesRef = { current: () => {} };
+    const clearStreamingTextRef = { current: () => {} };
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useConversationLoader } = requireFreshWithMocks('../src/hooks/chat/useConversationLoader.ts', {
+          react: reactMock,
+        });
+        return useConversationLoader;
+      },
+      () => ({
+        character: selected,
+        conversationId: null,
+        clearMessagesRef,
+        clearStreamingTextRef,
+      }),
+    );
+
+    runtime.render();
+    // 关键：等 char-a 的 revalidate 定时器真正触发、fetch 已在飞（挂在 gate 上）后再切换角色。
+    // 若立即切换，effect cleanup 会 clearTimeout 取消 char-a 的请求，测不到「过期响应被丢弃」。
+    await new Promise(resolve => setTimeout(resolve, 5));
+    selected = { id: 'char-b', name: 'B' };
+    runtime.render();
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    // 判别性顺序：先放行 char-b 让新角色应用完成，再放行 char-a——
+    // 过期响应**最后**到达仍不得覆盖（若无 seq/characterRef 守卫，char-a 会覆盖终态，此测试必挂）
+    releasers['char-b']();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    runtime.render();
+    assert.equal(runtime.current.activeConvId, 'conv-char-b', 'char-b must be applied first');
+
+    releasers['char-a']();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    runtime.render();
+
+    assert.equal(runtime.current.activeConvId, 'conv-char-b', 'stale char-a response must be dropped');
+    assert.equal(runtime.current.conversations[0]?.character_id, 'char-b');
+    assert.ok(
+      !runtime.current.conversations.some(item => item.character_id === 'char-a'),
+      'stale char-a response must not leak into state',
+    );
+  } finally {
+    global.fetch = originalFetch;
+    clearCharacterContext();
+  }
+});
+
+test('conversation loader falls back to persisted character context after browser restart', async () => {
+  const originalFetch = global.fetch;
+  const {
+    __setCharacterContextPersistenceForTests,
+    clearCharacterContext,
+  } = require(path.resolve(__dirname, '../src/lib/character-context-cache.ts'));
+  const { createChatCachePersistence } = require(path.resolve(__dirname, '../src/lib/chat-cache-store.ts'));
+
+  clearCharacterContext();
+  const fakePersistence = {
+    async hydrate() {
+      return [{
+        id: 'char-idb',
+        snapshot: {
+          conversations: [
+            {
+              id: 'conv-idb',
+              character_id: 'char-idb',
+              title: 'From IndexedDB',
+              ignore_memory: 0,
+              created_at: '2026-07-01T00:00:00.000Z',
+              updated_at: '2026-07-01T00:00:00.000Z',
+            },
+          ],
+          memories: [
+            {
+              id: 'mem-idb',
+              character_id: 'char-idb',
+              content: 'persisted memory',
+              category: 'fact',
+              tags: [],
+              importance: 1,
+              status: 'active',
+              pinned: 0,
+              metadata: {},
+              created_at: '2026-07-01T00:00:00.000Z',
+              updated_at: '2026-07-01T00:00:00.000Z',
+            },
+          ],
+          savedAt: 100,
+        },
+      }];
+    },
+    schedulePut() {},
+    remove() {},
+    removeAll() {},
+  };
+  __setCharacterContextPersistenceForTests(fakePersistence);
+
+  let releaseNetwork;
+  const networkGate = new Promise(resolve => { releaseNetwork = resolve; });
+  let networkReached = false;
+
+  global.fetch = async input => {
+    const url = new URL(String(input), 'http://test.local');
+    await networkGate;
+    networkReached = true;
+    if (url.pathname === '/api/memories') {
+      return jsonResponse([]);
+    }
+    if (url.pathname === '/api/conversations') {
+      return jsonResponse([
+        {
+          id: 'conv-network',
+          character_id: 'char-idb',
+          title: 'Network',
+          ignore_memory: 0,
+          created_at: '2026-07-02T00:00:00.000Z',
+          updated_at: '2026-07-02T00:00:00.000Z',
+        },
+      ], {
+        headers: { 'X-Has-More': 'false' },
+      });
+    }
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+
+  try {
+    const character = { id: 'char-idb', name: 'IDB Char' };
+    const clearMessagesRef = { current: () => {} };
+    const clearStreamingTextRef = { current: () => {} };
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useConversationLoader } = requireFreshWithMocks('../src/hooks/chat/useConversationLoader.ts', {
+          react: reactMock,
+        });
+        return useConversationLoader;
+      },
+      () => ({
+        character,
+        conversationId: null,
+        clearMessagesRef,
+        clearStreamingTextRef,
+      }),
+    );
+
+    runtime.render();
+    // 内存 LRU 未命中 → 走 readCharacterContextAsync（fake hydrate）；等微任务链完成
+    await new Promise(resolve => setTimeout(resolve, 10));
+    runtime.render();
+
+    assert.equal(networkReached, false, 'network must still be gated');
+    assert.equal(runtime.current.activeConvId, 'conv-idb');
+    assert.equal(runtime.current.conversations[0]?.id, 'conv-idb');
+    assert.equal(runtime.current.memories[0]?.id, 'mem-idb');
+    assert.equal(runtime.current.loadingThread, false);
+
+    releaseNetwork();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    runtime.render();
+
+    assert.equal(runtime.current.activeConvId, 'conv-network');
+    assert.equal(runtime.current.conversations[0]?.id, 'conv-network');
+  } finally {
+    global.fetch = originalFetch;
+    __setCharacterContextPersistenceForTests(createChatCachePersistence(null));
+    clearCharacterContext();
+  }
+});
+
+test('conversation loader keeps a manual selection when revalidate resolves later', async () => {
+  const originalFetch = global.fetch;
+  const {
+    clearCharacterContext,
+    writeCharacterContext,
+  } = require(path.resolve(__dirname, '../src/lib/character-context-cache.ts'));
+
+  clearCharacterContext();
+  const cachedConversations = ['conv-1', 'conv-2', 'conv-3'].map(id => ({
+    id,
+    character_id: 'char-keep',
+    title: id,
+    ignore_memory: 0,
+    created_at: '2026-07-01T00:00:00.000Z',
+    updated_at: '2026-07-01T00:00:00.000Z',
+  }));
+  writeCharacterContext('char-keep', { conversations: cachedConversations, memories: [] });
+
+  let releaseNetwork;
+  const networkGate = new Promise(resolve => { releaseNetwork = resolve; });
+
+  global.fetch = async input => {
+    const url = new URL(String(input), 'http://test.local');
+    await networkGate;
+    if (url.pathname === '/api/memories') {
+      return jsonResponse([]);
+    }
+    if (url.pathname === '/api/conversations') {
+      return jsonResponse(cachedConversations, { headers: { 'X-Has-More': 'false' } });
+    }
+    throw new Error(`unexpected fetch: ${input}`);
+  };
+
+  try {
+    const character = { id: 'char-keep', name: 'Keep' };
+    const clearMessagesRef = { current: () => {} };
+    const clearStreamingTextRef = { current: () => {} };
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useConversationLoader } = requireFreshWithMocks('../src/hooks/chat/useConversationLoader.ts', {
+          react: reactMock,
+        });
+        return useConversationLoader;
+      },
+      () => ({
+        character,
+        conversationId: null,
+        clearMessagesRef,
+        clearStreamingTextRef,
+      }),
+    );
+
+    runtime.render();
+    await new Promise(resolve => queueMicrotask(resolve));
+    runtime.render();
+    assert.equal(runtime.current.activeConvId, 'conv-1', 'cache should preselect the newest conversation');
+
+    // 网络还没回来时用户手动切到 conv-3
+    runtime.current.selectActiveConvId('conv-3');
+    releaseNetwork();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    runtime.render();
+
+    assert.equal(runtime.current.activeConvId, 'conv-3', 'late revalidate must not stomp the manual selection');
+  } finally {
+    global.fetch = originalFetch;
+    clearCharacterContext();
+  }
+});

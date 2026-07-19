@@ -3,6 +3,7 @@ import type { Character, Memory } from '@/types';
 import { formatTemplate } from '@/lib/i18n';
 import { fetchMessagesPage } from '@/lib/chat-stream-client';
 import { getErrorMessage, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
+import { updateCharacterMemories } from '@/lib/character-context-cache';
 
 type MemoryExtractStatus = 'idle' | 'extracting' | 'done' | 'failed';
 
@@ -137,6 +138,7 @@ export function useMemoryTaskPolling({
                   );
                   if (activeConvIdRef.current === convId && characterRef.current?.id === charId) {
                     setMemories(list);
+                    updateCharacterMemories(charId, list);
                   }
                 } catch (error) {
                   if (!isAbortError(error) && activeConvIdRef.current === convId && characterRef.current?.id === charId) {

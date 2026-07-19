@@ -2,6 +2,7 @@
 // 作为 chat-message-cache 内存 Map 的 write-through 副作用存在，用于重开浏览器后
 // 进入会话时立即渲染上次的消息快照（stale-while-revalidate 的 stale 部分）。
 // 失败不阻塞：任何一步出错即静默关闭持久化，内存缓存与网络加载完全不受影响。
+// 工厂对 DB/store 名与快照校验做了参数化，character-context-cache 复用同一套持久化语义。
 
 const DB_NAME = 'lumimuse-chat-cache';
 const DB_VERSION = 1;
@@ -31,13 +32,13 @@ export type ChatCachePersistence<T> = {
   removeAll(): void;
 };
 
-function openDb(): Promise<IDBDatabase> {
+function openDb(dbName: string, storeName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(dbName, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
+      if (!db.objectStoreNames.contains(storeName)) {
+        db.createObjectStore(storeName);
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -46,12 +47,16 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 /** SSR 或浏览器不支持 IndexedDB 时返回 null，持久化整体退化为 no-op。 */
-export function createIndexedDbBackend<T>(): ChatCacheBackend<T> | null {
+export function createIndexedDbBackend<T>(
+  options?: { dbName?: string; storeName?: string },
+): ChatCacheBackend<T> | null {
   if (typeof indexedDB === 'undefined') return null;
 
+  const dbName = options?.dbName ?? DB_NAME;
+  const storeName = options?.storeName ?? STORE_NAME;
   let dbPromise: Promise<IDBDatabase> | null = null;
   const getDb = () => {
-    dbPromise ??= openDb();
+    dbPromise ??= openDb(dbName, storeName);
     return dbPromise;
   };
 
@@ -61,8 +66,8 @@ export function createIndexedDbBackend<T>(): ChatCacheBackend<T> | null {
   ): Promise<void> => {
     const db = await getDb();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, mode);
-      const request = run(tx.objectStore(STORE_NAME));
+      const tx = db.transaction(storeName, mode);
+      const request = run(tx.objectStore(storeName));
       request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'));
       tx.oncomplete = () => resolve();
       tx.onabort = () => reject(tx.error ?? new Error('indexedDB transaction aborted'));
@@ -73,8 +78,8 @@ export function createIndexedDbBackend<T>(): ChatCacheBackend<T> | null {
     async getAll() {
       const db = await getDb();
       return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
+        const tx = db.transaction(storeName, 'readonly');
+        const store = tx.objectStore(storeName);
         const keysRequest = store.getAllKeys();
         const valuesRequest = store.getAll();
         tx.oncomplete = () => {
@@ -91,21 +96,30 @@ export function createIndexedDbBackend<T>(): ChatCacheBackend<T> | null {
   };
 }
 
-function isValidRecord<T>(record: unknown): record is StoredRecord<T> {
+/** 默认快照校验：聊天消息快照必须带 messages 数组。 */
+function hasMessagesArray(snapshot: object): boolean {
+  return Array.isArray((snapshot as { messages?: unknown }).messages);
+}
+
+function isValidRecord<T>(
+  record: unknown,
+  validateSnapshot: (snapshot: object) => boolean,
+): record is StoredRecord<T> {
   if (typeof record !== 'object' || record === null) return false;
   const candidate = record as Partial<StoredRecord<T>>;
   return candidate.v === RECORD_VERSION
     && typeof candidate.savedAt === 'number'
     && typeof candidate.snapshot === 'object'
     && candidate.snapshot !== null
-    && Array.isArray((candidate.snapshot as { messages?: unknown }).messages);
+    && validateSnapshot(candidate.snapshot);
 }
 
 export function createChatCachePersistence<T>(
   backend: ChatCacheBackend<T> | null,
-  options?: { debounceMs?: number },
+  options?: { debounceMs?: number; validateSnapshot?: (snapshot: object) => boolean },
 ): ChatCachePersistence<T> {
   const debounceMs = options?.debounceMs ?? DEFAULT_PUT_DEBOUNCE_MS;
+  const validateSnapshot = options?.validateSnapshot ?? hasMessagesArray;
   const pendingPuts = new Map<string, ReturnType<typeof setTimeout>>();
   let disabled = backend === null;
   let hydratePromise: Promise<Array<{ id: string; snapshot: T }>> | null = null;
@@ -131,7 +145,7 @@ export function createChatCachePersistence<T>(
         try {
           const rows = await backend.getAll();
           return rows
-            .filter(row => isValidRecord<T>(row.record))
+            .filter(row => isValidRecord<T>(row.record, validateSnapshot))
             .sort((a, b) => a.record.savedAt - b.record.savedAt)
             .map(row => ({ id: row.id, snapshot: row.record.snapshot }));
         } catch {

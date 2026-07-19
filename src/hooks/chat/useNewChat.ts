@@ -2,6 +2,7 @@ import { useCallback, useState, type Dispatch, type SetStateAction } from 'react
 import type { Character, Conversation, Message } from '@/types';
 import type { MessagesResponse } from '@/lib/chat-stream-client';
 import { writeCachedMessages } from '@/lib/chat-message-cache';
+import { prependCharacterConversation } from '@/lib/character-context-cache';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 
 type UseNewChatOptions = {
@@ -82,6 +83,7 @@ export function useNewChat({
       });
       const conversation = parseConversation(await parseJsonResponse<unknown>(response));
       setConversations(prev => [conversation, ...prev]);
+      prependCharacterConversation(character.id, conversation);
       initializeEmptyMessages(conversation.id);
       clearMessages();
       selectActiveConvId(conversation.id);

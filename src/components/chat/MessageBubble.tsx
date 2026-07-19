@@ -507,6 +507,7 @@ function MessageBubbleInner({
                         src={att.url || att.data}
                         alt={att.name}
                         maxWidthClassName="max-w-[16rem]"
+                        maxWidth="16rem"
                         maxHeight="12rem"
                         className="rounded-xl ring-1 ring-white/30"
                       />
@@ -561,7 +562,7 @@ function MessageBubbleInner({
         const images = sanitizeGeneratedImages(meta.generatedImages);
         if (images.length === 0) return null;
         return (
-          <div className="generated-image-list ml-13 mt-2 flex flex-col items-start gap-2">
+          <div className="generated-image-list ml-13 mt-2 flex flex-col items-start gap-2 self-stretch">
             {images.map((img) => (
               <ImageGenCard
                 key={img.id}
@@ -860,7 +861,7 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, i
 
   return (
     <>
-      <div className="generated-image-card group/img relative inline-block overflow-hidden rounded-xl border border-border-light shadow-sm">
+      <div className="generated-image-card group/img relative block w-full max-w-[20rem] overflow-hidden rounded-xl border border-border-light shadow-sm">
         {hasFallbackUrl && (
           <div className="flex items-center gap-2 rounded-t-xl border-b border-red-200/60 bg-red-50/90 px-3 py-1.5 text-xs text-red-600 backdrop-blur-sm">
             <span className="min-w-0 flex-1 truncate">{img.error || t('message.imageRegenFailed')}</span>
@@ -880,13 +881,13 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, i
             e.stopPropagation();
             openLightbox();
           }}
-          className="block w-full max-w-[20rem] rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="block w-full rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           aria-label={t('message.imageOpenTitle') || t('message.imageCloseTitle')}
         >
           <ReservedChatImage
             src={img.url}
             alt=""
-            maxWidthClassName="max-w-[20rem]"
+            maxWidthClassName="max-w-full"
             className="cursor-pointer rounded-xl"
           />
         </button>

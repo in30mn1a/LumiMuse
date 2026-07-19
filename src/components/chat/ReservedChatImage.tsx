@@ -20,7 +20,12 @@ interface Props {
   className?: string;
   /** 最大宽度类名，默认聊天生图卡 max-w-[20rem] */
   maxWidthClassName?: string;
-  /** 最大高度（CSS 长度），用于用户附件等场景；不设则仅受宽度约束 */
+  /**
+   * 最大宽/高（CSS 长度）。设置 maxHeight 时容器宽度用绝对 calc 推导
+   * （min(maxHeight×ratio, maxWidth)），不依赖百分比——收缩包裹
+   * （fit-content/inline-block）祖先里百分比会按 auto 折叠成 0 宽。
+   */
+  maxWidth?: string;
   maxHeight?: string;
   onClick?: (e: React.MouseEvent<HTMLImageElement>) => void;
 }
@@ -44,6 +49,7 @@ function ReservedChatImageInner({
   alt = '',
   className = '',
   maxWidthClassName = 'max-w-[20rem]',
+  maxWidth,
   maxHeight,
   onClick,
 }: Props & { src: string }) {
@@ -103,14 +109,18 @@ function ReservedChatImageInner({
     };
   }, [src]);
 
-  // maxHeight 生效时（竖图/方图），让容器宽度跟随比率收窄为 maxHeight*ratio，
-  // 避免 aspect-ratio 被 max-height 压过后出现左右 letterbox 灰带（圆角/ring 需贴图片）
-  const sizeStyle: React.CSSProperties = {
-    aspectRatio: String(ratio),
-    ...(maxHeight
-      ? { maxHeight, width: `min(100%, calc(${maxHeight} * ${ratio}))` }
-      : null),
-  };
+  // maxHeight 场景（用户附件）：宽度用绝对 calc（maxHeight×ratio，再按 maxWidth 封顶），
+  // 既避免 aspect-ratio 被 max-height 压过后出现 letterbox，也不依赖会在
+  // 收缩包裹祖先（气泡 fit-content）里折叠为 0 的百分比宽度
+  const sizeStyle: React.CSSProperties = maxHeight
+    ? {
+        aspectRatio: String(ratio),
+        maxHeight,
+        width: maxWidth
+          ? `min(calc(${maxHeight} * ${ratio}), ${maxWidth})`
+          : `calc(${maxHeight} * ${ratio})`,
+      }
+    : { aspectRatio: String(ratio) };
 
   return (
     <div

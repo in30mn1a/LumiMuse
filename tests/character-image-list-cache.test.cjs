@@ -155,11 +155,10 @@ test('in-flight loadCharacterImageList does not overwrite optimistic setCharacte
 });
 
 test('successful loadCharacterImageList preloads first-page thumbnails in the browser', async () => {
-  const created = [];
+  const { resetImageBlobCache } = require('../src/lib/image-blob-cache.ts');
+  resetImageBlobCache();
+  // 预热已改为 blob 内存缓存：断言首屏 URL 走 fetch 预取（probe Image 只在成功后解码宽高比）
   class FakeImage {
-    constructor() {
-      created.push(this);
-    }
     set src(value) {
       this._src = value;
     }
@@ -167,16 +166,31 @@ test('successful loadCharacterImageList preloads first-page thumbnails in the br
       return this._src;
     }
   }
+  const requested = [];
   global.Image = FakeImage;
   global.window = global;
-  global.fetch = async () => jsonResponse(sampleImages(['/a.png', '/b.png', '/c.png']));
+  global.fetch = async (url) => {
+    const target = String(url);
+    if (target.startsWith('/api/')) {
+      return jsonResponse(sampleImages(['/a.png', '/b.png', '/c.png']));
+    }
+    requested.push(target);
+    return {
+      ok: true,
+      blob: async () => new Blob([new Uint8Array(4)], { type: 'image/png' }),
+    };
+  };
 
-  await loadCharacterImageList('char-thumbs');
-  assert.equal(created.length, 3);
-  assert.deepEqual(created.map((img) => img.src), ['/a.png', '/b.png', '/c.png']);
-
-  delete global.Image;
-  delete global.window;
+  try {
+    await loadCharacterImageList('char-thumbs');
+    // warm 为 fire-and-forget，留一拍让 blob 拉取全部发出
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual([...requested].sort(), ['/a.png', '/b.png', '/c.png']);
+  } finally {
+    delete global.Image;
+    delete global.window;
+    resetImageBlobCache();
+  }
 });
 
 test('force loadCharacterImageList starts a new fetch even when one is in flight', async () => {

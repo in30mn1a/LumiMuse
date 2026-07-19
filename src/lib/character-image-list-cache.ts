@@ -1,5 +1,6 @@
 import type { UniqueGeneratedImageItem } from '@/lib/generated-image-assets';
 import { parseJsonResponse } from '@/lib/http';
+import { warmImageBlobs } from '@/lib/image-blob-cache';
 
 /**
  * 角色图库列表缓存（按 characterId）：
@@ -8,7 +9,7 @@ import { parseJsonResponse } from '@/lib/http';
  * - writeEpoch：本地写入（删除后写回）递增；在飞 GET 仅当 epoch 未变时才写回，
  *   避免慢请求覆盖用户刚完成的删除结果
  *
- * 仅缓存列表元数据（url/引用），不缓存图片二进制；图片本身由浏览器 HTTP cache 负责。
+ * 列表层只缓存元数据（url/引用）；图片二进制由 image-blob-cache + 浏览器 HTTP cache 负责。
  */
 
 const cache = new Map<string, UniqueGeneratedImageItem[]>();
@@ -30,16 +31,17 @@ function notify(characterId: string, images: UniqueGeneratedImageItem[]): void {
   for (const listener of set) listener(images);
 }
 
-/** 预热首屏缩略图（浏览器 HTTP cache），仅在浏览器环境执行 */
+/** 预热首屏缩略图（宽高比 + 内存 blob），仅在浏览器环境执行 */
 function preloadThumbnails(images: UniqueGeneratedImageItem[]): void {
   if (typeof window === 'undefined' || typeof Image === 'undefined') return;
   // 与 ImageManagerModal 的 PAGE_SIZE 对齐：预热第一页即可
+  const urls: string[] = [];
   for (const item of images.slice(0, 12)) {
     if (!item.url) continue;
-    const img = new Image();
-    img.decoding = 'async';
-    img.src = item.url;
+    urls.push(item.url);
   }
+  // 内存 blob 预热：probe 解码时顺带写入宽高比缓存，聊天气泡与图库都受益
+  warmImageBlobs(urls);
 }
 
 export function getCharacterImageListCache(characterId: string): UniqueGeneratedImageItem[] | null {

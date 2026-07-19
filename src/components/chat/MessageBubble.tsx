@@ -10,6 +10,7 @@ import { formatTemplate } from '@/lib/i18n';
 import { sanitizeGeneratedImages, type GeneratedImage, type GeneratedImageVersion } from '@/lib/generated-image-assets';
 import { CheckIcon, ClockIcon, CopyIcon, PencilIcon, RefreshIcon, TrashIcon, ReplyIcon, SummaryIcon, ImageIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
+import ReservedChatImage from '@/components/chat/ReservedChatImage';
 
 interface VersionInfo {
   total: number;
@@ -501,12 +502,13 @@ function MessageBubbleInner({
                 <div className="mb-2 flex flex-wrap gap-2">
                   {atts.map((att, i) => (
                     att.type === 'image' ? (
-                      <img
+                      <ReservedChatImage
                         key={i}
                         src={att.url || att.data}
                         alt={att.name}
-                        className="max-h-48 max-w-[16rem] rounded-xl object-cover ring-1 ring-white/30"
-                        loading="lazy"
+                        maxWidthClassName="max-w-[16rem]"
+                        maxHeight="12rem"
+                        className="rounded-xl ring-1 ring-white/30"
                       />
                     ) : (
                       <div key={i} className="flex items-center gap-2 rounded-xl bg-white/20 px-3 py-2 text-xs text-white/90">
@@ -878,14 +880,14 @@ function ImageGenCard({ img, allImages, initialIndex, messageId, onRegenerate, i
             e.stopPropagation();
             openLightbox();
           }}
-          className="block rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="block w-full max-w-[20rem] rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           aria-label={t('message.imageOpenTitle') || t('message.imageCloseTitle')}
         >
-          <img
+          <ReservedChatImage
             src={img.url}
             alt=""
-            className="max-w-[20rem] cursor-pointer rounded-xl"
-            loading="lazy"
+            maxWidthClassName="max-w-[20rem]"
+            className="cursor-pointer rounded-xl"
           />
         </button>
         {/* 操作按钮：PC hover 显示，移动端点击切换 */}

@@ -6,6 +6,8 @@ import type { Message, Character } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatDateLabel, getVersionInfo, isSameDay } from '@/lib/chat-view-utils';
 import { usePrependScrollAnchor, useScrollTargetVirtualizer } from '@/hooks/chat/useChatScrollController';
+import { sanitizeGeneratedImages } from '@/lib/generated-image-assets';
+import { warmImageBlobs } from '@/lib/image-blob-cache';
 import { MemoryIcon } from '@/components/ui/icons';
 import MessageBubble from './MessageBubble';
 
@@ -100,6 +102,37 @@ function ChatMessageList(
     () => visibleMessages.filter(m => m.id !== hiddenMessageId || m.id === streamingTargetId),
     [visibleMessages, hiddenMessageId, streamingTargetId],
   );
+
+  // 切对话 / 消息集合变化时预热图片（blob 内存缓存；probe 顺带记宽高比）。
+  // - 只取最近 30 条：预热范围贴近落点视口，避免长会话灌爆 LRU（纯 UI 预热，不涉聊天语义）
+  // - data:/blob: 已在内存，跳过（也避免把 MB 级 base64 拼进 memo key）
+  // - memo key 为 URL 拼接：流式期间 filtered 每 chunk 换引用，但 URL 集不变则不重跑，
+  //   同时配合 blob 层的失败负缓存，避免对 404 图反复发请求
+  const warmImageUrlsKey = useMemo(() => {
+    const urls: string[] = [];
+    for (const message of filtered.slice(-30)) {
+      const meta = (message.metadata || {}) as Record<string, unknown>;
+      if (message.role === 'assistant') {
+        for (const img of sanitizeGeneratedImages(meta.generatedImages)) {
+          if (img.url && !img.url.startsWith('data:') && !img.url.startsWith('blob:')) urls.push(img.url);
+        }
+      } else if (message.role === 'user') {
+        const atts = meta.attachments as Array<{ type?: string; url?: string; data?: string }> | undefined;
+        if (atts) {
+          for (const att of atts) {
+            if (att?.type !== 'image') continue;
+            const src = att.url || att.data;
+            if (src && !src.startsWith('data:') && !src.startsWith('blob:')) urls.push(src);
+          }
+        }
+      }
+    }
+    return urls.join('\n');
+  }, [filtered]);
+
+  useEffect(() => {
+    if (warmImageUrlsKey) warmImageBlobs(warmImageUrlsKey.split('\n'));
+  }, [warmImageUrlsKey]);
 
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally returns imperative helpers used only inside this list.
   const virtualizer = useVirtualizer({

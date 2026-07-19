@@ -2,6 +2,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Character } from '@/types';
+import type { UniqueGeneratedImageItem } from '@/lib/generated-image-assets';
+import {
+  getCharacterImageListCache,
+  loadCharacterImageList,
+  setCharacterImageListCache,
+  subscribeCharacterImageList,
+} from '@/lib/character-image-list-cache';
 import { ImageIcon, TrashIcon } from '@/components/ui/icons';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
@@ -11,24 +18,7 @@ import JSZip from 'jszip';
 const PAGE_SIZE = 12;
 const DOWNLOAD_CONCURRENCY = 5;
 
-interface CharacterImage {
-  messageId: string;
-  conversationId: string;
-  conversationTitle: string;
-  createdAt: string;
-  imageId: string;
-  versionId: string;
-  url: string;
-  referenceCount: number;
-  references: Array<{
-    messageId: string;
-    conversationId: string;
-    conversationTitle: string;
-    createdAt: string;
-    imageId: string;
-    versionId: string;
-  }>;
-}
+type CharacterImage = UniqueGeneratedImageItem;
 
 interface Props {
   open: boolean;
@@ -80,33 +70,46 @@ type InnerProps = Omit<Props, 'open'>;
  */
 function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showToast }: InnerProps) {
   const { t } = useTranslation();
-  const [images, setImages] = useState<CharacterImage[]>([]);
-  const [loading, setLoading] = useState(false);
+  const characterId = character?.id ?? null;
+  // 有缓存时秒开上次列表；无缓存才显示加载中（stale-while-revalidate）
+  const [images, setImages] = useState<CharacterImage[]>(() => (
+    characterId ? (getCharacterImageListCache(characterId) ?? []) : []
+  ));
+  const [loading, setLoading] = useState(() => (
+    characterId ? getCharacterImageListCache(characterId) === null : false
+  ));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [downloading, setDownloading] = useState(false);
 
-  const reload = useCallback(async () => {
-    if (!character) return;
-    setLoading(true);
+  const reload = useCallback(async (options?: { quiet?: boolean; force?: boolean }) => {
+    if (!characterId) return;
+    // 有缓存时 quiet revalidate：保持现有网格，不闪「加载中」
+    if (!options?.quiet) setLoading(true);
     try {
-      const res = await fetch(`/api/characters/${character.id}/images`);
-      const data = await res.json();
+      const data = await loadCharacterImageList(characterId, { force: options?.force });
       setImages(data);
     } catch {
       showToast(t('chat.imageLoadFail'));
     } finally {
       setLoading(false);
     }
-  }, [character, showToast, t]);
+  }, [characterId, showToast, t]);
 
-  // 挂载时加载一次（外层保证只有 open=true 才会挂载）
-  // reload() 内部会 setLoading(true) 启动加载态，是合法的"组件挂载时同步外部数据"模式
+  // 挂载时：有缓存 → quiet 后台对齐；无缓存 → 显示 loading 等首屏
   useEffect(() => {
+    if (!characterId) return;
+    const hasCache = getCharacterImageListCache(characterId) !== null;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void reload();
-  }, [reload]);
+    void reload({ quiet: hasCache });
+  }, [characterId, reload]);
+
+  // 与模块缓存同步（删除后写回 / 并发打开共享）
+  useEffect(() => {
+    if (!characterId) return;
+    return subscribeCharacterImageList(characterId, setImages);
+  }, [characterId]);
 
   const close = () => {
     setPreviewIndex(null);
@@ -128,7 +131,13 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
       if (!data.ok) throw new Error(t('chat.imageDeleteFail'));
       setSelected(new Set());
       setPreviewIndex(null);
-      await reload();
+      // 乐观写回缓存（抬高 epoch），再 force 拉权威列表，避免在飞 pre-delete GET 覆盖
+      if (characterId) {
+        const remaining = images.filter(img => !selected.has(img.url));
+        setCharacterImageListCache(characterId, remaining);
+        setImages(remaining);
+      }
+      await reload({ force: true, quiet: true });
       // 通知父组件刷新主消息列表（图片已从 metadata 中剥离）
       if (onAfterBatchDelete) await onAfterBatchDelete();
       showToast(formatTemplate(t('chat.imageBatchDeleted'), { count: items.length }), 'info');

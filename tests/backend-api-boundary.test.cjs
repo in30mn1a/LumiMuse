@@ -476,6 +476,33 @@ test('/api/messages/[id] PUT refreshes token provenance after content and attach
   assert.equal(payload.metadata.token_count_provenance.source, 'server');
 });
 
+test('/api/messages/[id] PUT metadata merge honors explicit empty values for one-shot image fields', async () => {
+  const db = createConversationMessagesDb();
+  // 该消息 metadata 带本地生成图 URL，PUT 后会走孤儿文件检查，需要 characters 表
+  db.exec('CREATE TABLE characters (id TEXT PRIMARY KEY, avatar_url TEXT)');
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES ('msg-img', 'conv-a', 'assistant', 'reply', 3, '2026-07-11T00:00:01.000Z', 1, ?)
+  `).run(JSON.stringify({
+    inlineImagePrompt: '1girl, stale prompt',
+    generatedImages: [{ id: 'img-1', url: '/api/files/generated/a.png', prompt: 'old' }],
+  }));
+  const route = loadRoute('../src/app/api/messages/[id]/route.ts', db);
+
+  // 浅合并语义下缺失的 key 会保留旧值；客户端删光图片时必须发显式空值
+  const response = await route.PUT(
+    jsonRequest({ metadata: { generatedImages: [], inlineImagePrompt: '' } }),
+    { params: Promise.resolve({ id: 'msg-img' }) },
+  );
+
+  assert.equal(response.status, 200);
+  const stored = JSON.parse(
+    db.prepare('SELECT metadata FROM messages WHERE id = ?').get('msg-img').metadata,
+  );
+  assert.deepEqual(stored.generatedImages, []);
+  assert.equal(stored.inlineImagePrompt, '');
+});
+
 test('/api/messages/[id] DELETE returns the owning conversation id for precise cache invalidation', async () => {
   const db = createConversationMessagesDb();
   db.prepare(`

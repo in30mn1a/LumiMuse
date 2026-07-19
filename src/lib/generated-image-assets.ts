@@ -235,6 +235,8 @@ export function removeGeneratedImageReferences(
       meta.generatedImages = nextImages;
     } else {
       delete meta.generatedImages;
+      // 与气泡内删图一致：图删光后清掉随对话缓存的提示词，避免再次生图复用旧词
+      delete meta.inlineImagePrompt;
     }
   }
 

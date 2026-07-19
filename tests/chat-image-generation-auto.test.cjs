@@ -95,3 +95,27 @@ test('handleGenerateImage no longer hard-depends on characterRef for starting', 
   assert.doesNotMatch(hookSource, /if \(!targetConversationId \|\| !characterRef\.current\) return/);
   assert.match(hookSource, /if \(!targetConversationId\) return false;/);
 });
+
+test('inlineImagePrompt is one-shot: cleared after successful image gen and when last image is deleted', () => {
+  // 成功出图时一律清掉 metadata.inlineImagePrompt（含自动出图把内联词当 existingPrompt 传入的路径）
+  assert.match(hookSource, /clearInlinePrompt/);
+  assert.match(hookSource, /clearInlinePrompt: true/);
+  // PUT /api/messages 对 metadata 是浅合并，delete 不落库：必须写显式空值
+  assert.match(hookSource, /nextMeta\.inlineImagePrompt = ''/);
+  assert.doesNotMatch(hookSource, /delete nextMeta\.inlineImagePrompt/);
+  assert.doesNotMatch(hookSource, /delete meta\.generatedImages/);
+  // 气泡内删光最后一张图时也清（同样必须显式空值：generatedImages: [] + inlineImagePrompt: ''）
+  assert.match(
+    hookSource,
+    /meta\.generatedImages = nextImages;\s*if \(nextImages\.length === 0\) \{\s*meta\.inlineImagePrompt = '';/,
+  );
+  // 图片管理批量删除走服务端 removeGeneratedImageReferences（整体重写 metadata，delete 生效），同样在图删光时清
+  const assetsSource = fs.readFileSync(
+    path.join(root, 'src/lib/generated-image-assets.ts'),
+    'utf8',
+  );
+  assert.match(
+    assetsSource,
+    /delete meta\.generatedImages;\s*[\s\S]*?delete meta\.inlineImagePrompt;/,
+  );
+});

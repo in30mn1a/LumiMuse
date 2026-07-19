@@ -244,3 +244,24 @@ test('removeGeneratedImageReferences skips malformed generatedImages metadata', 
   assert.deepEqual(result.removedUrls, ['/api/files/generated/ok.png']);
   assert.deepEqual(result.metadata, {});
 });
+
+test('removeGeneratedImageReferences clears inlineImagePrompt when last image is removed', () => {
+  const result = removeGeneratedImageReferences(
+    {
+      inlineImagePrompt: '1girl, blue eyes, leftover prompt',
+      generatedImages: [
+        {
+          id: 'img-only',
+          url: '/api/files/generated/only.png',
+          prompt: 'only prompt',
+        },
+      ],
+    },
+    { urls: new Set(['/api/files/generated/only.png']) },
+  );
+
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.removedUrls, ['/api/files/generated/only.png']);
+  assert.equal(result.metadata.generatedImages, undefined);
+  assert.equal(result.metadata.inlineImagePrompt, undefined);
+});

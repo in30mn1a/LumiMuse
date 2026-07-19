@@ -117,11 +117,16 @@ export function useChatImageGeneration({
 
     const persistImages = async (
       updater: (images: ImageEntry[]) => ImageEntry[],
-      options?: { allowCompletedRequest?: boolean },
+      options?: { allowCompletedRequest?: boolean; clearInlinePrompt?: boolean },
     ) => {
       if (!canWriteImageRequest(options?.allowCompletedRequest)) return workingMeta;
       const currentImages = sanitizeGeneratedImages(workingMeta.generatedImages);
-      const nextMeta = { ...workingMeta, generatedImages: updater(currentImages) };
+      const nextMeta: Record<string, unknown> = { ...workingMeta, generatedImages: updater(currentImages) };
+      // 随对话生成的提示词只免费复用一次：成功出图后清掉，避免删图再点仍用旧词。
+      // 注意 PUT /api/messages 对 metadata 是浅合并，delete 掉的 key 不会落库，必须写显式空值
+      if (options?.clearInlinePrompt) {
+        nextMeta.inlineImagePrompt = '';
+      }
 
       await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
         method: 'PUT',
@@ -160,9 +165,12 @@ export function useChatImageGeneration({
     };
 
     const inlineImagePrompt = typeof (targetMsg.metadata as Record<string, unknown> | undefined)?.inlineImagePrompt === 'string'
-      ? (targetMsg.metadata as Record<string, unknown>).inlineImagePrompt as string
+      ? ((targetMsg.metadata as Record<string, unknown>).inlineImagePrompt as string).trim()
       : '';
-    let generatedPrompt = existingPrompt || inlineImagePrompt || '';
+    // existingPrompt：调用方显式传入（自动出图的内联词 / 卡片重生成的旧词 / 用户编辑后的词）
+    // 否则才回退 metadata.inlineImagePrompt（消息上的「随对话」免费提示词）
+    // 成功出图后一律清掉 inlineImagePrompt：它只该服务「本轮首次出图」，删图再点应重新生成提示词
+    let generatedPrompt = (existingPrompt || inlineImagePrompt || '').trim();
 
     try {
       await upsertPlaceholder({
@@ -221,7 +229,7 @@ export function useChatImageGeneration({
         }
 
         return images.map(img => img.id === placeholderId ? newImage : img);
-      });
+      }, { clearInlinePrompt: true });
       return true;
     } catch (err) {
       // 已占坑：无论成败都返回 true，避免 auto 路径反复重试同一条消息
@@ -346,7 +354,7 @@ export function useChatImageGeneration({
       const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
       const existingImages = sanitizeGeneratedImages(meta.generatedImages);
 
-      meta.generatedImages = existingImages.flatMap(img => {
+      const nextImages = existingImages.flatMap(img => {
         if (img.id !== imgId) return [img];
 
         const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
@@ -371,6 +379,13 @@ export function useChatImageGeneration({
           activeVersion: nextActiveVersion,
         }];
       });
+
+      // 消息上已无任何生成图时，一并清掉随对话缓存的提示词，避免删光后点生图仍复用旧词。
+      // PUT /api/messages 对 metadata 是浅合并：缺失的 key 保留库中旧值，必须发显式空值而非 delete
+      meta.generatedImages = nextImages;
+      if (nextImages.length === 0) {
+        meta.inlineImagePrompt = '';
+      }
 
       await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
         method: 'PUT',

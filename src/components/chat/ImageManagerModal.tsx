@@ -13,7 +13,6 @@ import { ImageIcon, TrashIcon } from '@/components/ui/icons';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import Modal from '@/components/ui/Modal';
-import JSZip from 'jszip';
 
 const PAGE_SIZE = 12;
 const DOWNLOAD_CONCURRENCY = 5;
@@ -75,9 +74,11 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
   const [images, setImages] = useState<CharacterImage[]>(() => (
     characterId ? (getCharacterImageListCache(characterId) ?? []) : []
   ));
-  const [loading, setLoading] = useState(() => (
-    characterId ? getCharacterImageListCache(characterId) === null : false
-  ));
+  // 仅在「无任何可展示列表」时用整页 loading；已有缓存/已有图时静默对齐
+  const [loading, setLoading] = useState(() => {
+    if (!characterId) return false;
+    return getCharacterImageListCache(characterId) === null;
+  });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [page, setPage] = useState(0);
@@ -85,8 +86,9 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
 
   const reload = useCallback(async (options?: { quiet?: boolean; force?: boolean }) => {
     if (!characterId) return;
-    // 有缓存时 quiet revalidate：保持现有网格，不闪「加载中」
-    if (!options?.quiet) setLoading(true);
+    // quiet 或本地已有可展示列表时，不闪整页「加载中」
+    const shouldShowLoading = !options?.quiet && images.length === 0;
+    if (shouldShowLoading) setLoading(true);
     try {
       const data = await loadCharacterImageList(characterId, { force: options?.force });
       setImages(data);
@@ -95,7 +97,7 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
     } finally {
       setLoading(false);
     }
-  }, [characterId, showToast, t]);
+  }, [characterId, images.length, showToast, t]);
 
   // 挂载时：有缓存 → quiet 后台对齐；无缓存 → 显示 loading 等首屏
   useEffect(() => {
@@ -103,7 +105,9 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
     const hasCache = getCharacterImageListCache(characterId) !== null;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload({ quiet: hasCache });
-  }, [characterId, reload]);
+    // 仅在角色切换时拉一次；reload 身份会因 images.length 变化而变，不能放进 deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [characterId]);
 
   // 与模块缓存同步（删除后写回 / 并发打开共享）
   useEffect(() => {
@@ -150,6 +154,8 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
     if (selected.size === 0) return;
     setDownloading(true);
     try {
+      // 动态加载 jszip，避免图库弹窗首开就拖入压缩库
+      const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
       // 选中态以 img.url 为 key（与单选/全选/删除一致），这里必须同样用 url 过滤，
       // 否则匹配不到任何图片，会导致打出空压缩包。
@@ -247,9 +253,9 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
             </div>
           </div>
 
-          {/* 图片网格 */}
+          {/* 图片网格：仅当没有任何可展示图时才整页 loading，避免有缓存仍空白转圈 */}
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {loading ? (
+            {loading && images.length === 0 ? (
               <div className="flex h-40 items-center justify-center text-sm text-text-muted">{t('common.loading')}</div>
             ) : images.length === 0 ? (
               <div className="flex h-40 flex-col items-center justify-center gap-2 text-sm text-text-muted">
@@ -275,7 +281,9 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
                           src={img.url}
                           alt=""
                           className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
-                          loading="lazy"
+                          // 首屏网格用 eager，避免 lazy 在弹窗刚打开时还不触发解码
+                          loading={indexInPage < PAGE_SIZE ? 'eager' : 'lazy'}
+                          decoding="async"
                         />
                       </button>
                       <button

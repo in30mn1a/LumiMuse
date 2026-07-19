@@ -38,6 +38,7 @@ import {
   prependCharacterConversation,
   removeCharacterConversation,
 } from '@/lib/character-context-cache';
+import { loadCharacterImageList } from '@/lib/character-image-list-cache';
 import { MenuIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
@@ -47,6 +48,7 @@ const PAGE_SIZE = 60; // 每次从后端加载的消息数
 const ResetExtractionModal = dynamic(() => import('./ResetExtractionModal'));
 const ImageManagerModal = dynamic(() => import('./ImageManagerModal'));
 const TokenBreakdownModal = dynamic(() => import('./TokenBreakdownModal'));
+const prefetchImageManagerModal = () => import('./ImageManagerModal');
 
 interface Props {
   character: Character | null;
@@ -89,6 +91,16 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const [toolbarExpanded, setToolbarExpanded] = useState(true);
   // 图片管理弹窗（仅保留开关；列表/选中/分页等已下沉到 ImageManagerModal 内部）
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
+
+  // 进入角色页即预热：图库列表 API + 弹窗 chunk + 首屏缩略图 HTTP cache，
+  // 点开时不应再等 dynamic import / 列表首拉
+  useEffect(() => {
+    if (!character?.id) return;
+    void loadCharacterImageList(character.id).catch(() => {
+      // 预热失败静默：打开弹窗时仍会走正式加载路径
+    });
+    void prefetchImageManagerModal();
+  }, [character?.id]);
 
   // Token 拆分弹窗
   const [tokenBreakdownOpen, setTokenBreakdownOpen] = useState(false);

@@ -56,7 +56,17 @@ test('ChatView lazy-loads low-frequency modals that are not needed for first pai
   assert.match(
     chatView,
     /\{imageManagerOpen && \(\s*<ImageManagerModal/,
-    'ImageManagerModal should only mount when opened so its jszip chunk is not requested on first paint',
+    'ImageManagerModal should only mount when opened (chunk may be prefetched, but first paint must not mount the modal tree)',
+  );
+  assert.match(
+    chatView,
+    /prefetchImageManagerModal|import\('\.\/ImageManagerModal'\)/,
+    'ImageManagerModal chunk should be prefetchable after character load for snappy open',
+  );
+  assert.match(
+    chatView,
+    /loadCharacterImageList/,
+    'character image list should be prefetched on character enter so the manager opens from cache',
   );
   assert.match(
     chatView,

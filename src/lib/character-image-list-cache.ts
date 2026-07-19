@@ -30,6 +30,18 @@ function notify(characterId: string, images: UniqueGeneratedImageItem[]): void {
   for (const listener of set) listener(images);
 }
 
+/** 预热首屏缩略图（浏览器 HTTP cache），仅在浏览器环境执行 */
+function preloadThumbnails(images: UniqueGeneratedImageItem[]): void {
+  if (typeof window === 'undefined' || typeof Image === 'undefined') return;
+  // 与 ImageManagerModal 的 PAGE_SIZE 对齐：预热第一页即可
+  for (const item of images.slice(0, 12)) {
+    if (!item.url) continue;
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = item.url;
+  }
+}
+
 export function getCharacterImageListCache(characterId: string): UniqueGeneratedImageItem[] | null {
   return cache.get(characterId) ?? null;
 }
@@ -88,6 +100,7 @@ export function loadCharacterImageList(
       // 直接写 cache + 通知，不走 setCharacterImageListCache，避免无意义抬高 epoch
       cache.set(characterId, data);
       notify(characterId, data);
+      preloadThumbnails(data);
       return data;
     })
     .finally(() => {

@@ -154,6 +154,31 @@ test('in-flight loadCharacterImageList does not overwrite optimistic setCharacte
   );
 });
 
+test('successful loadCharacterImageList preloads first-page thumbnails in the browser', async () => {
+  const created = [];
+  class FakeImage {
+    constructor() {
+      created.push(this);
+    }
+    set src(value) {
+      this._src = value;
+    }
+    get src() {
+      return this._src;
+    }
+  }
+  global.Image = FakeImage;
+  global.window = global;
+  global.fetch = async () => jsonResponse(sampleImages(['/a.png', '/b.png', '/c.png']));
+
+  await loadCharacterImageList('char-thumbs');
+  assert.equal(created.length, 3);
+  assert.deepEqual(created.map((img) => img.src), ['/a.png', '/b.png', '/c.png']);
+
+  delete global.Image;
+  delete global.window;
+});
+
 test('force loadCharacterImageList starts a new fetch even when one is in flight', async () => {
   let releaseFirst;
   const firstGate = new Promise((resolve) => {

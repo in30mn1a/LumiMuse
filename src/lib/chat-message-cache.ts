@@ -30,8 +30,59 @@ export function __setChatCachePersistenceForTests(next: ChatCachePersistence<Cac
   hydrationPromise = null;
 }
 
+/** 乐观占位消息（发送中的 temp-user 等），仅存在于内存 UI，不落持久层、不被网络空响覆盖 */
+export function isOptimisticMessage(message: Message): boolean {
+  return message.id === 'temp-user' || message.id.startsWith('temp-');
+}
+
+function stripOptimisticMessages(messages: Message[]): Message[] {
+  return messages.filter(message => !isOptimisticMessage(message));
+}
+
+/**
+ * 网络/权威快照合并本地乐观消息：
+ * - 新建会话首条发送时，activeConvId 切换会立刻拉空列表，不能抹掉已展示的 temp-user
+ * - 服务端已出现同内容的真实 user 消息后，丢弃对应乐观占位，避免双气泡
+ */
+export function mergeMessagesWithOptimistic(
+  serverMessages: Message[],
+  previousMessages: Message[] | undefined,
+): Message[] {
+  const optimistic = (previousMessages ?? []).filter(isOptimisticMessage);
+  if (optimistic.length === 0) {
+    return uniqueMessagesById(serverMessages);
+  }
+
+  const keepOptimistic = optimistic.filter(opt => {
+    if (serverMessages.some(message => message.id === opt.id)) return false;
+    if (opt.role === 'user') {
+      const replaced = serverMessages.some(message => (
+        message.role === 'user'
+        && !isOptimisticMessage(message)
+        && message.content === opt.content
+      ));
+      if (replaced) return false;
+    }
+    return true;
+  });
+
+  return uniqueMessagesById([...serverMessages, ...keepOptimistic]);
+}
+
 function schedulePersist(conversationId: string): void {
-  persistence.schedulePut(conversationId, () => messageCache.get(conversationId) ?? null);
+  // 持久化时剥掉乐观占位，避免刷新后残留幽灵 temp-user
+  persistence.schedulePut(conversationId, () => {
+    const snapshot = messageCache.get(conversationId);
+    if (!snapshot) return null;
+    const durableMessages = stripOptimisticMessages(snapshot.messages);
+    if (durableMessages.length === snapshot.messages.length) {
+      return snapshot;
+    }
+    return {
+      ...snapshot,
+      messages: durableMessages,
+    };
+  });
 }
 
 /** 首次调用时把持久层快照填充到内存 Map 中**尚不存在**的 key（不覆盖本次运行已写入的新数据）。 */
@@ -124,7 +175,8 @@ export function uniqueMessagesById(messages: Message[]): Message[] {
 }
 
 export function cacheMessagesResponse(conversationId: string, response: CachedMessages): Message[] {
-  const nextMessages = uniqueMessagesById(response.messages);
+  const previous = messageCache.get(conversationId);
+  const nextMessages = mergeMessagesWithOptimistic(response.messages, previous?.messages);
   writeCachedMessages(conversationId, {
     messages: nextMessages,
     hasMore: response.hasMore,
@@ -166,8 +218,12 @@ export function updateCachedMessages(
   updater: MessageUpdater,
   metadata?: CachedMessageMetadata,
 ): CachedMessages | null {
-  const previous = messageCache.get(conversationId);
-  if (!previous) return null;
+  // 新建会话尚无缓存时也要写入乐观消息，否则随后空列表拉取无法从 previous 合并回来
+  const previous = messageCache.get(conversationId) ?? {
+    messages: [],
+    hasMore: false,
+    oldestSeq: null,
+  };
   const nextSnapshot = {
     ...previous,
     ...metadata,

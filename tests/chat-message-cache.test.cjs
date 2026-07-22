@@ -35,6 +35,7 @@ const {
   applyMessagesResponseToState,
   cacheMessagesResponse,
   clearCachedMessages,
+  mergeMessagesWithOptimistic,
   readCachedMessages,
   updateCachedMessages,
   updateMessagesForConversationState,
@@ -236,6 +237,90 @@ test('message response state helper applies active conversation response to UI a
   assert.equal(ui.unextractedCount, 2);
   assert.deepEqual(ui.totalTokens, { convId: 'conv-a', value: 8 });
   assert.deepEqual(readCachedMessages('conv-a')?.messages.map(item => item.id), ['a-1', 'a-2']);
+});
+
+test('updateCachedMessages creates a snapshot when conversation has no cache yet', () => {
+  clearCachedMessages();
+  const tempUser = {
+    id: 'temp-user',
+    conversation_id: 'conv-new',
+    role: 'user',
+    content: 'hello first',
+    token_count: 0,
+    created_at: '2026-07-23T12:00:00.000Z',
+    metadata: {},
+  };
+
+  const updated = updateCachedMessages('conv-new', messages => [...messages, tempUser]);
+  assert.deepEqual(updated?.messages.map(item => item.id), ['temp-user']);
+  assert.deepEqual(readCachedMessages('conv-new')?.messages.map(item => item.id), ['temp-user']);
+});
+
+test('mergeMessagesWithOptimistic keeps temp-user until a real user message with same content arrives', () => {
+  const tempUser = {
+    id: 'temp-user',
+    conversation_id: 'conv-new',
+    role: 'user',
+    content: 'hello first',
+    token_count: 0,
+    created_at: '2026-07-23T12:00:00.000Z',
+    metadata: {},
+  };
+
+  assert.deepEqual(
+    mergeMessagesWithOptimistic([], [tempUser]).map(item => item.id),
+    ['temp-user'],
+  );
+
+  const realUser = message('u-1', 1, 'conv-new');
+  realUser.content = 'hello first';
+  assert.deepEqual(
+    mergeMessagesWithOptimistic([realUser], [tempUser]).map(item => item.id),
+    ['u-1'],
+  );
+
+  const otherUser = message('u-2', 2, 'conv-new');
+  otherUser.content = 'different text';
+  assert.deepEqual(
+    mergeMessagesWithOptimistic([otherUser], [tempUser]).map(item => item.id),
+    ['u-2', 'temp-user'],
+  );
+});
+
+test('empty network response does not wipe optimistic temp-user during first-message send', () => {
+  clearCachedMessages();
+  const tempUser = {
+    id: 'temp-user',
+    conversation_id: 'conv-new',
+    role: 'user',
+    content: 'first message',
+    token_count: 0,
+    created_at: '2026-07-23T12:00:00.000Z',
+    metadata: {},
+  };
+
+  updateCachedMessages('conv-new', messages => [...messages, tempUser]);
+  const ui = {};
+  const applied = applyMessagesResponseToState('conv-new', {
+    messages: [],
+    hasMore: false,
+    oldestSeq: null,
+    unextractedCount: 0,
+    totalTokens: 0,
+  }, {
+    getActiveConversationId: () => 'conv-new',
+    replaceMessages: messages => { ui.messages = messages; },
+    setHasOlderMessages: hasMore => { ui.hasMore = hasMore; },
+    setOldestLoadedSeq: oldestSeq => { ui.oldestSeq = oldestSeq; },
+    setServerUnextractedCount: count => { ui.unextractedCount = count; },
+    setServerTotalTokens: total => { ui.totalTokens = total; },
+  });
+
+  assert.equal(applied, true);
+  assert.deepEqual(ui.messages.map(item => item.id), ['temp-user']);
+  assert.deepEqual(readCachedMessages('conv-new')?.messages.map(item => item.id), ['temp-user']);
+  assert.equal(ui.hasMore, false);
+  assert.equal(ui.oldestSeq, null);
 });
 
 test('message mutation state helper updates inactive cache without flashing active UI', () => {

@@ -253,8 +253,14 @@ function MessageBubbleInner({
   useEffect(() => {
     const el = editTextareaRef.current;
     if (!editing || !el) return;
+    // 读 scrollHeight 会强制同步布局，而此刻 textarea 已被压到 min-height（3.25rem）。
+    // 移动端浏览器会在这一刻把光标滚回这个矮视口内、改掉 scrollTop，高度恢复后不还原，
+    // 表现为编辑长消息时第一次增删字符整段文本突然跳动。测量前后自行保存/恢复 scrollTop。
+    // prevScrollTop 取自浏览器处理完 input 的结果，本身已保证光标可见，还原不会把光标顶出视口。
+    const prevScrollTop = el.scrollTop;
     el.style.height = '0px';
     el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.6))}px`;
+    el.scrollTop = prevScrollTop;
   }, [editing, editContent]);
 
   const handleCopy = async () => {

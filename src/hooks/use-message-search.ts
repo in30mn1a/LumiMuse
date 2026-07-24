@@ -18,6 +18,8 @@ export interface MessageSearchResult {
 interface UseMessageSearchOptions {
   limit?: number;
   debounceMs?: number;
+  /** 传入后只搜索该角色的对话内容；不传则搜索全部角色 */
+  characterId?: string | null;
 }
 
 interface MessageSearchResponse {
@@ -47,7 +49,7 @@ function parseSearchPayload(data: unknown): MessageSearchResponse {
 }
 
 export function useMessageSearch(query: string, options: UseMessageSearchOptions = {}) {
-  const { limit = 15, debounceMs = 220 } = options;
+  const { limit = 15, debounceMs = 220, characterId = null } = options;
   const [results, setResults] = useState<MessageSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -76,6 +78,7 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
         limit: String(limit),
         offset: String(reset ? 0 : resultsRef.current.length),
       });
+      if (characterId) params.set('characterId', characterId);
       const response = await fetch(`/api/messages/search?${params}`, { signal: controller.signal });
       const data = await parseJsonResponse<unknown>(response);
       const { results: nextResults, hasMore: nextHasMore } = parseSearchPayload(data);
@@ -105,7 +108,7 @@ export function useMessageSearch(query: string, options: UseMessageSearchOptions
         abortRef.current = null;
       }
     }
-  }, [limit]);
+  }, [characterId, limit]);
 
   const clearSearch = useCallback(() => {
     abortRef.current?.abort();

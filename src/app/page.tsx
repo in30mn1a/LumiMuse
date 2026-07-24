@@ -24,6 +24,8 @@ export default function Home() {
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // null = 全局搜索（侧栏 / Ctrl+K）；非空 = 只搜该角色（聊天页顶部搜索）
+  const [searchCharacterId, setSearchCharacterId] = useState<string | null>(null);
   const selectionGenerationRef = useRef(0);
   const {
     characterId: selectedCharacterId,
@@ -64,6 +66,11 @@ export default function Home() {
       .catch(() => {/* 请求失败时保留上一组完整 selection 或当前快照 */});
   };
 
+  const openSearch = (scopeCharacterId: string | null) => {
+    setSearchCharacterId(scopeCharacterId);
+    setSearchOpen(true);
+  };
+
   const handleConversationSelect = async (characterId: string, conversationId: string, messageId?: string) => {
     const generation = ++selectionGenerationRef.current;
     const nextTargetMessageId = messageId ?? null;
@@ -98,7 +105,10 @@ export default function Home() {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
-        setSearchOpen(prev => !prev);
+        setSearchOpen(prev => {
+          if (!prev) setSearchCharacterId(null);
+          return !prev;
+        });
       }
     };
     window.addEventListener('keydown', handler);
@@ -127,7 +137,7 @@ export default function Home() {
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
           onConversationSelect={handleConversationSelect}
-          onSearchOpen={() => setSearchOpen(true)}
+          onSearchOpen={() => openSearch(null)}
         />
       </div>
 
@@ -143,7 +153,7 @@ export default function Home() {
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
           onConversationSelect={handleConversationSelect}
-          onSearchOpen={() => setSearchOpen(true)}
+          onSearchOpen={() => openSearch(null)}
         />
       </Modal>
 
@@ -154,7 +164,7 @@ export default function Home() {
           conversationId={selectedConversationId}
           targetMessageId={targetMessageId}
           onOpenSidebar={() => setSidebarOpen(true)}
-          onOpenSearch={() => setSearchOpen(true)}
+          onOpenSearch={() => openSearch(selectedCharacterId)}
         />
       </main>
 
@@ -162,6 +172,7 @@ export default function Home() {
       <GlobalSearch
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
+        characterId={searchCharacterId}
         onConversationSelect={(characterId, conversationId, messageId) =>
           handleConversationSelect(characterId, conversationId, messageId)
         }

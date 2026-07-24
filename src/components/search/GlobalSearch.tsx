@@ -18,16 +18,18 @@ interface SearchResult {
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** 传入后只搜索该角色的对话内容（聊天页顶部搜索）；不传则搜索全部角色（侧栏搜索） */
+  characterId?: string | null;
   onConversationSelect?: (characterId: string, conversationId: string, messageId?: string) => void;
 }
 
-export default function GlobalSearch({ open, onClose, onConversationSelect }: Props) {
+export default function GlobalSearch({ open, onClose, characterId = null, onConversationSelect }: Props) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const { results: messageResults, loading, loadingMore, hasMore, error, loadMore, clearSearch } = useMessageSearch(open ? query : '', { limit: 30, debounceMs: 200 });
+  const { results: messageResults, loading, loadingMore, hasMore, error, loadMore, clearSearch } = useMessageSearch(open ? query : '', { limit: 30, debounceMs: 200, characterId });
   const results = useMemo<SearchResult[]>(() => messageResults.map(m => ({
       id: m.messageId,
       title: m.snippet,

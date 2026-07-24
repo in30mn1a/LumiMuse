@@ -76,11 +76,12 @@ function parseDateRange(input: string): [string, string] | null {
 }
 
 /**
- * GET /api/messages/search?q=关键词&limit=10
- * 按消息内容关键词搜索，支持日期搜索
+ * GET /api/messages/search?q=关键词&limit=10&characterId=xxx
+ * 按消息内容关键词搜索，支持日期搜索；带 characterId 时只搜该角色的对话
  */
 export async function GET(request: NextRequest) {
   const q = request.nextUrl.searchParams.get('q')?.trim();
+  const characterId = request.nextUrl.searchParams.get('characterId')?.trim() || null;
   const limitParam = Number(request.nextUrl.searchParams.get('limit') || '15');
   const offsetParam = Number(request.nextUrl.searchParams.get('offset') || '0');
   const limit = Math.floor(Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 15, 1), 50));
@@ -93,6 +94,10 @@ export async function GET(request: NextRequest) {
 
   // 检测是否为日期搜索
   const dateRange = parseDateRange(q);
+
+  // 角色过滤：子句紧跟 role 条件，参数插在关键词之后、分页参数之前
+  const charClause = characterId ? 'AND ch.id = ?' : '';
+  const charParams: string[] = characterId ? [characterId] : [];
 
   let rows: Array<{
     message_id: string;
@@ -122,10 +127,10 @@ export async function GET(request: NextRequest) {
       FROM messages m
       JOIN conversations c  ON m.conversation_id = c.id
       JOIN characters   ch ON c.character_id     = ch.id
-      WHERE (m.created_at >= ? AND m.created_at <= ?) AND m.role IN ('user', 'assistant')
+      WHERE (m.created_at >= ? AND m.created_at <= ?) AND m.role IN ('user', 'assistant') ${charClause}
       ORDER BY m.created_at ASC
       LIMIT ? OFFSET ?
-    `).all(dateRange[0], dateRange[1], pageSize, offset) as typeof rows;
+    `).all(dateRange[0], dateRange[1], ...charParams, pageSize, offset) as typeof rows;
   } else {
     // 普通关键词搜索
     const normalized = q.replace(/"/g, '""');
@@ -147,10 +152,10 @@ export async function GET(request: NextRequest) {
       FROM messages m
       JOIN conversations c  ON m.conversation_id = c.id
       JOIN characters   ch ON c.character_id     = ch.id
-      WHERE m.content LIKE ? ESCAPE '\\' AND m.role IN ('user', 'assistant')
+      WHERE m.content LIKE ? ESCAPE '\\' AND m.role IN ('user', 'assistant') ${charClause}
       ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
       LIMIT ? OFFSET ?
-    `).all(`%${escapedKeyword}%`, pageSize, offset) as typeof rows;
+    `).all(`%${escapedKeyword}%`, ...charParams, pageSize, offset) as typeof rows;
 
     if (shouldUseTrigram) {
       try {
@@ -169,10 +174,10 @@ export async function GET(request: NextRequest) {
           JOIN messages m      ON m.id = fts.id
           JOIN conversations c ON m.conversation_id = c.id
           JOIN characters ch   ON c.character_id = ch.id
-          WHERE messages_fts_trigram MATCH ? AND m.role IN ('user', 'assistant')
+          WHERE messages_fts_trigram MATCH ? AND m.role IN ('user', 'assistant') ${charClause}
           ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
           LIMIT ? OFFSET ?
-        `).all(`"${normalized}"`, pageSize, offset) as typeof rows;
+        `).all(`"${normalized}"`, ...charParams, pageSize, offset) as typeof rows;
       } catch {
         rows = searchLike();
       }
@@ -196,10 +201,10 @@ export async function GET(request: NextRequest) {
           JOIN messages m      ON m.id = fts.id
           JOIN conversations c ON m.conversation_id = c.id
           JOIN characters ch   ON c.character_id = ch.id
-          WHERE messages_fts MATCH ? AND m.role IN ('user', 'assistant')
+          WHERE messages_fts MATCH ? AND m.role IN ('user', 'assistant') ${charClause}
           ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
           LIMIT ? OFFSET ?
-        `).all(ftsQuery, pageSize, offset) as typeof rows;
+        `).all(ftsQuery, ...charParams, pageSize, offset) as typeof rows;
         rows = ftsRows.length === 0 ? searchLike() : ftsRows;
       } catch {
         rows = searchLike();

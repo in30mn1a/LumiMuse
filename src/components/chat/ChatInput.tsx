@@ -81,6 +81,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const effortPickerRef = useRef<HTMLDivElement>(null);
   const effortTriggerRef = useRef<HTMLButtonElement>(null);
   const effortOptionRefs = useRef<Array<HTMLDivElement | null>>([]);
+  // 触屏设备（手机/平板）上回车键当换行用，发送只走发送按钮
+  const [enterInsertsNewline, setEnterInsertsNewline] = useState(false);
   const { t } = useTranslation();
 
   const modelList = externalModelList && externalModelList.length > 0 ? externalModelList : fetchedModels;
@@ -90,6 +92,15 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     textareaRef.current.style.height = '0px';
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
   }, [text]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(hover: none) and (pointer: coarse)');
+    const sync = () => setEnterInsertsNewline(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
 
   useEffect(() => {
     if (!modelPickerOpen) return;
@@ -225,6 +236,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // 触屏设备保留浏览器默认行为（换行），避免软键盘回车误发送
+    if (enterInsertsNewline) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       handleSubmit();

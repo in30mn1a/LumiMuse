@@ -33,7 +33,7 @@ require.extensions['.ts'] = function loadTs(module, filename) {
 
 const {
   buildMemoryReviewBatches,
-  MEMORY_REVIEW_BATCH_TEXT_CHAR_LIMIT,
+  MEMORY_REVIEW_BATCH_SIZE,
 } = require('../src/lib/memory-review-cluster');
 const { normalizeEmbedding } = require('../src/lib/memory-embeddings');
 
@@ -74,8 +74,8 @@ test('buildMemoryReviewBatches: similar vectors cluster together even across dif
     { id: 'w1', content: '喜欢下雨', importance: 0.4, embedding: weather },
     { id: 'c2', content: '喜欢咖啡 B', importance: 0.3, embedding: nearCoffee },
   ];
-  const batches = buildMemoryReviewBatches(memories, { batchTextCharLimit: 50_000 });
-  // 高相似的 c1/c2 应同批（在预算极大时同簇同批）
+  // 大批量保证同簇不会被条数切开
+  const batches = buildMemoryReviewBatches(memories, { batchSize: 50_000 });
   const flatBatches = batches.map(b => b.slice().sort().join(','));
   const coffeeTogether = batches.some(batch => batch.includes('c1') && batch.includes('c2'));
   assert.ok(coffeeTogether, `expected c1,c2 together, batches=${JSON.stringify(flatBatches)}`);
@@ -88,7 +88,7 @@ test('buildMemoryReviewBatches: text similarity clusters near-duplicates without
     { id: '2', content: '用户非常喜欢在周末的时候去附近的公园散步放松心情并且有时会带上相机拍照记录', importance: 0.7 },
     { id: '3', content: '明天项目同步会改到三楼玻璃会议室下午三点开始', importance: 0.6 },
   ];
-  const batches = buildMemoryReviewBatches(memories, { batchTextCharLimit: 50_000 });
+  const batches = buildMemoryReviewBatches(memories, { batchSize: 50_000 });
   const together = batches.some(batch => batch.includes('1') && batch.includes('2'));
   assert.ok(together, `expected near-duplicate texts together: ${JSON.stringify(batches)}`);
 });
@@ -100,30 +100,34 @@ test('buildMemoryReviewBatches: comparison guardrail forces sequential remainder
     importance: 1 - i * 0.01,
   }));
   // maxComparisons=0 → 全部直接各成簇（顺序降级）
-  const batches = buildMemoryReviewBatches(memories, { maxComparisons: 0, batchTextCharLimit: 50_000 });
+  const batches = buildMemoryReviewBatches(memories, { maxComparisons: 0, batchSize: 50_000 });
   assert.equal(batches.flat().length, 10);
   // 稳定序：importance 高的 id 先出现
   assert.equal(batches[0][0], 'g0');
 });
 
-test('buildMemoryReviewBatches: respects batch char budget by splitting large cluster', () => {
-  const long = '用户偏好细节'.repeat(200); // 足够长，单条估算会逼近/超过预算
-  const memories = [
-    { id: 'x1', content: long, importance: 1 },
-    { id: 'x2', content: long, importance: 0.9 },
-  ];
-  const batches = buildMemoryReviewBatches(memories, {
-    batchTextCharLimit: MEMORY_REVIEW_BATCH_TEXT_CHAR_LIMIT,
-    // 强制同簇：极低阈值
-    textThreshold: 0,
-    vectorThreshold: 0,
-  });
-  // 两条很长内容不应挤在同一 8000 批（估算含 overhead）
-  if (batches.length === 1) {
-    // 若实现把它们塞进一批，至少保证不丢 id
-    assert.deepEqual(batches[0].slice().sort(), ['x1', 'x2']);
-  } else {
-    assert.ok(batches.length >= 2);
-    assert.equal(batches.flat().length, 2);
-  }
+test('buildMemoryReviewBatches: packs by count (default 500), not by char budget', () => {
+  // 长内容也不该因为字符预算被拆成上百批
+  const long = '用户偏好细节'.repeat(200);
+  const memories = Array.from({ length: 800 }, (_, i) => ({
+    id: `x${i}`,
+    content: `${long} ${i}`,
+    importance: 1 - i * 0.0001,
+  }));
+  const batches = buildMemoryReviewBatches(memories);
+  assert.equal(batches.length, Math.ceil(800 / MEMORY_REVIEW_BATCH_SIZE));
+  assert.equal(batches[0].length, MEMORY_REVIEW_BATCH_SIZE);
+  assert.equal(batches[1].length, 800 - MEMORY_REVIEW_BATCH_SIZE);
+  assert.equal(batches.flat().length, 800);
+});
+
+test('buildMemoryReviewBatches: respects custom batchSize', () => {
+  const memories = Array.from({ length: 25 }, (_, i) => ({
+    id: `n${i}`,
+    content: `独立条目 ${i}`,
+    importance: 0.5,
+  }));
+  const batches = buildMemoryReviewBatches(memories, { batchSize: 10 });
+  assert.equal(batches.length, 3);
+  assert.deepEqual(batches.map(batch => batch.length), [10, 10, 5]);
 });

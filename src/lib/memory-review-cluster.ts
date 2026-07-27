@@ -1,16 +1,16 @@
 /**
  * AI 整理用的语义聚类分批（纯计算，无 DB）。
  * 贪心单遍：向量 → 文本 → 稳定顺序；禁止按 category 预分桶。
+ * 分批按条数（默认 500），聚类只决定批内/跨批邻接顺序，不再按字符硬切。
  */
 import { dotProduct } from '@/lib/memory-embeddings';
 import { supersedeTextSimilarity } from '@/lib/text-similarity';
 
-/** 与 memory-review 路由保持一致的批文本预算。 */
-export const MEMORY_REVIEW_BATCH_TEXT_CHAR_LIMIT = 8000;
-export const MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT = 4000;
+/** 单次 LLM 审核最多携带的记忆条数（与 HTTP 页大小对齐）。 */
+export const MEMORY_REVIEW_BATCH_SIZE = 500;
 
-/** 渲染元数据行的保守开销估算（ID/分类/标签等）。 */
-const ENTRY_METADATA_OVERHEAD_CHARS = 160;
+/** 写入审核 prompt 时单条 content 截断上限（仅渲染用，不影响分批）。 */
+export const MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT = 4000;
 
 export const MEMORY_REVIEW_VECTOR_SIMILARITY_THRESHOLD = 0.78;
 export const MEMORY_REVIEW_TEXT_SIMILARITY_THRESHOLD = 0.72;
@@ -27,8 +27,8 @@ export type MemoryReviewClusterItem = {
 };
 
 export type BuildMemoryReviewBatchesOptions = {
-  batchTextCharLimit?: number;
-  entryContentCharLimit?: number;
+  /** 每批最多条数；默认 MEMORY_REVIEW_BATCH_SIZE。 */
+  batchSize?: number;
   vectorThreshold?: number;
   textThreshold?: number;
   maxComparisons?: number;
@@ -39,14 +39,7 @@ type InternalItem = {
   content: string;
   importance: number;
   embedding: ArrayLike<number> | null;
-  estimatedChars: number;
 };
-
-function estimateEntryChars(content: string, entryContentCharLimit: number): number {
-  const body = Math.min(content.length, entryContentCharLimit);
-  const truncationNote = content.length > entryContentCharLimit ? 24 : 0;
-  return body + truncationNote + ENTRY_METADATA_OVERHEAD_CHARS;
-}
 
 function stableSortItems(items: InternalItem[]): InternalItem[] {
   return [...items].sort((a, b) => {
@@ -64,8 +57,8 @@ function vectorSimilarity(a: ArrayLike<number> | null, b: ArrayLike<number> | nu
 }
 
 /**
- * 将记忆聚成簇后再按字符预算切成 LLM 批次，返回每批 memory id 列表。
- * 同一输入 + 同一选项下结果确定。
+ * 将记忆聚成簇后按条数切成 LLM 批次，返回每批 memory id 列表。
+ * 簇顺序保留语义邻接（同簇尽量同批），同一输入 + 同一选项下结果确定。
  */
 export function buildMemoryReviewBatches(
   memories: MemoryReviewClusterItem[],
@@ -73,8 +66,10 @@ export function buildMemoryReviewBatches(
 ): string[][] {
   if (memories.length === 0) return [];
 
-  const batchTextCharLimit = options.batchTextCharLimit ?? MEMORY_REVIEW_BATCH_TEXT_CHAR_LIMIT;
-  const entryContentCharLimit = options.entryContentCharLimit ?? MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT;
+  const batchSizeRaw = options.batchSize ?? MEMORY_REVIEW_BATCH_SIZE;
+  const batchSize = Number.isFinite(batchSizeRaw) && batchSizeRaw >= 1
+    ? Math.floor(batchSizeRaw)
+    : MEMORY_REVIEW_BATCH_SIZE;
   const vectorThreshold = options.vectorThreshold ?? MEMORY_REVIEW_VECTOR_SIMILARITY_THRESHOLD;
   const textThreshold = options.textThreshold ?? MEMORY_REVIEW_TEXT_SIMILARITY_THRESHOLD;
   const maxComparisons = options.maxComparisons
@@ -86,7 +81,6 @@ export function buildMemoryReviewBatches(
       content: memory.content,
       importance: Number.isFinite(memory.importance) ? memory.importance : 0,
       embedding: memory.embedding ?? null,
-      estimatedChars: estimateEntryChars(memory.content, entryContentCharLimit),
     })),
   );
 
@@ -137,26 +131,17 @@ export function buildMemoryReviewBatches(
     }
   }
 
-  // 簇内保持稳定序（已按全局稳定序扫描，members 追加顺序即稳定）
-  const batches: string[][] = [];
+  // 按簇展平（同簇相邻），再按条数切批，避免按字符切出上百次 LLM 调用。
+  const orderedIds: string[] = [];
   for (const cluster of clusters) {
-    let current: string[] = [];
-    let currentLength = 0;
     for (const member of cluster.members) {
-      const separatorLength = current.length > 0 ? 2 : 0;
-      if (
-        current.length > 0
-        && currentLength + separatorLength + member.estimatedChars > batchTextCharLimit
-      ) {
-        batches.push(current);
-        current = [];
-        currentLength = 0;
-      }
-      current.push(member.id);
-      currentLength += (current.length > 1 ? 2 : 0) + member.estimatedChars;
+      orderedIds.push(member.id);
     }
-    if (current.length > 0) batches.push(current);
   }
 
+  const batches: string[][] = [];
+  for (let offset = 0; offset < orderedIds.length; offset += batchSize) {
+    batches.push(orderedIds.slice(offset, offset + batchSize));
+  }
   return batches;
 }

@@ -42,12 +42,46 @@ function requireFreshWithMocks(modulePath, mocks) {
   };
 
   try {
+    // 清掉 route / plan / cluster 缓存，确保 mocks 与 cluster 分批参数生效。
+    for (const key of Object.keys(require.cache)) {
+      if (
+        key.includes(`${path.sep}memory-review`)
+        || key.includes(`${path.sep}memory-review-plan`)
+        || key.includes(`${path.sep}memory-review-cluster`)
+      ) {
+        delete require.cache[key];
+      }
+    }
     const resolved = require.resolve(modulePath);
     delete require.cache[resolved];
     return require(modulePath);
   } finally {
     Module._load = originalLoad;
   }
+}
+
+/**
+ * 强制按固定条数切批（跳过真实聚类）。
+ * MEMORY_REVIEW_BATCH_SIZE 仍为 500，保证单次 HTTP 页可容纳多批 LLM 调用（并发/失败隔离用例）。
+ */
+function mockClusterChunkBy(chunkSize) {
+  return {
+    MEMORY_REVIEW_BATCH_SIZE: 500,
+    MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT: 4000,
+    buildMemoryReviewBatches(memories) {
+      const sorted = [...memories].sort((a, b) => {
+        if (b.importance !== a.importance) return b.importance - a.importance;
+        if (a.id < b.id) return -1;
+        if (a.id > b.id) return 1;
+        return 0;
+      });
+      const batches = [];
+      for (let offset = 0; offset < sorted.length; offset += chunkSize) {
+        batches.push(sorted.slice(offset, offset + chunkSize).map(memory => memory.id));
+      }
+      return batches;
+    },
+  };
 }
 
 function jsonResponseMock() {
@@ -581,7 +615,7 @@ test('/api/memory-review prompt asks AI to normalize similar tags on current mem
   assert.match(capturedPrompt, /最终 tags 应该是统一后的完整标签数组/);
 });
 
-test('/api/memory-review reviews every active memory across bounded AI batches', async () => {
+test('/api/memory-review reviews every active memory in one count-based AI batch', async () => {
   const capturedPrompts = [];
   const capturedMaxTokens = [];
 
@@ -611,6 +645,8 @@ test('/api/memory-review reviews every active memory across bounded AI batches',
     },
     '@/lib/memory-embeddings': {
       enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
     },
     '@/lib/memory-index-trigger': {
       triggerMemoryIndexProcessing: () => false,
@@ -622,11 +658,9 @@ test('/api/memory-review reviews every active memory across bounded AI batches',
 
   assert.equal(response.status, 200);
   assert.equal(payload.reviewed, 81);
-  assert.ok(capturedPrompts.length > 1, 'large reviews should be split into multiple AI calls');
-  assert.ok(
-    capturedPrompts.every(prompt => prompt.length <= 14000),
-    `each review prompt should stay bounded, got lengths ${capturedPrompts.map(prompt => prompt.length).join(', ')}`,
-  );
+  // 默认每批 500 条：81 条应一次 LLM 调用装完，不再按字符切成几十批
+  assert.equal(capturedPrompts.length, 1);
+  assert.equal(payload.batch_count, 1);
   assert.deepEqual([...new Set(capturedMaxTokens)], [16384]);
 
   const combinedPrompt = capturedPrompts.join('\n');
@@ -635,7 +669,7 @@ test('/api/memory-review reviews every active memory across bounded AI batches',
   assert.match(combinedPrompt, /最后一条也必须进入 AI 整理 prompt/);
 });
 
-test('/api/memory-review runs large AI review batches with concurrency of three', async () => {
+test('/api/memory-review runs multi-batch AI review with concurrency of three', async () => {
   let activeCalls = 0;
   let maxActiveCalls = 0;
   let startedCalls = 0;
@@ -643,6 +677,7 @@ test('/api/memory-review runs large AI review batches with concurrency of three'
   const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/memory-review-cluster': mockClusterChunkBy(20),
     '@/lib/settings': {
       loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
       resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
@@ -669,6 +704,8 @@ test('/api/memory-review runs large AI review batches with concurrency of three'
     },
     '@/lib/memory-embeddings': {
       enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
     },
     '@/lib/memory-index-trigger': {
       triggerMemoryIndexProcessing: () => false,
@@ -680,7 +717,8 @@ test('/api/memory-review runs large AI review batches with concurrency of three'
 
   assert.equal(response.status, 200);
   assert.equal(payload.reviewed, 81);
-  assert.ok(startedCalls > 3, 'fixture should create more than three AI review batches');
+  // 81 / 20 → 5 批；并发上限 3
+  assert.equal(startedCalls, 5);
   assert.equal(maxActiveCalls, 3);
 });
 
@@ -943,6 +981,7 @@ test('/api/memory-review isolates a failed batch and still applies successful co
   const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    '@/lib/memory-review-cluster': mockClusterChunkBy(20),
     '@/lib/settings': {
       loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
       resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
@@ -967,6 +1006,8 @@ test('/api/memory-review isolates a failed batch and still applies successful co
     },
     '@/lib/memory-embeddings': {
       enqueueMemoryEmbeddingTask: () => true,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
     },
     '@/lib/memory-index-trigger': {
       triggerMemoryIndexProcessing: () => true,
@@ -991,6 +1032,7 @@ test('/api/memory-review returns 500 only when every batch fails', async () => {
   const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/memory-review-cluster': mockClusterChunkBy(20),
     '@/lib/settings': {
       loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
       resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
@@ -1010,7 +1052,11 @@ test('/api/memory-review returns 500 only when every batch fails', async () => {
         throw new Error('API error 429: rate limited');
       },
     },
-    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
+    },
     '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
   });
 
@@ -1148,6 +1194,7 @@ test('/api/memory-review uses one combined deadline signal for every concurrent 
   const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/memory-review-cluster': mockClusterChunkBy(20),
     '@/lib/settings': {
       loadSettings: () => ({
         api_base: 'https://llm.example/v1',
@@ -1183,7 +1230,11 @@ test('/api/memory-review uses one combined deadline signal for every concurrent 
         return JSON.stringify({ corrections: [] });
       },
     },
-    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
+    },
     '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
   });
 
@@ -1203,6 +1254,7 @@ test('/api/memory-review returns structured 504 when its shared server deadline 
   const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => createLargeReviewDb() },
+    '@/lib/memory-review-cluster': mockClusterChunkBy(20),
     '@/lib/settings': {
       loadSettings: () => ({
         api_base: 'https://llm.example/v1',
@@ -1236,7 +1288,11 @@ test('/api/memory-review returns structured 504 when its shared server deadline 
         });
       },
     },
-    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
+    },
     '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
   });
 
@@ -1295,6 +1351,7 @@ test('/api/memory-review preserves one client cancellation across concurrent bat
         });
       },
     },
+    '@/lib/memory-review-cluster': mockClusterChunkBy(20),
     '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
     '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
   });

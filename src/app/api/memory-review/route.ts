@@ -19,15 +19,18 @@ import {
   type MemoryReviewPlan,
 } from '@/lib/memory-review-plan';
 import {
-  MEMORY_REVIEW_BATCH_TEXT_CHAR_LIMIT,
+  MEMORY_REVIEW_BATCH_SIZE,
   MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT,
 } from '@/lib/memory-review-cluster';
 
 const MEMORY_REVIEW_OUTPUT_MAX_TOKENS = REASONING_SAFE_MAX_TOKENS;
 const MEMORY_REVIEW_BATCH_CONCURRENCY = 3;
 const MEMORY_REVIEW_TAG_OVERVIEW_CHAR_LIMIT = 1200;
-/** 单次 HTTP 请求最多审核的记忆条数（按 plan 批累加，成员集合仍由 plan 冻结）。 */
-const MEMORY_REVIEW_ACTIVE_MEMORY_LIMIT = 500;
+/**
+ * 单次 HTTP 请求最多审核的记忆条数（按 plan 批累加，成员集合仍由 plan 冻结）。
+ * 与 MEMORY_REVIEW_BATCH_SIZE 对齐：一页 ≈ 一批 ≈ 一次 LLM 调用。
+ */
+const MEMORY_REVIEW_ACTIVE_MEMORY_LIMIT = MEMORY_REVIEW_BATCH_SIZE;
 
 type MemoryReviewRow = {
   id: string;
@@ -316,8 +319,7 @@ function resolveOrCreatePlan(params: {
       embedding: embeddingById.get(row.id) ?? null,
     })),
     clusterOptions: {
-      batchTextCharLimit: MEMORY_REVIEW_BATCH_TEXT_CHAR_LIMIT,
-      entryContentCharLimit: MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT,
+      batchSize: MEMORY_REVIEW_BATCH_SIZE,
     },
   });
   return { plan, startBatchIndex: 0 };

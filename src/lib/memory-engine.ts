@@ -12,6 +12,7 @@ import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBac
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
+import { contentSimilarity, supersedeTextSimilarity } from '@/lib/text-similarity';
 
 const CJK_STOPWORDS = new Set([
   // 原有
@@ -181,38 +182,6 @@ export function retrieveRelevantMemories(
 
   scored.sort((a, b) => b[0] - a[0]);
   return scored.slice(0, maxMemories).map(([, memory]) => memory);
-}
-
-function contentSimilarity(a: string, b: string): number {
-  const left = a.replace(/\s+/g, '').toLowerCase();
-  const right = b.replace(/\s+/g, '').toLowerCase();
-  if (!left || !right) return 0;
-
-  const bigramsA = new Set<string>();
-  const bigramsB = new Set<string>();
-  for (let i = 0; i < left.length - 1; i += 1) bigramsA.add(left[i] + left[i + 1]);
-  for (let i = 0; i < right.length - 1; i += 1) bigramsB.add(right[i] + right[i + 1]);
-
-  const intersectionSize = [...bigramsA].filter(item => bigramsB.has(item)).length;
-  const unionSize = new Set([...bigramsA, ...bigramsB]).size;
-  return unionSize === 0 ? 0 : intersectionSize / unionSize;
-}
-
-function supersedeTextSimilarity(a: string, b: string): number {
-  const left = a.replace(/\s+/g, '').toLowerCase();
-  const right = b.replace(/\s+/g, '').toLowerCase();
-  if (left.length < 2 || right.length < 2) return contentSimilarity(a, b);
-  const shorterLength = Math.min(left.length, right.length);
-
-  const bigramsA = new Set<string>();
-  const bigramsB = new Set<string>();
-  for (let i = 0; i < left.length - 1; i += 1) bigramsA.add(left[i] + left[i + 1]);
-  for (let i = 0; i < right.length - 1; i += 1) bigramsB.add(right[i] + right[i + 1]);
-
-  const intersectionSize = [...bigramsA].filter(item => bigramsB.has(item)).length;
-  const smallerSize = Math.min(bigramsA.size, bigramsB.size);
-  const containmentSimilarity = smallerSize === 0 || shorterLength < 20 ? 0 : intersectionSize / smallerSize;
-  return Math.max(contentSimilarity(a, b), containmentSimilarity);
 }
 
 function extractAnchors(text: string): Set<string> {

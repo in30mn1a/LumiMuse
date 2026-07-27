@@ -712,6 +712,8 @@ test('/api/memory-review reads a bounded active-memory candidate set from the DB
     },
     '@/lib/memory-embeddings': {
       enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
     },
     '@/lib/memory-index-trigger': {
       triggerMemoryIndexProcessing: () => false,
@@ -723,22 +725,25 @@ test('/api/memory-review reads a bounded active-memory candidate set from the DB
   const combinedPrompt = capturedPrompts.join('\n');
 
   assert.equal(response.status, 200);
-  assert.equal(payload.reviewed, 500);
+  // plan 冻结全量 650；单请求最多约 500 条（按批累加，末批可略超）
+  assert.ok(payload.reviewed >= 500, `reviewed=${payload.reviewed}`);
+  assert.ok(payload.reviewed < 650, `reviewed should be bounded per request, got ${payload.reviewed}`);
   assert.equal(payload.total_active, 650);
-  assert.equal(payload.skipped_due_to_limit, 150);
   assert.equal(payload.has_more, true);
+  assert.ok(typeof payload.plan_id === 'string');
+  assert.ok(typeof payload.next_batch_index === 'number');
   assert.equal(payload.reviewed_offset, 0);
-  assert.equal(payload.next_offset, 500);
   assert.match(combinedPrompt, /候选上限内记忆/);
   assert.doesNotMatch(combinedPrompt, /不应进入审核 prompt 的尾部记忆/);
 });
 
-test('/api/memory-review can continue after the first bounded candidate page', async () => {
+test('/api/memory-review can continue after the first plan page via plan_id + batch_index', async () => {
   const capturedPrompts = [];
+  const db = createBoundedReviewDb();
 
   const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
     'next/server': jsonResponseMock(),
-    '@/lib/db': { getDb: () => createBoundedReviewDb() },
+    '@/lib/db': { getDb: () => db },
     '@/lib/settings': {
       loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 64000 }),
       resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
@@ -761,25 +766,42 @@ test('/api/memory-review can continue after the first bounded candidate page', a
     },
     '@/lib/memory-embeddings': {
       enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
     },
     '@/lib/memory-index-trigger': {
       triggerMemoryIndexProcessing: () => false,
     },
   });
 
-  const response = await route.POST(jsonRequest({ character_id: 'char-a', offset: 500 }));
+  const first = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const firstPayload = await first.json();
+  assert.equal(first.status, 200);
+  assert.ok(firstPayload.plan_id);
+  assert.equal(firstPayload.has_more, true);
+  assert.ok(typeof firstPayload.next_batch_index === 'number');
+
+  // 模拟整理改写了排序字段——plan 成员仍应完整覆盖，续跑不依赖 OFFSET
+  db.prepare(`UPDATE memories SET importance = 0.01, updated_at = '2099-01-01T00:00:00.000Z' WHERE character_id = 'char-a'`).run();
+
+  capturedPrompts.length = 0;
+  const response = await route.POST(jsonRequest({
+    character_id: 'char-a',
+    plan_id: firstPayload.plan_id,
+    batch_index: firstPayload.next_batch_index,
+  }));
   const payload = await response.json();
   const combinedPrompt = capturedPrompts.join('\n');
+  const reviewedTotal = firstPayload.reviewed + payload.reviewed;
 
   assert.equal(response.status, 200);
-  assert.equal(payload.reviewed, 150);
   assert.equal(payload.total_active, 650);
-  assert.equal(payload.skipped_due_to_limit, 0);
   assert.equal(payload.has_more, false);
-  assert.equal(payload.reviewed_offset, 500);
-  assert.equal(payload.next_offset, null);
-  assert.doesNotMatch(combinedPrompt, /候选上限内记忆/);
-  assert.match(combinedPrompt, /不应进入审核 prompt 的尾部记忆/);
+  assert.equal(payload.next_batch_index, null);
+  assert.equal(reviewedTotal, 650);
+  assert.ok(payload.reviewed > 0);
+  // 第二页应覆盖第一页未审的尾部 id
+  assert.doesNotMatch(combinedPrompt, new RegExp(`ID:${firstPayload.plan_id}`));
 });
 
 test('/api/memory-review passes DeepSeek background thinking override to AI calls', async () => {
@@ -1098,21 +1120,21 @@ test('/api/memory-review returns zero correction counts when there are no active
   const payload = await response.json();
 
   assert.equal(response.status, 200);
-  assert.deepEqual(payload, {
-    ok: true,
-    reviewed: 0,
-    total_active: 0,
-    skipped_due_to_limit: 0,
-    reviewed_offset: 0,
-    next_offset: null,
-    has_more: false,
-    corrected: 0,
-    failed_batches: 0,
-    failed_messages: [],
-    indexing_queued: 0,
-    indexing_started: false,
-    changes: [],
-  });
+  assert.equal(payload.ok, true);
+  assert.equal(payload.reviewed, 0);
+  assert.equal(payload.total_active, 0);
+  assert.equal(payload.skipped_due_to_limit, 0);
+  assert.equal(payload.reviewed_offset, 0);
+  assert.equal(payload.has_more, false);
+  assert.equal(payload.next_offset, null);
+  assert.equal(payload.corrected, 0);
+  assert.equal(payload.failed_batches, 0);
+  assert.deepEqual(payload.failed_messages, []);
+  assert.deepEqual(payload.changes, []);
+  assert.deepEqual(payload.merge_suggestions, []);
+  assert.ok(typeof payload.plan_id === 'string');
+  assert.equal(payload.indexing_queued, 0);
+  assert.equal(payload.indexing_started, false);
 });
 
 test('/api/memory-review uses one combined deadline signal for every concurrent batch', async () => {
@@ -1292,4 +1314,246 @@ test('/api/memory-review preserves one client cancellation across concurrent bat
   assert.notEqual(seenSignals[0], controller.signal);
   assert.equal(seenSignals[0].aborted, true);
   assert.equal(seenSignals[0].reason?.message, 'client disconnected');
+});
+
+test('buildTagOverview ranks tags by frequency then name and includes counts', () => {
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+  });
+
+  const overview = route.buildTagOverview([
+    { id: 'a', category: '偏好习惯', content: 'x', tags: JSON.stringify(['午餐', '对话']), importance: 0.5, emotional_weight: 0, memory_kind: 'general' },
+    { id: 'b', category: '偏好习惯', content: 'y', tags: JSON.stringify(['午餐', '咖啡']), importance: 0.5, emotional_weight: 0, memory_kind: 'general' },
+    { id: 'c', category: '偏好习惯', content: 'z', tags: JSON.stringify(['对话']), importance: 0.5, emotional_weight: 0, memory_kind: 'general' },
+  ]);
+
+  // 午餐×2、对话×2 并列后按名升序；咖啡×1 在后。JS 字符串序：午 < 对。
+  assert.equal(overview, '午餐×2、对话×2、咖啡×1');
+});
+
+test('buildTagOverview returns 无 when there are no tags and truncates long overviews', () => {
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+  });
+
+  assert.equal(route.buildTagOverview([
+    { id: 'a', category: '偏好习惯', content: 'x', tags: '[]', importance: 0.5, emotional_weight: 0, memory_kind: 'general' },
+  ]), '无');
+
+  const manyTags = Array.from({ length: 200 }, (_, i) => `标签${String(i).padStart(3, '0')}`);
+  const longOverview = route.buildTagOverview([
+    {
+      id: 'long',
+      category: '偏好习惯',
+      content: 'x',
+      tags: JSON.stringify(manyTags),
+      importance: 0.5,
+      emotional_weight: 0,
+      memory_kind: 'general',
+    },
+  ]);
+  assert.ok(longOverview.length <= 1200 + 40, `overview should be truncated, got length ${longOverview.length}`);
+  assert.match(longOverview, /已截断用于本次审核/);
+});
+
+test('parseMemoryReviewPayload extracts merge_suggestions and drops invalid ones', () => {
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+  });
+
+  const parsed = route.parseMemoryReviewPayload(JSON.stringify({
+    corrections: [{ id: 'mem-a', tags: ['午餐'] }],
+    merge_suggestions: [
+      {
+        source_ids: ['mem-a', 'mem-b'],
+        merged_content: '用户喜欢美式咖啡',
+        category: '偏好习惯',
+        tags: ['咖啡'],
+        importance: 0.7,
+        kind: 'merge',
+        reason: '重复偏好',
+      },
+      {
+        source_ids: ['mem-c', 'mem-d'],
+        merged_content: '互相矛盾的时序事实',
+        kind: 'conflict',
+        reason: '时间冲突',
+      },
+      { source_ids: ['only-one'], merged_content: '缺源', kind: 'merge' },
+      { source_ids: ['a', 'b'], merged_content: '  ', kind: 'merge' },
+      { source_ids: ['a', 'b'], merged_content: '无 kind' },
+      null,
+      'skip-me',
+    ],
+  }));
+
+  assert.equal(parsed.corrections.length, 1);
+  assert.equal(parsed.merge_suggestions.length, 2);
+  assert.deepEqual(parsed.merge_suggestions[0], {
+    source_ids: ['mem-a', 'mem-b'],
+    merged_content: '用户喜欢美式咖啡',
+    category: '偏好习惯',
+    tags: ['咖啡'],
+    importance: 0.7,
+    kind: 'merge',
+    reason: '重复偏好',
+  });
+  assert.equal(parsed.merge_suggestions[1].kind, 'conflict');
+});
+
+test('/api/memory-review prompt includes merge rules and returns merge_suggestions', async () => {
+  const db = createEmptyReviewDb();
+  // 近重复文案，确保文本相似度聚类进同一 plan 批（merge 建议只保留同批 source_ids）
+  insertReviewMemory(db, {
+    id: 'mem-a',
+    content: '用户喜欢美式咖啡，几乎每天都喝。',
+    tags: ['咖啡'],
+    category: '偏好习惯',
+  });
+  insertReviewMemory(db, {
+    id: 'mem-b',
+    content: '用户喜欢美式咖啡，几乎每天都喝一杯。',
+    tags: ['饮品'],
+    category: '偏好习惯',
+  });
+  let capturedPrompt = '';
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 100 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async (_settings, messages) => {
+        capturedPrompt = messages[0].content;
+        return JSON.stringify({
+          corrections: [],
+          merge_suggestions: [{
+            source_ids: ['mem-a', 'mem-b'],
+            merged_content: '用户喜欢美式咖啡',
+            category: '偏好习惯',
+            tags: ['咖啡'],
+            importance: 0.7,
+            kind: 'merge',
+            reason: '重复描述同一偏好',
+          }],
+        });
+      },
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.match(capturedPrompt, /合并建议铁律/);
+  assert.match(capturedPrompt, /merge_suggestions/);
+  assert.match(capturedPrompt, /kind=conflict/);
+  assert.match(capturedPrompt, /标签×出现次数/);
+  assert.match(capturedPrompt, /咖啡×1/);
+  assert.deepEqual(payload.merge_suggestions, [{
+    source_ids: ['mem-a', 'mem-b'],
+    merged_content: '用户喜欢美式咖啡',
+    category: '偏好习惯',
+    tags: ['咖啡'],
+    importance: 0.7,
+    kind: 'merge',
+    reason: '重复描述同一偏好',
+  }]);
+});
+
+test('/api/memory-review drops merge_suggestions whose source_ids are outside the reviewed batch', async () => {
+  const db = createEmptyReviewDb();
+  // 近重复文案保证同批；ghost-id 不在候选中应被丢弃
+  insertReviewMemory(db, { id: 'mem-a', content: '用户喜欢美式咖啡，几乎每天都喝。' });
+  insertReviewMemory(db, { id: 'mem-b', content: '用户喜欢美式咖啡，几乎每天都喝一杯。' });
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 100 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async () => JSON.stringify({
+        corrections: [],
+        merge_suggestions: [
+          {
+            source_ids: ['mem-a', 'ghost-id'],
+            merged_content: '幽灵源',
+            kind: 'merge',
+          },
+          {
+            source_ids: ['mem-a', 'mem-b'],
+            merged_content: '合法合并',
+            kind: 'merge',
+          },
+        ],
+      }),
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.merge_suggestions.length, 1);
+  assert.deepEqual(payload.merge_suggestions[0].source_ids, ['mem-a', 'mem-b']);
+});
+
+test('/api/memory-review returns PLAN_NOT_FOUND for unknown plan_id', async () => {
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => createEmptyReviewDb() },
+  });
+
+  const response = await route.POST(jsonRequest({
+    character_id: 'char-a',
+    plan_id: 'does-not-exist',
+    batch_index: 0,
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(payload.code, 'PLAN_NOT_FOUND');
+  assert.match(payload.error, /整理计划不存在|过期/);
 });

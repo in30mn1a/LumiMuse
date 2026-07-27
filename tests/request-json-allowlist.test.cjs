@@ -18,6 +18,7 @@ const allowedDirectJsonRoutes = [
   'src/app/api/memories/route.ts',
   'src/app/api/memory-archive/route.ts',
   'src/app/api/memory-candidates/[id]/route.ts',
+  'src/app/api/memory-merge/route.ts',
   'src/app/api/memory-profile/route.ts',
   'src/app/api/memory-review/route.ts',
   'src/app/api/messages/[id]/route.ts',

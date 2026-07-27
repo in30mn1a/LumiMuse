@@ -20,9 +20,14 @@ test('/memories page places AI review beside character selector and exposes late
     'memoryAiReviewRunning',
     'lastMemoryAiReviewResult',
     'showMemoryAiReviewChanges',
-    'let nextOffset: number | null = 0;',
-    'while (nextOffset !== null)',
-    'offset: nextOffset',
+    'let nextBatchIndex: number | null = 0;',
+    'while (nextBatchIndex !== null)',
+    'batch_index: nextBatchIndex',
+    'if (planId) body.plan_id = planId;',
+    "errBody.code === 'PLAN_NOT_FOUND'",
+    "fetch('/api/memory-merge'",
+    'handleAcceptMerge',
+    'handleUndoMerge',
     'aggregateResult.reviewed += result.reviewed ?? 0;',
     'aggregateResult.changes.push(...(result.changes ?? []));',
     'changes: Array<{ id: string; fields: string[]; content: string }>',
@@ -30,6 +35,8 @@ test('/memories page places AI review beside character selector and exposes late
     "t('memory.viewLatestAiReviewChanges')",
     "t('memory.hideLatestAiReviewChanges')",
     "t('memory.aiReviewMemoryContent')",
+    "t('memory.mergeSuggestions')",
+    "t('memory.mergeAccept')",
     "setMemoryRefreshNonce(prev => prev + 1)",
     '<MemoryList characterId={selectedCharId} refreshNonce={memoryRefreshNonce} />',
   ]) {
@@ -57,11 +64,20 @@ test('/memories page places AI review beside character selector and exposes late
     'memory.aiReviewRunning',
     'memory.aiReviewDone',
     'memory.aiReviewFailed',
+    'memory.aiReviewPlanExpired',
     'memory.viewLatestAiReviewChanges',
     'memory.hideLatestAiReviewChanges',
     'memory.aiReviewNoChanges',
     'memory.aiReviewChangedFields',
     'memory.aiReviewMemoryContent',
+    'memory.mergeSuggestions',
+    'memory.mergeAccept',
+    'memory.mergeReject',
+    'memory.mergeUndo',
+    'memory.mergeAccepted',
+    'memory.mergeFailed',
+    'memory.mergeUndoDone',
+    'memory.mergeConflict',
   ]) {
     assert.match(i18n, new RegExp(`'${key}'`));
   }
@@ -73,7 +89,9 @@ test('/memories page binds AI review results to the initiating character', () =>
   for (const snippet of [
     'const selectedCharIdRef = useRef<string | null>(null);',
     'const requestedCharacterId = selectedCharId;',
-    'body: JSON.stringify({ character_id: requestedCharacterId, offset: nextOffset })',
+    'character_id: requestedCharacterId',
+    'batch_index: nextBatchIndex',
+    'if (planId) body.plan_id = planId;',
     'if (selectedCharIdRef.current !== requestedCharacterId) return;',
   ]) {
     assert.ok(memoriesPage.includes(snippet), `missing snippet: ${snippet}`);

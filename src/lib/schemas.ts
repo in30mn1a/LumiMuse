@@ -17,7 +17,7 @@ import { MEMORY_CATEGORIES, MEMORY_KINDS, MEMORY_STATUSES } from '@/types';
 const MAX_NAME = 100;
 const MAX_LARGE_TEXT = 32 * 1024;       // personality / system_prompt
 const MAX_MEDIUM_TEXT = 16 * 1024;      // 描述类字段
-const MAX_MEMORY_CONTENT = 8 * 1024;
+export const MAX_MEMORY_CONTENT = 8 * 1024;
 const MAX_MESSAGE_CONTENT = 100 * 1024;
 export const MAX_TOTAL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_TOTAL_TEXT_ATTACHMENT_CHARS = MAX_MESSAGE_CONTENT;

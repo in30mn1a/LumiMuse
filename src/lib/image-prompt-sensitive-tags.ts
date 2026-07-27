@@ -1,6 +1,7 @@
 /**
- * 部分 LLM（Gemini、Grok 等）对 image_tags 里的幼态/敏感 danbooru 词会误拦或 403。
+ * LLM 对 image_tags 里的幼态/敏感 danbooru 词会误拦或 403。
  * 生图 prompt 请求前先剥离，生成后再按 image_tags 原顺序拼回，保证 NAI/SD 侧外貌完整。
+ * 不区分模型，所有模型统一走剥离 + 拼回。
  */
 
 export const IMAGE_PROMPT_SENSITIVE_TAG_PATTERN =
@@ -40,11 +41,6 @@ function coreKey(tag: string): string {
 function findTagIndexByCore(parts: string[], core: string): number {
   const needle = core.toLowerCase();
   return parts.findIndex(t => coreKey(t) === needle);
-}
-
-/** 是否需在调用上游前剥离 image_tags 中的敏感词 */
-export function shouldStripSensitiveImagePromptTags(model: string): boolean {
-  return /gemini|grok/i.test(model);
 }
 
 export function partitionSensitiveImageTags(imageTags: string): {
@@ -132,16 +128,12 @@ export function rejoinSensitiveTagsAfterSubject(positive: string, strippedTags: 
   return parts.join(', ');
 }
 
-/**
- * 发给 Gemini/Grok 前：从 image_tags 抽出可给模型的安全串。
- * 非敏感模型原样返回。
- */
-export function prepareImageTagsForSensitiveModel(
-  model: string,
+/** 发给模型前：从 image_tags 抽出可给模型的安全串。 */
+export function prepareImageTagsForLlm(
   imageTags?: string,
 ): { tagsForLlm: string | undefined; strippedForRejoin: string } {
-  if (!imageTags?.trim() || !shouldStripSensitiveImagePromptTags(model)) {
-    return { tagsForLlm: imageTags?.trim() || undefined, strippedForRejoin: '' };
+  if (!imageTags?.trim()) {
+    return { tagsForLlm: undefined, strippedForRejoin: '' };
   }
   const { safeForLlm, strippedForRejoin } = partitionSensitiveImageTags(imageTags);
   return {
@@ -154,11 +146,10 @@ export function prepareImageTagsForSensitiveModel(
  * 模型产出的生图 prompt（内联或专用）落库/出图前：按 image_tags 原顺序拼回敏感 tag。
  */
 export function restoreSensitiveImageTagsToPrompt(
-  model: string,
   prompt: string,
   imageTags?: string,
 ): string {
-  if (!prompt.trim() || !imageTags?.trim() || !shouldStripSensitiveImagePromptTags(model)) {
+  if (!prompt.trim() || !imageTags?.trim()) {
     return prompt;
   }
   return rejoinSensitiveTagsFromOriginalOrder(prompt, imageTags);

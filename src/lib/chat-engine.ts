@@ -23,7 +23,7 @@ import {
 } from '@/lib/memory-prompt-contract';
 import { allocateAssistantInsertAfterUser } from '@/lib/message-seq-insert';
 import {
-  prepareImageTagsForSensitiveModel,
+  prepareImageTagsForLlm,
   restoreSensitiveImageTagsToPrompt,
 } from '@/lib/image-prompt-sensitive-tags';
 
@@ -410,9 +410,9 @@ export async function assemblePrompt(
   }
   // 内联生图提示词：把指令追加到最后一条 user 消息尾部（约束力最强，实测稳定触发）。
   // 仅作用于发给模型的请求副本，不落库 —— 避免污染对话记录 / 记忆 / 前端显示。
-  // Gemini/Grok：指令里的固定外貌标签先剥敏感词，落库时再拼回（与 /api/image-gen/prompt 一致）。
+  // 指令里的固定外貌标签先剥敏感词，落库时再拼回（与 /api/image-gen/prompt 一致）。
   if (settings.image_gen?.enabled && settings.image_gen?.inline_prompt) {
-    const { tagsForLlm } = prepareImageTagsForSensitiveModel(settings.model, character.image_tags);
+    const { tagsForLlm } = prepareImageTagsForLlm(character.image_tags);
     const instruction = buildInlinePromptInstruction(tagsForLlm, character.user_image_tags);
     for (let i = merged.length - 1; i >= 0; i -= 1) {
       const msg = merged[i];
@@ -629,10 +629,10 @@ export async function runChat(
     // 清理 AI 可能误输出的时间戳前缀
     const withoutTs = stripTimestampPrefix(rawText);
     // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离，保证落库/上下文/记忆/token 都干净
-    // Gemini/Grok 指令侧已剥敏感 tag，此处拼回后写入 metadata.inlineImagePrompt 供出图
+    // 指令侧已剥敏感 tag，此处拼回后写入 metadata.inlineImagePrompt 供出图
     const rawInlinePrompt = extractInlinePrompt(withoutTs);
     const inlinePrompt = rawInlinePrompt
-      ? restoreSensitiveImageTagsToPrompt(settings.model, rawInlinePrompt, character.image_tags)
+      ? restoreSensitiveImageTagsToPrompt(rawInlinePrompt, character.image_tags)
       : '';
     const fullText = rawInlinePrompt ? stripInlinePrompt(withoutTs) : withoutTs;
     const tokenResult = createMessageTokenCount(fullText, 'assistant');

@@ -9,7 +9,6 @@ import { structuredLog } from '@/lib/structured-log';
 import {
   partitionSensitiveImageTags,
   rejoinSensitiveTagsFromOriginalOrder,
-  shouldStripSensitiveImagePromptTags,
 } from '@/lib/image-prompt-sensitive-tags';
 
 /**
@@ -185,13 +184,9 @@ export async function POST(request: NextRequest) {
       if (character.personality) context += `性格/外貌描述：${character.personality}\n`;
       if (character.scenario) context += `世界观/场景设定：${character.scenario}\n`;
       if (character.image_tags) {
-        if (shouldStripSensitiveImagePromptTags(settings.model)) {
-          const { safeForLlm } = partitionSensitiveImageTags(character.image_tags);
-          if (safeForLlm) {
-            context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${safeForLlm}\n`;
-          }
-        } else {
-          context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${character.image_tags}\n`;
+        const { safeForLlm } = partitionSensitiveImageTags(character.image_tags);
+        if (safeForLlm) {
+          context += `\n【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】\n${safeForLlm}\n`;
         }
       }
       if (character.user_image_tags) {
@@ -237,7 +232,7 @@ export async function POST(request: NextRequest) {
       positive = result.replace(/POSITIVE:|NEGATIVE:.*$/gm, '').trim();
     }
 
-    if (originalImageTags && shouldStripSensitiveImagePromptTags(settings.model)) {
+    if (originalImageTags) {
       positive = rejoinSensitiveTagsFromOriginalOrder(positive, originalImageTags);
     }
 

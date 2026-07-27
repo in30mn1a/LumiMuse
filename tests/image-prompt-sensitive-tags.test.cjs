@@ -37,7 +37,7 @@ const {
   rejoinSensitiveTagsAfterSubject,
   isSensitiveImageTag,
   imageTagCoreForSensitivity,
-  prepareImageTagsForSensitiveModel,
+  prepareImageTagsForLlm,
   restoreSensitiveImageTagsToPrompt,
 } = require('../src/lib/image-prompt-sensitive-tags.ts');
 
@@ -123,34 +123,27 @@ test('legacy rejoinSensitiveTagsAfterSubject still inserts after 1girl', () => {
   );
 });
 
-test('prepareImageTagsForSensitiveModel strips only for gemini/grok', () => {
-  const grok = prepareImageTagsForSensitiveModel(
-    'grok-4.5',
-    'blue eyes, 1.3::loli::, red hair',
-  );
-  assert.equal(grok.tagsForLlm, 'blue eyes, red hair');
-  assert.equal(grok.strippedForRejoin, '1.3::loli::');
+test('prepareImageTagsForLlm strips sensitive tags for every model', () => {
+  const stripped = prepareImageTagsForLlm('blue eyes, 1.3::loli::, red hair');
+  assert.equal(stripped.tagsForLlm, 'blue eyes, red hair');
+  assert.equal(stripped.strippedForRejoin, '1.3::loli::');
 
-  const deepseek = prepareImageTagsForSensitiveModel(
-    'deepseek-chat',
-    'blue eyes, 1.3::loli::, red hair',
-  );
-  assert.equal(deepseek.tagsForLlm, 'blue eyes, 1.3::loli::, red hair');
-  assert.equal(deepseek.strippedForRejoin, '');
+  const clean = prepareImageTagsForLlm('blue eyes, red hair');
+  assert.equal(clean.tagsForLlm, 'blue eyes, red hair');
+  assert.equal(clean.strippedForRejoin, '');
+
+  const empty = prepareImageTagsForLlm('   ');
+  assert.equal(empty.tagsForLlm, undefined);
+  assert.equal(empty.strippedForRejoin, '');
 });
 
-test('restoreSensitiveImageTagsToPrompt uses original order for grok/gemini', () => {
+test('restoreSensitiveImageTagsToPrompt uses original order for every model', () => {
   const restored = restoreSensitiveImageTagsToPrompt(
-    'gemini-3.1-pro',
     'masterpiece, 1girl, blue eyes, long hair',
     'blue eyes, 1.3::loli::, red hair',
   );
   assert.equal(restored, 'masterpiece, 1girl, blue eyes, 1.3::loli::, long hair');
 
-  const untouched = restoreSensitiveImageTagsToPrompt(
-    'deepseek-chat',
-    'masterpiece, 1girl, long hair',
-    '1.3::loli::, blue eyes',
-  );
-  assert.equal(untouched, 'masterpiece, 1girl, long hair');
+  const noTags = restoreSensitiveImageTagsToPrompt('masterpiece, 1girl, long hair', '');
+  assert.equal(noTags, 'masterpiece, 1girl, long hair');
 });

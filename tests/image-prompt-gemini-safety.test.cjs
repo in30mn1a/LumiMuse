@@ -157,3 +157,8 @@ test('Gemini image prompt generation strips kindergarten tags before the AI call
 test('Grok image prompt generation strips sensitive tags before the AI call and restores them in output', async () => {
   await runSensitiveTagStripRouteTest('grok-4.5-fast');
 });
+
+test('non-gemini/grok models strip and restore sensitive tags the same way', async () => {
+  await runSensitiveTagStripRouteTest('deepseek-chat');
+  await runSensitiveTagStripRouteTest('gpt-4o');
+});

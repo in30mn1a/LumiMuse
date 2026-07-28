@@ -508,6 +508,25 @@ test('单块兼容仅在 story_history + lastUserMessage 的安全形态启用',
   assert.match(flattened, /\{\{user\}\}: 旧问题/);
   assert.match(flattened, /\{\{char\}\}: 旧回答/);
   assert.match(flattened, /<last_user>当前问题<\/last_user>/);
+  const historyMessage = result.find(message => (
+    message.role === 'system'
+    && typeof message.content === 'string'
+    && message.content.includes('{{user}}: 旧问题')
+  ));
+  assert.equal(
+    historyMessage?.content,
+    '<story_history>\n{{user}}: 旧问题\n{{char}}: 旧回答\n</story_history>',
+    'story_history 的开闭标签应由 chatHistory 对应的 system 消息完整承载',
+  );
+  assert.equal(
+    result.some(message => (
+      message.role === 'user'
+      && typeof message.content === 'string'
+      && /<\/?story_history>/.test(message.content)
+    )),
+    false,
+    'story_history 标签不应跨到前后 user 消息',
+  );
   assert.equal((flattened.match(/当前问题/g) || []).length, 1, '当前 user 只由 lastUserMessage 宏承载一次');
 });
 

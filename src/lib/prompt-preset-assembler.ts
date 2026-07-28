@@ -89,8 +89,9 @@ function formatBehaviorAndTimeSystemContent(timeContext?: ChatTimeContext): stri
 /** 把对话历史渲染成 chatHistory marker 的内容（**只含历史正文本身**，不带 <story_history> 容器 tag）。
  *
  * 酒馆 RONG 风格：`<story_history>` 与 `</story_history>` 是「对话历史开始 / 对话历史结束」
- * 这两条**独立 enabled user 条目**的 content——chatHistory marker 只提供纯历史内容，
- * 容器 tag 由那两条邻居条目自然围出。
+ * 两条独立 enabled user 条目的 content。单块兼容模式会由调用方移除这两个独立消息，
+ * 再把标签与本函数返回的正文一起放进 chatHistory marker 对应的 system 消息，避免标签
+ * 跨越多个 role。
  *
  * 排除"当前最新一条 user 输入"：那是 {{lastUserMessage}} 宏该去的地方，
  * 不属于历史 —— history 应该**截止于最新 user 之前**。
@@ -275,7 +276,7 @@ function estimateMessageContentTokens(message: ChatMessage): number {
 }
 
 type RelativeSegment =
-  | { kind: 'messages'; messages: ChatMessage[] }
+  | { kind: 'messages'; messages: ChatMessage[]; isStoryHistoryBoundary: boolean }
   | { kind: 'history'; role: PresetRole };
 
 /**
@@ -358,7 +359,15 @@ export async function assemblePresetPrompt(
       continue;
     }
     const rendered = renderEntry(entry, renderCtx);
-    if (rendered.length > 0) segments.push({ kind: 'messages', messages: rendered });
+    if (rendered.length > 0) {
+      const trimmedContent = entry.content.trim();
+      segments.push({
+        kind: 'messages',
+        messages: rendered,
+        isStoryHistoryBoundary: entry.marker_key == null
+          && (trimmedContent === '<story_history>' || trimmedContent === '</story_history>'),
+      });
+    }
   }
   const injectionGroups = prepareInjectionGroups(
     inChatEntries,
@@ -419,6 +428,7 @@ export async function assemblePresetPrompt(
   let chatHistoryInserted = false;
   for (const segment of segments) {
     if (segment.kind === 'messages') {
+      if (useRongSingleBlockHistory && segment.isStoryHistoryBoundary) continue;
       result.push(...segment.messages);
       continue;
     }
@@ -426,7 +436,10 @@ export async function assemblePresetPrompt(
     chatHistoryInserted = true;
     if (useRongSingleBlockHistory) {
       const block = renderHistoryForChatHistoryMarker(history);
-      if (block) result.push({ role: segment.role, content: block });
+      result.push({
+        role: segment.role,
+        content: block ? `<story_history>\n${block}\n</story_history>` : '<story_history>\n</story_history>',
+      });
     } else {
       result.push(...historyWithInjections);
     }

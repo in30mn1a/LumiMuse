@@ -13,6 +13,13 @@ export interface Character {
   other_info: string;
   image_tags: string;
   user_image_tags: string;
+  /**
+   * 预设提示词绑定（Q4 双层绑定）。
+   * - `null`：跟随全局默认 `settings.prompt_preset.default_preset_id`
+   * - `'__none__'`：禁用预设（不走预设组装路径，使用 LumiMuse 传统骨架）
+   * - 其他字符串：预设 id，覆盖全局默认
+   */
+  active_preset_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -323,6 +330,64 @@ export const DEFAULT_MEMORY_ENGINE_SETTINGS: MemoryEngineSettings = {
   total_retrieval_timeout_ms: 2500,
 };
 
+/** SillyTavern 预设提示词核心 marker（Q3 决策：6 条核心集） */
+export const PRESET_MARKER_KEYS = [
+  'charDescription',
+  'charPersonality',
+  'scenario',
+  'dialogueExamples',
+  'chatHistory',
+  'memoryPackage',
+] as const;
+export type PresetMarkerKey = typeof PRESET_MARKER_KEYS[number];
+
+export type PresetRole = 'system' | 'user' | 'assistant';
+
+export interface PromptPreset {
+  id: string;
+  name: string;
+  description: string;
+  is_built_in: boolean;
+  /** 落库前是否剥掉 SillyTavern 剧本协议 XML（<story_plot> 容器、<story_scene>、</story_body>、<story_after_format> 等）。 */
+  story_plot_strip: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PresetEntry {
+  id: string;
+  preset_id: string;
+  name: string;
+  role: PresetRole;
+  content: string;
+  is_marker: boolean;
+  marker_key: PresetMarkerKey | null;
+  is_system_prompt: boolean;
+  /** 0=relative（按 sort_order 拼到 prompt 头部序列）；1=in-chat（按 depth 插进历史中间） */
+  injection_position: 0 | 1;
+  /** 仅 in-chat 用：从历史末尾消息往上数的索引，越大越远 */
+  injection_depth: number;
+  /** 同 depth 内排序：值越小越靠近原历史中的最新消息 */
+  injection_order: number;
+  forbid_overrides: boolean;
+  /** 单层启用（Q2 决策）：直接决定该条目是否启用 */
+  enabled: boolean;
+  /** 在预设中的顺序（Q2：替代酒馆 prompt_order 数组） */
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PresetImportReport {
+  preset_id: string;
+  preset_name: string;
+  total: number;
+  enabled: number;
+  markers_recognized: number;
+  markers_disabled: number;
+  story_plot_strip: boolean;
+}
+
 export interface Settings {
   api_base: string;
   api_key: string;
@@ -373,6 +438,10 @@ export interface Settings {
   memory_engine: MemoryEngineSettings;
   // 画师串管理
   artist_strings: ArtistString[];
+  // 预设提示词（双层绑定的全局默认；角色可在 active_preset_id 覆盖）
+  prompt_preset: {
+    default_preset_id: string | null;
+  };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -416,6 +485,7 @@ export const DEFAULT_SETTINGS: Settings = {
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
   memory_engine: { ...DEFAULT_MEMORY_ENGINE_SETTINGS },
   artist_strings: [],
+  prompt_preset: { default_preset_id: null },
 };
 export interface ChatRequest {
   conversation_id: string;

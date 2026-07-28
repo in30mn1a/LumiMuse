@@ -7,6 +7,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
+import PresetSelectField from '@/components/ui/PresetSelectField';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { clearCharacterContext } from '@/lib/character-context-cache';
 
@@ -676,6 +677,14 @@ export default function CharacterEditor({ params }: Props) {
                     className="textarea-rich font-mono text-sm"
                   />
                 </div>
+                <PresetSelectField
+                  value={character.active_preset_id ?? null}
+                  onChange={(v) => {
+                    if (!character) return;
+                    setDirty(true);
+                    setCharacter({ ...character, active_preset_id: v });
+                  }}
+                />
               </div>
             </details>
           </main>

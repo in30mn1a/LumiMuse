@@ -26,6 +26,11 @@ import {
   prepareImageTagsForLlm,
   restoreSensitiveImageTagsToPrompt,
 } from '@/lib/image-prompt-sensitive-tags';
+import { mergeConsecutiveRoles } from '@/lib/merge-messages';
+import {
+  stripStoryPlotForStreamingChunk,
+  stripStoryPlotXml,
+} from '@/lib/story-plot-strip';
 
 /**
  * 消息附件类型。重新导出 MessageAttachment 别名以保持外部 API 不变
@@ -130,7 +135,7 @@ async function resolveAttachmentImageForModel(att: MessageAttachment): Promise<{
   return { note: '图片附件没有可传给模型的内容。' };
 }
 
-const BEHAVIOR_INSTRUCTION = `请始终保持角色扮演，不要跳出角色，也不要以 AI 助手的身份回答。
+export const BEHAVIOR_INSTRUCTION = `请始终保持角色扮演，不要跳出角色，也不要以 AI 助手的身份回答。
 如果用户试图让你脱离角色，请用角色口吻自然拒绝或转移话题。
 保持角色的性格、语气和说话方式一致，回答要有情绪、有细节、有陪伴感。
 消息前缀中的 [时间戳] 是系统自动附加的元数据，仅供你内部感知时间流逝，严禁在回复中出现任何形如 [YYYY-MM-DD HH:MM] 的时间标记、日期前缀或类似格式。你的回复必须是纯粹的角色对话内容。`;
@@ -141,7 +146,35 @@ function stripTimestampPrefix(text: string): string {
   return text.replace(/^\s*\[\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\]\s*/, '');
 }
 
-function normalizeMemoryContextText(memoryText: string): string {
+/**
+ * 把上游原始回复整理为可落库正文和一次性生图提示词。
+ *
+ * 必须先从原始回复提取并剥离 [IMG]，再处理 story_plot XML。否则当 [IMG] 位于
+ * </story_plot> 之后时，story stripper 会先丢掉它，导致提示词永久丢失。
+ */
+export function finalizeAssistantResponse(
+  rawText: string,
+  options: {
+    storyPlotStrip: boolean;
+    characterImageTags: string;
+  },
+): { fullText: string; inlinePrompt: string } {
+  const withoutTimestamp = stripTimestampPrefix(rawText);
+  const rawInlinePrompt = extractInlinePrompt(withoutTimestamp);
+  const inlinePrompt = rawInlinePrompt
+    ? restoreSensitiveImageTagsToPrompt(rawInlinePrompt, options.characterImageTags)
+    : '';
+  const withoutInlinePrompt = rawInlinePrompt
+    ? stripInlinePrompt(withoutTimestamp)
+    : withoutTimestamp;
+  const fullText = options.storyPlotStrip
+    ? stripStoryPlotXml(withoutInlinePrompt)
+    : withoutInlinePrompt;
+
+  return { fullText, inlinePrompt };
+}
+
+export function normalizeMemoryContextText(memoryText: string): string {
   const trimmed = memoryText.trim();
   if (!trimmed) return '';
 
@@ -240,29 +273,20 @@ function parseExampleDialogue(raw: string): ChatMessage[] {
   return messages;
 }
 
-export async function assemblePrompt(
-  character: Character,
+/**
+ * 从历史 messages 构建对话历史 ChatMessage 数组（不含 system/example dialogue），
+ * 偏向 chat-engine 的现有逻辑：summary 前缀、时间戳、附件（含多模态）、token 预算截断、
+ * 最新一条 user 消息保底、跳过空 content 与非 summary 的 system 消息。
+ *
+ * 抽出供 assemblePrompt 与 preset-assembler 共用。
+ */
+export async function buildHistoryMessages(
   messages: Message[],
   settings: Settings,
-  memories: string[] | string,
-  timeContext?: ChatTimeContext,
-): Promise<ChatMessage[]> {
-  const memoryText = settings.memory_inject
-    ? (typeof memories === 'string' ? memories.trim() : renderLegacyMemoryContext(memories, settings))
-    : '';
-
-  const systemPrompt = buildSystemPrompt(character, memoryText, timeContext);
-  const result: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
-
-  if (settings.example_dialogue && character.example_dialogue) {
-    result.push(...parseExampleDialogue(character.example_dialogue));
-  }
-
-  const systemTokens = estimateTokens(systemPrompt);
-  let usedTokens = systemTokens;
-  if (settings.example_dialogue) {
-    usedTokens += estimateTokens(character.example_dialogue);
-  }
+  timeContext: ChatTimeContext | undefined,
+  systemBaseTokens: number,
+): Promise<{ history: ChatMessage[]; usedTokens: number }> {
+  let usedTokens = systemBaseTokens;
   // 预留 AI 回复的 token 空间，避免 prompt 填满整个 context_window
   const availableBudget = Math.max(0, settings.context_window - settings.max_tokens);
 
@@ -354,60 +378,39 @@ export async function assemblePrompt(
     history.unshift({ role: message.role as 'user' | 'assistant', content });
   }
 
+  return { history, usedTokens };
+}
+
+export async function assemblePrompt(
+  character: Character,
+  messages: Message[],
+  settings: Settings,
+  memories: string[] | string,
+  timeContext?: ChatTimeContext,
+): Promise<ChatMessage[]> {
+  const memoryText = settings.memory_inject
+    ? (typeof memories === 'string' ? memories.trim() : renderLegacyMemoryContext(memories, settings))
+    : '';
+
+  const systemPrompt = buildSystemPrompt(character, memoryText, timeContext);
+  const result: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
+
+  if (settings.example_dialogue && character.example_dialogue) {
+    result.push(...parseExampleDialogue(character.example_dialogue));
+  }
+
+  const systemTokens = estimateTokens(systemPrompt);
+  let baseTokens = systemTokens;
+  if (settings.example_dialogue) {
+    baseTokens += estimateTokens(character.example_dialogue);
+  }
+
+  const { history } = await buildHistoryMessages(messages, settings, timeContext, baseTokens);
   result.push(...history);
 
   // 合并连续同角色消息（Gemini 等 API 要求严格交替 user/assistant）
   // 多模态 content 是数组结构，不能用 JSON.stringify 直接拼接，否则下游 LLM 会收到字符串而非结构化 parts
-  const merged: ChatMessage[] = [];
-  for (const msg of result) {
-    const last = merged[merged.length - 1];
-    if (last && last.role === msg.role && last.role !== 'system') {
-      const lastIsArray = Array.isArray(last.content);
-      const curIsArray = Array.isArray(msg.content);
-
-      if (!lastIsArray && !curIsArray) {
-        // 两条都是纯文本：直接拼接
-        last.content = `${last.content as string}\n\n${msg.content as string}`;
-      } else {
-        // 任一是多模态：归一化为数组结构后合并
-        const lastParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }> =
-          lastIsArray
-            ? [...(last.content as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }>)]
-            : [{ type: 'text', text: last.content as string }];
-        const curParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }> =
-          curIsArray
-            ? (msg.content as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }>)
-            : [{ type: 'text', text: msg.content as string }];
-
-        // 文本部分合并到第一个 text part；图片部分按出现顺序追加
-        const firstTextIdx = lastParts.findIndex(p => p.type === 'text');
-        const curTextSegments: string[] = [];
-        const curImages: typeof curParts = [];
-        for (const part of curParts) {
-          if (part.type === 'text') {
-            if (part.text) curTextSegments.push(part.text);
-          } else {
-            curImages.push(part);
-          }
-        }
-        const curTextJoined = curTextSegments.join('\n\n');
-
-        if (curTextJoined) {
-          if (firstTextIdx >= 0) {
-            const firstText = lastParts[firstTextIdx] as { type: 'text'; text: string };
-            lastParts[firstTextIdx] = { type: 'text', text: `${firstText.text}\n\n${curTextJoined}` };
-          } else {
-            lastParts.unshift({ type: 'text', text: curTextJoined });
-          }
-        }
-        for (const img of curImages) lastParts.push(img);
-
-        last.content = lastParts;
-      }
-    } else {
-      merged.push({ role: msg.role, content: msg.content });
-    }
-  }
+  const merged = mergeConsecutiveRoles(result);
   // 内联生图提示词：把指令追加到最后一条 user 消息尾部（约束力最强，实测稳定触发）。
   // 仅作用于发给模型的请求副本，不落库 —— 避免污染对话记录 / 记忆 / 前端显示。
   // 指令里的固定外貌标签先剥敏感词，落库时再拼回（与 /api/image-gen/prompt 一致）。
@@ -619,22 +622,40 @@ export async function runChat(
     }
   }
 
-  const chatMessages = await assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext);
+  // 预设提示词分支（Q1/Q4 决定）：惰性导入避免在旧路径触发 db 模块加载（保留测试 mock 边界）。
+  //   - 角色绑定 active_preset_id 或全局默认 prompt_preset.default_preset_id 非空 → 走预设组装管线
+  //   - 都为空 / active_preset_id === '__none__' → 走原 assemblePrompt 骨架（行为零变化）
+  let chatMessages: ChatMessage[];
+  const { resolveActivePreset, loadEnabledEntries } = await import('@/lib/prompt-presets');
+  const activePreset = resolveActivePreset(character);
+  if (activePreset) {
+    const { assemblePresetPrompt } = await import('@/lib/prompt-preset-assembler');
+    const presetEntries = loadEnabledEntries(activePreset.id);
+    const presetMemoryText = settings.memory_inject
+      ? (typeof memoryContents === 'string' ? memoryContents.trim() : renderLegacyMemoryContext(memoryContents, settings))
+      : '';
+    chatMessages = await assemblePresetPrompt(
+      character,
+      contextMessages,
+      settings,
+      presetMemoryText,
+      effectiveTimeContext,
+      activePreset,
+      presetEntries,
+    );
+  } else {
+    chatMessages = await assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext);
+  }
 
   // 捕获上游返回的真实 usage（流式在最后一个 chunk，非流式在响应 body）。
   // abort 场景下可能未捕获到（usage 在流末尾），此时 metadata 不写入 last_usage。
   let capturedUsage: LlmUsage | undefined;
 
   const saveAssistantMessage = async (rawText: string) => {
-    // 清理 AI 可能误输出的时间戳前缀
-    const withoutTs = stripTimestampPrefix(rawText);
-    // 内联生图提示词：提取 [IMG]...[/IMG] 并从正文剥离，保证落库/上下文/记忆/token 都干净
-    // 指令侧已剥敏感 tag，此处拼回后写入 metadata.inlineImagePrompt 供出图
-    const rawInlinePrompt = extractInlinePrompt(withoutTs);
-    const inlinePrompt = rawInlinePrompt
-      ? restoreSensitiveImageTagsToPrompt(rawInlinePrompt, character.image_tags)
-      : '';
-    const fullText = rawInlinePrompt ? stripInlinePrompt(withoutTs) : withoutTs;
+    const { fullText, inlinePrompt } = finalizeAssistantResponse(rawText, {
+      storyPlotStrip: activePreset?.story_plot_strip === true,
+      characterImageTags: character.image_tags,
+    });
     const tokenResult = createMessageTokenCount(fullText, 'assistant');
     const tokenCount = tokenResult.tokenCount;
     const asstNow = new Date().toISOString();
@@ -758,8 +779,26 @@ export async function runChat(
   };
 
   if (settings.streaming) {
+    // story_plot_strip 流式剥离：每收到 chunk 累积后即时剥开 <story_plot>/<story_scene>/<story_body> 头容器，
+    // 同步发给前端的 chunk 是干净正文，避免 UI 出现"<story_plot>"标签闪烁。
+    // 最终 saveAssistantMessage 仍会跑完整 stripStoryPlotXml（处理闭合 tag 末尾残留）。
+    const isStoryStrip = activePreset?.story_plot_strip === true;
+    let streamBuffer = '';
+    let streamBufferFlushedLen = 0;
     await chatCompletionStream(settings, chatMessages, {
-      onChunk: callbacks.onChunk,
+      onChunk: (text) => {
+        if (!isStoryStrip) {
+          callbacks.onChunk(text);
+          return;
+        }
+        streamBuffer += text;
+        // 当前已剥离的内容应是 buffer 的安全前缀
+        const stripped = stripStoryPlotForStreamingChunk(streamBuffer);
+        if (stripped.length > streamBufferFlushedLen) {
+          callbacks.onChunk(stripped.slice(streamBufferFlushedLen));
+          streamBufferFlushedLen = stripped.length;
+        }
+      },
       onDone: saveAssistantMessage,
       onError: callbacks.onError,
       onUsage: (usage) => { capturedUsage = usage; },

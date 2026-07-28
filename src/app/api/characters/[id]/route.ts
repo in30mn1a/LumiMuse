@@ -43,7 +43,8 @@ export async function PUT(
   db.prepare(`
     UPDATE characters SET
       name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
-      greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?, updated_at = ?
+      greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?,
+      active_preset_id = ?, updated_at = ?
     WHERE id = ?
   `).run(
     body.name ?? existing.name,
@@ -57,6 +58,10 @@ export async function PUT(
     body.other_info ?? existing.other_info ?? '',
     body.image_tags ?? existing.image_tags ?? '',
     body.user_image_tags ?? existing.user_image_tags ?? '',
+    // 预设绑定（三态）：未传 active_preset_id 字段时保留旧值；显式 null 解绑跟随全局默认；'__none__' 强制禁用
+    body.active_preset_id !== undefined
+      ? (body.active_preset_id === null || body.active_preset_id === '' ? null : body.active_preset_id)
+      : ((existing as Character & { active_preset_id?: string | null }).active_preset_id ?? null),
     now,
     id,
   );

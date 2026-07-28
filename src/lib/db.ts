@@ -95,6 +95,14 @@ export function __resetDbForTests(): void {
   _db = null;
 }
 
+/**
+ * 测试专用：直接把模块级单例 _db 指向调用方提供的连接（通常是 :memory:）。
+ * 与 __resetDbForTests 配对使用；本函数不关闭旧连接。
+ */
+export function __setDbForTests(db: Database.Database): void {
+  _db = db;
+}
+
 export function getDb(): Database.Database {
   if (_db) return _db;
 
@@ -692,6 +700,162 @@ function migrate(db: Database.Database): void {
   const convCols = db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
   if (!convCols.some(c => c.name === 'ignore_memory')) {
     db.exec(`ALTER TABLE conversations ADD COLUMN ignore_memory INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // 增量迁移：预设提示词（SillyTavern preset prompts 移植）
+  // 设计：单层启用（entries.enabled 直接决定启用）+ sort_order 排序
+  // 双层绑定：characters.active_preset_id 覆盖 settings.prompt_preset.default_preset_id
+  // active_preset_id 三态：NULL=跟随全局默认 / '__none__'=禁用预设 / uuid=具体预设
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS prompt_presets (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      is_built_in INTEGER NOT NULL DEFAULT 0,
+      story_plot_strip INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_preset_entries (
+      id TEXT PRIMARY KEY,
+      preset_id TEXT NOT NULL REFERENCES prompt_presets(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('system','user','assistant')),
+      content TEXT NOT NULL DEFAULT '',
+      is_marker INTEGER NOT NULL DEFAULT 0,
+      marker_key TEXT,
+      is_system_prompt INTEGER NOT NULL DEFAULT 0,
+      injection_position INTEGER NOT NULL DEFAULT 0,
+      injection_depth INTEGER NOT NULL DEFAULT 4,
+      injection_order INTEGER NOT NULL DEFAULT 100,
+      forbid_overrides INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+  `);
+
+  // 历史遗留：早期本地调试版本可能把 prompt_presets 建成 (id/name/data/source_filename) 这版不相容 schema
+  // —— 该 schema 既不属于生产任何发布版，也不属于本仓库任何提交；迁移脚本只增列无法消化多余 NOT NULL 列。
+  // 修复：检测 ORPHAN 列；若用户尚未在表中存数据则 DROP 重建（数据零损失），有数据则 fail-fast 让用户介入。
+  const presetOrphanCols = db.prepare("PRAGMA table_info(prompt_presets)").all() as { name: string }[];
+  const presetColNames = presetOrphanCols.map(c => c.name);
+  const hasOrphanDataCol = presetColNames.includes('data');
+  const hasOrphanFilenameCol = presetColNames.includes('source_filename');
+  if (hasOrphanDataCol || hasOrphanFilenameCol) {
+    const rowCount = (db.prepare('SELECT COUNT(*) AS n FROM prompt_presets').get() as { n: number }).n;
+    if (rowCount > 0) {
+      throw new Error(
+        `[db.migrate] prompt_presets 检测到历史 schema 残留 (data/source_filename) 且表中已有 ${rowCount} 行；` +
+        `为不破坏数据，请用户手工确认后删除表或迁移数据，再启动应用。`,
+      );
+    }
+    db.exec(`DROP TABLE prompt_presets`);
+    db.exec(`DROP TABLE IF EXISTS prompt_preset_entries`);
+    db.exec(`
+      CREATE TABLE prompt_presets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        is_built_in INTEGER NOT NULL DEFAULT 0,
+        story_plot_strip INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS prompt_preset_entries (
+        id TEXT PRIMARY KEY,
+        preset_id TEXT NOT NULL REFERENCES prompt_presets(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('system','user','assistant')),
+        content TEXT NOT NULL DEFAULT '',
+        is_marker INTEGER NOT NULL DEFAULT 0,
+        marker_key TEXT,
+        is_system_prompt INTEGER NOT NULL DEFAULT 0,
+        injection_position INTEGER NOT NULL DEFAULT 0,
+        injection_depth INTEGER NOT NULL DEFAULT 4,
+        injection_order INTEGER NOT NULL DEFAULT 100,
+        forbid_overrides INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_prompt_preset_entries_preset ON prompt_preset_entries(preset_id, sort_order);
+    `);
+  }
+
+  // prompt_presets / prompt_preset_entries 的列级增量迁移：兼容早期版本只建表但缺字段
+  const presetCols = db.prepare("PRAGMA table_info(prompt_presets)").all() as { name: string }[];
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'description')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN description TEXT NOT NULL DEFAULT ''`);
+  }
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'is_built_in')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN is_built_in INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'story_plot_strip')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN story_plot_strip INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'created_at')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`);
+  }
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'updated_at')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`);
+  }
+  db.exec(`
+    UPDATE prompt_presets SET created_at = datetime('now') WHERE created_at IS NULL OR created_at = '';
+    UPDATE prompt_presets SET updated_at = datetime('now') WHERE updated_at IS NULL OR updated_at = '';
+  `);
+
+  const presetEntryCols = db.prepare("PRAGMA table_info(prompt_preset_entries)").all() as { name: string }[];
+  const entryCol = (name: string) => presetEntryCols.some(c => c.name === name);
+  if (presetEntryCols.length > 0 && !entryCol('marker_key')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN marker_key TEXT`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('is_system_prompt')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN is_system_prompt INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('injection_position')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN injection_position INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('injection_depth')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN injection_depth INTEGER NOT NULL DEFAULT 4`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('injection_order')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN injection_order INTEGER NOT NULL DEFAULT 100`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('forbid_overrides')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN forbid_overrides INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('enabled')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('sort_order')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('created_at')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('updated_at')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`);
+  }
+  db.exec(`
+    UPDATE prompt_preset_entries SET created_at = datetime('now') WHERE created_at IS NULL OR created_at = '';
+    UPDATE prompt_preset_entries SET updated_at = datetime('now') WHERE updated_at IS NULL OR updated_at = '';
+  `);
+
+  // 必须在列级迁移完成后建复合索引；早期 partial schema 可能尚无 sort_order。
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_prompt_preset_entries_preset
+    ON prompt_preset_entries(preset_id, sort_order)
+  `);
+
+  // characters 表加 active_preset_id 列
+  const charPresetCols = db.prepare("PRAGMA table_info(characters)").all() as { name: string }[];
+  if (!charPresetCols.some(c => c.name === 'active_preset_id')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN active_preset_id TEXT`);
   }
 
   db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);

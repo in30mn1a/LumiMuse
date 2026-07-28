@@ -174,6 +174,12 @@ function createPageHarness() {
 
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (request === 'next/navigation') return { useRouter: () => ({ push: noop, replace: noop }) };
+    if (request === 'next/link') {
+      return {
+        __esModule: true,
+        default: ({ children, href, ...props }) => React.createElement('a', { href, ...props }, children),
+      };
+    }
     if (request === '@/lib/i18n-context') return { useTranslation: () => translation };
     if (request === '@/components/ui/Toast') return { useToast: () => toast };
     if (request === '@/components/ui/icons') {

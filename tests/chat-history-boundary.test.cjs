@@ -317,3 +317,17 @@ test('runChat preserves regenerate target time even when the target is before th
   assert.deepEqual(targetQuery.calls, [['target-assistant', 'conv-a']]);
   assert.doesNotMatch(JSON.stringify(probe.capture.messages), /later summary|later question|old answer/);
 });
+
+test('finalizeAssistantResponse 先提取 IMG 再剥 story XML，保留正文和生图提示词', (t) => {
+  const probe = createDbProbe();
+  t.after(() => probe.database.close());
+  const { finalizeAssistantResponse } = loadChatEngine(probe.db, {});
+
+  const result = finalizeAssistantResponse(
+    '<story_plot><story_body>干净正文</story_body></story_plot>\n[IMG]1girl, blue eyes[/IMG]',
+    { storyPlotStrip: true, characterImageTags: '' },
+  );
+
+  assert.equal(result.fullText, '干净正文');
+  assert.equal(result.inlinePrompt, '1girl, blue eyes');
+});

@@ -326,12 +326,59 @@ export const characterCreateSchema = z.object({
   other_info: z.string().max(MAX_MEDIUM_TEXT).optional(),
   image_tags: z.string().max(MAX_MEDIUM_TEXT).optional(),
   user_image_tags: z.string().max(MAX_MEDIUM_TEXT).optional(),
+  // 预设提示词绑定（三态：null=跟随全局默认 / '__none__'=禁用 / uuid=具体预设）
+  active_preset_id: z.string().max(64).nullable().optional(),
 });
 export type CharacterCreate = z.infer<typeof characterCreateSchema>;
 
 /** 角色 PUT，所有字段都可选 */
 export const characterUpdateSchema = characterCreateSchema;
 export type CharacterUpdate = z.infer<typeof characterUpdateSchema>;
+
+// --------- /api/prompt-presets ---------
+const presetMarkerKeySchema = z.enum([
+  'charDescription',
+  'charPersonality',
+  'scenario',
+  'dialogueExamples',
+  'chatHistory',
+  'memoryPackage',
+]);
+
+export const promptPresetCreateSchema = z.object({
+  name: z.string().min(1).max(MAX_NAME),
+  description: z.string().max(MAX_SHORT_SETTING).optional(),
+});
+export type PromptPresetCreate = z.infer<typeof promptPresetCreateSchema>;
+
+export const promptPresetUpdateSchema = z.object({
+  name: z.string().min(1).max(MAX_NAME).optional(),
+  description: z.string().max(MAX_SHORT_SETTING).optional(),
+  story_plot_strip: z.boolean().optional(),
+});
+export type PromptPresetUpdate = z.infer<typeof promptPresetUpdateSchema>;
+
+export const promptPresetEntryUpsertSchema = z.object({
+  name: z.string().min(1).max(MAX_NAME),
+  role: z.enum(['system', 'user', 'assistant']),
+  content: z.string().max(MAX_LARGE_TEXT).optional(),
+  is_marker: z.boolean().optional(),
+  marker_key: presetMarkerKeySchema.nullable().optional(),
+  is_system_prompt: z.boolean().optional(),
+  injection_position: z.union([z.literal(0), z.literal(1)]).optional(),
+  injection_depth: z.number().int().nonnegative().optional(),
+  injection_order: z.number().int().optional(),
+  forbid_overrides: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  sort_order: z.number().int().optional(),
+});
+export type PromptPresetEntryUpsert = z.infer<typeof promptPresetEntryUpsertSchema>;
+
+export const promptPresetImportSchema = z.object({
+  name: z.string().max(MAX_NAME).optional(),
+  json: z.string().min(1).max(8 * 1024 * 1024), // 8MB hard limit for JSON text
+});
+export type PromptPresetImport = z.infer<typeof promptPresetImportSchema>;
 
 // --------- /api/conversations ---------
 export const conversationCreateSchema = z.object({

@@ -54,6 +54,12 @@ function loadSettingsComponents() {
     if (request === '@/components/ui/icons') {
       return new Proxy({}, { get: () => () => React.createElement('span', { 'aria-hidden': 'true' }) });
     }
+    if (request === 'next/link') {
+      return {
+        __esModule: true,
+        default: ({ children, href, ...props }) => React.createElement('a', { href, ...props }, children),
+      };
+    }
     return originalLoad.call(this, request, parent, isMain);
   };
   try {
@@ -114,6 +120,12 @@ function loadSettingsPage() {
 
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (request === 'next/navigation') return { useRouter: () => ({ push: noop, replace: noop }) };
+    if (request === 'next/link') {
+      return {
+        __esModule: true,
+        default: ({ children, href, ...props }) => React.createElement('a', { href, ...props }, children),
+      };
+    }
     if (request === '@/lib/i18n-context') return { useTranslation: () => ({ t: key => key, setLang: noop }) };
     if (request === '@/components/ui/Toast') return { useToast: () => ({ showToast: noop }) };
     if (request === '@/components/ui/icons') {

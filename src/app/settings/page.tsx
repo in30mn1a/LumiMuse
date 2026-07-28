@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import Link from 'next/link';
 import {
   DEFAULT_MEMORY_ENGINE_SETTINGS,
   DEFAULT_SETTINGS,
@@ -517,6 +518,19 @@ export default function SettingsPage() {
             </>)}
 
             {activeTab === 'generation' && (<>
+            <Link
+              href="/settings/prompt-presets"
+              className="surface-panel flex items-center justify-between gap-4 px-5 py-4 transition-shadow hover:shadow-md"
+            >
+              <div>
+                <h2 className="text-base font-semibold text-text-primary">{t('preset.pageTitle')}</h2>
+                <p className="mt-1 text-sm text-text-muted">{t('preset.pageSubtitle')}</p>
+              </div>
+              <span className="soft-button soft-button-primary shrink-0 whitespace-nowrap">
+                {t('preset.manage')}
+              </span>
+            </Link>
+
             <section className="surface-panel p-5">
               <div className="mb-4">
                 <h2 className="section-title text-lg">{t('settings.modelParams')}</h2>

@@ -29,6 +29,81 @@ interface Props {
   params: Promise<{ id: string }>;
 }
 
+interface EntryRowProps {
+  entry: PresetEntry;
+  pending: boolean;
+  t: ReturnType<typeof useTranslation>['t'];
+  onToggle: (entry: PresetEntry) => void;
+  onEdit: (entry: PresetEntry) => void;
+  onDelete: (entry: PresetEntry) => void;
+}
+
+function EntryRow({ entry, pending, t, onToggle, onEdit, onDelete }: EntryRowProps) {
+  return (
+    <li
+      className={`flex items-start justify-between gap-3 rounded-xl border px-4 py-3 ${
+        entry.enabled
+          ? 'border-border-light bg-surface'
+          : 'border-border-light/50 bg-surface/50 opacity-60'
+      }`}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate text-sm font-medium text-text-primary">{entry.name}</span>
+          <span className={`rounded-full px-2 py-0.5 text-xs ${
+            entry.role === 'system' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' :
+            entry.role === 'user' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' :
+            'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+          }`}>
+            {entry.role}
+          </span>
+          {entry.is_marker && entry.marker_key && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" title={t('preset.markerHint')}>
+              marker: {entry.marker_key}
+            </span>
+          )}
+          {entry.injection_position === 1 && (
+            <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" title={t('preset.inChatHint')}>
+              in-chat d{entry.injection_depth}/o{entry.injection_order}
+            </span>
+          )}
+          <span className="text-xs text-text-muted">#{entry.sort_order}</span>
+        </div>
+        {entry.content && (
+          <p className="mt-1 line-clamp-2 text-xs text-text-muted">{entry.content}</p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          onClick={() => onToggle(entry)}
+          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+            entry.enabled
+              ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300'
+              : 'bg-zinc-200 text-zinc-600 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-400'
+          }`}
+          disabled={pending}
+        >
+          {entry.enabled ? t('preset.enabled') : t('preset.disabled')}
+        </button>
+        <button
+          onClick={() => onEdit(entry)}
+          className="soft-button soft-button-secondary text-xs"
+          disabled={pending}
+        >
+          {t('preset.edit')}
+        </button>
+        <button
+          onClick={() => onDelete(entry)}
+          className="soft-button soft-button-danger text-xs"
+          disabled={pending}
+        >
+          {t('preset.delete')}
+        </button>
+      </div>
+    </li>
+  );
+}
+
 export default function PresetDetailPage({ params }: Props) {
   const { id } = use(params);
   const { t } = useTranslation();
@@ -181,8 +256,6 @@ export default function PresetDetailPage({ params }: Props) {
 
   const toggleEnabled = async (entry: PresetEntry) => {
     if (!beginAction(`toggle:${entry.id}`)) return;
-    // 保留点击时的视口位置，避免 PATCH 后 setState 触发整列重排导致浏览器跳到顶部
-    const scrollY = window.scrollY;
     try {
       const res = await fetch(`/api/prompt-presets/${id}/entries/${entry.id}`, {
         method: 'PATCH',
@@ -191,10 +264,6 @@ export default function PresetDetailPage({ params }: Props) {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setEntries(prev => prev.map(e => e.id === entry.id ? { ...e, enabled: !e.enabled } : e));
-      // 等浏览器下次绘制完成后强制回到原 scroll 位置
-      requestAnimationFrame(() => {
-        window.scrollTo({ top: scrollY, behavior: 'instant' as ScrollBehavior });
-      });
     } catch (err) {
       showToast(`${t('preset.toggleError')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
@@ -297,70 +366,6 @@ export default function PresetDetailPage({ params }: Props) {
 
   const relativeEntries = entries.filter(e => e.injection_position === 0);
   const inChatEntries = entries.filter(e => e.injection_position === 1);
-
-  const EntryRow = ({ entry }: { entry: PresetEntry }) => (
-    <li
-      className={`flex items-start justify-between gap-3 rounded-xl border px-4 py-3 ${
-        entry.enabled
-          ? 'border-border-light bg-surface'
-          : 'border-border-light/50 bg-surface/50 opacity-60'
-      }`}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium text-text-primary">{entry.name}</span>
-          <span className={`rounded-full px-2 py-0.5 text-xs ${
-            entry.role === 'system' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' :
-            entry.role === 'user' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' :
-            'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
-          }`}>
-            {entry.role}
-          </span>
-          {entry.is_marker && entry.marker_key && (
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" title={t('preset.markerHint')}>
-              marker: {entry.marker_key}
-            </span>
-          )}
-          {entry.injection_position === 1 && (
-            <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" title={t('preset.inChatHint')}>
-              in-chat d{entry.injection_depth}/o{entry.injection_order}
-            </span>
-          )}
-          <span className="text-xs text-text-muted">#{entry.sort_order}</span>
-        </div>
-        {entry.content && (
-          <p className="mt-1 line-clamp-2 text-xs text-text-muted">{entry.content}</p>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          onClick={() => toggleEnabled(entry)}
-          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-            entry.enabled
-              ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300'
-              : 'bg-zinc-200 text-zinc-600 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-400'
-          }`}
-          disabled={pendingAction !== null}
-        >
-          {entry.enabled ? t('preset.enabled') : t('preset.disabled')}
-        </button>
-        <button
-          onClick={() => handleEditClick(entry)}
-          className="soft-button soft-button-secondary text-xs"
-          disabled={pendingAction !== null}
-        >
-          {t('preset.edit')}
-        </button>
-        <button
-          onClick={() => handleDelete(entry)}
-          className="soft-button soft-button-danger text-xs"
-          disabled={pendingAction !== null}
-        >
-          {t('preset.delete')}
-        </button>
-      </div>
-    </li>
-  );
 
   return (
     <div className="app-shell min-h-screen px-4 py-4">
@@ -468,7 +473,17 @@ export default function PresetDetailPage({ params }: Props) {
           <p className="mt-1 text-xs text-text-muted">{t('preset.relativeHint')}</p>
           <ul className="mt-3 space-y-2">
             {relativeEntries.length === 0 && <li className="text-sm text-text-muted">{t('preset.noEntries')}</li>}
-            {relativeEntries.map(e => <EntryRow key={e.id} entry={e} />)}
+            {relativeEntries.map(e => (
+              <EntryRow
+                key={e.id}
+                entry={e}
+                pending={pendingAction !== null}
+                t={t}
+                onToggle={toggleEnabled}
+                onEdit={handleEditClick}
+                onDelete={handleDelete}
+              />
+            ))}
           </ul>
         </section>
 
@@ -477,7 +492,17 @@ export default function PresetDetailPage({ params }: Props) {
           <p className="mt-1 text-xs text-text-muted">{t('preset.inChatHint2')}</p>
           <ul className="mt-3 space-y-2">
             {inChatEntries.length === 0 && <li className="text-sm text-text-muted">{t('preset.noEntries')}</li>}
-            {inChatEntries.map(e => <EntryRow key={e.id} entry={e} />)}
+            {inChatEntries.map(e => (
+              <EntryRow
+                key={e.id}
+                entry={e}
+                pending={pendingAction !== null}
+                t={t}
+                onToggle={toggleEnabled}
+                onEdit={handleEditClick}
+                onDelete={handleDelete}
+              />
+            ))}
           </ul>
         </section>
 

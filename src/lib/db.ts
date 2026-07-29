@@ -713,6 +713,7 @@ function migrate(db: Database.Database): void {
       description TEXT NOT NULL DEFAULT '',
       is_built_in INTEGER NOT NULL DEFAULT 0,
       story_plot_strip INTEGER NOT NULL DEFAULT 0,
+      strip_tags TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -762,6 +763,7 @@ function migrate(db: Database.Database): void {
         description TEXT NOT NULL DEFAULT '',
         is_built_in INTEGER NOT NULL DEFAULT 0,
         story_plot_strip INTEGER NOT NULL DEFAULT 0,
+        strip_tags TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
@@ -797,6 +799,9 @@ function migrate(db: Database.Database): void {
   }
   if (presetCols.length > 0 && !presetCols.some(c => c.name === 'story_plot_strip')) {
     db.exec(`ALTER TABLE prompt_presets ADD COLUMN story_plot_strip INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'strip_tags')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN strip_tags TEXT NOT NULL DEFAULT '[]'`);
   }
   if (presetCols.length > 0 && !presetCols.some(c => c.name === 'created_at')) {
     db.exec(`ALTER TABLE prompt_presets ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`);

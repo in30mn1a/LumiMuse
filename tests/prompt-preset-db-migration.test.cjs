@@ -95,3 +95,32 @@ test('partial legacy preset schema with rows is upgraded before the composite in
     db.close();
   }
 });
+
+test('legacy story_plot_strip presets receive an empty strip_tags column for re-import', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE prompt_presets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        story_plot_strip INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO prompt_presets (id, name, story_plot_strip)
+      VALUES ('preset-rong', 'RONG legacy', 1);
+    `);
+
+    const dbModulePath = require.resolve(path.join(root, 'src', 'lib', 'db.ts'));
+    delete require.cache[dbModulePath];
+    const dbModule = require(dbModulePath);
+    dbModule.__migrateForTests(db);
+
+    const preset = db.prepare(`
+      SELECT strip_tags
+      FROM prompt_presets
+      WHERE id = 'preset-rong'
+    `).get();
+    assert.deepEqual(JSON.parse(preset.strip_tags), []);
+  } finally {
+    db.close();
+  }
+});

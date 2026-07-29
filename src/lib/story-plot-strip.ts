@@ -1,22 +1,363 @@
 /**
- * 落库前剥离 SillyTavern 预设的剧本协议 XML：
- *   <story_plot>
- *     <story_scene>
- *       <date>...</date><time>...</time><location>...</location>
- *     </story_scene>
- *     <story_body>...正文...</story_body>
- *     <story_after_format><story_done/> 或 <w2g>...</w2g></story_after_format>
- *   </story_plot>
+ * 落库前剥离 AI 回复中的「预设包装 XML 容器」。
  *
- * 规则（用户决策）：
- *   - 容器标签全剥：<story_plot>、<story_scene>、<story_body>、<story_after_format>（含开闭）。
- *   - <story_scene> 整体丢弃，包括 <date> / <time> / <location>（用户 Q1）。
- *   - <story_body> 内正文原样保留（trim 首尾空白）。
- *   - <story_after_format> 内 <story_done/> 空标签整体丢弃；
- *     其他内容（比如行动选项 <w2g>...</w2g>：主人已禁用，但万一模型仍输出）按原样追加到正文末尾（Q2 语义：禁用了就剥掉标签但保留文本）。
+ * 背景：SillyTavern 预设（RONG / 可待 等）都会让模型输出带一层包装容器：
+ *   RONG（story_plot 协议）→ <story_plot><story_scene>…</story_scene><story_body>…正文…</story_body>…</story_plot>
+ *   可待（content/scene/thinking 协议）→ <scene>…地点…</scene> + <content>…正文…</content> + <thinking>…思考…</thinking> + <output-template>…</output-template>
  *
- * 触发条件：输入文本以 <story_plot> 开头（去除 BOM/空白后）。否则原样返回。
+ * 预设自带 strip_tags：声明「本预设的输出应剥掉哪些 tag 的包装」，导入时由 auto-detect 生成默认，UI 可手工增删。
+ *
+ * 两种协议对应两种调用入口（本模块导出单一入口 stripByPresetRules，按 rules 内容分流）：
+ *   - 含 block 规则 'story_plot'：走旧 RONG 协议专用逻辑 stripStoryPlotXml（"以 <story_plot 开头"触发，保 body 弃 scene）
+ *   - 否则：走参数化 stripContainerTags——剥 block 容器、丢 drop 内容，对正文里的普通 tag 字面量不误伤
+ *
+ * 参数化 tag 语法（与预设 strip_tags 存储一致）：
+ *   - 'xxx'       剥开/闭合 tag，保留内部文本（用于 <content>…正文…</content> → 正文）
+ *   - '#xxx'      整块连内容丢弃，EOF 未闭合也丢（用于 #thinking 思考草稿、#output-template 模板）
  */
+
+// ---------- 参数化 tag 列表解析 ----------
+
+const DROP_PREFIX = '#';
+
+const RAW_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+/** 解析单条 tag 规则，返回 [mode, name]；非法返回 null。 */
+function parseTagEntry(raw: unknown): { mode: 'block' | 'drop'; name: string } | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const isDrop = trimmed.startsWith(DROP_PREFIX);
+  const name = isDrop ? trimmed.slice(1).trim() : trimmed;
+  if (!RAW_NAME_RE.test(name)) return null;
+  return { mode: isDrop ? 'drop' : 'block', name };
+}
+
+// ---------- 参数化剥离（内容/thinking 类协议） ----------
+
+type ParsedTagRule = { mode: 'block' | 'drop'; name: string };
+
+type ParsedTagToken = {
+  start: number;
+  end: number;
+  name: string;
+  mode: 'block' | 'drop';
+  kind: 'open' | 'close';
+  selfClosing: boolean;
+  pairIndex: number | null;
+};
+
+type BlockContext = {
+  name: string;
+  outputStart: number;
+  atStart: boolean;
+};
+
+type DropContext = {
+  name: string;
+  preserveLeadingLayout: boolean;
+};
+
+function parseTagRules(tags: string[]): ParsedTagRule[] {
+  const out: ParsedTagRule[] = [];
+  const seen = new Set<string>();
+  for (const raw of tags) {
+    const parsed = parseTagEntry(raw);
+    if (!parsed) continue;
+    const name = parsed.name.toLowerCase();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push({ ...parsed, name });
+  }
+  return out;
+}
+
+function findMarkupEnd(text: string, start: number): number {
+  let quote: '"' | "'" | null = null;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '>') return index;
+  }
+  return -1;
+}
+
+function parseCompleteTag(
+  text: string,
+  start: number,
+  end: number,
+  ruleModes: ReadonlyMap<string, 'block' | 'drop'>,
+): Omit<ParsedTagToken, 'start' | 'end' | 'pairIndex'> | null {
+  let inner = text.slice(start + 1, end);
+  if (!inner || /^\s/.test(inner)) return null;
+
+  if (inner.startsWith('/')) {
+    const closeBody = inner.slice(1);
+    const nameEnd = closeBody.search(/\s/);
+    const name = nameEnd < 0 ? closeBody : closeBody.slice(0, nameEnd);
+    const trailing = nameEnd < 0 ? '' : closeBody.slice(nameEnd);
+    const normalizedName = name.toLowerCase();
+    const mode = ruleModes.get(normalizedName);
+    if (!mode || trailing.trim() !== '') return null;
+    return { name: normalizedName, mode, kind: 'close', selfClosing: false };
+  }
+
+  let selfClosing = false;
+  if (inner.endsWith('/')) {
+    selfClosing = true;
+    inner = inner.slice(0, -1).trimEnd();
+  }
+  const nameEnd = inner.search(/\s/);
+  const name = nameEnd < 0 ? inner : inner.slice(0, nameEnd);
+  const normalizedName = name.toLowerCase();
+  const mode = ruleModes.get(normalizedName);
+  if (!mode) return null;
+  return { name: normalizedName, mode, kind: 'open', selfClosing };
+}
+
+function couldBeRuleTagPrefix(suffix: string, ruleNames: readonly string[]): boolean {
+  const normalizedSuffix = suffix.toLowerCase();
+  for (const name of ruleNames) {
+    for (const target of [`<${name}`, `</${name}`]) {
+      if (target.startsWith(normalizedSuffix)) return true;
+      if (!normalizedSuffix.startsWith(target)) continue;
+      const rest = normalizedSuffix.slice(target.length);
+      if (target.startsWith('</')) {
+        if (/^\s*$/.test(rest)) return true;
+      } else if (rest === '' || rest.startsWith('/') || /^\s/.test(rest)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function scanParameterizedTags(
+  text: string,
+  rules: readonly ParsedTagRule[],
+): { tokens: ParsedTagToken[]; partialStart: number | null } {
+  const ruleModes = new Map(rules.map(rule => [rule.name, rule.mode]));
+  const ruleNames = rules.map(rule => rule.name);
+  const tokens: ParsedTagToken[] = [];
+  let partialStart: number | null = null;
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const start = text.indexOf('<', cursor);
+    if (start < 0) break;
+    const end = findMarkupEnd(text, start);
+    if (end < 0) {
+      if (couldBeRuleTagPrefix(text.slice(start), ruleNames)) partialStart = start;
+      break;
+    }
+    const parsed = parseCompleteTag(text, start, end, ruleModes);
+    if (parsed) {
+      tokens.push({ start, end: end + 1, pairIndex: null, ...parsed });
+    }
+    cursor = end + 1;
+  }
+
+  const openStacks = new Map<string, number[]>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.selfClosing) continue;
+    if (token.kind === 'open') {
+      const stack = openStacks.get(token.name) ?? [];
+      stack.push(index);
+      openStacks.set(token.name, stack);
+      continue;
+    }
+    const stack = openStacks.get(token.name);
+    const openIndex = stack?.pop();
+    if (openIndex === undefined) continue;
+    token.pairIndex = openIndex;
+    tokens[openIndex].pairIndex = index;
+  }
+
+  return { tokens, partialStart };
+}
+
+function trimWhitespaceAfter(text: string, start: number): string {
+  let end = text.length;
+  while (end > start && /\s/.test(text[end - 1])) end -= 1;
+  return end === text.length ? text : text.slice(0, end);
+}
+
+function isLayoutWhitespace(char: string | undefined): boolean {
+  return char === ' ' || char === '\t' || char === '\r' || char === '\n';
+}
+
+function skipLayoutWhitespaceAfter(text: string, start: number): number {
+  let cursor = start;
+  while (cursor < text.length && isLayoutWhitespace(text[cursor])) cursor += 1;
+  return cursor;
+}
+
+function transformParameterizedTags(
+  rawText: string,
+  tags: string[],
+  streaming: boolean,
+): { text: string; matched: boolean } {
+  const rules = parseTagRules(tags);
+  if (rules.length === 0) return { text: rawText, matched: false };
+
+  const { tokens, partialStart } = scanParameterizedTags(rawText, rules);
+  const firstNonWhitespace = rawText.search(/\S/);
+  let lastNonWhitespace = rawText.length - 1;
+  while (lastNonWhitespace >= 0 && /\s/.test(rawText[lastNonWhitespace])) {
+    lastNonWhitespace -= 1;
+  }
+
+  let out = '';
+  let cursor = 0;
+  let matched = false;
+  let protocolActive = false;
+  let protocolAtHead = false;
+  const blockStack: BlockContext[] = [];
+  const dropStack: DropContext[] = [];
+  if (partialStart !== null && partialStart === firstNonWhitespace) {
+    matched = true;
+    protocolActive = true;
+    protocolAtHead = true;
+  }
+
+  const appendVisible = (text: string) => {
+    if (!text || dropStack.length > 0) return;
+    let visible = text;
+    const activeBlock = blockStack[blockStack.length - 1];
+    if (activeBlock?.atStart) {
+      visible = visible.replace(/^\s+/, '');
+    }
+    if (!visible) return;
+    out += visible;
+    if (/\S/.test(visible)) {
+      const currentBlock = blockStack[blockStack.length - 1];
+      if (currentBlock) currentBlock.atStart = false;
+    }
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (partialStart !== null && token.start >= partialStart) break;
+    appendVisible(rawText.slice(cursor, token.start));
+
+    if (dropStack.length > 0) {
+      const activeDrop = dropStack[dropStack.length - 1];
+      if (token.mode === 'drop' && token.name === activeDrop.name) {
+        if (token.kind === 'open' && !token.selfClosing) {
+          dropStack.push({ name: token.name, preserveLeadingLayout: false });
+        } else if (token.kind === 'close') {
+          const closedDrop = dropStack.pop();
+          if (dropStack.length === 0) {
+            cursor = closedDrop?.preserveLeadingLayout
+              ? skipLayoutWhitespaceAfter(rawText, token.end)
+              : token.end;
+            continue;
+          }
+        }
+      }
+      cursor = token.end;
+      continue;
+    }
+
+    const tokenIsAtHead = token.start === firstNonWhitespace;
+    if (token.mode === 'drop' && token.kind === 'open') {
+      matched = true;
+      protocolActive = true;
+      protocolAtHead ||= tokenIsAtHead;
+      const preserveLeadingLayout = isLayoutWhitespace(out[out.length - 1]);
+      if (token.selfClosing) {
+        cursor = preserveLeadingLayout
+          ? skipLayoutWhitespaceAfter(rawText, token.end)
+          : token.end;
+      } else {
+        dropStack.push({ name: token.name, preserveLeadingLayout });
+        cursor = token.end;
+      }
+      continue;
+    }
+
+    if (token.mode === 'block' && token.kind === 'open') {
+      const canStripUnclosed = protocolActive || tokenIsAtHead;
+      if (token.pairIndex !== null || token.selfClosing || canStripUnclosed) {
+        matched = true;
+        protocolActive = true;
+        protocolAtHead ||= tokenIsAtHead;
+        if (!token.selfClosing) {
+          blockStack.push({ name: token.name, outputStart: out.length, atStart: true });
+        }
+        cursor = token.end;
+        continue;
+      }
+      if (streaming) {
+        cursor = token.start;
+        break;
+      }
+      appendVisible(rawText.slice(token.start, token.end));
+      cursor = token.end;
+      continue;
+    }
+
+    if (token.mode === 'block' && token.kind === 'close') {
+      const isTrailingClose = token.end - 1 >= lastNonWhitespace;
+      if (token.pairIndex !== null || protocolActive || isTrailingClose) {
+        matched = true;
+        protocolActive = true;
+        const block = blockStack[blockStack.length - 1];
+        if (block?.name === token.name) {
+          blockStack.pop();
+          out = trimWhitespaceAfter(out, block.outputStart);
+          if (!block.atStart) {
+            const parentBlock = blockStack[blockStack.length - 1];
+            if (parentBlock) parentBlock.atStart = false;
+          }
+        }
+        cursor = token.end;
+        continue;
+      }
+    }
+
+    appendVisible(rawText.slice(token.start, token.end));
+    cursor = token.end;
+  }
+
+  const stoppedAtAmbiguousBlock = streaming && cursor < rawText.length
+    && tokens.some(token => token.start === cursor && token.mode === 'block' && token.kind === 'open');
+  if (!stoppedAtAmbiguousBlock) {
+    const visibleEnd = partialStart ?? rawText.length;
+    appendVisible(rawText.slice(cursor, visibleEnd));
+    if (!streaming && partialStart !== null && !protocolActive && dropStack.length === 0) {
+      appendVisible(rawText.slice(partialStart));
+    }
+  }
+
+  if (!matched) {
+    return { text: streaming ? out.trimEnd() : rawText, matched: false };
+  }
+
+  if (protocolAtHead) out = out.trimStart();
+  out = out.trimEnd();
+  return { text: out, matched: true };
+}
+
+/**
+ * 按 tags 剥掉指定 XML 容器（内容型协议）。
+ *
+ * 扫描器只做确定性线性前进；drop 块在 EOF 未闭合时也整段丢弃，避免 abort
+ * 把思考草稿写入数据库。普通文本没有命中协议 tag 时按字节原样返回。
+ */
+export function stripContainerTags(rawText: string, tags: string[]): string {
+  return transformParameterizedTags(rawText, tags, false).text;
+}
+
+// ---------- RONG 旧剧本协议（strip_rules 含 block 规则 'story_plot' 时走这条） ----------
 
 const STORY_PLOT_PREFIX = '<story_plot';
 const STORY_BODY_CLOSE = '</story_body>';
@@ -71,17 +412,10 @@ function stripKnownContainers(text: string): string {
     .replace(/<\/?story_body(?:\s[^>]*)?>/g, '')
     .replace(/<\/?story_after_format(?:\s[^>]*)?>/g, '')
     .replace(/<story_done\s*\/>/g, '')
-    // Abort 可能停在尚未闭合的容器 tag 中间，不能把协议碎片写入 DB。
     .replace(/<\/?story_(?:plot|body|after_format|scene)[^>]*$/g, '');
   return dropTrailingProtocolPrefix(stripped);
 }
 
-/**
- * 持有/丢弃末尾尚未生成完整的协议 tag。
- *
- * 例如 abort 恰好停在 `<sto`、`</story_bo` 时，不能把这段协议碎片发给前端或写入数据库。
- * 普通的 `<w2g>` 等非协议 tag 不受影响：一旦其前缀已明确不属于协议，就会原样保留。
- */
 function dropTrailingProtocolPrefix(text: string): string {
   const lastOpen = text.lastIndexOf('<');
   if (lastOpen < 0) return text;
@@ -91,8 +425,10 @@ function dropTrailingProtocolPrefix(text: string): string {
     : text;
 }
 
+/** RONG 旧剧本剥离（保持与历史输出字节级一致，供 strip_rules 含 'story_plot' 时调用）。 */
 export function stripStoryPlotXml(rawText: string): string {
   const source = rawText.trimStart();
+  if (source && STORY_PLOT_PREFIX.startsWith(source)) return '';
   if (!isStoryPlotPrefix(source)) return rawText;
   if (/^<story_plot\s*\/>/.test(source)) return '';
 
@@ -127,27 +463,13 @@ export function stripStoryPlotXml(rawText: string): string {
     return body && trailing ? `${body}\n\n${trailing}` : body || trailing;
   }
 
-  // 写坏或被 abort 的输出：剥已知容器；未闭合 scene 从其开头起整体丢弃，避免元数据污染正文。
   return stripKnownContainers(stripSceneBlocks(source, true)).trim();
 }
 
-/**
- * 流式语法剥离的前缀 variant：
- * 对已收到的 partial text，**安全剥离**已完整的 <story_scene> 和"故事开头容器 tag"，
- * 让 SSE 流式响应给前端的 chunk 也是干净正文。
- *
- * 规则：
- *   - 若 partial 尚未包含 `<story_plot>` 开头：原样返回（模型可能还在生成）
- *   - 完整 <story_scene>...</story_scene>：剥掉整块
- *   - 完整 <story_plot>：剥开 tag（保留后续）
- *   - 完整 <story_body>：剥开 tag（保留后续）
- *   - body 与 after_format 都只返回已确认安全的可见前缀；协议 tag 的跨 chunk 前缀会被持有。
- *   - 返回值对同一累计输入保持单调（后一次结果一定以前一次结果开头），调用方可安全按长度增量发送。
- */
+/** RONG 旧剧本流式剥离。 */
 export function stripStoryPlotForStreamingChunk(partialText: string): string {
   const source = partialText.trimStart();
 
-  // 在确认前持有可能的 story_plot 前缀；一旦明确不是协议输出，再原样流出。
   if (!source.startsWith(STORY_PLOT_PREFIX)) {
     return STORY_PLOT_PREFIX.startsWith(source) ? '' : partialText;
   }
@@ -202,7 +524,6 @@ function stripSceneBlocksForStreaming(text: string): string {
     }
 
     let tail = text.slice(cursor);
-    // 同样持有可能跨 chunk 的 scene opening tag 前缀，避免先发 "<sto" 后再回删。
     for (let length = Math.min(STORY_SCENE_PREFIX.length, tail.length); length > 0; length -= 1) {
       const suffix = tail.slice(-length);
       if (STORY_SCENE_PREFIX.startsWith(suffix)) {
@@ -215,4 +536,36 @@ function stripSceneBlocksForStreaming(text: string): string {
   }
 
   return out.join('');
+}
+
+// ---------- 预设统一入口 ----------
+
+/**
+ * 按预设 strip_tags 剥离回复。
+ *   - 含 block 规则 'story_plot'：走 RONG 旧协议专用剥离（保 body 弃 scene，仅原文开头触发）
+ *   - 否则：按 tags 参数化剥（block 保留内部、drop 整段丢）
+ *
+ */
+export function stripByPresetRules(rawText: string, rules: string[]): string {
+  if (rules.some((rule) => {
+    const parsed = parseTagEntry(rule);
+    return parsed?.mode === 'block' && parsed.name.toLowerCase() === 'story_plot';
+  })) {
+    return stripStoryPlotXml(rawText);
+  }
+  return stripContainerTags(rawText, rules);
+}
+
+/**
+ * 流式 variant 返回严格单调的安全前缀，供调用方按上次长度切 delta。
+ * 尚不确定是普通字面量还是协议 tag 的尾部会暂存到下一 chunk；drop 内容永不进入安全前缀。
+ */
+export function stripByPresetRulesForStreamingChunk(partialText: string, rules: string[]): string {
+  if (rules.some((rule) => {
+    const parsed = parseTagEntry(rule);
+    return parsed?.mode === 'block' && parsed.name.toLowerCase() === 'story_plot';
+  })) {
+    return stripStoryPlotForStreamingChunk(partialText);
+  }
+  return transformParameterizedTags(partialText, rules, true).text;
 }

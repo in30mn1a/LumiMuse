@@ -355,6 +355,59 @@ test('预设详情忽略旧 id 的迟到响应', async () => {
   assert.ok(view.getByRole('heading', { name: 'New preset' }));
 });
 
+test('预设详情新增 strip tag：PATCH 失败保留输入，重试成功后才清空', async () => {
+  let patchCalls = 0;
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    const method = init.method || 'GET';
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'GET') {
+      return jsonResponse({
+        ...PRESET,
+        story_plot_strip: true,
+        strip_tags: [],
+      });
+    }
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}/entries` && method === 'GET') {
+      return jsonResponse({ entries: [] });
+    }
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'PATCH') {
+      patchCalls += 1;
+      return patchCalls === 1
+        ? jsonResponse({ error: 'write failed' }, 500)
+        : jsonResponse({ ok: true });
+    }
+    throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
+  };
+
+  const { Component, toastCalls } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  const input = await view.findByPlaceholderText('preset.stripTagPlaceholder');
+  const addButton = view.getByRole('button', { name: 'preset.stripTagAdd' });
+
+  fireEvent.change(input, { target: { value: 'content' } });
+  fireEvent.click(addButton);
+
+  await waitFor(() => assert.deepEqual(toastCalls.at(-1), [
+    'preset.toggleError: HTTP 500',
+    'error',
+  ]));
+  assert.equal(input.value, 'content', '失败后应保留输入，允许原样重试');
+  assert.equal(addButton.disabled, false, '失败请求结束后应恢复重试按钮');
+
+  fireEvent.click(addButton);
+
+  await waitFor(() => assert.equal(patchCalls, 2));
+  await waitFor(() => assert.equal(input.value, ''));
+  assert.ok(view.getByText('content'));
+  assert.deepEqual(toastCalls.at(-1), [
+    'preset.stripTagsUpdateSuccess',
+    'success',
+  ]);
+});
+
 test('预设详情新增和保存都用 pending guard 防止重复写请求', async () => {
   const addRequest = deferred();
   const saveRequest = deferred();

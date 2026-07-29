@@ -176,6 +176,84 @@ function loadChatEngine(db, capture) {
   }
 }
 
+async function runStreamingStripProbe(rawText, chunkSizes, options = {}) {
+  const probe = createDbProbe();
+  const capture = { emitted: '', doneText: '', errors: [] };
+  const abortController = new AbortController();
+  const preset = {
+    id: 'preset-stream-strip',
+    name: 'stream strip',
+    description: '',
+    is_built_in: false,
+    story_plot_strip: true,
+    strip_tags: options.stripTags ?? ['content', 'scene', '#think'],
+    created_at: '2026-07-30T00:00:00.000Z',
+    updated_at: '2026-07-30T00:00:00.000Z',
+  };
+
+  Module._load = function loadStreamingMocks(request, parent, isMain) {
+    if (request === '@/lib/db') return { getDb: () => probe.db };
+    if (request === '@/lib/api-client') {
+      return {
+        async chatCompletion() {
+          throw new Error('non-streaming path should not run');
+        },
+        async chatCompletionStream(_settings, _messages, callbacks) {
+          let offset = 0;
+          let chunkIndex = 0;
+          while (offset < rawText.length) {
+            const size = chunkSizes[chunkIndex % chunkSizes.length];
+            callbacks.onChunk(rawText.slice(offset, offset + size));
+            offset += size;
+            chunkIndex += 1;
+          }
+          if (options.abort) abortController.abort();
+          await callbacks.onDone(rawText);
+        },
+      };
+    }
+    if (request === '@/lib/memory-engine') return { retrieveRelevantMemories: () => [] };
+    if (request === '@/lib/memory-retrieval') {
+      return { retrieveWorkingMemoryPackage: async () => ({ text: '', selectedMemories: [], tokenCount: 0, mode: 'test' }) };
+    }
+    if (request === '@/lib/prompt-presets') {
+      return {
+        resolveActivePreset: () => preset,
+        loadEnabledEntries: () => [],
+      };
+    }
+    if (request === '@/lib/prompt-preset-assembler') {
+      return {
+        assemblePresetPrompt: async () => [{ role: 'system', content: 'test prompt' }],
+      };
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  try {
+    const resolved = require.resolve('../src/lib/chat-engine.ts');
+    delete require.cache[resolved];
+    const { runChat } = require('../src/lib/chat-engine.ts');
+    await runChat('conv-a', '', { ...settings(), streaming: true }, {
+      onChunk(text) { capture.emitted += text; },
+      onDone(text) { capture.doneText = text; },
+      onError(error) { capture.errors.push(error); },
+    }, { skipUserInsert: true, signal: abortController.signal });
+  } finally {
+    Module._load = originalLoad;
+  }
+
+  const stored = probe.database.prepare(
+    "SELECT content, metadata FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
+  ).get('conv-a');
+  return {
+    ...capture,
+    storedText: stored?.content ?? '',
+    storedMetadata: stored?.metadata ? JSON.parse(stored.metadata) : {},
+    database: probe.database,
+  };
+}
+
 async function runWithProbe(rows, options) {
   const probe = createDbProbe();
   for (const row of rows) insertMessage(probe.database, row);
@@ -325,9 +403,78 @@ test('finalizeAssistantResponse 先提取 IMG 再剥 story XML，保留正文和
 
   const result = finalizeAssistantResponse(
     '<story_plot><story_body>干净正文</story_body></story_plot>\n[IMG]1girl, blue eyes[/IMG]',
-    { storyPlotStrip: true, characterImageTags: '' },
+    { storyPlotStrip: true, stripTags: ['story_plot'], characterImageTags: '' },
   );
 
   assert.equal(result.fullText, '干净正文');
   assert.equal(result.inlinePrompt, '1girl, blue eyes');
+});
+
+test('runChat 参数化流式逐字符/任意 chunk 的可见文本与最终落库严格一致', async (t) => {
+  const raw = '<think>草稿</think>\n\n<scene>客厅</scene>\n\n<content>正文</content>';
+  for (const chunkSizes of [[1], [2, 7, 1, 9, 3]]) {
+    const result = await runStreamingStripProbe(raw, chunkSizes);
+    t.after(() => result.database.close());
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.emitted, '客厅\n\n正文');
+    assert.equal(result.doneText, result.emitted);
+    assert.equal(result.storedText, result.emitted);
+  }
+});
+
+test('runChat 参数化流式在 EOF 补发安全前缀暂存的普通尾部空白', async (t) => {
+  const raw = '  缩进 Markdown\n    ';
+  const result = await runStreamingStripProbe(raw, [1]);
+  t.after(() => result.database.close());
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.doneText, raw);
+  assert.equal(result.storedText, raw);
+  assert.equal(result.emitted, raw);
+});
+
+test('runChat 参数化流式真实 abort 不显示或落库未闭合 drop 与协议碎片', async (t) => {
+  const cases = [
+    ['<scene>客厅</scene><think>未完成草稿', '客厅'],
+    ['<scene>客厅</scene><content>正文</con', '客厅正文'],
+  ];
+  for (const [raw, expected] of cases) {
+    const result = await runStreamingStripProbe(raw, [1], { abort: true });
+    t.after(() => result.database.close());
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.emitted, expected);
+    assert.equal(result.doneText, expected);
+    assert.equal(result.storedText, expected);
+    assert.equal(result.storedMetadata.generation_stopped, true);
+    assert.equal(result.storedMetadata.generation_stop_reason, 'abort');
+  }
+});
+
+test('runChat 参数化流式在 EOF 保留正文中的非头部未闭合 block 字面量', async (t) => {
+  const raw = '她说 <content> 是标签符号';
+  const result = await runStreamingStripProbe(raw, [1]);
+  t.after(() => result.database.close());
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.emitted, raw);
+  assert.equal(result.doneText, raw);
+  assert.equal(result.storedText, raw);
+});
+
+test('runChat abort 不补发或落库首个未完成协议前缀', async (t) => {
+  const cases = [
+    ['<con', ['content', '#think']],
+    ['<think', ['content', '#think']],
+    ['<sto', ['story_plot']],
+  ];
+  for (const [raw, stripTags] of cases) {
+    const result = await runStreamingStripProbe(raw, [1], { abort: true, stripTags });
+    t.after(() => result.database.close());
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.emitted, '');
+    assert.equal(result.doneText, '');
+    assert.equal(result.storedText, '');
+    assert.equal(result.storedMetadata.generation_stopped, true);
+    assert.equal(result.storedMetadata.generation_stop_reason, 'abort');
+  }
 });

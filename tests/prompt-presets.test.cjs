@@ -90,6 +90,28 @@ test('updatePreset 修改字段并刷 updated_at', () => {
   assert.equal(after.description, 'desc');
 });
 
+test('createPreset/updatePreset reject invalid, duplicate, and conflicting strip_tags', () => {
+  assert.throws(
+    () => lib.createPreset({ name: 'invalid', strip_tags: ['#'] }),
+    /strip_tags/,
+  );
+
+  const preset = lib.createPreset({ name: 'valid', strip_tags: ['content', '#think'] });
+  assert.throws(
+    () => lib.updatePreset(preset.id, { strip_tags: ['content', 'CONTENT'] }),
+    /strip_tags/,
+  );
+  assert.throws(
+    () => lib.updatePreset(preset.id, { strip_tags: ['think', '#Think'] }),
+    /strip_tags/,
+  );
+  assert.deepEqual(lib.getPreset(preset.id).strip_tags, ['content', '#think']);
+
+  lib.updatePreset(preset.id, { strip_tags: [] });
+  const stored = db.prepare('SELECT strip_tags FROM prompt_presets WHERE id = ?').get(preset.id);
+  assert.deepEqual(JSON.parse(stored.strip_tags), []);
+});
+
 test('upsertEntry 新建 + 修改 + sort_order 排序', () => {
   const p = lib.createPreset({ name: 'preset-A' });
 

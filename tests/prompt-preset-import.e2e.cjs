@@ -1,10 +1,13 @@
 /**
  * TASK-IMPORT-E2E：公开、确定性生成的 78 条 SillyTavern 预设完整导入。
  *
+ * 结构：6 核心 marker + 6 墓碑（marker=true 内建占位）+ 1 main（marker=false 普通内建）+ 65 普通 uuid 条目 = 78
+ *
  * 验证：
  *  - total=78
  *  - 6 条核心 marker identifier（charDescription/charPersonality/scenario/dialogueExamples/chatHistory）正确落到 marker_key
- *  - markers_disabled ≥ 1（worldInfoBefore/After、personaDescription、main、nsfw、jailbreak、enhanceDefinitions 中实际出现的）
+ *  - markers_disabled = 6（worldInfoBefore/After、personaDescription、agentSystemPrompt/agentResults/agentTask 等 marker=true 的内建占位条目）
+ *  - marker=false 的 main（普通内建条目）保留正文、按 order.enabled 启用
  *  - prompt_order 内所有外部 identifier 全部映射为内部条目且 sort_order 严格单调递增
  *  - 数据落库后 content / role / injection_position 与原文一致
  */
@@ -49,7 +52,8 @@ const importModulePath = require.resolve(path.join(root, 'src', 'lib', 'prompt-p
 const presetModulePath = require.resolve(path.join(root, 'src', 'lib', 'prompt-presets.ts'));
 
 const CORE_MARKERS = ['charDescription', 'charPersonality', 'scenario', 'dialogueExamples', 'chatHistory'];
-const TOMBSTONES = ['worldInfoBefore', 'worldInfoAfter', 'personaDescription', 'main', 'nsfw', 'jailbreak', 'enhanceDefinitions'];
+// 酒馆里 marker=true 的占位条目才会转墓碑；main/nsfw/jailbreak/enhanceDefinitions 是 marker=false 的普通内建条目（保留正文）
+const TOMBSTONES = ['worldInfoBefore', 'worldInfoAfter', 'personaDescription', 'agentSystemPrompt', 'agentResults', 'agentTask'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function syntheticUuid(index) {
@@ -92,6 +96,22 @@ function buildSyntheticPreset() {
       injection_trigger: [],
     });
   }
+
+  // marker=false 的普通内建条目（酒馆里有正文的「Main Prompt / jailbreak 等」）：应保留内容、按 order.enabled 启用
+  prompts.push({
+    identifier: 'main',
+    name: 'Main Prompt',
+    enabled: true,
+    role: 'system',
+    content: '主提示正文内容',
+    injection_position: 0,
+    injection_depth: 4,
+    injection_order: 100,
+    system_prompt: false,
+    marker: false,
+    forbid_overrides: false,
+    injection_trigger: [],
+  });
 
   const ordinaryCount = 78 - prompts.length;
   for (let index = 0; index < ordinaryCount; index += 1) {
@@ -185,17 +205,16 @@ test('导入公开合成预设：78 条全部入库 + marker 识别正确 + sort
   assert.ok(markerNames.includes('charPersonality'), 'charPersonality 应识别');
   assert.ok(markerNames.includes('dialogueExamples'), 'dialogueExamples 应识别');
 
-  // 5) 墓碑（酒馆特有但 LumiMuse 不识别）已自动禁用
+  // 5) 墓碑（marker=true 的内建占位条目）已自动禁用；marker=false 的 main 保留正文并启用
   const tomb = entries.filter(e => !e.is_marker && e.marker_key === null && !e.enabled && e.content === '');
-  const tombNamesHit = TOMBSTONES.filter(id => {
-    // 从原 JSON 验证哪些 tombstone 在 prompt_order 中
-    const data = JSON.parse(jsonText);
-    const order = (data.prompt_order && data.prompt_order[0] && data.prompt_order[0].order) || [];
-    return order.some(o => o.identifier === id);
-  });
   assert.equal(tomb.length, TOMBSTONES.length, '全部墓碑 marker 都应清空并禁用');
-  assert.equal(tombNamesHit.length, TOMBSTONES.length, '合成 order 应包含全部墓碑 marker');
   assert.equal(report.markers_disabled, TOMBSTONES.length);
+  // main 作为 marker=false 的普通内建条目，应保留内容、按 order.enabled=true 启用
+  const mainEntry = entries.find(e => e.name === 'Main Prompt');
+  assert.ok(mainEntry, 'main 应入库');
+  assert.equal(mainEntry.is_marker, false, 'main 不应作为 marker');
+  assert.equal(mainEntry.content, '主提示正文内容', 'main 应保留正文');
+  assert.equal(mainEntry.enabled, true, 'main 按 order.enabled=true 应启用');
 
   // 6) sort_order 严格单调递增
   const sortedBySortOrder = [...entries].sort((a, b) => a.sort_order - b.sort_order);

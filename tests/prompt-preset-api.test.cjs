@@ -57,11 +57,21 @@ const exportRouteModulePath = require.resolve(path.join(
   'export',
   'route.ts',
 ));
+const presetRouteModulePath = require.resolve(path.join(
+  root,
+  'src',
+  'app',
+  'api',
+  'prompt-presets',
+  '[id]',
+  'route.ts',
+));
 
 let db;
 let presetLib;
 let entryRoute;
 let exportRoute;
+let presetRoute;
 
 test.beforeEach(() => {
   const keysBefore = Object.keys(require.cache).filter(key => (
@@ -80,6 +90,7 @@ test.beforeEach(() => {
   presetLib = require(presetModulePath);
   entryRoute = require(entryRouteModulePath);
   exportRoute = require(exportRouteModulePath);
+  presetRoute = require(presetRouteModulePath);
 });
 
 test.afterEach(() => {
@@ -145,4 +156,24 @@ test('export uses an ASCII-safe Content-Disposition with UTF-8 filename metadata
 
   const payload = await response.json();
   assert.equal(payload.preset.name, preset.name);
+});
+
+test('preset PATCH rejects invalid and conflicting strip_tags', async () => {
+  const preset = presetLib.createPreset({ name: 'Rules' });
+  const params = { params: Promise.resolve({ id: preset.id }) };
+
+  for (const strip_tags of [['#'], ['content', '#CONTENT']]) {
+    const request = new NextRequest(
+      `http://localhost/api/prompt-presets/${preset.id}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strip_tags }),
+      },
+    );
+    const response = await presetRoute.PATCH(request, params);
+    assert.equal(response.status, 400);
+  }
+
+  assert.deepEqual(presetLib.getPreset(preset.id).strip_tags, []);
 });

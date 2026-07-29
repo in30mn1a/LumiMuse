@@ -10,6 +10,7 @@
 
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
+import { stripTagRulesSchema } from '@/lib/schemas';
 import { loadSettings } from '@/lib/settings';
 import {
   Character,
@@ -21,6 +22,14 @@ import {
 /** 特殊 sentinel：characters.active_preset_id === '__none__' 表示禁用预设（与全局默认无关）。 */
 export const PRESET_ID_NONE = '__none__';
 
+function parseStripTags(value: unknown): string[] {
+  const parsed = stripTagRulesSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`Invalid strip_tags: ${parsed.error.issues.map(issue => issue.message).join('; ')}`);
+  }
+  return parsed.data;
+}
+
 function genId(): string {
   return crypto.randomUUID();
 }
@@ -30,12 +39,24 @@ function nowIso(): string {
 }
 
 function rowToPreset(row: Record<string, unknown>): PromptPreset {
+  const stripTagsRaw = row.strip_tags;
+  let stripTags: string[] = [];
+  if (typeof stripTagsRaw === 'string' && stripTagsRaw.trim()) {
+    try {
+      const parsed = JSON.parse(stripTagsRaw) as unknown;
+      const validated = stripTagRulesSchema.safeParse(parsed);
+      if (validated.success) stripTags = validated.data;
+    } catch {
+      // 非法 JSON 视作空列表（不应该发生，迁移默认 '[]'）
+    }
+  }
   return {
     id: row.id as string,
     name: row.name as string,
     description: (row.description as string | null) ?? '',
     is_built_in: (row.is_built_in as number) === 1,
     story_plot_strip: (row.story_plot_strip as number | null | undefined) === 1,
+    strip_tags: stripTags,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };
@@ -91,26 +112,39 @@ export function getPreset(id: string): PromptPreset | null {
   return row ? rowToPreset(row) : null;
 }
 
-export function createPreset(input: { name: string; description?: string; id?: string; story_plot_strip?: boolean }): PromptPreset {
+export function createPreset(input: { name: string; description?: string; id?: string; story_plot_strip?: boolean; strip_tags?: string[] }): PromptPreset {
   const db = getDb();
   const id = input.id ?? genId();
   const now = nowIso();
+  const stripTags = parseStripTags(input.strip_tags ?? []);
   db.prepare(`
-    INSERT INTO prompt_presets (id, name, description, is_built_in, story_plot_strip, created_at, updated_at)
-    VALUES (?, ?, ?, 0, ?, ?, ?)
-  `).run(id, input.name.trim() || '未命名预设', input.description ?? '', (input.story_plot_strip ?? false) ? 1 : 0, now, now);
+    INSERT INTO prompt_presets (
+      id, name, description, is_built_in, story_plot_strip,
+      strip_tags, created_at, updated_at
+    )
+    VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.name.trim() || '未命名预设',
+    input.description ?? '',
+    (input.story_plot_strip ?? false) ? 1 : 0,
+    JSON.stringify(stripTags),
+    now,
+    now,
+  );
   return {
     id,
     name: input.name.trim() || '未命名预设',
     description: input.description ?? '',
     is_built_in: false,
     story_plot_strip: input.story_plot_strip ?? false,
+    strip_tags: stripTags,
     created_at: now,
     updated_at: now,
   };
 }
 
-export function updatePreset(id: string, patch: Partial<Pick<PromptPreset, 'name' | 'description' | 'is_built_in' | 'story_plot_strip'>>): void {
+export function updatePreset(id: string, patch: Partial<Pick<PromptPreset, 'name' | 'description' | 'is_built_in' | 'story_plot_strip' | 'strip_tags'>>): void {
   const db = getDb();
   const fields: string[] = [];
   const values: unknown[] = [];
@@ -118,6 +152,11 @@ export function updatePreset(id: string, patch: Partial<Pick<PromptPreset, 'name
   if (patch.description !== undefined) { fields.push('description = ?'); values.push(patch.description); }
   if (patch.is_built_in !== undefined) { fields.push('is_built_in = ?'); values.push(patch.is_built_in ? 1 : 0); }
   if (patch.story_plot_strip !== undefined) { fields.push('story_plot_strip = ?'); values.push(patch.story_plot_strip ? 1 : 0); }
+  if (patch.strip_tags !== undefined) {
+    const tags = parseStripTags(patch.strip_tags);
+    fields.push('strip_tags = ?');
+    values.push(JSON.stringify(tags));
+  }
   if (fields.length === 0) return;
   fields.push('updated_at = ?');
   values.push(nowIso());

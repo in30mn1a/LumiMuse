@@ -1,11 +1,12 @@
 /**
- * SillyTavern 宏子集处理（RONG 预设依赖的关键宏）。
+ * SillyTavern 宏子集处理（RONG / 可待风格预设依赖的关键宏）。
  *
- * 支持 4 类核心宏：
+ * 支持 5 类核心宏：
  *   - {{setvar::name::value}}   定义变量；该条目本身**不输出文本**（但保留同条目中其余文本）
  *   - {{addvar::name::value}}   append 到变量
  *   - {{getvar::name}}          替换为当前变量值（空字符串若未定义）
  *   - {{lastUserMessage}}       替换为最新 user 消息原文（去时间戳）
+ *   - {{trim}}                  删除宏周围连续换行，保留普通水平空格
  *
  * 用法（与 prompt-preset-assembler 集成）：
  *   1. 第一遍扫所有 relative 启用条目：逐条处理其中出现的 setvar/addvar → 累积 variables map。
@@ -126,6 +127,16 @@ export function collectSetAndAddVars(content: string, state: StMacroState): stri
 }
 
 /**
+ * 对齐 SillyTavern 的非 scoped {{trim}}：删除宏自身及其前后连续换行，
+ * 但保留普通水平空格；宏名大小写不敏感。
+ * 官方实现位于 public/scripts/macros.js，正则 source 为
+ * `(?:\r?\n)*{{trim}}(?:\r?\n)*`，flags 为 `gi`。
+ */
+export function applyTrimMacro(content: string): string {
+  return content.replace(/(?:\r?\n)*\{\{trim\}\}(?:\r?\n)*/gi, '');
+}
+
+/**
  * 处理一段 content：
  *   - {{getvar::name}} 替换为 state.variables.get(name) ?? ''
  *   - {{lastUserMessage}} 替换为 lastUserMessage
@@ -135,7 +146,7 @@ export function expandGetVars(
   state: StMacroState,
   lastUserMessage: string,
 ): string {
-  return content
+  return applyTrimMacro(content)
     .replace(/\{\{getvar::([^}:]+)\}\}/g, (match, name: string) => state.variables.get(name.trim()) ?? '')
     .replace(/\{\{lastUserMessage\}\}/g, () => lastUserMessage);
 }

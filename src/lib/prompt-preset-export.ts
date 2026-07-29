@@ -7,7 +7,7 @@
 import { listEntries, getPreset } from '@/lib/prompt-presets';
 import { PresetEntry, PromptPreset } from '@/types';
 
-/** LumiMuse native：完整保真（含 enabled/sort_order/story_plot_strip/MarkerKey/is_marker） */
+/** LumiMuse native：完整保真（含 enabled/sort_order/story_plot_strip/strip_tags/MarkerKey/is_marker） */
 export interface LumiMusePresetExport {
   version: 1;
   format: 'lumimuse-prompt-preset';
@@ -15,6 +15,7 @@ export interface LumiMusePresetExport {
     name: string;
     description: string;
     story_plot_strip: boolean;
+    strip_tags: string[];
   };
   entries: Array<{
     name: string;
@@ -43,6 +44,7 @@ export function buildLumiMusePresetExport(presetId: string): LumiMusePresetExpor
       name: preset.name,
       description: preset.description,
       story_plot_strip: preset.story_plot_strip,
+      strip_tags: preset.strip_tags,
     },
     entries: entries.map(e => ({
       name: e.name,

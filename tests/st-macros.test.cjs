@@ -27,7 +27,7 @@ require.extensions['.ts'] = function (module, filename) {
   module._compile(output.outputText, filename);
 };
 
-const { collectSetAndAddVars, createStMacroState, expandGetVars, processStMacrosOnce } = require(path.join(root, 'src', 'lib', 'st-macros.ts'));
+const { applyTrimMacro, collectSetAndAddVars, createStMacroState, expandGetVars, processStMacrosOnce } = require(path.join(root, 'src', 'lib', 'st-macros.ts'));
 
 test('setvar 收集 + 从 content 中剥离', () => {
   const state = createStMacroState();
@@ -146,4 +146,29 @@ test('未闭合 setvar 不抛出，原文保留', () => {
   const out = collectSetAndAddVars(src, state);
   assert.equal(out, '{{setvar::x::unclosed');
   assert.equal(state.variables.get('x'), undefined);
+});
+
+// ============================================================
+// {{trim}}
+// ============================================================
+
+test('{{trim}} 删除宏周围全部换行，但保留普通水平空格', () => {
+  assert.equal(applyTrimMacro('{{trim}}'), '');
+  assert.equal(applyTrimMacro('\n{{trim}}\n'), '');
+  assert.equal(applyTrimMacro('A\n\n{{trim}}\r\n\nB'), 'AB');
+  assert.equal(applyTrimMacro('A {{trim}} B'), 'A  B');
+  assert.equal(applyTrimMacro('\n  {{trim}}  \n'), '\n    \n');
+});
+
+test('{{trim}} 大小写不敏感', () => {
+  assert.equal(applyTrimMacro('A\n{{TRIM}}\nB'), 'AB');
+  assert.equal(applyTrimMacro('A\n{{Trim}}\nB'), 'AB');
+});
+
+test('{{trim}} 与 getvar / lastUserMessage 同管线生效', () => {
+  const state = createStMacroState();
+  state.variables.set('v', 'X');
+  assert.equal(expandGetVars('A\n{{trim}}\n{{getvar::v}}\n{{lastUserMessage}}', state, 'hi'),
+    'AX\nhi');
+  assert.equal(expandGetVars('{{trim}}{{getvar::v}}', state, 'hi'), 'X');
 });

@@ -98,25 +98,29 @@ test('order.entry.enabled 优先于 prompt.enabled', () => {
   assert.equal(e.enabled, false, 'order.enabled=false 应胜出');
 });
 
-test('order 缺失 prompt：追加到末尾，enabled 取 prompt.enabled', () => {
+test('order 缺失 prompt：追加到末尾并强制 disabled（酒馆不渲染未列入 order 的条目）', () => {
   const id1 = 'aaaaaaaa-1111-4111-a111-111111111113';
   const id2 = 'aaaaaaaa-1111-4111-a111-111111111114';
+  const id3 = 'aaaaaaaa-1111-4111-a111-111111111115';
   const report = importLib.importSillyTavernPreset(JSON.stringify({
     prompts: [
       { identifier: id1, name: 'in-order', role: 'user', enabled: true },
-      { identifier: id2, name: 'not-in-order', role: 'user', enabled: false },
+      { identifier: id2, name: 'not-in-order-false', role: 'user', enabled: false },
+      { identifier: id3, name: 'not-in-order-true', role: 'user', enabled: true },
     ],
     prompt_order: [{ character_id: 100001, order: [{ identifier: id1, enabled: true }] }],
   }));
-  assert.equal(report.total, 2);
+  assert.equal(report.total, 3);
   const entries = presetLib.listEntries(report.preset_id);
   const e1 = entries.find(e => e.name === 'in-order');
-  const e2 = entries.find(e => e.name === 'not-in-order');
-  assert.ok(e1 && e2);
-  assert.notEqual(e1.id, id1, '外部 identifier 不应复用为内部主键');
-  assert.notEqual(e2.id, id2, '外部 identifier 不应复用为内部主键');
+  const e2 = entries.find(e => e.name === 'not-in-order-false');
+  const e3 = entries.find(e => e.name === 'not-in-order-true');
+  assert.ok(e1 && e2 && e3);
   assert.ok(e1.sort_order < e2.sort_order, '未在 order 中的应排到后面');
-  assert.equal(e2.enabled, false, '未在 order 中的按 prompt.enabled 走');
+  assert.ok(e2.sort_order < e3.sort_order, '未在 order 中的相对顺序保持');
+  assert.equal(e1.enabled, true, 'order.enabled=true 应生效');
+  assert.equal(e2.enabled, false, '未在 order 中的强制 disabled（不受 prompt.enabled=false 影响）');
+  assert.equal(e3.enabled, false, '未在 order 中的即使 prompt.enabled=true 也应强制 disabled');
 });
 
 test('order 引用不存在的 prompt：剔除', () => {
@@ -143,25 +147,49 @@ test('核心 6 marker 全部识别', () => {
   assert.equal(charDesc.content, '');
 });
 
-test('墓碑 marker：worldInfo/personaDescription/main 自动 disabled + content 为空', () => {
+test('墓碑 marker：marker=true 的内建占位条目自动 disabled + content 为空', () => {
   const report = importLib.importSillyTavernPreset(JSON.stringify({
     prompts: [
-      { identifier: 'worldInfoBefore', name: 'World Info (before)', role: 'user', enabled: true },
-      { identifier: 'main', name: 'Main Prompt', role: 'system', enabled: true },
+      { identifier: 'worldInfoBefore', name: 'World Info (before)', role: 'user', enabled: true, marker: true },
+      { identifier: 'personaDescription', name: 'Persona Description', role: 'user', enabled: true, marker: true },
+      { identifier: 'agentTask', name: 'Agent Task', role: 'user', enabled: true, marker: true },
     ],
     prompt_order: [{ character_id: 100001, order: [
       { identifier: 'worldInfoBefore', enabled: true },
-      { identifier: 'main', enabled: true },
+      { identifier: 'personaDescription', enabled: true },
+      { identifier: 'agentTask', enabled: true },
     ]}],
   }));
-  assert.equal(report.markers_disabled, 2);
+  assert.equal(report.markers_disabled, 3, 'marker=true 且非核心映射的条目都应转墓碑');
   const entries = presetLib.listEntries(report.preset_id);
   for (const e of entries) {
     assert.equal(e.enabled, false, `${e.name} 应自动 disabled`);
-    assert.equal(e.content, '');
+    assert.equal(e.content, '', `${e.name} 应 content 为空`);
     assert.equal(e.is_marker, false);
     assert.equal(e.marker_key, null);
   }
+});
+
+test('marker=false 的内建 regular 条目（main/jailbreak 等）保留内容并按 order.enabled 启用', () => {
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    prompts: [
+      { identifier: 'main', name: 'Main Prompt', role: 'system', enabled: true, marker: false, content: '这是主提示正文' },
+      { identifier: 'jailbreak', name: 'Post-History', role: 'system', enabled: false, marker: false, content: '越狱正文' },
+    ],
+    prompt_order: [{ character_id: 100001, order: [
+      { identifier: 'main', enabled: true },
+      { identifier: 'jailbreak', enabled: false },
+    ]}],
+  }));
+  assert.equal(report.markers_disabled, 0, 'marker=false 的内建条目不应转墓碑');
+  const entries = presetLib.listEntries(report.preset_id);
+  const main = entries.find(e => e.name === 'Main Prompt');
+  const jailbreak = entries.find(e => e.name === 'Post-History');
+  assert.ok(main && jailbreak);
+  assert.equal(main.content, '这是主提示正文', 'marker=false 的 main 应保留正文');
+  assert.equal(main.enabled, true, 'order.enabled=true 应生效');
+  assert.equal(jailbreak.content, '越狱正文', 'marker=false 的 jailbreak 应保留正文');
+  assert.equal(jailbreak.enabled, false, 'order.enabled=false 应生效');
 });
 
 test('injection_trigger 字段忽略（Q6b）', () => {
@@ -218,6 +246,7 @@ test('LumiMuse native export can be imported with all preset and entry fields pr
     name: '原生往返',
     description: '完整描述',
     story_plot_strip: true,
+    strip_tags: ['content', 'scene', '#think'],
   });
   presetLib.upsertEntry({
     preset_id: source.id,
@@ -255,12 +284,39 @@ test('LumiMuse native export can be imported with all preset and entry fields pr
   assert.equal(importedPreset.name, source.name);
   assert.equal(importedPreset.description, source.description);
   assert.equal(importedPreset.story_plot_strip, true);
+  assert.deepEqual(importedPreset.strip_tags, source.strip_tags, 'strip_tags 应完整往返');
   assert.equal(report.total, originalEntries.length);
   assert.deepEqual(
     importedEntries.map(({ id, preset_id, created_at, updated_at, ...entry }) => entry),
     originalEntries.map(({ id, preset_id, created_at, updated_at, ...entry }) => entry),
   );
   assert.ok(importedEntries.every((entry, index) => entry.id !== originalEntries[index].id));
+});
+
+test('legacy LumiMuse v1 without strip_tags imports with empty rules for re-import', () => {
+  const source = presetLib.createPreset({
+    name: 'legacy native',
+    story_plot_strip: true,
+  });
+  const exported = exportLib.buildLumiMusePresetExport(source.id);
+  delete exported.preset.strip_tags;
+
+  const report = importLib.importSillyTavernPreset(JSON.stringify(exported));
+  const importedPreset = presetLib.getPreset(report.preset_id);
+
+  assert.deepEqual(importedPreset.strip_tags, []);
+});
+
+test('LumiMuse native explicit empty strip_tags is preserved', () => {
+  const source = presetLib.createPreset({
+    name: 'explicitly empty native',
+    story_plot_strip: true,
+    strip_tags: [],
+  });
+  const exported = exportLib.buildLumiMusePresetExport(source.id);
+
+  const report = importLib.importSillyTavernPreset(JSON.stringify(exported));
+  assert.deepEqual(presetLib.getPreset(report.preset_id).strip_tags, []);
 });
 
 test('LumiMuse native import rejects malformed metadata or entries without partial writes', () => {
@@ -300,4 +356,79 @@ test('LumiMuse native import rejects malformed metadata or entries without parti
     );
   }
   assert.equal(presetLib.listPresets().length, presetCountBefore);
+});
+
+test('LumiMuse native import rejects invalid, duplicate, or conflicting strip_tags without writes', () => {
+  const source = presetLib.createPreset({ name: 'strict strip tags' });
+  const exported = exportLib.buildLumiMusePresetExport(source.id);
+  const presetCountBefore = presetLib.listPresets().length;
+  const invalidRules = [
+    ['#'],
+    [''],
+    ['not a tag'],
+    ['content', 'CONTENT'],
+    ['think', '#Think'],
+  ];
+
+  for (const strip_tags of invalidRules) {
+    assert.throws(
+      () => importLib.importSillyTavernPreset(JSON.stringify({
+        ...exported,
+        preset: { ...exported.preset, strip_tags },
+      })),
+      /strip_tags/,
+    );
+  }
+  assert.equal(presetLib.listPresets().length, presetCountBefore);
+});
+
+test('auto-detect 可待协议：content+thinking 同时出现 → 默认 strip_tags 含 scene/content/#think/#thinking/#output-template', () => {
+  const id = 'aaaaaaaa-1111-4111-a111-111111111120';
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    prompts: [{
+      identifier: id,
+      name: 'kedai-formatter',
+      role: 'user',
+      enabled: true,
+      // 内含 content+scene+thinking+output-template 指导
+      content: '请在 <scene>…地点…</scene> 后用 <content>…正文…</content> 回应，思考放 <thinking>…</thinking> 或 <think>…</think>，输出遵循 <output-template>',
+    }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: id, enabled: true }] }],
+  }));
+  const preset = presetLib.getPreset(report.preset_id);
+  assert.equal(preset.story_plot_strip, true, '可待协议应开启剥离');
+  assert.deepEqual(
+    preset.strip_tags,
+    ['content', 'scene', '#think', '#thinking', '#output-template'],
+    'strip_tags 应包含 block 容器 + drop 草稿/模板',
+  );
+});
+
+test('auto-detect RONG 协议不与可待混淆：story_plot 单独出现 → 默认 strip_tags 是 RONG 列表', () => {
+  const id = 'aaaaaaaa-1111-4111-a111-111111111121';
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    prompts: [{
+      identifier: id, name: 'rong-protocol', role: 'user', enabled: true,
+      content: '{{setvar::rong_story_protocol::STORY_PLOT_OUTPUT}}<story_plot><story_body>…</story_body></story_plot>',
+    }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: id, enabled: true }] }],
+  }));
+  const preset = presetLib.getPreset(report.preset_id);
+  assert.equal(preset.story_plot_strip, true);
+  assert.deepEqual(
+    preset.strip_tags,
+    ['story_plot', 'story_scene', 'story_body', 'story_after_format', 'story_done'],
+    'RONG 应启用旧剥离路径专用 tag 列表',
+  );
+});
+
+test('两协议都不命中：strip_tags=[] 且 story_plot_strip=false', () => {
+  const id = 'aaaaaaaa-1111-4111-a111-111111111122';
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    prompts: [{ identifier: id, name: 'plain', role: 'user', enabled: true, content: '完全没协议的普通提示' }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: id, enabled: true }] }],
+  }));
+  const preset = presetLib.getPreset(report.preset_id);
+  assert.equal(preset.story_plot_strip, false);
+  assert.deepEqual(preset.strip_tags, []);
 });

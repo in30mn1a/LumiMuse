@@ -348,8 +348,17 @@ export interface PromptPreset {
   name: string;
   description: string;
   is_built_in: boolean;
-  /** 落库前是否剥掉 SillyTavern 剧本协议 XML（<story_plot> 容器、<story_scene>、</story_body>、<story_after_format> 等）。 */
+  /** 落库前是否剥掉 AI 回复中的预设包装 XML 容器。 */
   story_plot_strip: boolean;
+  /**
+   * 预设自带的剥离规则：tag 名列表（如 ['story_plot', 'story_body']）。DB 里存 JSON 字符串。
+   * 导入时由 preset 内容自动检测生成默认值，UI 可手工增删。
+   *   - 'xxx'      剥开/闭合 <xxx> 保留内部文本（如 <content>…正文…</content> → 正文）
+   *   - '#xxx'     <xxx> 起整段连内容丢弃，EOF 未闭合也丢（如 #thinking 思考草稿）
+   * 普通 'story_plot' block 规则走 RONG 旧协议专用逻辑（保 body 弃 scene，仅开头触发）；
+   * '#story_plot' 仍按通用 drop 规则处理。
+   */
+  strip_tags: string[];
   created_at: string;
   updated_at: string;
 }

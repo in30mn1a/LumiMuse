@@ -345,6 +345,41 @@ const presetMarkerKeySchema = z.enum([
   'memoryPackage',
 ]);
 
+const stripTagRuleSchema = z.string()
+  .max(64)
+  .regex(
+    /^#?[A-Za-z][A-Za-z0-9_-]*$/,
+    'must be an optional # followed by a valid tag name',
+  );
+
+/**
+ * strip_tags 规则：
+ * - `tag`：剥容器、保留内容
+ * - `#tag`：删除整个块
+ *
+ * 参数化标签匹配大小写不敏感；规则身份也按此判定，因此重复规则以及同名
+ * block/drop 冲突都拒绝，避免让数组顺序隐式决定语义。
+ */
+export const stripTagRulesSchema = z.array(stripTagRuleSchema).max(64).superRefine((rules, ctx) => {
+  const seen = new Map<string, { drop: boolean; index: number }>();
+  rules.forEach((rule, index) => {
+    const drop = rule.startsWith('#');
+    const name = (drop ? rule.slice(1) : rule).toLowerCase();
+    const previous = seen.get(name);
+    if (!previous) {
+      seen.set(name, { drop, index });
+      return;
+    }
+    ctx.addIssue({
+      code: 'custom',
+      path: [index],
+      message: previous.drop === drop
+        ? `duplicates strip_tags[${previous.index}]`
+        : `conflicts with strip_tags[${previous.index}]`,
+    });
+  });
+});
+
 export const promptPresetCreateSchema = z.object({
   name: z.string().min(1).max(MAX_NAME),
   description: z.string().max(MAX_SHORT_SETTING).optional(),
@@ -355,6 +390,7 @@ export const promptPresetUpdateSchema = z.object({
   name: z.string().min(1).max(MAX_NAME).optional(),
   description: z.string().max(MAX_SHORT_SETTING).optional(),
   story_plot_strip: z.boolean().optional(),
+  strip_tags: stripTagRulesSchema.optional(),
 });
 export type PromptPresetUpdate = z.infer<typeof promptPresetUpdateSchema>;
 

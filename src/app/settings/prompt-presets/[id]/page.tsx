@@ -34,7 +34,8 @@ export default function PresetDetailPage({ params }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
 
-  const [preset, setPreset] = useState<{ id: string; name: string; description: string; story_plot_strip: boolean } | null>(null);
+  const [preset, setPreset] = useState<{ id: string; name: string; description: string; story_plot_strip: boolean; strip_tags: string[] } | null>(null);
+  const [newTagInput, setNewTagInput] = useState('');
   const [entries, setEntries] = useState<PresetEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -81,6 +82,39 @@ export default function PresetDetailPage({ params }: Props) {
     } finally {
       finishAction();
     }
+  };
+
+  const updateStripTags = async (nextTags: string[]): Promise<boolean> => {
+    if (!preset || !beginAction('strip-tags')) return false;
+    try {
+      const res = await fetch(`/api/prompt-presets/${preset.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strip_tags: nextTags }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setPreset(current => current?.id === preset.id ? { ...current, strip_tags: nextTags } : current);
+      showToast(t('preset.stripTagsUpdateSuccess'), 'success');
+      return true;
+    } catch (err) {
+      showToast(`${t('preset.toggleError')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      return false;
+    } finally {
+      finishAction();
+    }
+  };
+
+  const addStripTag = async () => {
+    const tag = newTagInput.trim();
+    if (!tag || !preset) return;
+    if (preset.strip_tags.includes(tag)) { setNewTagInput(''); return; }
+    const updated = await updateStripTags([...preset.strip_tags, tag]);
+    if (updated) setNewTagInput('');
+  };
+
+  const removeStripTag = async (tag: string) => {
+    if (!preset) return;
+    await updateStripTags(preset.strip_tags.filter(tg => tg !== tag));
   };
 
   // 统一的"保留视口位置"工具：执行任何会触发整列重渲染的 setState，需要包住它
@@ -338,7 +372,7 @@ export default function PresetDetailPage({ params }: Props) {
               {preset.description && (
                 <p className="mt-1 section-copy">{preset.description}</p>
               )}
-              <div className="mt-3 flex items-center gap-2">
+              <div className="mt-3 flex flex-col gap-2">
                 <label className="flex items-center gap-2 text-xs text-text-muted">
                   <input
                     type="checkbox"
@@ -348,6 +382,49 @@ export default function PresetDetailPage({ params }: Props) {
                   />
                   {t('preset.storyPlotStripLabel')}
                 </label>
+                {preset.story_plot_strip && (
+                  <div className="flex flex-col gap-1.5">
+                    <p className="text-xs text-text-muted">{t('preset.stripTagsHint')}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {preset.strip_tags.map(tag => (
+                        <span
+                          key={tag}
+                          className="inline-flex items-center gap-1 rounded bg-surface-2 px-2 py-0.5 text-xs text-text-secondary"
+                        >
+                          <code>{tag}</code>
+                          <button
+                            type="button"
+                            onClick={() => void removeStripTag(tag)}
+                            disabled={pendingAction !== null}
+                            className="text-text-muted hover:text-red-400 disabled:opacity-40"
+                            aria-label={`remove ${tag}`}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={newTagInput}
+                        onChange={e => setNewTagInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') void addStripTag(); }}
+                        placeholder={t('preset.stripTagPlaceholder')}
+                        disabled={pendingAction !== null}
+                        className="w-48 rounded border border-border bg-surface px-2 py-1 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void addStripTag()}
+                        disabled={pendingAction !== null || !newTagInput.trim()}
+                        className="soft-button soft-button-secondary px-2 py-1 text-xs disabled:opacity-40"
+                      >
+                        {t('preset.stripTagAdd')}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             <Link href="/settings/prompt-presets" className="soft-button soft-button-secondary shrink-0 px-3 py-2">

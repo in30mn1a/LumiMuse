@@ -28,8 +28,8 @@ import {
 } from '@/lib/image-prompt-sensitive-tags';
 import { mergeConsecutiveRoles } from '@/lib/merge-messages';
 import {
-  stripStoryPlotForStreamingChunk,
-  stripStoryPlotXml,
+  stripByPresetRules,
+  stripByPresetRulesForStreamingChunk,
 } from '@/lib/story-plot-strip';
 
 /**
@@ -156,6 +156,7 @@ export function finalizeAssistantResponse(
   rawText: string,
   options: {
     storyPlotStrip: boolean;
+    stripTags: string[];
     characterImageTags: string;
   },
 ): { fullText: string; inlinePrompt: string } {
@@ -167,8 +168,8 @@ export function finalizeAssistantResponse(
   const withoutInlinePrompt = rawInlinePrompt
     ? stripInlinePrompt(withoutTimestamp)
     : withoutTimestamp;
-  const fullText = options.storyPlotStrip
-    ? stripStoryPlotXml(withoutInlinePrompt)
+  const fullText = options.storyPlotStrip && options.stripTags.length > 0
+    ? stripByPresetRules(withoutInlinePrompt, options.stripTags)
     : withoutInlinePrompt;
 
   return { fullText, inlinePrompt };
@@ -654,6 +655,7 @@ export async function runChat(
   const saveAssistantMessage = async (rawText: string) => {
     const { fullText, inlinePrompt } = finalizeAssistantResponse(rawText, {
       storyPlotStrip: activePreset?.story_plot_strip === true,
+      stripTags: activePreset?.strip_tags ?? [],
       characterImageTags: character.image_tags,
     });
     const tokenResult = createMessageTokenCount(fullText, 'assistant');
@@ -779,10 +781,11 @@ export async function runChat(
   };
 
   if (settings.streaming) {
-    // story_plot_strip 流式剥离：每收到 chunk 累积后即时剥开 <story_plot>/<story_scene>/<story_body> 头容器，
-    // 同步发给前端的 chunk 是干净正文，避免 UI 出现"<story_plot>"标签闪烁。
-    // 最终 saveAssistantMessage 仍会跑完整 stripStoryPlotXml（处理闭合 tag 末尾残留）。
-    const isStoryStrip = activePreset?.story_plot_strip === true;
+    // story_plot_strip 流式剥离：每收到 chunk 累积后即时剥开预设 strip_tags 声明的容器 tag，
+    // 同步发给前端的 chunk 是干净正文，避免 UI 出现包装标签闪烁。
+    // 最终 saveAssistantMessage 仍会跑完整 stripByPresetRules（处理闭合 tag 末尾残留）。
+    const isStoryStrip = activePreset?.story_plot_strip === true && (activePreset?.strip_tags?.length ?? 0) > 0;
+    const stripTags = activePreset?.strip_tags ?? [];
     let streamBuffer = '';
     let streamBufferFlushedLen = 0;
     await chatCompletionStream(settings, chatMessages, {
@@ -793,13 +796,29 @@ export async function runChat(
         }
         streamBuffer += text;
         // 当前已剥离的内容应是 buffer 的安全前缀
-        const stripped = stripStoryPlotForStreamingChunk(streamBuffer);
+        const stripped = stripByPresetRulesForStreamingChunk(streamBuffer, stripTags);
         if (stripped.length > streamBufferFlushedLen) {
           callbacks.onChunk(stripped.slice(streamBufferFlushedLen));
           streamBufferFlushedLen = stripped.length;
         }
       },
-      onDone: saveAssistantMessage,
+      onDone: async (rawText) => {
+        if (isStoryStrip) {
+          // 流式扫描器会暂存尾部空白或可能跨 chunk 的协议前缀；EOF/abort 时用最终
+          // 剥离结果补发仍未发送的安全后缀，保证前端累积文本与最终落库内容一致。
+          const streamedPrefix = stripByPresetRulesForStreamingChunk(streamBuffer, stripTags);
+          const finalStripped = stripByPresetRules(rawText, stripTags);
+          if (
+            streamedPrefix.length === streamBufferFlushedLen
+            && finalStripped.startsWith(streamedPrefix)
+            && finalStripped.length > streamBufferFlushedLen
+          ) {
+            callbacks.onChunk(finalStripped.slice(streamBufferFlushedLen));
+            streamBufferFlushedLen = finalStripped.length;
+          }
+        }
+        await saveAssistantMessage(rawText);
+      },
       onError: callbacks.onError,
       onUsage: (usage) => { capturedUsage = usage; },
       signal: options?.signal,

@@ -9,9 +9,12 @@
  *   - 条目 identifier 是 uuid → 普通文本条目（is_marker=false）
  *   - identifier 是酒馆内建 marker（如 'charDescription'）：
  *       * charDescription/charPersonality/scenario/dialogueExamples/chatHistory → 6 条核心 marker
- *       * worldInfoBefore/After、personaDescription、main、nsfw、jailbreak、enhanceDefinitions → 墓碑（is_marker=false, content='', enabled=false, name 保留）
+ *       * 其余 marker 条目（worldInfoBefore/After、personaDescription、agentTask 等）→ 墓碑
+ *         （is_marker=false, content='', enabled=false, name 保留）
+ *   - marker 判据取条目自带的 `marker` 字段：酒馆的 marker 是无正文占位符，而 main/nsfw/
+ *     jailbreak/enhanceDefinitions 是**有正文的普通内建条目**，按普通文本条目导入
  *   - prompt_order.entry.enabled 优先于 prompt.enabled（Q2 单层：合并到 entries.enabled）
- *   - prompt_order 缺失的 prompt：追加到末尾（sort_order 继续递增，enabled 取 prompt.enabled）
+ *   - prompt_order 缺失的 prompt：追加到末尾并强制 disabled（酒馆不渲染未列入 order 的条目）
  *   - prompt_order 引用不存在的 prompt：剔除
  *   - injection_trigger 字段忽略（Q6b 决策）
  *   - sort_order = order 数组下标 * 10
@@ -21,6 +24,7 @@
 
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
+import { stripTagRulesSchema } from '@/lib/schemas';
 import { PresetImportReport, PresetMarkerKey } from '@/types';
 
 /** 酒馆内建 marker → LumiMuse 6 条核心 marker 的映射（Q3）。 */
@@ -33,17 +37,6 @@ const CORE_MARKER_MAP: Record<string, PresetMarkerKey> = {
   // LumiMuse 特有；纳入映射以保证 SillyTavern 兼容格式导出后仍能回导。
   memoryPackage: 'memoryPackage',
 };
-
-/** 酒馆内建但 LumiMuse 无对应概念的 marker（转墓碑）。 */
-const TOMBSTONE_MARKERS = new Set([
-  'worldInfoBefore',
-  'worldInfoAfter',
-  'personaDescription',
-  'main',
-  'nsfw',
-  'jailbreak',
-  'enhanceDefinitions',
-]);
 
 interface RawPrompt {
   identifier: string;
@@ -85,6 +78,7 @@ interface RawLumiMusePreset {
     name: string;
     description: string;
     story_plot_strip: boolean;
+    strip_tags?: string[];
   };
   entries: RawLumiMusePresetEntry[];
 }
@@ -195,6 +189,17 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
     } satisfies RawLumiMusePresetEntry;
   });
 
+  let stripTags: string[] | undefined;
+  if (Object.hasOwn(preset, 'strip_tags')) {
+    const validated = stripTagRulesSchema.safeParse(preset.strip_tags);
+    if (!validated.success) {
+      throw new Error(
+        `导入失败：LumiMuse strip_tags 无效 - ${validated.error.issues.map(issue => issue.message).join('; ')}`,
+      );
+    }
+    stripTags = validated.data;
+  }
+
   return {
     version: 1,
     format: 'lumimuse-prompt-preset',
@@ -202,6 +207,7 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
       name: preset.name,
       description: preset.description,
       story_plot_strip: preset.story_plot_strip,
+      strip_tags: stripTags,
     },
     entries,
   };
@@ -254,17 +260,38 @@ export function importSillyTavernPreset(
   let markersRecognized = 0;
   let markersDisabled = 0;
 
-  // 自动检测剧本协议：任何 prompt content 包含 <story_plot> / {{setvar::rong_var_schema 即视为启用了 STORY_PLOT_OUTPUT 协议
-  // （主人决策 Q3：开启而非默认关闭）。后续聊天落库前会剥掉 story_plot 容器 tag。
-  const hasStoryPlotProtocol = rawPrompts.some(p =>
-    typeof p?.content === 'string' && (p.content.includes('<story_plot') || p.content.includes('setvar::rong_var_schema'))
-  );
+  // 自动检测预设剥离协议 → 生成默认 strip_tags：
+  //   - RONG：任一 content 含 <story_plot 或 {{setvar::rong_var_schema → story_plot_strip=1 + RONG tags
+  //   - 可待：任一 content 同时出现 <content 与 (<thinking|think|output-template) → story_plot_strip=1 + 可待 tags
+  // 两者都不命中 → story_plot_strip=0、strip_tags=[];
+  // UI 可手工增删、往返格式（LumiMuse native export）亦可自定义（见 importLumiMusePreset）。
+  const allContents = rawPrompts.map(p => (typeof p?.content === 'string' ? p.content : '')).join('\n');
+  const isRongProtocol = allContents.includes('<story_plot') || allContents.includes('setvar::rong_var_schema');
+  const isKedaiProtocol = allContents.includes('<content') && /<(thinking|think|output-template)/.test(allContents);
+
+  const RONG_TAGS = [
+    'story_plot',
+    'story_scene',
+    'story_body',
+    'story_after_format',
+    'story_done',
+  ];
+  // 可待预设实际输出：<scene>…地点…</scene> + <content>…正文…</content> + <think|thinking>…思考…</think|thinking> + <output-template>…</output-template>
+  // scene/content 剥 tag 保内部；think/thinking（草稿）与 output-template（模板）成对丢整块。
+  // think 与 thinking 在酒馆生态里常被混用，同时列出两种。
+  const KEDAI_TAGS = ['content', 'scene', '#think', '#thinking', '#output-template'];
+
+  const storyPlotStrip = isRongProtocol || isKedaiProtocol;
+  const defaultStripTags = isRongProtocol ? RONG_TAGS : (isKedaiProtocol ? KEDAI_TAGS : []);
 
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO prompt_presets (id, name, description, is_built_in, story_plot_strip, created_at, updated_at)
-      VALUES (?, ?, '', 0, ?, ?, ?)
-    `).run(presetId, presetName, hasStoryPlotProtocol ? 1 : 0, now, now);
+      INSERT INTO prompt_presets (
+        id, name, description, is_built_in, story_plot_strip,
+        strip_tags, created_at, updated_at
+      )
+      VALUES (?, ?, '', 0, ?, ?, ?, ?)
+    `).run(presetId, presetName, storyPlotStrip ? 1 : 0, JSON.stringify(defaultStripTags), now, now);
 
     const insertEntry = db.prepare(`
       INSERT INTO prompt_preset_entries (
@@ -314,19 +341,18 @@ export function importSillyTavernPreset(
       });
     }
 
-    // 再追加 order 缺失的 prompts（酒馆历史数据偶尔会有）
+    // 再追加 order 缺失的 prompts：酒馆不渲染未列入 order 的条目，故强制 disabled（条目保留，UI 可手动开）
     let appendIndex = rawOrders.length;
     for (const prompt of rawPrompts) {
       if (!prompt || typeof prompt.identifier !== 'string') continue;
       if (handledIdentifiers.has(prompt.identifier)) continue;
       handledIdentifiers.add(prompt.identifier);
       const sortOrder = appendIndex++ * 10;
-      const entryEnabled = typeof prompt.enabled === 'boolean' ? prompt.enabled : true;
       insertOne({
         prompt,
         identifier: prompt.identifier,
         kind: 'extra',
-        entryEnabled,
+        entryEnabled: false,
         sortOrder,
       });
     }
@@ -341,12 +367,15 @@ export function importSillyTavernPreset(
       const { prompt, identifier, entryEnabled, sortOrder } = args;
 
       const isCoreMarker = Object.hasOwn(CORE_MARKER_MAP, identifier);
-      const isTombstone = TOMBSTONE_MARKERS.has(identifier);
+      // 墓碑判据看条目自带的 marker 字段：酒馆的 marker 是无正文占位条目。
+      // main/nsfw/jailbreak/enhanceDefinitions 在酒馆里是 marker=false 的普通内建条目（有正文），
+      // 不在此列，按普通文本条目导入以保留内容。
+      const isTombstone = !isCoreMarker && prompt.marker === true;
 
       // marker 决策：
       //   - 核心 marker → marker_key=CORE_MAP[identifier], is_marker=1, content=''
       //   - 墓碑 marker → is_marker=0, content='', enabled=false
-      //   - uuid / 其他 → 普通文本条目（content= prompt.content）
+      //   - uuid / marker=false 内建条目 → 普通文本条目（content= prompt.content）
       let isMarker = 0;
       let markerKey: PresetMarkerKey | null = null;
       let content = (typeof prompt.content === 'string' ? prompt.content : '');
@@ -396,7 +425,7 @@ export function importSillyTavernPreset(
     enabled: enabledCount,
     markers_recognized: markersRecognized,
     markers_disabled: markersDisabled,
-    story_plot_strip: hasStoryPlotProtocol,
+    story_plot_strip: storyPlotStrip,
   };
 }
 
@@ -412,6 +441,7 @@ function importLumiMusePreset(
   const presetName = sourceName || (opts.presetName && opts.presetName.trim()) || '导入预设';
   const description = typeof data.preset.description === 'string' ? data.preset.description : '';
   const storyPlotStrip = data.preset.story_plot_strip === true;
+  const stripTags = data.preset.strip_tags ?? [];
 
   let total = 0;
   let enabledCount = 0;
@@ -419,9 +449,12 @@ function importLumiMusePreset(
 
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO prompt_presets (id, name, description, is_built_in, story_plot_strip, created_at, updated_at)
-      VALUES (?, ?, ?, 0, ?, ?, ?)
-    `).run(presetId, presetName, description, storyPlotStrip ? 1 : 0, now, now);
+      INSERT INTO prompt_presets (
+        id, name, description, is_built_in, story_plot_strip,
+        strip_tags, created_at, updated_at
+      )
+      VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+    `).run(presetId, presetName, description, storyPlotStrip ? 1 : 0, JSON.stringify(stripTags), now, now);
 
     const insertEntry = db.prepare(`
       INSERT INTO prompt_preset_entries (

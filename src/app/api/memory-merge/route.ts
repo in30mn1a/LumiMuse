@@ -128,7 +128,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       batch_id: executed.batchId,
+      // 同时给 snake_case 与 camelCase：memory-merge 的前期调用方与 undo 断言存在混用，
+      // 前端本次新增 UI 也以 resultMemoryId 展示跳转目标。
       result_memory_id: executed.resultMemoryId,
+      resultMemoryId: executed.resultMemoryId,
       source_ids: executed.sourceIds,
       content: executed.content,
       indexing_queued: indexingQueued,

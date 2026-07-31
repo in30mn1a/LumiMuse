@@ -4,10 +4,18 @@ import { useState, useEffect, useRef } from 'react';
 import { Character } from '@/types';
 import MemoryList from '@/components/memories/MemoryList';
 import Link from 'next/link';
+import Modal from '@/components/ui/Modal';
 import { useTranslation } from '@/lib/i18n-context';
 import { getErrorMessage, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, ChevronDownIcon, MemoryIcon, SparkIcon } from '@/components/ui/icons';
+
+interface MemoryMergeSuggestionSource {
+  id: string;
+  content: string;
+  category: string;
+  tags: string[];
+}
 
 interface MemoryMergeSuggestion {
   source_ids: string[];
@@ -17,6 +25,7 @@ interface MemoryMergeSuggestion {
   importance?: number;
   kind: 'merge' | 'conflict';
   reason?: string;
+  sources: MemoryMergeSuggestionSource[];
 }
 
 interface MemoryAiReviewResult {
@@ -47,6 +56,11 @@ interface PendingMergeSuggestion extends MemoryMergeSuggestion {
   error?: string;
 }
 
+interface MergeSourcesModalState {
+  title: string;
+  sources: MemoryMergeSuggestionSource[];
+}
+
 export default function MemoriesPage() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
@@ -55,6 +69,7 @@ export default function MemoriesPage() {
   const [showMemoryAiReviewChanges, setShowMemoryAiReviewChanges] = useState(false);
   const [mergeSuggestions, setMergeSuggestions] = useState<PendingMergeSuggestion[]>([]);
   const [mergeBusyKey, setMergeBusyKey] = useState<string | null>(null);
+  const [mergeSourcesModal, setMergeSourcesModal] = useState<MergeSourcesModalState | null>(null);
   const [memoryRefreshNonce, setMemoryRefreshNonce] = useState(0);
   const selectedCharIdRef = useRef<string | null>(null);
   const { t } = useTranslation();
@@ -402,6 +417,19 @@ export default function MemoriesPage() {
                         {suggestion.merged_content}
                       </p>
                       <div className="mt-2 flex flex-wrap gap-2">
+                        {suggestion.sources.length > 0 && (
+                          <button
+                            type="button"
+                            disabled={mergeBusyKey === suggestion.key}
+                            onClick={() => setMergeSourcesModal({
+                              title: `${t('memory.mergeSources')} ×${suggestion.sources.length}`,
+                              sources: suggestion.sources,
+                            })}
+                            className="soft-button soft-button-secondary px-3 py-1 text-xs disabled:opacity-50"
+                          >
+                            {t('memory.mergeViewSources')}
+                          </button>
+                        )}
                         {suggestion.kind === 'merge' && suggestion.status !== 'accepted' && (
                           <button
                             type="button"
@@ -457,6 +485,39 @@ export default function MemoriesPage() {
           )}
         </main>
       </div>
+
+      <Modal
+        open={mergeSourcesModal !== null}
+        onClose={() => setMergeSourcesModal(null)}
+        title={mergeSourcesModal?.title}
+        maxWidth="max-w-2xl"
+        padded={false}
+        dialogClassName="flex w-full max-w-2xl max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-white shadow-xl outline-none dark:bg-zinc-900"
+      >
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          {mergeSourcesModal?.sources.map(source => (
+            <div key={source.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-2 dark:bg-white/5">
+              <div className="font-medium text-text-primary break-all">{source.id}</div>
+              <div className="mt-1 text-xs text-text-muted">
+                {source.category}
+                {source.tags.length > 0 ? ` · ${source.tags.join(',')}` : ''}
+              </div>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+                {source.content}
+              </p>
+            </div>
+          ))}
+        </div>
+        <div className="flex shrink-0 justify-end border-t border-border-light px-5 py-3">
+          <button
+            type="button"
+            onClick={() => setMergeSourcesModal(null)}
+            className="soft-button soft-button-secondary px-4 py-2 text-sm"
+          >
+            {t('common.close')}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

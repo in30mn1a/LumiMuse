@@ -245,6 +245,97 @@ test('executeMemoryMerge: rejects overlong content', () => {
   );
 });
 
+test('executeMemoryMerge: merged result timestamp matches latest source memory, not now', () => {
+  const db = createMergeTestDb();
+  insertMemory(db, {
+    id: 's1',
+    content: '较新记忆',
+    created_at: '2026-07-01T00:00:00.000Z',
+    updated_at: '2026-07-10T00:00:00.000Z',
+  });
+  insertMemory(db, {
+    id: 's2',
+    content: '较老记忆',
+    created_at: '2026-06-01T00:00:00.000Z',
+    updated_at: '2026-06-20T00:00:00.000Z',
+  });
+
+  const executed = executeMemoryMerge(db, {
+    batchId: 'batch-ts',
+    characterId: 'char-1',
+    resultMemoryId: 'result-ts',
+    sourceIds: ['s1', 's2'],
+    mergedContent: '合并内容',
+    now: '2026-07-28T01:00:00.000Z',
+  });
+  assert.equal(executed.resultMemoryId, 'result-ts');
+
+  const result = db.prepare('SELECT created_at, updated_at FROM memories WHERE id = ?').get('result-ts');
+  // 期望结果：合并产物不应被标到「当下」，而是取源记忆中最新的 updated_at（2026-07-10）。
+  assert.equal(result.updated_at, '2026-07-10T00:00:00.000Z');
+  assert.equal(result.created_at, '2026-07-10T00:00:00.000Z');
+});
+
+test('executeMemoryMerge: compares mixed SQLite and ISO timestamps chronologically', () => {
+  const db = createMergeTestDb();
+  insertMemory(db, {
+    id: 's1',
+    content: 'ISO 时间记忆',
+    created_at: '2026-07-10T10:00:00.000Z',
+    updated_at: '2026-07-10T11:00:00.000Z',
+  });
+  insertMemory(db, {
+    id: 's2',
+    content: 'SQLite 时间记忆',
+    created_at: '2026-07-10 10:30:00',
+    updated_at: '2026-07-10 12:00:00',
+  });
+
+  executeMemoryMerge(db, {
+    batchId: 'batch-mixed-ts',
+    characterId: 'char-1',
+    resultMemoryId: 'result-mixed-ts',
+    sourceIds: ['s1', 's2'],
+    mergedContent: '合并内容',
+    now: '2026-07-10T13:00:00.000Z',
+  });
+
+  const result = db.prepare('SELECT created_at, updated_at FROM memories WHERE id = ?')
+    .get('result-mixed-ts');
+  assert.equal(result.updated_at, '2026-07-10 12:00:00');
+  assert.equal(result.created_at, '2026-07-10 12:00:00');
+});
+
+test('executeMemoryMerge: ignores empty and invalid source timestamps', () => {
+  const db = createMergeTestDb();
+  insertMemory(db, {
+    id: 's1',
+    content: '无效时间记忆',
+    created_at: '',
+    updated_at: 'not-a-timestamp',
+  });
+  insertMemory(db, {
+    id: 's2',
+    content: '有效时间记忆',
+    created_at: '2026-07-09 10:00:00',
+    updated_at: '2026-07-10T12:00:00.000Z',
+  });
+
+  executeMemoryMerge(db, {
+    batchId: 'batch-invalid-ts',
+    characterId: 'char-1',
+    resultMemoryId: 'result-invalid-ts',
+    sourceIds: ['s1', 's2'],
+    mergedContent: '合并内容',
+    now: '2026-07-10T13:00:00.000Z',
+  });
+
+  const result = db.prepare('SELECT created_at, updated_at FROM memories WHERE id = ?')
+    .get('result-invalid-ts');
+  assert.equal(result.updated_at, '2026-07-10T12:00:00.000Z');
+  assert.equal(result.created_at, '2026-07-10T12:00:00.000Z');
+});
+
 test('executeMemoryMerge: rejects archive-marked memory', () => {
   const db = createMergeTestDb();
   insertMemory(db, { id: 's1', content: 'a', metadata: { archiveBatchId: 'arch-1' } });

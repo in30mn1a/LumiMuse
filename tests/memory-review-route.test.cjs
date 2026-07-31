@@ -1454,6 +1454,7 @@ test('parseMemoryReviewPayload extracts merge_suggestions and drops invalid ones
     importance: 0.7,
     kind: 'merge',
     reason: '重复偏好',
+    sources: [],
   });
   assert.equal(parsed.merge_suggestions[1].kind, 'conflict');
 });
@@ -1528,6 +1529,9 @@ test('/api/memory-review prompt includes merge rules and returns merge_suggestio
   assert.match(capturedPrompt, /kind=conflict/);
   assert.match(capturedPrompt, /标签×出现次数/);
   assert.match(capturedPrompt, /咖啡×1/);
+  assert.ok(capturedPrompt.includes(
+    '4. 人称视角铁律：沿用记忆第一人称约定——记忆是从 AI 角色视角记录的，角色自身用"我"，用户用"用户"；不得写成"用户和LumiMuse"之类的第三人称并列表述，LumiMuse 是系统名，不是角色名，禁止出现在 merged_content 中',
+  ));
   assert.deepEqual(payload.merge_suggestions, [{
     source_ids: ['mem-a', 'mem-b'],
     merged_content: '用户喜欢美式咖啡',
@@ -1536,7 +1540,71 @@ test('/api/memory-review prompt includes merge rules and returns merge_suggestio
     importance: 0.7,
     kind: 'merge',
     reason: '重复描述同一偏好',
+    sources: [
+      { id: 'mem-a', content: '用户喜欢美式咖啡，几乎每天都喝。', category: '偏好习惯', tags: ['咖啡'] },
+      { id: 'mem-b', content: '用户喜欢美式咖啡，几乎每天都喝一杯。', category: '偏好习惯', tags: ['饮品'] },
+    ],
   }]);
+});
+
+test('/api/memory-review excludes memories that become non-active after the plan freezes', async () => {
+  const db = createEmptyReviewDb();
+  insertReviewMemory(db, { id: 'mem-active', content: '用户喜欢美式咖啡。' });
+  insertReviewMemory(db, { id: 'mem-archived', content: '已归档，不应进 prompt。' });
+  insertReviewMemory(db, { id: 'mem-summarized', content: '已总结，不应进 prompt。' });
+  let capturedPrompt = '';
+  let planFreezeHookCalls = 0;
+
+  const route = requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 100 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async (_settings, messages) => {
+        capturedPrompt = messages[0].content;
+        return JSON.stringify({ corrections: [] });
+      },
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => {
+        // 此钩子在 plan 读取完全部 active rows 后、按冻结 id 二次回表前调用。
+        // 模拟 plan 成员在这个竞态窗口中被归档/总结。
+        planFreezeHookCalls += 1;
+        db.prepare("UPDATE memories SET status = 'archived' WHERE id = 'mem-archived'").run();
+        db.prepare("UPDATE memories SET status = 'summarized' WHERE id = 'mem-summarized'").run();
+        return [];
+      },
+      blobToEmbedding: () => new Float32Array(0),
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(planFreezeHookCalls, 1);
+  assert.equal(payload.total_active, 3);
+  assert.match(capturedPrompt, /mem-active/);
+  assert.doesNotMatch(capturedPrompt, /mem-archived/);
+  assert.doesNotMatch(capturedPrompt, /mem-summarized/);
+  assert.equal(payload.reviewed, 1);
 });
 
 test('/api/memory-review drops merge_suggestions whose source_ids are outside the reviewed batch', async () => {

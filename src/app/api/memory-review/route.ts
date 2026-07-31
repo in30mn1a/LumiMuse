@@ -51,6 +51,13 @@ type MemoryReviewCorrection = {
   importance?: number;
 };
 
+export type MemoryMergeSuggestionSource = {
+  id: string;
+  content: string;
+  category: string;
+  tags: string[];
+};
+
 export type MemoryMergeSuggestion = {
   source_ids: string[];
   merged_content: string;
@@ -59,6 +66,8 @@ export type MemoryMergeSuggestion = {
   importance?: number;
   kind: 'merge' | 'conflict';
   reason?: string;
+  /** 源记忆详情（供 UI 查看原记忆），仅服务端按需带出，LLM 输出侧不含此字段。 */
+  sources: MemoryMergeSuggestionSource[];
 };
 
 function parseTags(tags: string): string[] {
@@ -170,6 +179,7 @@ ${TAG_SPEC_PROMPT_SECTION}
   1. merged_content 必须保留全部具体事实，宁长勿简，禁止为简洁丢弃细节
   2. 时序互相否定、无法无损合并的事实不得合并，输出 kind=conflict
   3. source_ids 至少 2 个，且必须都是本批 ID
+  4. 人称视角铁律：沿用记忆第一人称约定——记忆是从 AI 角色视角记录的，角色自身用"我"，用户用"用户"；不得写成"用户和LumiMuse"之类的第三人称并列表述，LumiMuse 是系统名，不是角色名，禁止出现在 merged_content 中
 - 只输出 JSON 对象，不要解释
 
 ## 输出格式
@@ -221,6 +231,7 @@ function parseMemoryReviewPayload(llmResult: string): {
       const mergedContent = typeof row.merged_content === 'string' ? row.merged_content.trim() : '';
       const kind = row.kind === 'conflict' ? 'conflict' : row.kind === 'merge' ? 'merge' : null;
       if (sourceIds.length < 2 || !mergedContent || !kind) continue;
+      // sources 由服务端在最终返回前统一透传，LLM 原始负载不含该字段（此处先占位）。
       merge_suggestions.push({
         source_ids: [...new Set(sourceIds)],
         merged_content: mergedContent,
@@ -229,6 +240,7 @@ function parseMemoryReviewPayload(llmResult: string): {
         importance: typeof row.importance === 'number' && Number.isFinite(row.importance) ? row.importance : undefined,
         kind,
         reason: typeof row.reason === 'string' ? row.reason : undefined,
+        sources: [],
       });
     }
   }
@@ -415,11 +427,12 @@ export async function POST(request: NextRequest) {
   }
 
   // 按冻结 id 列表加载**当前**行内容（成员集合不因 importance/updated_at 变化而漂移）
+  // 仅取 active：归档/总结/superseded 的记忆不应被再次送审或纳入合并建议。
   const placeholders = memoryIds.map(() => '?').join(',');
   const loaded = db.prepare(`
     SELECT id, category, content, tags, importance, emotional_weight, memory_kind
     FROM memories
-    WHERE character_id = ? AND id IN (${placeholders})
+    WHERE character_id = ? AND status = 'active' AND id IN (${placeholders})
   `).all(characterId, ...memoryIds) as MemoryReviewRow[];
   const byId = new Map(loaded.map(row => [row.id, row]));
   // 仅审核仍存在的记忆；缺失 id（中途删除）跳过但不破坏 plan
@@ -523,12 +536,29 @@ export async function POST(request: NextRequest) {
 
   // 合并建议：只保留本请求内 id，且全部仍在本批候选中
   const validIds = new Set(memories.map(m => m.id));
-  const mergeSuggestions = rawSuggestions.filter(suggestion => {
+  const rawSuggestionsFiltered = rawSuggestions.filter(suggestion => {
     if (suggestion.source_ids.length < 2) return false;
     if (!suggestion.source_ids.every(id => validIds.has(id))) return false;
     // 同一建议的源应来自同一 plan 批（模型本批可见范围）
     return batchIdSets.some(set => suggestion.source_ids.every(id => set.has(id)));
   });
+
+  // 透出源记忆详情给 UI：接受合并前必须先能核对原记忆内容。
+  const mergeSuggestions = rawSuggestionsFiltered.map(suggestion => ({
+    ...suggestion,
+    sources: suggestion.source_ids
+      .map(id => {
+        const row = memories.find(m => m.id === id);
+        if (!row) return null;
+        return {
+          id: row.id,
+          content: row.content,
+          category: row.category,
+          tags: parseTags(row.tags),
+        };
+      })
+      .filter((source): source is NonNullable<typeof source> => source !== null),
+  })).filter(suggestion => suggestion.sources.length === suggestion.source_ids.length);
 
   const memoryContentById = new Map(memories.map(memory => [memory.id, memory.content]));
   const changes: Array<{ id: string; fields: string[]; content: string }> = [];

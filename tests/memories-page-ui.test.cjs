@@ -2,8 +2,102 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const Module = require('node:module');
+const React = require('react');
+const ts = require('typescript');
+const { installDomTestEnvironment } = require('./helpers/dom-test-environment.cjs');
+
+const restoreDom = installDomTestEnvironment();
+global.IS_REACT_ACT_ENVIRONMENT = true;
+const { cleanup, fireEvent, render, waitFor, within } = require('@testing-library/react');
 
 const root = path.resolve(__dirname, '..');
+const originalResolveFilename = Module._resolveFilename;
+const originalLoad = Module._load;
+
+function loadTypeScript(module, filename) {
+  const source = fs.readFileSync(filename, 'utf8');
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      esModuleInterop: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: filename,
+  });
+  module._compile(output.outputText, filename);
+}
+
+function loadMemoriesPage() {
+  const translate = key => key;
+  const showToast = () => {};
+
+  Module._resolveFilename = function resolveFilename(request, parent, isMain, options) {
+    if (request.startsWith('@/')) {
+      const mapped = path.join(root, 'src', request.slice(2));
+      for (const candidate of [mapped, `${mapped}.ts`, `${mapped}.tsx`, path.join(mapped, 'index.ts')]) {
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+      }
+    }
+    return originalResolveFilename.call(this, request, parent, isMain, options);
+  };
+  require.extensions['.ts'] = loadTypeScript;
+  require.extensions['.tsx'] = loadTypeScript;
+  Module._load = function loadWithMocks(request, parent, isMain) {
+    if (request === 'next/link') {
+      return {
+        __esModule: true,
+        default: ({ children, href, ...props }) => React.createElement('a', { href, ...props }, children),
+      };
+    }
+    if (request === '@/components/memories/MemoryList') {
+      return { __esModule: true, default: () => React.createElement('div', { 'data-testid': 'memory-list' }) };
+    }
+    if (request === '@/lib/i18n-context') {
+      return { useTranslation: () => ({ t: translate }) };
+    }
+    if (request === '@/components/ui/Toast') {
+      return { useToast: () => ({ showToast }) };
+    }
+    if (request === '@/components/ui/icons') {
+      return new Proxy({}, {
+        get: () => ({ className }) => React.createElement('span', { className, 'aria-hidden': 'true' }),
+      });
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  try {
+    const absolutePath = path.join(root, 'src/app/memories/page.tsx');
+    delete require.cache[require.resolve(absolutePath)];
+    return require(absolutePath).default;
+  } finally {
+    Module._resolveFilename = originalResolveFilename;
+    Module._load = originalLoad;
+    delete require.extensions['.ts'];
+    delete require.extensions['.tsx'];
+  }
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+test.afterEach(() => {
+  cleanup();
+  delete global.fetch;
+});
+
+test.after(() => {
+  Module._resolveFilename = originalResolveFilename;
+  Module._load = originalLoad;
+  delete global.IS_REACT_ACT_ENVIRONMENT;
+  restoreDom();
+});
 
 function readProjectFile(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
@@ -135,6 +229,80 @@ test('/memories page clears AI review running and old result state when changing
     selectBlock.indexOf('setMemoryAiReviewRunning(false);') < selectBlock.indexOf('setLastMemoryAiReviewResult(null);'),
     'character change should clear running before resetting old review result state',
   );
+});
+
+test('/memories page opens source details and closes them with an explicit button', async () => {
+  global.fetch = async input => {
+    const url = String(input);
+    if (url === '/api/characters') {
+      return jsonResponse([{
+        id: 'char-a',
+        name: '角色 A',
+        avatar_url: null,
+        description: '',
+        personality: '',
+        system_prompt: '',
+        first_message: '',
+        example_dialogues: [],
+        tags: [],
+        created_at: '2026-07-31T00:00:00.000Z',
+        updated_at: '2026-07-31T00:00:00.000Z',
+      }]);
+    }
+    if (url === '/api/memory-review') {
+      return jsonResponse({
+        ok: true,
+        reviewed: 2,
+        total_active: 2,
+        skipped_due_to_limit: 0,
+        reviewed_offset: 0,
+        next_offset: null,
+        next_batch_index: null,
+        has_more: false,
+        corrected: 0,
+        failed_batches: 0,
+        failed_messages: [],
+        indexing_queued: 0,
+        indexing_started: false,
+        changes: [],
+        merge_suggestions: [{
+          source_ids: ['mem-a', 'mem-b'],
+          merged_content: '用户喜欢美式咖啡。',
+          kind: 'merge',
+          sources: [
+            { id: 'mem-a', content: '第一条源记忆全文', category: '偏好习惯', tags: ['咖啡', '饮品'] },
+            { id: 'mem-b', content: '第二条源记忆全文', category: '四季日常', tags: ['日常'] },
+          ],
+        }],
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  const MemoriesPage = loadMemoriesPage();
+  const view = render(React.createElement(MemoriesPage));
+  const reviewButton = await view.findByRole('button', { name: 'memory.aiReview' });
+  await waitFor(() => assert.equal(reviewButton.disabled, false));
+  fireEvent.click(reviewButton);
+
+  const viewSourcesButton = await view.findByRole('button', { name: 'memory.mergeViewSources' });
+  fireEvent.click(viewSourcesButton);
+
+  const dialog = await view.findByRole('dialog', { name: 'memory.mergeSources ×2' });
+  const dialogQueries = within(dialog);
+  assert.ok(dialogQueries.getByText('第一条源记忆全文'));
+  assert.ok(dialogQueries.getByText('第二条源记忆全文'));
+  assert.ok(dialogQueries.getByText(/偏好习惯/));
+  assert.ok(dialogQueries.getByText(/咖啡,饮品/));
+
+  const sourceCard = dialogQueries.getByText('第一条源记忆全文').parentElement;
+  assert.ok(sourceCard?.className.includes('dark:bg-white/5'));
+
+  const closeButton = dialogQueries.getByRole('button', { name: 'common.close' });
+  assert.equal(closeButton.tagName, 'BUTTON');
+  assert.ok(closeButton.tabIndex >= 0);
+  fireEvent.click(closeButton);
+  await waitFor(() => assert.equal(view.queryByRole('dialog'), null));
 });
 
 test('memory list accumulates clicked tag filters and shows removable tag chips without label text', () => {

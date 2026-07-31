@@ -108,6 +108,35 @@ function resolveMemoryKind(value: string | undefined, fallback: string): string 
   return 'general';
 }
 
+/**
+ * 合并结果的时间不应取“点击合并的当下”，而应取被合并记忆中最新的那条时间，
+ * 否则会把老记忆错误顶到记忆列表顶部（列表按 updated_at DESC 排序）。
+ * 用 sources 的 created_at/updated_at 取最大值；再用 now 做上限兜底，防御未来时间戳异常。
+ * SQLite datetime('now') 产生无时区的 UTC 字符串，应用侧则使用 ISO 8601；比较前统一解析，
+ * 但返回被选中的原始字符串，避免无谓改写现有时间格式。
+ */
+function resolveMergedTimestamp(rows: MemoryRow[], now: string): string {
+  const parseTimestamp = (value: unknown): number | null => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)
+      ? `${trimmed.replace(' ', 'T')}Z`
+      : trimmed;
+    const timestamp = Date.parse(normalized);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  };
+
+  const candidates = rows
+    .flatMap(row => [row.updated_at, row.created_at])
+    .map(value => ({ value, timestamp: parseTimestamp(value) }))
+    .filter((candidate): candidate is { value: string; timestamp: number } => candidate.timestamp !== null);
+  if (candidates.length === 0) return now;
+  const latest = candidates.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
+  const nowTimestamp = parseTimestamp(now);
+  return nowTimestamp !== null && latest.timestamp >= nowTimestamp ? now : latest.value;
+}
+
 function assertMergeSources(rows: MemoryRow[], sourceIds: string[]): void {
   if (sourceIds.length < 2) {
     throw new Error('source_ids must contain at least 2 memories');
@@ -174,6 +203,7 @@ export function executeMemoryMerge(
       : Math.max(...orderedRows.map(row => row.importance), 0);
     const category = resolveCategory(params.category, orderedRows[0].category);
     const memoryKind = resolveMemoryKind(params.memoryKind, orderedRows[0].memory_kind);
+    const mergedTimestamp = resolveMergedTimestamp(orderedRows, params.now);
     const confidence = Math.max(...orderedRows.map(row => row.confidence), 0.8);
     const emotionalWeight = Math.max(...orderedRows.map(row => row.emotional_weight), 0);
 
@@ -206,8 +236,8 @@ export function executeMemoryMerge(
       null,
       0,
       JSON.stringify(resultMetadata),
-      params.now,
-      params.now,
+      mergedTimestamp,
+      mergedTimestamp,
     );
 
     const updateSource = db.prepare(`
@@ -331,4 +361,3 @@ export function listUndoableMemoryMergeBatches(
     ORDER BY updated_at DESC
   `).all(characterId) as MemoryMergeBatch[];
 }
-

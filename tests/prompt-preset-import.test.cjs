@@ -422,6 +422,35 @@ test('auto-detect RONG 协议不与可待混淆：story_plot 单独出现 → �
   );
 });
 
+test('auto-detect 可待协议不被同前缀 tag 误命中：<content_policy>+<thinking_style> → 不启用剥离', () => {
+  const id = 'aaaaaaaa-1111-4111-a111-111111111123';
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    prompts: [{
+      identifier: id, name: 'policy-preset', role: 'user', enabled: true,
+      // 只是碰巧含同前缀 tag：误判会把 #think/#thinking 当 drop 规则，连正文一起丢
+      content: '遵守 <content_policy>安全条款</content_policy> 并参考 <thinking_style>冷静</thinking_style>',
+    }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: id, enabled: true }] }],
+  }));
+  const preset = presetLib.getPreset(report.preset_id);
+  assert.equal(preset.story_plot_strip, false, '同前缀 tag 不应被认作可待协议');
+  assert.deepEqual(preset.strip_tags, []);
+});
+
+test('auto-detect 可待协议：自闭合与带属性写法仍能命中', () => {
+  const id = 'aaaaaaaa-1111-4111-a111-111111111124';
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    prompts: [{
+      identifier: id, name: 'kedai-variant', role: 'user', enabled: true,
+      content: '正文写进 <content lang="zh">…</content>，草稿放 <think/>',
+    }],
+    prompt_order: [{ character_id: 100001, order: [{ identifier: id, enabled: true }] }],
+  }));
+  const preset = presetLib.getPreset(report.preset_id);
+  assert.equal(preset.story_plot_strip, true);
+  assert.deepEqual(preset.strip_tags, ['content', 'scene', '#think', '#thinking', '#output-template']);
+});
+
 test('两协议都不命中：strip_tags=[] 且 story_plot_strip=false', () => {
   const id = 'aaaaaaaa-1111-4111-a111-111111111122';
   const report = importLib.importSillyTavernPreset(JSON.stringify({

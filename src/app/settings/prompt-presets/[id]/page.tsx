@@ -7,6 +7,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon } from '@/components/ui/icons';
+import { LEGACY_STORY_PLOT_TAGS, usesLegacyStoryPlotRules } from '@/lib/story-plot-strip';
 
 interface PresetEntry {
   id: string;
@@ -27,6 +28,17 @@ interface PresetEntry {
 
 interface Props {
   params: Promise<{ id: string }>;
+}
+
+/**
+ * RONG 旧协议模式（strip_tags 含 block 规则 story_plot）下剥离流程是硬编码的，
+ * 只有 LEGACY_STORY_PLOT_TAGS 里的容器会被处理，列表中其余规则一律不参与——
+ * 必须在 UI 上标出来，否则用户加了 tag 却看不出它永远不会生效。
+ */
+function isStripTagEffective(tag: string, legacyMode: boolean): boolean {
+  if (!legacyMode) return true;
+  if (tag.startsWith('#')) return false;
+  return LEGACY_STORY_PLOT_TAGS.includes(tag.trim().toLowerCase());
 }
 
 interface EntryRowProps {
@@ -183,8 +195,14 @@ export default function PresetDetailPage({ params }: Props) {
     const tag = newTagInput.trim();
     if (!tag || !preset) return;
     if (preset.strip_tags.includes(tag)) { setNewTagInput(''); return; }
+    const legacyMode = usesLegacyStoryPlotRules(preset.strip_tags);
     const updated = await updateStripTags([...preset.strip_tags, tag]);
-    if (updated) setNewTagInput('');
+    if (!updated) return;
+    setNewTagInput('');
+    // 规则已存下但不会参与剥离时当场告知，避免用户以为加上就生效了
+    if (!isStripTagEffective(tag, legacyMode)) {
+      showToast(t('preset.stripTagInactiveToast'), 'info');
+    }
   };
 
   const removeStripTag = async (tag: string) => {
@@ -228,7 +246,12 @@ export default function PresetDetailPage({ params }: Props) {
         entriesRes.json(),
       ]);
       if (loadSequenceRef.current !== sequence || controller.signal.aborted) return;
-      setPreset(presetData);
+      // 与 entries 一样在入口归一化：strip_tags 缺失/畸形时兜底成空数组，
+      // 让模式判定、标签渲染与增删路径拿到的一律是数组
+      setPreset({
+        ...presetData,
+        strip_tags: Array.isArray(presetData.strip_tags) ? presetData.strip_tags : [],
+      });
       setEntries(Array.isArray(entriesData.entries) ? entriesData.entries : []);
     } catch (err) {
       if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) return;
@@ -364,6 +387,7 @@ export default function PresetDetailPage({ params }: Props) {
   }
   if (!preset) return <div className="px-6 py-10 text-text-muted">{t('preset.notFound')}</div>;
 
+  const legacyStoryPlotMode = usesLegacyStoryPlotRules(preset.strip_tags);
   const relativeEntries = entries.filter(e => e.injection_position === 0);
   const inChatEntries = entries.filter(e => e.injection_position === 1);
 
@@ -390,24 +414,33 @@ export default function PresetDetailPage({ params }: Props) {
                 {preset.story_plot_strip && (
                   <div className="flex flex-col gap-1.5">
                     <p className="text-xs text-text-muted">{t('preset.stripTagsHint')}</p>
+                    {legacyStoryPlotMode && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">{t('preset.stripTagsLegacyHint')}</p>
+                    )}
                     <div className="flex flex-wrap gap-1.5">
-                      {preset.strip_tags.map(tag => (
-                        <span
-                          key={tag}
-                          className="inline-flex items-center gap-1 rounded bg-surface-2 px-2 py-0.5 text-xs text-text-secondary"
-                        >
-                          <code>{tag}</code>
-                          <button
-                            type="button"
-                            onClick={() => void removeStripTag(tag)}
-                            disabled={pendingAction !== null}
-                            className="text-text-muted hover:text-red-400 disabled:opacity-40"
-                            aria-label={`remove ${tag}`}
+                      {preset.strip_tags.map(tag => {
+                        const effective = isStripTagEffective(tag, legacyStoryPlotMode);
+                        return (
+                          <span
+                            key={tag}
+                            title={effective ? undefined : t('preset.stripTagInactiveToast')}
+                            className={`inline-flex items-center gap-1 rounded bg-surface-2 px-2 py-0.5 text-xs ${
+                              effective ? 'text-text-secondary' : 'text-text-muted line-through opacity-60'
+                            }`}
                           >
-                            ×
-                          </button>
-                        </span>
-                      ))}
+                            <code>{tag}</code>
+                            <button
+                              type="button"
+                              onClick={() => void removeStripTag(tag)}
+                              disabled={pendingAction !== null}
+                              className="text-text-muted hover:text-red-400 disabled:opacity-40"
+                              aria-label={`remove ${tag}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        );
+                      })}
                     </div>
                     <div className="flex items-center gap-1.5">
                       <input

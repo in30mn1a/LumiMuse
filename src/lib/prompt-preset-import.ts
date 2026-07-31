@@ -265,9 +265,14 @@ export function importSillyTavernPreset(
   //   - 可待：任一 content 同时出现 <content 与 (<thinking|think|output-template) → story_plot_strip=1 + 可待 tags
   // 两者都不命中 → story_plot_strip=0、strip_tags=[];
   // UI 可手工增删、往返格式（LumiMuse native export）亦可自定义（见 importLumiMusePreset）。
+  //
+  // 可待判据要求 tag 名后紧跟结束符（`>` / 空白 / `/`），避免 <content_policy>、<thinking_style>
+  // 这类同前缀 tag 误命中：可待默认 tags 里的 #think / #thinking / #output-template 是 drop 规则，
+  // 误判会连内容一起丢掉正文，代价远高于 block 规则误判（只多剥一层标签）。
   const allContents = rawPrompts.map(p => (typeof p?.content === 'string' ? p.content : '')).join('\n');
   const isRongProtocol = allContents.includes('<story_plot') || allContents.includes('setvar::rong_var_schema');
-  const isKedaiProtocol = allContents.includes('<content') && /<(thinking|think|output-template)/.test(allContents);
+  const isKedaiProtocol = /<content[\s>/]/.test(allContents)
+    && /<(?:thinking|think|output-template)[\s>/]/.test(allContents);
 
   const RONG_TAGS = [
     'story_plot',

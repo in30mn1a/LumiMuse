@@ -540,3 +540,100 @@ test('角色预设选择器保持 follow / none / explicit 三态并在卸载时
   view.unmount();
   assert.equal(capturedSignal.aborted, true);
 });
+
+test('RONG 旧协议预设：不生效的 strip_tags 被划掉并给出模式提示', async () => {
+  const rongPreset = {
+    ...PRESET,
+    story_plot_strip: true,
+    // story_plot 令整个预设走 RONG 硬编码剥离，#thinking / content 都不会参与
+    strip_tags: ['story_plot', 'story_body', '#thinking', 'content'],
+  };
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    const method = init.method || 'GET';
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'GET') return jsonResponse(rongPreset);
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}/entries` && method === 'GET') {
+      return jsonResponse({ entries: [ENTRY] });
+    }
+    throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
+  };
+
+  const { Component } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+
+  await view.findByText('preset.stripTagsLegacyHint');
+
+  const chipClass = tag => view.getByText(tag).closest('span').className;
+  assert.ok(!chipClass('story_plot').includes('line-through'), 'story_plot 由旧逻辑处理，应正常显示');
+  assert.ok(!chipClass('story_body').includes('line-through'), 'story_body 由旧逻辑处理，应正常显示');
+  assert.ok(chipClass('#thinking').includes('line-through'), '#thinking 在旧协议下不生效，应划掉');
+  assert.ok(chipClass('content').includes('line-through'), 'content 在旧协议下不生效，应划掉');
+});
+
+test('参数化预设：strip_tags 全部生效，不显示旧协议提示', async () => {
+  const kedaiPreset = {
+    ...PRESET,
+    story_plot_strip: true,
+    strip_tags: ['content', 'scene', '#think'],
+  };
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    const method = init.method || 'GET';
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'GET') return jsonResponse(kedaiPreset);
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}/entries` && method === 'GET') {
+      return jsonResponse({ entries: [ENTRY] });
+    }
+    throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
+  };
+
+  const { Component } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+
+  await view.findByText('content');
+  assert.equal(view.queryByText('preset.stripTagsLegacyHint'), null);
+  for (const tag of ['content', 'scene', '#think']) {
+    assert.ok(
+      !view.getByText(tag).closest('span').className.includes('line-through'),
+      `${tag} 走参数化路径应生效`,
+    );
+  }
+});
+
+test('预设响应缺 strip_tags 时详情页仍能增删规则（入口归一化）', async () => {
+  // 老响应形状：story_plot_strip=true 但整个 strip_tags 字段缺失
+  const legacyResponse = { id: PRESET.id, name: PRESET.name, description: '', story_plot_strip: true };
+  let patchBody = null;
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    const method = init.method || 'GET';
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'GET') return jsonResponse(legacyResponse);
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}/entries` && method === 'GET') {
+      return jsonResponse({ entries: [ENTRY] });
+    }
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'PATCH') {
+      patchBody = JSON.parse(init.body);
+      return jsonResponse({ ok: true });
+    }
+    throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
+  };
+
+  const { Component } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+
+  const input = await view.findByPlaceholderText('preset.stripTagPlaceholder');
+  fireEvent.change(input, { target: { value: 'content' } });
+  fireEvent.click(view.getByRole('button', { name: 'preset.stripTagAdd' }));
+
+  // 归一化前这里会 TypeError: Cannot read properties of undefined (reading 'includes')
+  await waitFor(() => assert.deepEqual(patchBody, { strip_tags: ['content'] }));
+  await waitFor(() => assert.equal(input.value, ''));
+});

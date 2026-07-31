@@ -364,7 +364,8 @@ const STORY_BODY_CLOSE = '</story_body>';
 const STORY_SCENE_PREFIX = '<story_scene';
 const STORY_SCENE_CLOSE = '</story_scene>';
 const STORY_AFTER_FORMAT_CLOSE = '</story_after_format>';
-const PROTOCOL_TAG_PREFIXES = [
+/** 旧协议扫描用的 tag 前缀表；导出供测试校验它与 LEGACY_STORY_PLOT_TAGS 未漏同步。 */
+export const PROTOCOL_TAG_PREFIXES = [
   '<story_plot',
   '</story_plot>',
   '<story_scene',
@@ -541,16 +542,38 @@ function stripSceneBlocksForStreaming(text: string): string {
 // ---------- 预设统一入口 ----------
 
 /**
+ * RONG 旧协议专用剥离实际处理的容器 tag。
+ *
+ * 该模式下剥离流程是硬编码的（见 stripStoryPlotXml），strip_tags 里的其余条目**不参与**，
+ * 因此 UI 需要据此标示哪些自定义规则在当前预设下不生效。
+ */
+export const LEGACY_STORY_PLOT_TAGS: readonly string[] = [
+  'story_plot',
+  'story_scene',
+  'story_body',
+  'story_after_format',
+  'story_done',
+];
+
+/**
+ * rules 是否触发 RONG 旧协议专用剥离：含 block 规则 'story_plot' 即触发，
+ * 此时 rules 中其余条目一律被忽略（'#story_plot' 是 drop 规则，不触发）。
+ */
+export function usesLegacyStoryPlotRules(rules: string[]): boolean {
+  return rules.some((rule) => {
+    const parsed = parseTagEntry(rule);
+    return parsed?.mode === 'block' && parsed.name.toLowerCase() === 'story_plot';
+  });
+}
+
+/**
  * 按预设 strip_tags 剥离回复。
  *   - 含 block 规则 'story_plot'：走 RONG 旧协议专用剥离（保 body 弃 scene，仅原文开头触发）
  *   - 否则：按 tags 参数化剥（block 保留内部、drop 整段丢）
  *
  */
 export function stripByPresetRules(rawText: string, rules: string[]): string {
-  if (rules.some((rule) => {
-    const parsed = parseTagEntry(rule);
-    return parsed?.mode === 'block' && parsed.name.toLowerCase() === 'story_plot';
-  })) {
+  if (usesLegacyStoryPlotRules(rules)) {
     return stripStoryPlotXml(rawText);
   }
   return stripContainerTags(rawText, rules);
@@ -561,10 +584,7 @@ export function stripByPresetRules(rawText: string, rules: string[]): string {
  * 尚不确定是普通字面量还是协议 tag 的尾部会暂存到下一 chunk；drop 内容永不进入安全前缀。
  */
 export function stripByPresetRulesForStreamingChunk(partialText: string, rules: string[]): string {
-  if (rules.some((rule) => {
-    const parsed = parseTagEntry(rule);
-    return parsed?.mode === 'block' && parsed.name.toLowerCase() === 'story_plot';
-  })) {
+  if (usesLegacyStoryPlotRules(rules)) {
     return stripStoryPlotForStreamingChunk(partialText);
   }
   return transformParameterizedTags(partialText, rules, true).text;

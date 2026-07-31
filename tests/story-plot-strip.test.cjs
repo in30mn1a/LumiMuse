@@ -32,11 +32,14 @@ require.extensions['.ts'] = function loadTs(module, filename) {
 };
 
 const {
+  LEGACY_STORY_PLOT_TAGS,
+  PROTOCOL_TAG_PREFIXES,
   stripByPresetRules,
   stripByPresetRulesForStreamingChunk,
   stripContainerTags,
   stripStoryPlotForStreamingChunk,
   stripStoryPlotXml,
+  usesLegacyStoryPlotRules,
 } = require(path.join(root, 'src', 'lib', 'story-plot-strip.ts'));
 
 test('非 story_plot 文本原样返回', () => {
@@ -470,6 +473,38 @@ test('最终参数化：#story_plot 保持 drop 整块语义，不进入 RONG �
 test('最终参数化：没有匹配协议 tag 时原样保留首尾空白', () => {
   const plain = '  \n  缩进 Markdown\n    ';
   assert.equal(stripByPresetRules(plain, ['content', '#think']), plain);
+});
+
+test('usesLegacyStoryPlotRules：block story_plot 触发旧协议，drop 形式不触发', () => {
+  assert.equal(usesLegacyStoryPlotRules(['story_plot', '#thinking']), true);
+  assert.equal(usesLegacyStoryPlotRules(['STORY_PLOT']), true, 'tag 名大小写不敏感');
+  assert.equal(usesLegacyStoryPlotRules(['#story_plot']), false, 'drop 规则走通用参数化路径');
+  assert.equal(usesLegacyStoryPlotRules(['content', '#think']), false);
+  assert.equal(usesLegacyStoryPlotRules([]), false);
+});
+
+test('旧协议模式下 strip_tags 其余规则确实不参与剥离（UI 据此标灰）', () => {
+  // #thinking 在参数化路径会整块丢弃；混入 story_plot 后走 RONG 硬编码逻辑，它不再生效
+  const raw = '<story_plot><story_body>正文<thinking>草稿</thinking></story_body></story_plot>';
+  assert.equal(
+    stripByPresetRules(raw, ['content', '#thinking']),
+    '<story_plot><story_body>正文</story_body></story_plot>',
+    '参数化路径：#thinking 丢整块，非规则 tag 原样留着',
+  );
+  assert.equal(
+    stripByPresetRules(raw, ['story_plot', '#thinking']),
+    '正文<thinking>草稿</thinking>',
+    'RONG 路径：容器被剥，但 #thinking 未生效，草稿仍留在正文里',
+  );
+});
+
+test('LEGACY_STORY_PLOT_TAGS 与旧协议扫描前缀表保持同步', () => {
+  // 对照实现（PROTOCOL_TAG_PREFIXES）而不是测试里手写的字面量：
+  // 任一侧增删容器都会让本用例变红，避免 UI 把生效规则误标为失效（或反之）
+  const namesFromPrefixes = [...new Set(
+    PROTOCOL_TAG_PREFIXES.map(prefix => prefix.replace(/^<\/?/, '').replace(/>$/, '')),
+  )].sort();
+  assert.deepEqual(namesFromPrefixes, [...LEGACY_STORY_PLOT_TAGS].sort());
 });
 
 test('最终参数化：未闭合 block 的长空白输入保持线性级响应', () => {

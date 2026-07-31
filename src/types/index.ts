@@ -261,7 +261,7 @@ export type FontStyle = 'wenkai' | 'system' | 'serif';
 export type FontSize = 'small' | 'medium' | 'large';
 
 // 思考强度（reasoning effort）：'default' 表示不在请求体里发送该字段，交给上游默认行为。
-export type ReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'max';
+export type ReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface ApiProvider {
   id: string;

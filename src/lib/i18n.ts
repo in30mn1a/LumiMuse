@@ -65,7 +65,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.noModels': '暂无可用模型，请先在设置中配置 API',
     'input.modelLoadFail': '模型列表加载失败，请检查 API 设置',
     'input.reasoningEffort': '思考强度',
-    'input.reasoningEffortDefault': '默认',
+    'input.reasoningEffortDefault': 'default',
     'input.reasoningEffortHint': '思考强度（reasoning effort）：默认时不在请求体里发送该字段，交给模型自身默认行为',
 
     'status.tokens': 'token',
@@ -219,9 +219,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'editor.importTitle': '导入角色',
     'editor.importDraftSuccess': '已导入到当前表单，检查后点击保存才会生效',
     'editor.importError': '导入失败，请检查角色卡格式',
-    'editor.previewTitle': '聊天预览',
     'editor.previewSubtitle': '角色资料会直接影响真实聊天时的语气与记忆',
-    'editor.previewNote': '这是当前角色在聊天中的感觉预览',
     'editor.saveSuccess': '已保存角色',
     'editor.saveFailed': '保存失败',
     'editor.confirmDiscard': '有未保存的修改，确定离开吗？',
@@ -749,10 +747,6 @@ const translations: Record<Lang, Record<string, string>> = {
     'login.submit': '进入',
     'login.tagline': 'LumiMuse · 让TA慢慢填满你的房间',
 
-    // 角色编辑页：聊天预览样例
-    'editor.previewUserSample': '我今天有点累，想听你慢慢说话。',
-    'editor.previewAssistantFallback': '我会在这里陪着你。',
-
     // 设置页：杂项 placeholder / 字体名 / 语言选项
     'settings.triggerKeywordsPlaceholder': '晚安',
     'settings.imageGenAutoKeywordsPlaceholder': '画,生图,来一张,看看',
@@ -898,7 +892,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.noModels': 'No models available. Please configure API in settings first.',
     'input.modelLoadFail': 'Failed to load models. Please check API settings.',
     'input.reasoningEffort': 'Reasoning',
-    'input.reasoningEffortDefault': 'Default',
+    'input.reasoningEffortDefault': 'default',
     'input.reasoningEffortHint': 'Reasoning effort. Default sends no reasoning_effort field, keeping the model\'s own behavior.',
 
     'status.tokens': 'tokens',
@@ -1052,9 +1046,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'editor.importTitle': 'Import character',
     'editor.importDraftSuccess': 'Imported into the current form. Review it and save to apply.',
     'editor.importError': 'Import failed, please check the character card format',
-    'editor.previewTitle': 'Chat preview',
     'editor.previewSubtitle': 'Character settings shape real chat tone and memory',
-    'editor.previewNote': 'This is the current feel of the character in chat',
     'editor.saveSuccess': 'Character saved',
     'editor.saveFailed': 'Save failed',
     'editor.confirmDiscard': 'You have unsaved changes. Leave anyway?',
@@ -1581,10 +1573,6 @@ const translations: Record<Lang, Record<string, string>> = {
     'login.connectError': 'Connection failed, please try again later',
     'login.submit': 'Enter',
     'login.tagline': 'LumiMuse · Let them slowly fill your room',
-
-    // Character editor: chat preview samples
-    'editor.previewUserSample': "I'm a bit tired today, just want to listen to you talk slowly.",
-    'editor.previewAssistantFallback': "I'll be right here with you.",
 
     // Settings page: misc placeholder / font names / language options
     'settings.triggerKeywordsPlaceholder': 'good night',

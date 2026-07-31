@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, use, useRef, useMemo, type ChangeEvent } from 'react';
+import { useState, useEffect, use, useRef, type ChangeEvent } from 'react';
 import { Character } from '@/types';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
@@ -24,15 +24,6 @@ interface ImportResponse {
   profileVersionsImported?: number;
   embeddingsImported?: number;
   characterDraft?: Partial<Character>;
-}
-
-function previewLine(text: string, fallback: string): string {
-  return text.trim() || fallback;
-}
-
-function previewText(text: string, fallback: string, maxLength = 90): string {
-  const value = previewLine(text, fallback).replace(/\s+/g, ' ').trim();
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
 function ExportDialog({ characterId, onClose }: { characterId: string; onClose: () => void }) {
@@ -229,20 +220,6 @@ export default function CharacterEditor({ params }: Props) {
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
   }, [dirty]);
-
-  const previewMessages = useMemo(() => {
-    if (!character) return [];
-    return [
-      {
-        role: 'user',
-        content: t('editor.previewUserSample'),
-      },
-      {
-        role: 'assistant',
-        content: previewText(character.greeting, t('editor.previewAssistantFallback'), 96),
-      },
-    ];
-  }, [character, t]);
 
   const returnToSidebar = () => {
     sessionStorage.setItem('lumimuse_open_sidebar', '1');
@@ -533,8 +510,8 @@ export default function CharacterEditor({ params }: Props) {
           )}
         </header>
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-          <main className="space-y-4">
+        <div className="grid gap-4 xl:grid-cols-2">
+          <main className="contents">
             <section className="surface-panel p-5">
               <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.identityInfo')}</h2>
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
@@ -576,6 +553,17 @@ export default function CharacterEditor({ params }: Props) {
             </section>
 
             <section className="surface-panel p-5">
+              <PresetSelectField
+                value={character.active_preset_id ?? null}
+                onChange={(v) => {
+                  if (!character) return;
+                  setDirty(true);
+                  setCharacter({ ...character, active_preset_id: v });
+                }}
+              />
+            </section>
+
+            <section className="surface-panel p-5 xl:col-span-2">
               <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.basicInfo')}</h2>
               <textarea
                 value={character.basic_info || ''}
@@ -630,7 +618,7 @@ export default function CharacterEditor({ params }: Props) {
               />
             </section>
 
-            <section className="surface-panel p-5">
+            <section className="surface-panel p-5 xl:col-span-2">
               <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.exampleDialogue')}</h2>
               <textarea
                 value={character.example_dialogue}
@@ -640,7 +628,7 @@ export default function CharacterEditor({ params }: Props) {
                 className="textarea-rich font-mono"
               />
             </section>
-            <details className="surface-panel overflow-hidden">
+            <details open className="surface-panel overflow-hidden xl:col-span-2">
               <summary className="cursor-pointer px-5 py-4 text-sm font-medium text-text-primary">
                 {t('editor.advanced')}
               </summary>
@@ -677,60 +665,9 @@ export default function CharacterEditor({ params }: Props) {
                     className="textarea-rich font-mono text-sm"
                   />
                 </div>
-                <PresetSelectField
-                  value={character.active_preset_id ?? null}
-                  onChange={(v) => {
-                    if (!character) return;
-                    setDirty(true);
-                    setCharacter({ ...character, active_preset_id: v });
-                  }}
-                />
               </div>
             </details>
           </main>
-
-          <aside className="surface-panel h-fit p-5 xl:sticky xl:top-4">
-            <h2 className="section-title text-lg">{t('editor.previewTitle')}</h2>
-            <p className="mt-2 section-copy">{t('editor.previewSubtitle')}</p>
-
-            <div className="mt-5 space-y-3">
-              <div className="stat-tile">
-                <div className="flex items-center gap-3">
-                  <div className="h-11 w-11 overflow-hidden rounded-2xl bg-gradient-to-br from-accent/15 to-accent-light/25">
-                    {character.avatar_url ? (
-                      <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" loading="lazy" />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-lg font-semibold text-accent-dark">
-                        {character.name[0]}
-                      </div>
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-text-primary">{character.name}</div>
-                    <div className="truncate text-xs text-text-muted">{t('editor.previewNote')}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="surface-card p-4">
-                <div className="mb-3 text-xs uppercase tracking-[0.18em] text-text-muted">{character.name}</div>
-                {previewMessages.map(message => (
-                  <div key={message.role} className={`mb-3 ${message.role === 'user' ? 'text-right' : ''}`}>
-                    <div className={`inline-block max-w-full break-words rounded-2xl px-3 py-2 text-sm leading-relaxed ${message.role === 'user' ? 'bg-warm-100 text-text-primary' : 'bg-[rgba(155,124,240,0.10)] text-text-primary'}`}>
-                      {message.content}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="stat-tile">
-                <div className="label-small">{t('editor.advanced')}</div>
-                <p className="mt-2 break-words text-sm text-text-primary">
-                  {previewText(character.system_prompt, t('editor.systemPromptPlaceholder'), 120)}
-                </p>
-              </div>
-            </div>
-          </aside>
         </div>
       </div>
     </div>

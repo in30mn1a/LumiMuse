@@ -9,7 +9,7 @@ import { SparkIcon, StopIcon } from '@/components/ui/icons';
 import type { AttachmentItem } from '@/lib/chat-engine';
 import type { ReasoningEffort } from '@/types';
 
-const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['default', 'low', 'medium', 'high', 'max'];
+const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png'];
 const ACCEPTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'application/json', 'application/xml', 'text/xml', 'text/html'];

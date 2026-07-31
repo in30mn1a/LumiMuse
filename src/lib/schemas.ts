@@ -129,7 +129,7 @@ export const settingsUpdateSchema = z.looseObject({
   repetition_penalty: z.union([z.null(), settingFiniteNumberSchema.min(0).max(10)]).optional(),
   seed: z.union([z.null(), z.number().int().min(0).max(2_147_483_647)]).optional(),
   // 思考强度：'default' 表示不发送 reasoning_effort 字段
-  reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'max']).optional(),
+  reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
   streaming: z.boolean().optional(),
   example_dialogue: z.boolean().optional(),
   memory_inject: z.boolean().optional(),
@@ -145,7 +145,7 @@ export const settingsUpdateSchema = z.looseObject({
   memory_background_timeout_ms: settingNonNegativeIntegerSchema.optional(),
   disable_deepseek_thinking_for_background: z.boolean().optional(),
   memory_background_reasoning_effort_enabled: z.boolean().optional(),
-  memory_background_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'max']).optional(),
+  memory_background_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
   theme: z.enum(['light', 'dark']).optional(),
   show_timestamps: z.boolean().optional(),
   limit_inject: z.boolean().optional(),

@@ -1,7 +1,7 @@
 import { getDb } from '@/lib/db';
 import { Memory, MemoryCategory, MemoryKind, Settings, MEMORY_CATEGORIES, MEMORY_KINDS } from '@/types';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
-import { EXTRACTION_PROMPT } from '@/lib/prompt-templates';
+import { EXTRACTION_PROMPT, MEMORY_LIFECYCLE_PROMPT } from '@/lib/prompt-templates';
 import { normalizeTags as canonicalizeTags } from '@/lib/memory-tag-spec';
 import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-category';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
@@ -13,6 +13,9 @@ import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { contentSimilarity, supersedeTextSimilarity } from '@/lib/text-similarity';
+// 仅类型导入：编译期擦除，不会与 memory-extraction-reference → memory-retrieval → memory-engine
+// 形成运行时循环依赖。实现由调用方（memory-queue）注入。
+import type { ExtractionCandidateSummary } from '@/lib/memory-extraction-reference';
 
 const CJK_STOPWORDS = new Set([
   // 原有
@@ -211,6 +214,13 @@ function setIntersection<T>(a: Set<T>, b: Set<T>): Set<T> {
   return result;
 }
 
+// 注意：合并规则是「content 取更长的一方」，较短一方的独有信息会被丢弃。
+// 这个启发式只在「两条确实是近重复」的前提下安全，所以合并入口必须由下方的
+// 相似度阈值把关。不要用「模型指认的 target」绕过阈值直接合并——
+// 模型判 upsert 的两条若措辞差异极大，通常是同一对象的不同事实
+// （"养了只叫小白的白猫" vs "小白最近生病了"），本就该并存；
+// 强行合并会静默丢掉新事实，且返回值仍报 mergeCount 成功。
+// 记忆完整性优先：宁可多存一条，不可丢事实。target 只用于 supersede（语义是旧的作废）。
 function mergeMemories(existing: Memory[], newMemories: Memory[]): Memory[] {
   const result = [...existing];
 
@@ -325,14 +335,38 @@ interface RawMemoryData {
   importance: number;
   emotional_weight: number;
   lifecycle_action: 'insert' | 'upsert' | 'supersede' | 'ignore';
+  /** 阶段二模型指认的「被取代/被合并」目标记忆 id；阶段一不产出 */
+  supersede_target_ids?: string[];
 }
 
-type NewMemoryEntry = Memory & { lifecycle_action: RawMemoryData['lifecycle_action'] };
+type NewMemoryEntry = Memory & {
+  lifecycle_action: RawMemoryData['lifecycle_action'];
+  supersede_target_ids?: string[];
+};
+
+/**
+ * 提取参考的注入接口。由 memory-queue 提供实现，让 memory-engine 无需 import
+ * memory-extraction-reference（后者依赖 memory-retrieval，而 memory-retrieval 依赖本模块）。
+ */
+export interface ExtractionReferenceProvider {
+  /** 阶段一参考：角色画像 + 高优先级记忆概览 */
+  overview: { profileText: string; priorityText: string };
+  /** 阶段二参考：以候选条目为锚点召回相似旧记忆 */
+  recallForLifecycle: (candidates: ExtractionCandidateSummary[]) => Promise<{
+    text: string;
+    profileText: string;
+    mode: string;
+    /** 与 text 里 E 编号一一对应的 memory id，供模型指认的 target 映射回真实记忆 */
+    memoryIds: string[];
+    diagnostics?: { embeddingFailed?: string; truncated?: boolean; recallCount?: number };
+  }>;
+}
 
 interface ExtractMemoryOptions {
   messageIds?: string[];
   taskId?: number;
   conversationId?: string;
+  reference?: ExtractionReferenceProvider;
 }
 
 function normalizeTags(value: unknown): string[] {
@@ -506,6 +540,177 @@ export function getCommittedExtractionResult(
   };
 }
 
+interface LifecycleDecision {
+  action: RawMemoryData['lifecycle_action'];
+  /** 已有记忆列表里的 E 编号；调用方据此映射回 memory id */
+  targets: number[];
+}
+
+/** 严格解析非负整数编号；拒绝 null/false/""/[] 等会被 Number() 静默转成 0 的值。 */
+function parseDecisionIndex(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === 'string') {
+    const matched = /^\s*E?(\d+)\s*$/i.exec(value);
+    if (matched) return Number(matched[1]);
+  }
+  return null;
+}
+
+function parseDecisionTargets(value: unknown): number[] {
+  const raw = Array.isArray(value) ? value : [value];
+  const targets: number[] = [];
+  for (const item of raw) {
+    // 已有记忆在 prompt 里显示为 "E3"，模型很可能原样回填；两种写法都接受。
+    // 严格匹配而非 Number()：后者会把 false/null/""/[] 静默转成 0，
+    // 而 E0 恰好是 pinned DESC 排序下最重要的那条，误伤代价极高。
+    const index = parseDecisionIndex(item);
+    if (index !== null) targets.push(index);
+  }
+  return [...new Set(targets)];
+}
+
+function parseLifecycleDecisions(
+  response: string,
+  count: number,
+): Map<number, LifecycleDecision> {
+  const decisions = new Map<number, LifecycleDecision>();
+
+  let text = response.trim();
+  if (text.startsWith('```')) {
+    text = text.split('\n').slice(1).join('\n');
+  }
+  if (text.endsWith('```')) {
+    text = text.slice(0, text.lastIndexOf('```'));
+  }
+
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // 与提取响应同样的稳健回退：从第一个 '{' 起做花括号配对扫描，避免被前后解释性文字带偏
+    const start = text.indexOf('{');
+    const snippet = start === -1 ? null : extractBalancedJsonAt(text, start);
+    if (snippet) {
+      try {
+        parsed = JSON.parse(snippet);
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+
+  const list = parsed && typeof parsed === 'object'
+    ? (parsed as { decisions?: unknown }).decisions
+    : null;
+  if (!Array.isArray(list)) return decisions;
+
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    // 严格解析：prompt 里教了模型写 "target": null，它很可能也写出 "index": null，
+    // 而 Number(null) === 0 会把整条判定错绑到候选 0（键缺失反而安全，是 NaN）。
+    const index = parseDecisionIndex(record.index);
+    if (index === null || index >= count) continue;
+    const action = record.lifecycle_action;
+    if (action === 'insert' || action === 'upsert' || action === 'supersede' || action === 'ignore') {
+      decisions.set(index, { action, targets: parseDecisionTargets(record.target) });
+    }
+  }
+
+  return decisions;
+}
+
+function toCandidateSummary(item: RawMemoryData): ExtractionCandidateSummary {
+  return { category: item.category, content: item.content, tags: item.tags };
+}
+
+/**
+ * 阶段二：以候选条目为锚点召回相似旧记忆，再让模型重判 lifecycle_action。
+ *
+ * 就地覆盖 rawData 中被明确判定的条目（含模型指认的 supersede 目标 id）；
+ * 未被提及或判定非法的条目保留阶段一的值。
+ * 失败不阻塞：召回或 LLM 任一环节出错都直接返回，记忆按阶段一判定照常入库。
+ */
+async function applyLifecycleDecisions(
+  rawData: RawMemoryData[],
+  reference: ExtractionReferenceProvider,
+  context: {
+    characterId: string;
+    taskId?: number;
+    llmSettings: Settings;
+    extraBody: Record<string, unknown> | undefined;
+    timeoutMs: number | undefined;
+  },
+): Promise<void> {
+  try {
+    const recall = await reference.recallForLifecycle(rawData.map(toCandidateSummary));
+    if (!recall.text.trim()) return;
+
+    // 召回结果的降级原因必须落日志：否则 embedding 上游挂掉后参考静默退化，
+    // 只看 mode 完全看不出来。
+    if (recall.diagnostics?.embeddingFailed || recall.diagnostics?.truncated) {
+      structuredLog('warn', 'memory.extraction.reference_degraded', {
+        taskId: context.taskId,
+        characterId: context.characterId,
+        operation: recall.mode,
+        status: 'degraded',
+        detail: {
+          embeddingFailed: recall.diagnostics.embeddingFailed,
+          truncated: recall.diagnostics.truncated,
+          recallCount: recall.diagnostics.recallCount,
+        },
+      });
+    }
+
+    const candidateList = rawData
+      .map((item, index) => `${index}. [${item.category}] ${item.content}`)
+      .join('\n');
+
+    const prompt = MEMORY_LIFECYCLE_PROMPT
+      .replace('{memory_profile}', () => recall.profileText || '暂无')
+      .replace('{existing_memories}', () => recall.text)
+      .replace('{candidates}', () => candidateList);
+
+    const response = await runWithBackgroundLlmDeadline(
+      context.timeoutMs,
+      signal => chatCompletion(context.llmSettings, [{ role: 'user', content: prompt }], signal, context.extraBody),
+    );
+
+    const decisions = parseLifecycleDecisions(response, rawData.length);
+    let resolvedTargets = 0;
+    for (const [index, decision] of decisions) {
+      rawData[index].lifecycle_action = decision.action;
+      // E 编号 → memory id。越界编号（模型幻觉）直接丢弃，退回词法匹配兜底。
+      const ids = decision.targets
+        .map(target => recall.memoryIds[target])
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      // 只有 supersede 消费 target。其它 action 一律不写入，避免字段名与写入条件脱节：
+      // upsert 曾因「按模型指认的目标合并」绕过相似度阈值而静默丢掉更短的新事实。
+      if (decision.action === 'supersede' && ids.length > 0) {
+        rawData[index].supersede_target_ids = [...new Set(ids)];
+        resolvedTargets += 1;
+      }
+    }
+
+    structuredLog('info', 'memory.extraction.lifecycle_resolved', {
+      taskId: context.taskId,
+      characterId: context.characterId,
+      operation: recall.mode,
+      status: 'ok',
+      detail: { candidates: rawData.length, decided: decisions.size, withTarget: resolvedTargets },
+    });
+  } catch (error) {
+    // 阶段一结果已可用，这里失败只降级为「沿用阶段一判定」，不产生 repairable 候选
+    structuredLog('warn', 'memory.extraction.lifecycle_failed', {
+      taskId: context.taskId,
+      characterId: context.characterId,
+      status: 'failed',
+    }, error);
+  }
+}
+
 export async function extractMemories(
   characterId: string,
   conversationText: string,
@@ -527,23 +732,29 @@ export async function extractMemories(
   ).all(characterId) as Memory[];
   const normalizedExisting = existingMemories.map(normalizeMemory);
 
-  // 提取时给 AI 参考的已有记忆：未启用注入限制时发送全部，启用时按相关性截取
-  let relevantExisting: Memory[];
-  if (!settings.limit_inject) {
-    // 不限制：全部已有记忆都发给 AI 参考，避免重复提取
-    relevantExisting = normalizedExisting;
+  // ── 阶段一：纯抽取 ──────────────────────────────────────────
+  // 参考材料是「画像 + 高优先级记忆」，不再是全量已有记忆：全量在长期使用后会线性膨胀，
+  // 且长列表中部条目本就容易被模型忽略。真正的去重/冲突判定交给阶段二（锚点召回后重判）。
+  // 未注入 reference 时（直接调用/旧测试）保持原全量行为，避免行为回退。
+  let profileSection = '暂无';
+  let prioritySection: string;
+  if (options.reference) {
+    profileSection = options.reference.overview.profileText || '暂无';
+    prioritySection = options.reference.overview.priorityText || '暂无';
   } else {
-    // 启用限制：按相关性检索，最多 memory_max_inject 条
-    relevantExisting = retrieveRelevantMemories(conversationText, characterId, settings.memory_max_inject || 30);
+    const relevantExisting = settings.limit_inject
+      ? retrieveRelevantMemories(conversationText, characterId, settings.memory_max_inject || 30)
+      : normalizedExisting;
+    prioritySection = relevantExisting.length > 0
+      ? relevantExisting.map(memory => `- [${memory.category}] ${memory.content}`).join('\n')
+      : '暂无';
   }
-  const existingSummary = relevantExisting.length > 0
-    ? relevantExisting.map(memory => `- [${memory.category}] ${memory.content}`).join('\n')
-    : '暂无';
 
   // 用函数形式的 replacement:字符串形式 replacement 会把对话原文里的 $&、$'、$`、$$、$n 当作替换模式展开,
   // 损坏发给 LLM 的提示词(用户发代码/shell/含 $ 文本即可触发)。函数返回值不做 $ 特殊解析。
   const prompt = EXTRACTION_PROMPT
-    .replace('{existing_memories}', () => existingSummary)
+    .replace('{memory_profile}', () => profileSection)
+    .replace('{priority_memories}', () => prioritySection)
     .replace('{conversation_text}', () => conversationText);
 
   const bgConfig = resolveBackgroundConfig(settings);
@@ -568,6 +779,20 @@ export async function extractMemories(
       });
     }
     return { insertCount: 0, mergeCount: 0 };
+  }
+
+  // ── 阶段二：生命周期判定 ────────────────────────────────────
+  // 以候选条目本身为锚点召回相似旧记忆后重判 lifecycle_action。锚点必须是候选而非对话文本：
+  // 否则措辞差异大但语义冲突的旧记忆召不回来（"迷上做甜点" 召不回 "不爱吃甜"），
+  // 该 supersede 的会被判成 insert，两条矛盾记忆并存。
+  if (options.reference) {
+    await applyLifecycleDecisions(rawData, options.reference, {
+      characterId,
+      taskId: options.taskId,
+      llmSettings: extractionSettings,
+      extraBody: backgroundExtraBody,
+      timeoutMs: settings.memory_background_timeout_ms,
+    });
   }
 
   const validCategories = new Set<string>(MEMORY_CATEGORIES);
@@ -607,6 +832,7 @@ export async function extractMemories(
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       lifecycle_action: item.lifecycle_action,
+      supersede_target_ids: item.supersede_target_ids,
     }));
 
   if (newEntries.length === 0) {
@@ -680,7 +906,17 @@ export async function extractMemories(
     }
 
     for (const entry of supersedeEntries) {
-      const targets = findSimilarExistingMemories(normalizedExisting, entry);
+      // 优先用阶段二模型指认的目标：语义冲突的新旧记忆词法相似度通常极低
+      // （"用户不爱吃甜" vs "用户迷上做甜点" 实测 ~0.04，远低于 0.72/0.82 门槛），
+      // 只靠 findSimilarExistingMemories 会一条都匹配不上，supersede 静默退化成 insert。
+      // 词法匹配保留为兜底：模型没给 target、或 target 已失效时仍能工作。
+      const declaredIds = new Set(entry.supersede_target_ids || []);
+      const declared = declaredIds.size > 0
+        ? normalizedExisting.filter(memory => declaredIds.has(memory.id))
+        : [];
+      const targets = declared.length > 0
+        ? declared
+        : findSimilarExistingMemories(normalizedExisting, entry);
       for (const target of targets) {
         const metadata = parseMemoryMetadata(target.metadata);
         metadata.previousStatus = target.status;

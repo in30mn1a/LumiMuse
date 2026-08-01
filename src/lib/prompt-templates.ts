@@ -2,8 +2,11 @@ import { TAG_SPEC_PROMPT_SECTION } from '@/lib/memory-tag-spec';
 
 export const EXTRACTION_PROMPT = `逐行扫描以下对话，提取用户的所有记忆信息。输出一个 JSON 对象。
 
-## 已提取的记忆（供参考，避免重复，可补充完善）
-{existing_memories}
+## 角色记忆画像（供参考，避免重复提取已被概括的内容）
+{memory_profile}
+
+## 已有的高优先级记忆（供参考，避免重复，可补充完善）
+{priority_memories}
 
 ## 时间处理规则（重要！）
 - 对话文本中每条消息带有时间戳，格式如 \`用户 (2026/03/30 02:01):\`，可以直接引用这些绝对时间
@@ -126,6 +129,43 @@ ${TAG_SPEC_PROMPT_SECTION}
 {conversation_text}
 
 请逐段提取所有记忆，输出 JSON 对象：`;
+
+export const MEMORY_LIFECYCLE_PROMPT = `你是 LumiMuse 的记忆生命周期判定助手。下面给出本轮从对话中新抽取的候选记忆，以及与它们相似的已有记忆。请为每条候选判定应该如何入库。
+
+## 判定选项
+- insert：全新信息，已有记忆中没有对应内容
+- upsert：与某条已有记忆是同一件事，应该合并或补充完善
+- supersede：与某条已有记忆冲突或将其取代（事实变化、偏好改变、状态更新），旧记忆应作废
+- ignore：与已有记忆完全重复且无任何新增信息
+
+## 判定要点
+- supersede 只用于「同一件事的新版本推翻旧版本」，例如居住地变更、口味改变、关系状态变化、计划取消
+- 两条记忆讲的是**不同的事**时不要用 supersede，即使话题相近。例如"用户迷上做甜点"和"用户不爱吃甜"是两件可以并存的事，只有当对话明确表明口味变了，才算取代
+- 拿不准时用 upsert，不要用 ignore：漏记的代价远高于重复记
+- 已有记忆列表可能不完整。没有找到对应项时用 insert，不要因为列表里看不到就判 ignore
+
+## 输出格式
+输出一个 JSON 对象，decisions 数组与候选一一对应：
+- index：候选编号（本轮候选记忆列表里的序号，必须是数字）
+- lifecycle_action：insert / upsert / supersede / ignore
+- target：**仅判 supersede 时**填被取代的已有记忆编号（即已有记忆列表里 E 后面的数字）；一条候选取代多条时填数组。其它情况填 null。
+
+{"decisions": [{"index": 0, "lifecycle_action": "supersede", "target": 3}, {"index": 1, "lifecycle_action": "insert", "target": null}]}
+
+**判 supersede 时 target 填错或漏填会导致旧记忆无法作废，请对照已有记忆列表的编号核实。**
+
+直接输出 JSON，不要代码块标记，不要解释。所有候选都必须在 decisions 里出现一次。lifecycle_action 只能是 insert、upsert、supersede、ignore 之一。
+
+## 角色记忆画像
+{memory_profile}
+
+## 已有记忆（可能不完整，编号 E0 起）
+{existing_memories}
+
+## 本轮候选记忆
+{candidates}
+
+请输出判定 JSON：`;
 
 export const AI_ARCHIVE_PROMPT = `你是 LumiMuse 的记忆归档助手。你需要审视角色的所有活跃记忆，选择可以归档的旧记忆，并为它们生成一条精炼的归档摘要。
 

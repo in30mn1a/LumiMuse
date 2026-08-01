@@ -675,11 +675,13 @@ test('memory-queue drain 会把任务来源 messageIds 传给 extractMemories', 
 
   assert.equal(captured.characterId, 'char-a');
   assert.match(captured.conversationText, /艾莉丝/);
-  assert.deepEqual(captured.options, {
-    messageIds: ['msg-user-queue', 'msg-assistant-queue'],
-    taskId: 1,
-    conversationId: 'conv-a',
-  });
+  assert.deepEqual(captured.options.messageIds, ['msg-user-queue', 'msg-assistant-queue']);
+  assert.equal(captured.options.taskId, 1);
+  assert.equal(captured.options.conversationId, 'conv-a');
+  // 队列会注入两阶段提取所需的参考构建器；本测试库缺记忆相关表，
+  // 构建过程内部降级但不得抛错，provider 仍应产出（overview 为空串）。
+  assert.equal(typeof captured.options.reference.recallForLifecycle, 'function');
+  assert.deepEqual(captured.options.reference.overview, { profileText: '', priorityText: '' });
 });
 
 test('extractMemories 为推理模型把 max_tokens 抬到安全下限', async () => {

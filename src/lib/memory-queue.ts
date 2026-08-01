@@ -8,7 +8,8 @@
  */
 import { DEFAULT_BACKGROUND_TASK_LEASE_SECONDS } from '@/lib/background-task-recovery';
 import { createDbTaskQueue } from '@/lib/db-task-queue';
-import { extractMemories, getCommittedExtractionResult } from '@/lib/memory-engine';
+import { extractMemories, getCommittedExtractionResult, retrieveRelevantMemories, type ExtractionReferenceProvider } from '@/lib/memory-engine';
+import { buildExtractionOverview, buildLifecycleReference } from '@/lib/memory-extraction-reference';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
@@ -112,6 +113,48 @@ function hasRepairableExtractionCandidate(db: ReturnType<typeof getDb>, taskId: 
     LIMIT 1
   `).get(taskId);
   return Boolean(row);
+}
+
+/**
+ * 组装提取参考的两段材料。
+ *
+ * 放在队列层而不是 memory-engine 内部，是为了避开循环依赖：
+ * memory-extraction-reference → memory-retrieval → memory-engine。
+ * 队列层同时依赖两侧是安全的（两者都能独立完整加载）。
+ *
+ * 本地关键词检索作为向量召回失败时的兜底注入进去，同样是为了不让下层反向依赖 memory-engine。
+ */
+function buildExtractionReferenceProvider(
+  characterId: string,
+  settings: ReturnType<typeof loadSettings>,
+): ExtractionReferenceProvider | undefined {
+  try {
+    const deps = { localRetrieve: retrieveRelevantMemories };
+    const overview = buildExtractionOverview(characterId, settings, deps);
+
+    return {
+      overview,
+      recallForLifecycle: async (candidates) => {
+        const reference = await buildLifecycleReference(characterId, candidates, settings, deps);
+        return {
+          text: reference.text,
+          profileText: overview.profileText,
+          mode: reference.mode,
+          // 顺序与 text 里的 E 编号严格一致，供模型指认的 target 映射回记忆 id
+          memoryIds: reference.memories.map(memory => memory.id),
+          diagnostics: reference.diagnostics,
+        };
+      },
+    };
+  } catch (error) {
+    // 兜底：参考材料构建失败绝不能让提取任务整体失败重试。
+    // 返回 undefined 时 extractMemories 退回「全量已有记忆」的旧路径，宁可多给也不丢记忆。
+    structuredLog('warn', 'memory.extraction.reference_unavailable', {
+      characterId,
+      status: 'failed',
+    }, error);
+    return undefined;
+  }
 }
 
 function markTaskStartedAt(db: ReturnType<typeof getDb>, task: ExtractionTaskRow): void {
@@ -228,6 +271,7 @@ async function processOneExtractionTask(): Promise<{ claimed: number }> {
           messageIds,
           taskId: task.id,
           conversationId: task.conversation_id,
+          reference: buildExtractionReferenceProvider(task.character_id, settings),
         });
         mergeCount = extracted.mergeCount;
         insertCount = extracted.insertCount;

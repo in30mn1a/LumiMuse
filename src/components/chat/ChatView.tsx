@@ -7,7 +7,7 @@ import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
 import ChatHeader from './ChatHeader';
 import ChatToolbar from './ChatToolbar';
-import ChatMessageList from './ChatMessageList';
+import ChatMessageList, { type SearchHighlight } from './ChatMessageList';
 import RenameConvModal from './RenameConvModal';
 import DeleteConvModal from './DeleteConvModal';
 import type { TokenBreakdownItem, RealUsage, MemoryInjectionInfo } from './TokenBreakdownModal';
@@ -24,6 +24,7 @@ import { parseConversation, useNewChat } from '@/hooks/chat/useNewChat';
 import { canBeginChatSend } from '@/hooks/chat/chat-send-guard';
 import { formatTemplate } from '@/lib/i18n';
 import { estimateClientTokens } from '@/lib/token-counter-client';
+import type { TextHighlightRange } from '@/lib/text-highlight';
 import { getVersionInfo } from '@/lib/chat-view-utils';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
 import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
@@ -54,11 +55,25 @@ interface Props {
   character: Character | null;
   conversationId: string | null;
   targetMessageId?: string | null;
+  /** 区分同一消息的多次搜索跳转 */
+  targetRequestId?: number | null;
+  /** 搜索结果快照给出的精确原文命中区间 */
+  searchHighlightRanges?: readonly TextHighlightRange[];
+  onSearchTargetConsumed?: (requestId: number) => void;
   onOpenSidebar?: () => void;
   onOpenSearch?: () => void;
 }
 
-export default function ChatView({ character, conversationId, targetMessageId, onOpenSidebar, onOpenSearch }: Props) {
+export default function ChatView({
+  character,
+  conversationId,
+  targetMessageId,
+  targetRequestId,
+  searchHighlightRanges,
+  onSearchTargetConsumed,
+  onOpenSidebar,
+  onOpenSearch,
+}: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [showTimestamps, setShowTimestamps] = useState(true);
@@ -128,6 +143,13 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     clearMessagesRef,
     clearStreamingTextRef,
   });
+  const selectUserConversation = useCallback((id: string | null) => {
+    if (id === activeConvIdRef.current) return;
+    selectActiveConvId(id);
+    if (targetRequestId !== null && targetRequestId !== undefined) {
+      onSearchTargetConsumed?.(targetRequestId);
+    }
+  }, [activeConvIdRef, onSearchTargetConsumed, selectActiveConvId, targetRequestId]);
   const {
     streamingText,
     hiddenMessageId,
@@ -165,7 +187,9 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   } = useMessagePaging({
     activeConvId,
     activeConvIdRef,
+    targetConversationId: conversationId,
     targetMessageId,
+    targetRequestId,
     pageSize: PAGE_SIZE,
     onTargetMessageLoaded: id => scrollControllerRef.current?.markTargetForScroll(id),
     onInitialMessagesLoaded: () => scrollControllerRef.current?.markScrollToBottomOnLoad(),
@@ -174,7 +198,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   const { creating, handleNewChat } = useNewChat({
     character,
     setConversations,
-    selectActiveConvId,
+    selectActiveConvId: selectUserConversation,
     applyMessagesResponse,
     clearMessages,
     clearStreamingText,
@@ -191,6 +215,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
 
   const {
     highlightedId,
+    activeScrollTargetId,
     messagesEndRef,
     topSentinelRef,
     scrollContainerRef,
@@ -211,6 +236,16 @@ export default function ChatView({ character, conversationId, targetMessageId, o
   useEffect(() => {
     scrollControllerRef.current = { markTargetForScroll, markScrollToBottomOnLoad };
   }, [markTargetForScroll, markScrollToBottomOnLoad]);
+
+  // 搜索高亮只属于发起跳转时指定的对话；ChatView 内部切换期间不得串到别的会话。
+  const searchHighlight = useMemo<SearchHighlight | null>(
+    () => (
+      activeConvId === conversationId && targetMessageId && searchHighlightRanges?.length
+        ? { messageId: targetMessageId, ranges: searchHighlightRanges }
+        : null
+    ),
+    [activeConvId, conversationId, searchHighlightRanges, targetMessageId],
+  );
 
   const { memoryExtractStatus, pollMemoryTask } = useMemoryTaskPolling({
     activeConvIdRef,
@@ -436,7 +471,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
     // 关闭弹窗 + 决定下一段对话（基于 targetConvId 而不是闭包变量）
     const next = conversations.find(conversation => conversation.id !== targetConvId) || null;
     // 先切换到下一个对话，避免删除时消息区闪白
-    selectActiveConvId(next?.id || null);
+    selectUserConversation(next?.id || null);
     if (!next) clearMessages();
     setDeleteOpen(false);
     try {
@@ -452,7 +487,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
       if (character?.id) removeCharacterConversation(character.id, targetConvId);
       void refreshConversationState(next?.id || null);
     } catch (err) {
-      selectActiveConvId(previousActiveConvId);
+      selectUserConversation(previousActiveConvId);
       replaceMessages(previousMessages);
       setDeleteOpen(true);
       showToast(err instanceof Error ? err.message : t('chat.deleteError'), 'error');
@@ -610,7 +645,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         const conversation = parseConversation(await parseJsonResponse<unknown>(response));
         setConversations(prev => [conversation, ...prev]);
         prependCharacterConversation(character.id, conversation);
-        selectActiveConvId(conversation.id);
+        selectUserConversation(conversation.id);
         convId = conversation.id;
       }
     } catch (error) {
@@ -771,6 +806,8 @@ export default function ChatView({ character, conversationId, targetMessageId, o
               streamingTargetId={streamingTargetId}
               streamingInsertAfterUserId={streamingInsertAfterUserId}
               highlightedId={highlightedId}
+              activeScrollTargetId={activeScrollTargetId}
+              searchHighlight={searchHighlight}
               isStreamingHere={isStreamingHere}
               hasOlderMessages={hasOlderMessages}
               loadingOlderMessages={loadingOlderMessages}
@@ -901,7 +938,7 @@ export default function ChatView({ character, conversationId, targetMessageId, o
         open={convDrawerOpen}
         conversations={conversations}
         activeConvId={activeConvId}
-        onSelect={selectActiveConvId}
+        onSelect={selectUserConversation}
         onClose={() => setConvDrawerOpen(false)}
       />
 

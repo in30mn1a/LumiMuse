@@ -223,6 +223,9 @@ function createSearchDb() {
   insert.run('msg-cjk-oldest', '昨晚梦见主人今天来看我', '2026-06-07T00:06:00.000Z', 5);
   insert.run('msg-cjk-short-only', '主人明天再见', '2026-06-07T00:04:00.000Z', 8);
   insert.run('msg-system-cjk', '主人今天的系统备注', '2026-06-07T00:08:00.000Z', 9);
+  insert.run('msg-diacritic', 'We met at café Lumi.', '2026-06-08T00:00:00.000Z', 10);
+  insert.run('msg-phrase-punctuation', 'Please say hello, world today.', '2026-06-08T00:01:00.000Z', 11);
+  insert.run('msg-prefix', 'The helper is ready.', '2026-06-08T00:02:00.000Z', 12);
   db.prepare("UPDATE messages SET role = 'system' WHERE id = 'msg-system-cjk'").run();
   db.exec(`
     INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
@@ -637,6 +640,40 @@ test('/api/messages/search LIKE fallback treats percent and underscore as litera
   assert.deepEqual(percentPayload.results.map(result => result.messageId), ['msg-literal-percent']);
   assert.equal(underscoreResponse.status, 200);
   assert.deepEqual(underscorePayload.results.map(result => result.messageId), ['msg-literal-underscore']);
+});
+
+test('/api/messages/search binds exact FTS highlight ranges to every result', async () => {
+  const route = loadRoute('../src/app/api/messages/search/route.ts', createSearchDb());
+  const cases = [
+    ['cafe', 'msg-diacritic', [{ start: 10, end: 14, text: 'café' }]],
+    ['hello%20world', 'msg-phrase-punctuation', [{ start: 11, end: 23, text: 'hello, world' }]],
+    ['hel*', 'msg-prefix', [{ start: 4, end: 10, text: 'helper' }]],
+  ];
+
+  for (const [encodedQuery, expectedMessageId, expectedTerms] of cases) {
+    const response = await route.GET(requestFor(
+      `http://test.local/api/messages/search?q=${encodedQuery}&limit=10`,
+    ));
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    const result = payload.results.find(item => item.messageId === expectedMessageId);
+    assert.ok(result, `expected ${expectedMessageId} to be returned for ${encodedQuery}`);
+    assert.deepEqual(result.highlightRanges, expectedTerms);
+  }
+});
+
+test('/api/messages/search marks date-only results as having no body highlight ranges', async () => {
+  const route = loadRoute('../src/app/api/messages/search/route.ts', createSearchDb());
+
+  const response = await route.GET(requestFor(
+    'http://test.local/api/messages/search?q=2026-06-07&limit=20',
+  ));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.ok(payload.results.length > 0);
+  assert.ok(payload.results.every(result => Array.isArray(result.highlightRanges) && result.highlightRanges.length === 0));
 });
 
 test('/api/messages/search keeps 1-2 code point Chinese queries on LIKE', async () => {

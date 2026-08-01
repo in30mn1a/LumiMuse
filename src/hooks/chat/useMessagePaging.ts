@@ -13,7 +13,9 @@ import {
 type UseMessagePagingOptions = {
   activeConvId: string | null;
   activeConvIdRef: MutableRefObject<string | null>;
+  targetConversationId?: string | null;
   targetMessageId?: string | null;
+  targetRequestId?: number | null;
   pageSize: number;
   onTargetMessageLoaded: (id: string) => void;
   onInitialMessagesLoaded: () => void;
@@ -25,7 +27,9 @@ const isAbortError = (error: unknown) => error instanceof DOMException && error.
 export function useMessagePaging({
   activeConvId,
   activeConvIdRef,
+  targetConversationId,
   targetMessageId,
+  targetRequestId,
   pageSize,
   onTargetMessageLoaded,
   onInitialMessagesLoaded,
@@ -69,6 +73,8 @@ export function useMessagePaging({
     () => activeConvId ? messages.filter(message => message.conversation_id === activeConvId) : [],
     [activeConvId, messages],
   );
+  const activeTargetMessageId = activeConvId === targetConversationId ? targetMessageId : null;
+  const activeTargetRequestId = activeTargetMessageId ? targetRequestId : null;
 
   const setServerUnextractedCountValue = useCallback((convId: string, count: number) => {
     const next = { convId, value: count };
@@ -124,7 +130,7 @@ export function useMessagePaging({
   useEffect(() => {
     if (!activeConvId) return;
     const ctl = new AbortController();
-    const needsTarget = Boolean(targetMessageId);
+    const needsTarget = Boolean(activeTargetMessageId);
     const loadingConvId = activeConvId;
     // stale-while-revalidate 竞态守卫：网络响应已应用后，迟到的本地持久快照不得再覆盖
     let networkApplied = false;
@@ -151,10 +157,10 @@ export function useMessagePaging({
         setMessagePagingError(null);
         if (!applyMessagesResponse(loadingConvId, response)) return;
 
-        if (targetMessageId) {
-          const idx = response.messages.findIndex(m => m.id === targetMessageId);
+        if (activeTargetMessageId) {
+          const idx = response.messages.findIndex(m => m.id === activeTargetMessageId);
           if (idx !== -1) {
-            onTargetMessageLoadedRef.current(targetMessageId);
+            onTargetMessageLoadedRef.current(activeTargetMessageId);
           }
         } else {
           onInitialMessagesLoadedRef.current();
@@ -165,7 +171,7 @@ export function useMessagePaging({
         reportMessagePagingError(error);
     });
     return () => ctl.abort();
-  }, [activeConvId, applyMessagesResponse, pageSize, reportMessagePagingError, targetMessageId]);
+  }, [activeConvId, activeTargetMessageId, activeTargetRequestId, applyMessagesResponse, pageSize, reportMessagePagingError]);
 
   // 页面重新可见时刷新未提取数量（处理后台提取完成但前端不知道的情况）
   useEffect(() => {

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import { SearchIcon, ClockIcon } from '@/components/ui/icons';
 import { useMessageSearch } from '@/hooks/use-message-search';
+import type { TextHighlightRange } from '@/lib/text-highlight';
 import Modal from '@/components/ui/Modal';
 
 interface SearchResult {
@@ -13,6 +14,7 @@ interface SearchResult {
   characterId: string;
   conversationId: string;
   messageId: string;
+  highlightRanges: readonly TextHighlightRange[];
 }
 
 interface Props {
@@ -20,7 +22,7 @@ interface Props {
   onClose: () => void;
   /** 传入后只搜索该角色的对话内容（聊天页顶部搜索）；不传则搜索全部角色（侧栏搜索） */
   characterId?: string | null;
-  onConversationSelect?: (characterId: string, conversationId: string, messageId?: string) => void;
+  onConversationSelect?: (characterId: string, conversationId: string, messageId?: string, highlightRanges?: readonly TextHighlightRange[]) => void;
 }
 
 export default function GlobalSearch({ open, onClose, characterId = null, onConversationSelect }: Props) {
@@ -37,6 +39,7 @@ export default function GlobalSearch({ open, onClose, characterId = null, onConv
       characterId: m.characterId,
       conversationId: m.conversationId,
       messageId: m.messageId,
+      highlightRanges: m.highlightRanges,
     })), [messageResults]);
   const safeActiveIndex = results.length > 0 ? Math.min(activeIndex, results.length - 1) : 0;
 
@@ -57,7 +60,7 @@ export default function GlobalSearch({ open, onClose, characterId = null, onConv
   }, [clearSearch, open]);
 
   const handleSelect = (result: SearchResult) => {
-    onConversationSelect?.(result.characterId, result.conversationId, result.messageId);
+    onConversationSelect?.(result.characterId, result.conversationId, result.messageId, result.highlightRanges);
     onClose();
   };
 

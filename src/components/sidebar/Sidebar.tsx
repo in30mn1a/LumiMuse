@@ -6,6 +6,7 @@ import CharacterList from './CharacterList';
 import { useTranslation } from '@/lib/i18n-context';
 import { MemoryIcon, SearchIcon, SettingsIcon, SparkIcon, ClockIcon } from '@/components/ui/icons';
 import { useMessageSearch, type MessageSearchResult } from '@/hooks/use-message-search';
+import type { TextHighlightRange } from '@/lib/text-highlight';
 import type { Character } from '@/types';
 
 type SearchResult = MessageSearchResult;
@@ -13,7 +14,7 @@ type SearchResult = MessageSearchResult;
 interface Props {
   selectedCharacterId: string | null;
   onCharacterSelect: (id: string, character: Character) => void;
-  onConversationSelect?: (characterId: string, conversationId: string, messageId: string) => void;
+  onConversationSelect?: (characterId: string, conversationId: string, messageId: string, highlightRanges?: readonly TextHighlightRange[]) => void;
   onSearchOpen?: () => void;
 }
 
@@ -45,7 +46,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
   };
 
   const handleSelect = (result: SearchResult) => {
-    onConversationSelect?.(result.characterId, result.conversationId, result.messageId);
+    onConversationSelect?.(result.characterId, result.conversationId, result.messageId, result.highlightRanges);
     setQuery('');
     clearSearch();
     inputRef.current?.blur();

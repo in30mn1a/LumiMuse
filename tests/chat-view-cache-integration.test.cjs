@@ -251,6 +251,9 @@ test('ChatView rechecks the active conversation before applying memory task coun
 test('ChatView delegates message paging and cache-aware updates to useMessagePaging', () => {
   const source = readChatView();
   const hook = readProjectFile('src/hooks/chat/useMessagePaging.ts');
+  const pagingStart = source.indexOf('useMessagePaging({');
+  const pagingEnd = source.indexOf('const { creating, handleNewChat }', pagingStart);
+  const pagingCall = source.slice(pagingStart, pagingEnd);
 
   assert.match(source, /useMessagePaging\(/);
   assert.ok(!source.includes('const [messages, setMessages] = useState<Message[]>([]);'));
@@ -263,6 +266,29 @@ test('ChatView delegates message paging and cache-aware updates to useMessagePag
   assert.match(hook, /fetchMessagesPage/);
   assert.match(hook, /loadOlderMessages/);
   assert.match(hook, /serverUnextractedCountRef/);
+  assert.match(pagingCall, /targetConversationId: conversationId/);
+  assert.match(pagingCall, /targetRequestId/);
+});
+
+test('ChatView consumes a search target for every real user-driven internal conversation switch', () => {
+  const source = readChatView();
+  const wrapperStart = source.indexOf('const selectUserConversation = useCallback');
+  const wrapperEnd = source.indexOf('const {', wrapperStart);
+  const wrapper = source.slice(wrapperStart, wrapperEnd);
+  const drawerStart = source.indexOf('<ConversationDrawer');
+  const drawerEnd = source.indexOf('/>', drawerStart);
+  const drawer = source.slice(drawerStart, drawerEnd);
+
+  assert.match(wrapper, /if \(id === activeConvIdRef\.current\) return;/);
+  assert.match(wrapper, /selectActiveConvId\(id\)/);
+  assert.match(wrapper, /onSearchTargetConsumed\?\.\(targetRequestId\)/);
+  assert.match(source, /selectActiveConvId: selectUserConversation/);
+  assert.match(source, /selectUserConversation\(next\?\.id \|\| null\)/);
+  assert.match(source, /selectUserConversation\(previousActiveConvId\)/);
+  assert.match(source, /selectUserConversation\(conversation\.id\)/);
+  assert.match(drawer, /onSelect=\{selectUserConversation\}/);
+  assert.equal((source.match(/selectActiveConvId\(/g) ?? []).length, 1, 'raw selection is reserved for the wrapper');
+  assert.match(source, /activeConvId === conversationId && targetMessageId/);
 });
 
 test('ChatView delegates conversation loading and stale request guards to useConversationLoader', () => {

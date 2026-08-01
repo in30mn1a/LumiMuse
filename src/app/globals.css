@@ -430,6 +430,21 @@
     box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
   }
 
+  /* 搜索跳转命中词：黄底 + 深色字，在白色助手气泡与紫色用户气泡上都可读 */
+  .search-hit {
+    background: #ffdf5e;
+    color: #221b33;
+    border-radius: 3px;
+    padding: 0 1px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  .dark .search-hit {
+    background: #f0c645;
+    color: #1a1526;
+  }
+
   .message-meta {
     margin-bottom: 0.35rem;
     font-size: 0.72rem;

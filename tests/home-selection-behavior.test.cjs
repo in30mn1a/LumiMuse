@@ -130,6 +130,7 @@ function createFetchHarness() {
 
 function loadHome() {
   let sidebarProps = null;
+  let chatViewProps = null;
 
   function SidebarProbe(props) {
     sidebarProps = props;
@@ -140,6 +141,7 @@ function loadHome() {
   }
 
   function ChatViewProbe(props) {
+    chatViewProps = props;
     return React.createElement('div', {
       'data-testid': 'home-chat',
       'data-character-id': props.character?.id ?? '',
@@ -170,6 +172,10 @@ function loadHome() {
       getSidebarProps() {
         assert.ok(sidebarProps, 'Sidebar should have rendered');
         return sidebarProps;
+      },
+      getChatViewProps() {
+        assert.ok(chatViewProps, 'ChatView should have rendered');
+        return chatViewProps;
       },
     };
   } finally {
@@ -205,7 +211,7 @@ function assertSelection(view, expected) {
 }
 
 async function renderInitializedHome(fetchHarness) {
-  const { Home, getSidebarProps } = loadHome();
+  const { Home, getChatViewProps, getSidebarProps } = loadHome();
   const view = render(React.createElement(Home));
 
   act(() => {
@@ -233,7 +239,7 @@ async function renderInitializedHome(fetchHarness) {
     targetMessageId: 'message-A',
   });
 
-  return { getSidebarProps, view };
+  return { getChatViewProps, getSidebarProps, view };
 }
 
 for (const responseOrder of ['older-first', 'newer-first']) {
@@ -387,6 +393,40 @@ test('home selection failures preserve the previous complete selection', async (
     assertSelection(view, previousSelection);
     await fetchHarness.reject('C');
     assertSelection(view, previousSelection);
+  } finally {
+    cleanup();
+    global.fetch = originalFetch;
+  }
+});
+
+test('reselecting the same search result creates a distinct jump request that can be consumed safely', async () => {
+  const fetchHarness = createFetchHarness();
+  const originalFetch = global.fetch;
+  global.fetch = fetchHarness.fetch;
+
+  try {
+    const { getChatViewProps, getSidebarProps, view } = await renderInitializedHome(fetchHarness);
+    const firstRequestId = getChatViewProps().targetRequestId;
+    assert.equal(typeof firstRequestId, 'number');
+
+    act(() => {
+      getSidebarProps().onConversationSelect('A', 'conv-A', 'message-A', [
+        { start: 0, end: 6, text: 'needle' },
+      ]);
+    });
+    const secondRequestId = getChatViewProps().targetRequestId;
+    assert.equal(typeof secondRequestId, 'number');
+    assert.notEqual(secondRequestId, firstRequestId, 'the same message id must still represent a new jump');
+
+    act(() => {
+      getChatViewProps().onSearchTargetConsumed(firstRequestId);
+    });
+    assert.equal(readSelection(view).targetMessageId, 'message-A', 'a stale consume callback must not clear a newer jump');
+
+    act(() => {
+      getChatViewProps().onSearchTargetConsumed(secondRequestId);
+    });
+    assert.equal(readSelection(view).targetMessageId, null);
   } finally {
     cleanup();
     global.fetch = originalFetch;

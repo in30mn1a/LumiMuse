@@ -39,7 +39,35 @@ type UseScrollTargetVirtualizerOptions<T extends IdentifiedMessage> = {
   targetMessageId: string | null;
   items: readonly T[];
   scrollToIndex: (index: number, options: { align: 'center' }) => void;
-  isTargetRendered?: (targetMessageId: string) => boolean;
+  /**
+   * 目标是否已就位 —— 既挂上了 DOM，也真的落进了滚动视口。
+   * 只判「已挂载」不够：虚拟列表会先把行渲染在视口外，此时停手用户仍然看不到目标。
+   */
+  isTargetSettled?: (targetMessageId: string) => boolean;
+  /**
+   * 通知虚拟列表「容器滚动位置已变」。
+   * scrollToIndex 是直接给 scrollTop 赋值的：当赋的值与当前值相同（重试时必然如此），
+   * 浏览器不会派发 scroll 事件，虚拟列表的内部 offset 就再也追不上真实 DOM，
+   * 从而卡在「DOM 已滚到目标、渲染窗口却停在开头」的死锁里。
+   */
+  syncScrollOffset?: () => void;
+};
+
+/**
+ * 搜索跳转定位的重试上限（单位：帧）。
+ * 虚拟列表行高是 estimateSize 估算值，scrollToIndex 落点会随 measureElement 重测而漂移，
+ * 单次调用常常滚不到目标；重试到目标真正挂上 DOM 为止，上限用于兜底避免无限循环。
+ */
+const SCROLL_TO_INDEX_MAX_ATTEMPTS = 60;
+/**
+ * 等目标行出现后再 scrollIntoView 精确居中的重试上限（单位：帧）。
+ * 必须比 SCROLL_TO_INDEX_MAX_ATTEMPTS 宽裕：要先等上面那轮把目标滚进视口，这一步才有节点可用。
+ */
+const PENDING_SCROLL_MAX_ATTEMPTS = 180;
+
+type ActiveScrollTarget = {
+  id: string;
+  requestId: number;
 };
 
 export function isScrollMetricsNearBottom(metrics: ScrollMetrics, threshold = 180): boolean {
@@ -106,14 +134,44 @@ export function useScrollTargetVirtualizer<T extends IdentifiedMessage>({
   targetMessageId,
   items,
   scrollToIndex,
-  isTargetRendered,
+  isTargetSettled,
+  syncScrollOffset,
 }: UseScrollTargetVirtualizerOptions<T>): void {
+  // 尝试次数跨 render 累计（本 effect 的依赖含内联回调，每次 render 都会重跑），
+  // 切换目标时归零，避免一次跳转的重试预算被后续跳转继承。
+  const attemptsRef = useRef(0);
+  const attemptedTargetRef = useRef<string | null>(null);
+
   useEffect(() => {
+    if (!targetMessageId) {
+      // null 是一次定位生命周期的明确结束；之后即使再次定位同一 ID，也必须重新获得完整预算。
+      attemptedTargetRef.current = null;
+      attemptsRef.current = 0;
+      return;
+    }
     const idx = getTargetMessageIndex(items, targetMessageId);
-    if (idx === -1 || !targetMessageId) return;
-    if (isTargetRendered?.(targetMessageId)) return;
-    scrollToIndex(idx, { align: 'center' });
-  }, [isTargetRendered, items, scrollToIndex, targetMessageId]);
+    if (idx === -1) return;
+
+    if (attemptedTargetRef.current !== targetMessageId) {
+      attemptedTargetRef.current = targetMessageId;
+      attemptsRef.current = 0;
+    }
+    if (isTargetSettled?.(targetMessageId)) return;
+
+    let raf = 0;
+    const scrollUntilTargetSettled = () => {
+      if (isTargetSettled?.(targetMessageId)) return;
+      if (attemptsRef.current >= SCROLL_TO_INDEX_MAX_ATTEMPTS) return;
+      attemptsRef.current += 1;
+      scrollToIndex(idx, { align: 'center' });
+      // 让虚拟列表把内部 offset 对齐到刚写入的 scrollTop，否则下一帧仍按旧 offset 重算同一个值。
+      syncScrollOffset?.();
+      raf = requestAnimationFrame(scrollUntilTargetSettled);
+    };
+    scrollUntilTargetSettled();
+
+    return () => cancelAnimationFrame(raf);
+  }, [isTargetSettled, items, scrollToIndex, syncScrollOffset, targetMessageId]);
 }
 
 export function useChatScrollController({
@@ -129,8 +187,12 @@ export function useChatScrollController({
   const topSentinelNodeRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [activeScrollTarget, setActiveScrollTarget] = useState<ActiveScrollTarget | null>(null);
   const [topSentinelElement, setTopSentinelElement] = useState<HTMLDivElement | null>(null);
   const pendingScrollRef = useRef<string | null>(null);
+  const scrollTargetRequestIdRef = useRef(0);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeConvIdRef = useRef(activeConvId);
   const scrollToBottomOnLoadRef = useRef(false);
   const skipScrollRef = useRef(false);
   const forceScrollToBottomRef = useRef(false);
@@ -163,26 +225,71 @@ export function useChatScrollController({
     forceScrollToBottomRef.current = true;
   }, []);
 
-  const markTargetForScroll = useCallback((messageId: string) => {
-    pendingScrollRef.current = messageId;
-    setHighlightedId(messageId);
+  const clearHighlightTimer = useCallback(() => {
+    if (highlightTimerRef.current === null) return;
+    clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = null;
   }, []);
+
+  useLayoutEffect(() => {
+    if (activeConvIdRef.current === activeConvId) return;
+    activeConvIdRef.current = activeConvId;
+    scrollTargetRequestIdRef.current += 1;
+    pendingScrollRef.current = null;
+    // 旧会话尚未完成的滚底请求同样失效；新会话加载完成后会重新显式标记。
+    scrollToBottomOnLoadRef.current = false;
+    clearHighlightTimer();
+    setHighlightedId(null);
+    setActiveScrollTarget(null);
+  }, [activeConvId, clearHighlightTimer]);
+
+  const markTargetForScroll = useCallback((messageId: string) => {
+    clearHighlightTimer();
+    const requestId = scrollTargetRequestIdRef.current + 1;
+    scrollTargetRequestIdRef.current = requestId;
+    pendingScrollRef.current = messageId;
+    setActiveScrollTarget({ id: messageId, requestId });
+    setHighlightedId(messageId);
+  }, [clearHighlightTimer]);
 
   const markScrollToBottomOnLoad = useCallback(() => {
     scrollToBottomOnLoadRef.current = true;
   }, []);
 
   useEffect(() => {
-    const id = pendingScrollRef.current;
-    if (id) {
-      const raf = requestAnimationFrame(() => {
+    const target = activeScrollTarget;
+    if (target) {
+      const { id, requestId } = target;
+      // 目标行由虚拟列表异步挂载（见 useScrollTargetVirtualizer），首帧通常还取不到节点。
+      // 逐帧重试到节点出现为止；超出上限就放弃并清空 pending，避免长时间后才突然跳转。
+      let raf = 0;
+      let attempts = 0;
+      const scrollToTargetWhenRendered = () => {
+        if (scrollTargetRequestIdRef.current !== requestId) return;
         const el = document.getElementById(`msg-${id}`);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           pendingScrollRef.current = null;
-          setTimeout(() => setHighlightedId(null), 2500);
+          setActiveScrollTarget(current => current?.requestId === requestId ? null : current);
+          clearHighlightTimer();
+          const timer = setTimeout(() => {
+            if (scrollTargetRequestIdRef.current !== requestId) return;
+            setHighlightedId(current => current === id ? null : current);
+            if (highlightTimerRef.current === timer) highlightTimerRef.current = null;
+          }, 2500);
+          highlightTimerRef.current = timer;
+          return;
         }
-      });
+        if (attempts >= PENDING_SCROLL_MAX_ATTEMPTS) {
+          pendingScrollRef.current = null;
+          setHighlightedId(current => current === id ? null : current);
+          setActiveScrollTarget(current => current?.requestId === requestId ? null : current);
+          return;
+        }
+        attempts += 1;
+        raf = requestAnimationFrame(scrollToTargetWhenRendered);
+      };
+      raf = requestAnimationFrame(scrollToTargetWhenRendered);
       return () => cancelAnimationFrame(raf);
     }
 
@@ -257,7 +364,12 @@ export function useChatScrollController({
       if (settleTimer) clearTimeout(settleTimer);
       scroller.removeEventListener('load', onAssetLoad, true);
     };
-  }, [visibleMessages]);
+  }, [activeScrollTarget, clearHighlightTimer, visibleMessages]);
+
+  useEffect(() => () => {
+    scrollTargetRequestIdRef.current += 1;
+    clearHighlightTimer();
+  }, [clearHighlightTimer]);
 
   useEffect(() => {
     if (streamingText && !streamingTargetId && streamingConvId === activeConvId && isMessageListNearBottom()) {
@@ -270,6 +382,9 @@ export function useChatScrollController({
       skipScrollRef.current = false;
       return;
     }
+    // 搜索跳转进行中：消息刚灌进来时列表还没撑开，isMessageListNearBottom 会误判为「在底部」
+    // 而滚到底，把正在重试的目标定位冲掉。定位期间不参与自动滚底。
+    if (pendingScrollRef.current) return;
     const forceScrollToBottom = forceScrollToBottomRef.current;
     if (forceScrollToBottom || (!scrollToBottomOnLoadRef.current && isMessageListNearBottom())) {
       const raf = requestAnimationFrame(() => {
@@ -294,6 +409,7 @@ export function useChatScrollController({
 
   return {
     highlightedId,
+    activeScrollTargetId: activeScrollTarget?.id ?? null,
     messagesEndRef,
     topSentinelRef,
     scrollContainerRef,

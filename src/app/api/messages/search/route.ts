@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { getDb } from '@/lib/db';
+import type { TextHighlightRange } from '@/lib/text-highlight';
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, char => `\\${char}`);
@@ -8,6 +10,51 @@ function escapeLikePattern(value: string): string {
 function isLongCjkQuery(value: string): boolean {
   const codePoints = Array.from(value);
   return codePoints.length >= 3 && codePoints.every(codePoint => /\p{Script=Han}/u.test(codePoint));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function literalHighlightRanges(text: string, keyword: string): TextHighlightRange[] {
+  const matcher = new RegExp(escapeRegExp(keyword), 'gi');
+  return Array.from(text.matchAll(matcher), match => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    text: match[0],
+  }));
+}
+
+function ftsHighlightRanges(
+  markedText: string,
+  originalText: string,
+  startMarker: string,
+  endMarker: string,
+): TextHighlightRange[] {
+  const ranges: TextHighlightRange[] = [];
+  let markedCursor = 0;
+  let plainText = '';
+
+  while (markedCursor < markedText.length) {
+    const start = markedText.indexOf(startMarker, markedCursor);
+    if (start === -1) {
+      plainText += markedText.slice(markedCursor);
+      break;
+    }
+
+    plainText += markedText.slice(markedCursor, start);
+    const matchStart = plainText.length;
+    const contentStart = start + startMarker.length;
+    const end = markedText.indexOf(endMarker, contentStart);
+    if (end === -1) return [];
+
+    const matchedText = markedText.slice(contentStart, end);
+    plainText += matchedText;
+    ranges.push({ start: matchStart, end: plainText.length, text: matchedText });
+    markedCursor = end + endMarker.length;
+  }
+
+  return plainText === originalText ? ranges : [];
 }
 
 /**
@@ -91,6 +138,9 @@ export async function GET(request: NextRequest) {
   if (!q) return NextResponse.json([]);
 
   const db = getDb();
+  const markerId = randomUUID();
+  const highlightStartMarker = `\u001e${markerId}:start\u001f`;
+  const highlightEndMarker = `\u001e${markerId}:end\u001f`;
 
   // 检测是否为日期搜索
   const dateRange = parseDateRange(q);
@@ -109,6 +159,7 @@ export async function GET(request: NextRequest) {
     character_id: string;
     character_name: string;
     avatar_url: string | null;
+    highlighted_content: string | null;
   }>;
 
   if (dateRange) {
@@ -123,7 +174,8 @@ export async function GET(request: NextRequest) {
         c.title     AS conversation_title,
         ch.id       AS character_id,
         ch.name     AS character_name,
-        ch.avatar_url AS avatar_url
+        ch.avatar_url AS avatar_url,
+        NULL AS highlighted_content
       FROM messages m
       JOIN conversations c  ON m.conversation_id = c.id
       JOIN characters   ch ON c.character_id     = ch.id
@@ -148,7 +200,8 @@ export async function GET(request: NextRequest) {
         c.title     AS conversation_title,
         ch.id       AS character_id,
         ch.name     AS character_name,
-        ch.avatar_url AS avatar_url
+        ch.avatar_url AS avatar_url,
+        NULL AS highlighted_content
       FROM messages m
       JOIN conversations c  ON m.conversation_id = c.id
       JOIN characters   ch ON c.character_id     = ch.id
@@ -169,7 +222,8 @@ export async function GET(request: NextRequest) {
             c.title     AS conversation_title,
             ch.id       AS character_id,
             ch.name     AS character_name,
-            ch.avatar_url AS avatar_url
+            ch.avatar_url AS avatar_url,
+            highlight(messages_fts_trigram, 1, ?, ?) AS highlighted_content
           FROM messages_fts_trigram fts
           JOIN messages m      ON m.id = fts.id
           JOIN conversations c ON m.conversation_id = c.id
@@ -177,7 +231,7 @@ export async function GET(request: NextRequest) {
           WHERE messages_fts_trigram MATCH ? AND m.role IN ('user', 'assistant') ${charClause}
           ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
           LIMIT ? OFFSET ?
-        `).all(`"${normalized}"`, ...charParams, pageSize, offset) as typeof rows;
+        `).all(highlightStartMarker, highlightEndMarker, `"${normalized}"`, ...charParams, pageSize, offset) as typeof rows;
       } catch {
         rows = searchLike();
       }
@@ -196,7 +250,8 @@ export async function GET(request: NextRequest) {
             c.title     AS conversation_title,
             ch.id       AS character_id,
             ch.name     AS character_name,
-            ch.avatar_url AS avatar_url
+            ch.avatar_url AS avatar_url,
+            highlight(messages_fts, 1, ?, ?) AS highlighted_content
           FROM messages_fts fts
           JOIN messages m      ON m.id = fts.id
           JOIN conversations c ON m.conversation_id = c.id
@@ -204,7 +259,7 @@ export async function GET(request: NextRequest) {
           WHERE messages_fts MATCH ? AND m.role IN ('user', 'assistant') ${charClause}
           ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
           LIMIT ? OFFSET ?
-        `).all(ftsQuery, ...charParams, pageSize, offset) as typeof rows;
+        `).all(highlightStartMarker, highlightEndMarker, ftsQuery, ...charParams, pageSize, offset) as typeof rows;
         rows = ftsRows.length === 0 ? searchLike() : ftsRows;
       } catch {
         rows = searchLike();
@@ -235,6 +290,16 @@ export async function GET(request: NextRequest) {
       characterId: r.character_id,
       characterName: r.character_name,
       avatarUrl: r.avatar_url,
+      highlightRanges: dateRange
+        ? []
+        : r.highlighted_content === null
+          ? literalHighlightRanges(r.content, q)
+          : ftsHighlightRanges(
+              r.highlighted_content,
+              r.content,
+              highlightStartMarker,
+              highlightEndMarker,
+            ),
     })),
     hasMore,
   });

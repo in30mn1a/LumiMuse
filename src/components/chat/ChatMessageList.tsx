@@ -8,6 +8,7 @@ import { formatDateLabel, getVersionInfo, isSameDay } from '@/lib/chat-view-util
 import { usePrependScrollAnchor, useScrollTargetVirtualizer } from '@/hooks/chat/useChatScrollController';
 import { sanitizeGeneratedImages } from '@/lib/generated-image-assets';
 import { warmImageBlobs } from '@/lib/image-blob-cache';
+import type { TextHighlightRange } from '@/lib/text-highlight';
 import { MemoryIcon } from '@/components/ui/icons';
 import MessageBubble from './MessageBubble';
 
@@ -16,12 +17,20 @@ interface VersionInfo {
   active: number;
 }
 
+/** 搜索跳转落点：目标消息正文里高亮后端确认命中的原文区间 */
+export interface SearchHighlight {
+  messageId: string;
+  ranges: readonly TextHighlightRange[];
+}
+
 interface Props {
   visibleMessages: Message[];
   hiddenMessageId: string | null;
   streamingTargetId: string | null;
   streamingInsertAfterUserId: string | null;
   highlightedId: string | null;
+  activeScrollTargetId: string | null;
+  searchHighlight: SearchHighlight | null;
   isStreamingHere: boolean;
   hasOlderMessages: boolean;
   loadingOlderMessages: boolean;
@@ -71,6 +80,8 @@ function ChatMessageList(
     streamingTargetId,
     streamingInsertAfterUserId,
     highlightedId,
+    activeScrollTargetId,
+    searchHighlight,
     isStreamingHere,
     hasOlderMessages,
     loadingOlderMessages,
@@ -157,14 +168,32 @@ function ChatMessageList(
     totalSize,
   });
 
-  // 当父组件设定 highlightedId（例如搜索跳转）但目标 row 还没渲染时，主动滚到对应 index，
+  // 当父组件设定 activeScrollTargetId（例如搜索跳转）但目标 row 还没渲染时，主动滚到对应 index，
   // 让 virtualizer 把它挂上 DOM。父组件随后 document.getElementById('msg-${id}').scrollIntoView()
-  // 才能拿到真实节点完成最终居中。
+  // 才能拿到真实节点完成最终居中。视觉 highlightedId 独立存续，不再驱动定位。
   useScrollTargetVirtualizer({
-    targetMessageId: highlightedId,
+    targetMessageId: activeScrollTargetId,
     items: filtered,
     scrollToIndex: (idx, options) => virtualizer.scrollToIndex(idx, options),
-    isTargetRendered: id => typeof document !== 'undefined' && Boolean(document.getElementById(`msg-${id}`)),
+    isTargetSettled: id => {
+      if (typeof document === 'undefined') return false;
+      const element = document.getElementById(`msg-${id}`);
+      const scroller = scrollContainerRef.current;
+      if (!element || !scroller) return false;
+      // 行会先被渲染在视口外，必须等它真的进入容器可视区域才算落点完成
+      const row = element.getBoundingClientRect();
+      const view = scroller.getBoundingClientRect();
+      return row.bottom > view.top && row.top < view.bottom;
+    },
+    syncScrollOffset: () => {
+      const scroller = scrollContainerRef.current;
+      if (!scroller) return;
+      // TanStack Virtual 会在 scroll 监听器中触发 React flushSync；若在当前 effect 调用栈里
+      // 同步派发事件，React 会报告 lifecycle 内嵌 flushSync。延后到微任务仍早于下一帧重试。
+      queueMicrotask(() => {
+        if (scroller.isConnected) scroller.dispatchEvent(new Event('scroll'));
+      });
+    },
   });
 
   // 流式生成时最后一条 bubble 高度会持续变化。ResizeObserver 已经能捕获绝大多数变化，
@@ -300,6 +329,7 @@ function ChatMessageList(
                       avatarUrl={character.avatar_url}
                       showTimestamps={showTimestamps}
                       versionInfo={versionInfoByMessageId.get(message.id) ?? getVersionInfo(message)}
+                      highlightRanges={searchHighlight?.messageId === message.id ? searchHighlight.ranges : null}
                       onEdit={onEdit}
                       onDelete={onDelete}
                       onRegenerate={onRegenerate}

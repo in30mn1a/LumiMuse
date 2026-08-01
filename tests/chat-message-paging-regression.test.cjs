@@ -231,6 +231,146 @@ test('message paging initial load is not restarted by parent callback identity c
   }
 });
 
+test('message paging restarts the same target for each distinct jump request', async () => {
+  const originalDocument = global.document;
+  global.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const activeConvIdRef = { current: 'conv-a' };
+  const requests = [];
+  const loadedTargets = [];
+  let targetRequestId = 1;
+  const targetMessage = {
+    id: 'target',
+    conversation_id: 'conv-a',
+    role: 'user',
+    content: 'needle',
+    created_at: '2026-06-08T00:00:00.000Z',
+    token_count: 1,
+    metadata: {},
+  };
+  const fetchMessagesPage = (conversationId, options) => {
+    requests.push({ conversationId, all: options.all ?? false });
+    return Promise.resolve({
+      messages: [targetMessage],
+      hasMore: false,
+      oldestSeq: 1,
+      unextractedCount: 0,
+      totalTokens: 1,
+    });
+  };
+
+  let runtime;
+  try {
+    runtime = createHookRuntime(
+      reactMock => {
+        const realMessageCache = require('../src/lib/chat-message-cache.ts');
+        realMessageCache.clearCachedMessages();
+        const { useMessagePaging } = requireFreshWithMocks('../src/hooks/chat/useMessagePaging.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage },
+          '@/lib/chat-message-cache': realMessageCache,
+        });
+        return useMessagePaging;
+      },
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef,
+        targetConversationId: 'conv-a',
+        targetMessageId: 'target',
+        targetRequestId,
+        pageSize: 60,
+        onTargetMessageLoaded: id => loadedTargets.push(id),
+        onInitialMessagesLoaded: () => {},
+        onError: () => {},
+      }),
+    );
+
+    runtime.render();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(requests, [{ conversationId: 'conv-a', all: true }]);
+    assert.deepEqual(loadedTargets, ['target']);
+
+    targetRequestId = 2;
+    runtime.render();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(requests, [
+      { conversationId: 'conv-a', all: true },
+      { conversationId: 'conv-a', all: true },
+    ]);
+    assert.deepEqual(loadedTargets, ['target', 'target']);
+  } finally {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    runtime?.cleanup();
+    global.document = originalDocument;
+  }
+});
+
+test('message paging applies a target only to its owning conversation', async () => {
+  const originalDocument = global.document;
+  global.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const activeConvIdRef = { current: 'conv-b' };
+  const requests = [];
+  let initialLoads = 0;
+  const fetchMessagesPage = (conversationId, options) => {
+    requests.push({ conversationId, all: options.all ?? false });
+    return Promise.resolve({
+      messages: [],
+      hasMore: false,
+      oldestSeq: null,
+      unextractedCount: 0,
+      totalTokens: 0,
+    });
+  };
+
+  let runtime;
+  try {
+    runtime = createHookRuntime(
+      reactMock => {
+        const realMessageCache = require('../src/lib/chat-message-cache.ts');
+        realMessageCache.clearCachedMessages();
+        const { useMessagePaging } = requireFreshWithMocks('../src/hooks/chat/useMessagePaging.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage },
+          '@/lib/chat-message-cache': realMessageCache,
+        });
+        return useMessagePaging;
+      },
+      () => ({
+        activeConvId: 'conv-b',
+        activeConvIdRef,
+        targetConversationId: 'conv-a',
+        targetMessageId: 'target-in-a',
+        targetRequestId: 1,
+        pageSize: 60,
+        onTargetMessageLoaded: () => assert.fail('another conversation must not consume the target'),
+        onInitialMessagesLoaded: () => { initialLoads += 1; },
+        onError: () => {},
+      }),
+    );
+
+    runtime.render();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(requests, [{ conversationId: 'conv-b', all: false }]);
+    assert.equal(initialLoads, 1);
+  } finally {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    runtime?.cleanup();
+    global.document = originalDocument;
+  }
+});
+
 test('message paging does not expose the previous conversation unextracted count while switching', async () => {
   const originalDocument = global.document;
   global.document = {

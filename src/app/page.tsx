@@ -1,18 +1,23 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Character } from '@/types';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import GlobalSearch from '@/components/search/GlobalSearch';
 import Modal from '@/components/ui/Modal';
 import { parseJsonResponse } from '@/lib/http';
+import type { TextHighlightRange } from '@/lib/text-highlight';
 
 interface HomeSelection {
   characterId: string | null;
   character: Character | null;
   conversationId: string | null;
   targetMessageId: string | null;
+  /** 区分同一消息的多次搜索跳转；普通对话选择没有请求 id */
+  targetRequestId: number | null;
+  /** 由搜索结果快照带入，只高亮后端确认命中的原文区间 */
+  searchHighlightRanges: readonly TextHighlightRange[];
 }
 
 export default function Home() {
@@ -21,6 +26,8 @@ export default function Home() {
     character: null,
     conversationId: null,
     targetMessageId: null,
+    targetRequestId: null,
+    searchHighlightRanges: [],
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -32,6 +39,8 @@ export default function Home() {
     character: selectedCharacter,
     conversationId: selectedConversationId,
     targetMessageId,
+    targetRequestId,
+    searchHighlightRanges,
   } = selection;
 
   useEffect(() => {
@@ -50,6 +59,8 @@ export default function Home() {
         character: characterSnapshot,
         conversationId: null,
         targetMessageId: null,
+        targetRequestId: null,
+        searchHighlightRanges: [],
       });
     }
     fetch(`/api/characters/${id}`)
@@ -61,6 +72,8 @@ export default function Home() {
           character: full,
           conversationId: null,
           targetMessageId: null,
+          targetRequestId: null,
+          searchHighlightRanges: [],
         });
       })
       .catch(() => {/* 请求失败时保留上一组完整 selection 或当前快照 */});
@@ -71,9 +84,16 @@ export default function Home() {
     setSearchOpen(true);
   };
 
-  const handleConversationSelect = async (characterId: string, conversationId: string, messageId?: string) => {
+  const handleConversationSelect = async (
+    characterId: string,
+    conversationId: string,
+    messageId?: string,
+    highlightRanges?: readonly TextHighlightRange[],
+  ) => {
     const generation = ++selectionGenerationRef.current;
     const nextTargetMessageId = messageId ?? null;
+    const nextTargetRequestId = nextTargetMessageId ? generation : null;
+    const nextSearchHighlightRanges = nextTargetMessageId ? [...(highlightRanges ?? [])] : [];
     setSidebarOpen(false);
 
     if (characterId === selectedCharacterId && selectedCharacter?.id === characterId) {
@@ -82,6 +102,8 @@ export default function Home() {
         character: selectedCharacter,
         conversationId,
         targetMessageId: nextTargetMessageId,
+        targetRequestId: nextTargetRequestId,
+        searchHighlightRanges: nextSearchHighlightRanges,
       });
       return;
     }
@@ -94,11 +116,25 @@ export default function Home() {
         character: full,
         conversationId,
         targetMessageId: nextTargetMessageId,
+        targetRequestId: nextTargetRequestId,
+        searchHighlightRanges: nextSearchHighlightRanges,
       });
     } catch {
       /* 请求失败时保留上一组完整 selection */
     }
   };
+
+  const handleSearchTargetConsumed = useCallback((requestId: number) => {
+    setSelection(current => {
+      if (current.targetRequestId !== requestId) return current;
+      return {
+        ...current,
+        targetMessageId: null,
+        targetRequestId: null,
+        searchHighlightRanges: [],
+      };
+    });
+  }, []);
 
   // Ctrl+K / Cmd+K 打开全局搜索
   useEffect(() => {
@@ -163,6 +199,9 @@ export default function Home() {
           character={selectedCharacter}
           conversationId={selectedConversationId}
           targetMessageId={targetMessageId}
+          targetRequestId={targetRequestId}
+          searchHighlightRanges={searchHighlightRanges}
+          onSearchTargetConsumed={handleSearchTargetConsumed}
           onOpenSidebar={() => setSidebarOpen(true)}
           onOpenSearch={() => openSearch(selectedCharacterId)}
         />
@@ -173,8 +212,8 @@ export default function Home() {
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
         characterId={searchCharacterId}
-        onConversationSelect={(characterId, conversationId, messageId) =>
-          handleConversationSelect(characterId, conversationId, messageId)
+        onConversationSelect={(characterId, conversationId, messageId, highlightRanges) =>
+          handleConversationSelect(characterId, conversationId, messageId, highlightRanges)
         }
       />
     </div>

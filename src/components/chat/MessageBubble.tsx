@@ -1,12 +1,13 @@
 'use client';
 
-import { memo, useEffect, useRef, useState } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
+import { splitByHighlightRanges, type TextHighlightRange } from '@/lib/text-highlight';
 import { sanitizeGeneratedImages, type GeneratedImage, type GeneratedImageVersion } from '@/lib/generated-image-assets';
 import { CheckIcon, ClockIcon, CopyIcon, PencilIcon, RefreshIcon, TrashIcon, ReplyIcon, SummaryIcon, ImageIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
@@ -25,6 +26,8 @@ interface Props {
   characterName: string;
   avatarUrl: string | null;
   versionInfo?: VersionInfo;
+  /** 搜索跳转命中的精确正文坐标：匹配处套黄色高亮 */
+  highlightRanges?: readonly TextHighlightRange[] | null;
   onEdit?: (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => void;
   onDelete?: (id: string) => void;
   onRegenerate?: (id: string) => void;
@@ -226,6 +229,7 @@ function MessageBubbleInner({
   isLoading,
   showTimestamps,
   versionInfo,
+  highlightRanges,
   onEdit,
   onDelete,
   onRegenerate,
@@ -248,6 +252,18 @@ function MessageBubbleInner({
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const hasVersions = versionInfo && versionInfo.total > 1;
+
+  // 搜索跳转命中的关键词高亮。流式期间正文还在追加，跳过；无命中时返回 null 走原文渲染。
+  const highlightedContent = useMemo(() => {
+    if (!highlightRanges || isStreaming) return null;
+    const segments = splitByHighlightRanges(message.content, highlightRanges);
+    if (!segments.some(segment => segment.isMatch)) return null;
+    return segments.map((segment, index) => (
+      segment.isMatch
+        ? <mark key={index} className="search-hit">{segment.text}</mark>
+        : <Fragment key={index}>{segment.text}</Fragment>
+    ));
+  }, [highlightRanges, isStreaming, message.content]);
 
   // 编辑框高度自适应内容：长消息进入编辑时不再被压成固定 3 行的小框，而是撑到原内容高度（与 ChatInput 同款 auto-grow），超长封顶 60vh 内部滚动
   useEffect(() => {
@@ -530,7 +546,7 @@ function MessageBubbleInner({
             <div className={`leading-relaxed ${isUser ? 'text-white' : 'text-text-primary'}`}
               style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }}
             >
-              {isStreaming ? message.content + '▍' : message.content}
+              {isStreaming ? message.content + '▍' : highlightedContent ?? message.content}
             </div>
           </>
         )}

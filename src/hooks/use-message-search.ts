@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
+import type { TextHighlightRange } from '@/lib/text-highlight';
 
 export interface MessageSearchResult {
   messageId: string;
@@ -13,6 +14,8 @@ export interface MessageSearchResult {
   characterId: string;
   characterName: string;
   avatarUrl: string | null;
+  /** 搜索当时由 FTS / LIKE 确认的正文命中坐标快照。 */
+  highlightRanges: TextHighlightRange[];
 }
 
 interface UseMessageSearchOptions {

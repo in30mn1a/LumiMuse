@@ -301,10 +301,10 @@ export async function buildHistoryMessages(
     if (message.role === 'system' && !meta.isSummary) continue;
 
     // 估算本条消息的 token 占用：基础内容 + 可能的时间戳前缀
-    // 时间戳形如 "[2026-05-13 14:30] "（约 19 个字符），在 estimateTokens 里
-    // ASCII 0.25 token、空格按 0.25 计算，整体 ~5 token。预算时计入，避免长会话
-    // 因为时间戳累积偏差导致预算超支。
-    const TIMESTAMP_TOKEN_OVERHEAD = 5;
+    // 时间戳形如 "[2026-08-02 Sun 14:30] "，用实际生效的 cl100k_base 编码器实测为
+    // 14 token（日期/时间的数字会被切成多个 BPE 片段，远高于按字符比例的粗估）。
+    // 预算时计入，避免长会话因为时间戳累积偏差导致预算超支。
+    const TIMESTAMP_TOKEN_OVERHEAD = 14;
     const baseTokens = resolveMessageTokenCount(message).tokenCount;
     const messageTokens = baseTokens
       + (settings.show_timestamps && message.created_at ? TIMESTAMP_TOKEN_OVERHEAD : 0);

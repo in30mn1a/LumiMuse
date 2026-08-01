@@ -213,6 +213,18 @@ export function useMessagePaging({
     applyMessagesResponse(conversationIdToRefresh, response);
   }, [activeConvIdRef, applyMessagesResponse, pageSize]);
 
+  const refreshMessageCountsForConversation = useCallback(async (conversationIdToRefresh: string) => {
+    const { unextractedCount, totalTokens } = await fetchMessagesPage(conversationIdToRefresh, { limit: pageSize });
+    const metadata: Partial<Omit<MessagesResponse, 'messages'>> = {};
+    if (unextractedCount !== undefined) metadata.unextractedCount = unextractedCount;
+    if (totalTokens !== undefined) metadata.totalTokens = totalTokens;
+    updateMessagesForConversation(conversationIdToRefresh, messages => messages, metadata);
+    if (activeConvIdRef.current === conversationIdToRefresh) {
+      updateServerCounts(conversationIdToRefresh, unextractedCount, totalTokens);
+    }
+    setMessagePagingError(null);
+  }, [activeConvIdRef, pageSize, updateMessagesForConversation, updateServerCounts]);
+
   const loadOlderMessages = useCallback(async () => {
     if (!activeConvId || !hasOlderMessages || oldestLoadedSeq === null || loadingOlderMessages) return;
     const loadingConvId = activeConvId;
@@ -258,6 +270,7 @@ export function useMessagePaging({
     replaceMessages,
     refreshMessages,
     refreshMessagesForConversation,
+    refreshMessageCountsForConversation,
     loadOlderMessages,
     updateServerCounts,
     setServerUnextractedCountValue,

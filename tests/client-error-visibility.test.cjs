@@ -87,10 +87,20 @@ test('ChatView write handlers validate failed responses before local mutation or
 
   const switchBlock = sliceBetween(messageActionsHook, 'const handleSwitchVersion = useCallback', '  return {');
   const switchValidationIndex = firstResponseValidationIndex(switchBlock);
+  const switchMutationIndex = switchBlock.indexOf('updateMessagesForConversation(updated.conversation_id');
+  const switchCountRefreshIndex = switchBlock.indexOf('await refreshMessageCountsForConversation(updated.conversation_id);');
   assert.notEqual(switchValidationIndex, -1, 'version switch should validate the write response');
   assert.ok(
-    switchValidationIndex < switchBlock.indexOf('await refreshMessagesForConversation(updated.conversation_id);'),
-    'version switches should not refresh messages before validating the write response',
+    switchValidationIndex < switchMutationIndex,
+    'version switches should not mutate messages before validating the write response',
+  );
+  assert.ok(
+    switchMutationIndex < switchCountRefreshIndex,
+    'version switches should apply the authoritative message before refreshing server counts',
+  );
+  assert.ok(
+    !switchBlock.includes('await refreshMessagesForConversation(updated.conversation_id);'),
+    'version switches must not replace a search-loaded full message window with a capped page',
   );
   assert.match(switchBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);
 });

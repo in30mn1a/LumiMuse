@@ -371,6 +371,94 @@ test('message paging applies a target only to its owning conversation', async ()
   }
 });
 
+test('count-only refresh preserves a search-loaded 205-message window', async () => {
+  const originalDocument = global.document;
+  global.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const activeConvIdRef = { current: 'conv-a' };
+  const messages = Array.from({ length: 205 }, (_, index) => ({
+    id: index === 0 ? 'search-target' : `msg-${index}`,
+    conversation_id: 'conv-a',
+    role: index % 2 === 0 ? 'assistant' : 'user',
+    content: `content ${index}`,
+    created_at: '2026-08-02T00:00:00.000Z',
+    token_count: 1,
+    metadata: {},
+    seq: index + 1,
+  }));
+  const requests = [];
+  const fetchMessagesPage = (_conversationId, options) => {
+    requests.push(options);
+    if (requests.length === 1) {
+      return Promise.resolve({
+        messages,
+        hasMore: false,
+        oldestSeq: 1,
+      });
+    }
+    return Promise.resolve({
+      messages: messages.slice(-60),
+      hasMore: true,
+      oldestSeq: 146,
+      unextractedCount: 7,
+      totalTokens: 999,
+    });
+  };
+
+  let runtime;
+  const realMessageCache = require('../src/lib/chat-message-cache.ts');
+  realMessageCache.clearCachedMessages();
+  try {
+    runtime = createHookRuntime(
+      reactMock => {
+        const { useMessagePaging } = requireFreshWithMocks('../src/hooks/chat/useMessagePaging.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage },
+          '@/lib/chat-message-cache': realMessageCache,
+        });
+        return useMessagePaging;
+      },
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef,
+        targetConversationId: 'conv-a',
+        targetMessageId: 'search-target',
+        pageSize: 60,
+        onTargetMessageLoaded: () => {},
+        onInitialMessagesLoaded: () => {},
+        onError: () => {},
+      }),
+    );
+
+    runtime.render();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(runtime.current.visibleMessages.length, 205);
+
+    await runtime.current.refreshMessageCountsForConversation('conv-a');
+
+    assert.equal(runtime.current.visibleMessages.length, 205);
+    assert.equal(runtime.current.visibleMessages[0].id, 'search-target');
+    assert.deepEqual(runtime.current.serverTotalTokens, { convId: 'conv-a', value: 999 });
+    assert.equal(runtime.current.serverUnextractedCount, 7);
+    const cached = realMessageCache.readCachedMessages('conv-a');
+    assert.equal(cached.messages.length, 205);
+    assert.equal(cached.totalTokens, 999);
+    assert.equal(cached.unextractedCount, 7);
+    assert.equal(requests[0].all, true);
+    assert.equal(requests[1].limit, 60);
+  } finally {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    runtime?.cleanup();
+    realMessageCache.clearCachedMessages();
+    global.document = originalDocument;
+  }
+});
+
 test('message paging does not expose the previous conversation unextracted count while switching', async () => {
   const originalDocument = global.document;
   global.document = {

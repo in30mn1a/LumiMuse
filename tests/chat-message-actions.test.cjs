@@ -83,6 +83,7 @@ function createOptions(overrides = {}) {
     setStreamingUsage: () => {},
     pollMemoryTask: () => Promise.resolve(),
     refreshMessagesForConversation: () => Promise.resolve(),
+    refreshMessageCountsForConversation: () => Promise.resolve(),
     touchConversation: () => {},
     updateMessagesForConversation: () => {},
     markSkipNextScroll: () => {},
@@ -325,10 +326,11 @@ test('delete failure is consumed and shown as an error toast', async () => {
   assert.deepEqual(toasts, [{ messageText: 'delete denied', type: 'error' }]);
 });
 
-test('edit and version switch refresh the message owner response instead of the current conversation', async () => {
+test('edit refreshes the message owner while version switch refreshes only its counts', async () => {
   const useChatMessageActions = loadHook();
   const options = createOptions();
   const refreshed = [];
+  const countRefreshes = [];
   global.fetch = async (_url, init) => {
     options.activeConvIdRef.current = 'conv-b';
     return new Response(JSON.stringify(message('assistant-target', 'assistant', init.method === 'PUT' ? 'updated' : 'unchanged')), {
@@ -340,11 +342,76 @@ test('edit and version switch refresh the message owner response instead of the 
   const { result } = renderHook(() => useChatMessageActions({
     ...options,
     refreshMessagesForConversation: async convId => { refreshed.push(convId); },
+    refreshMessageCountsForConversation: async convId => { countRefreshes.push(convId); },
   }));
   await act(async () => {
     await result.current.handleEditMessage('assistant-target', 'updated');
     await result.current.handleSwitchVersion('assistant-target', 0);
   });
 
-  assert.deepEqual(refreshed, ['conv-a', 'conv-a']);
+  assert.deepEqual(refreshed, ['conv-a']);
+  assert.deepEqual(countRefreshes, ['conv-a']);
+});
+
+test('version switch keeps a search-loaded message outside the latest 200-message page', async () => {
+  const useChatMessageActions = loadHook();
+  const options = createOptions();
+  const target = {
+    ...message('assistant-target', 'assistant', 'current version'),
+    token_count: 3,
+    metadata: {
+      activeVersion: 1,
+      versions: [
+        { content: 'older version', token_count: 2 },
+        { content: 'current version', token_count: 3 },
+      ],
+    },
+  };
+  let visibleMessages = [
+    target,
+    ...Array.from({ length: 204 }, (_, index) => (
+      message(`message-${index + 1}`, index % 2 === 0 ? 'user' : 'assistant', `content ${index + 1}`)
+    )),
+  ];
+  options.messagesRef.current = visibleMessages;
+  const refreshed = [];
+  const countRefreshes = [];
+  global.fetch = async () => new Response(JSON.stringify({
+    ...target,
+    content: 'older version',
+    token_count: 2,
+    metadata: {
+      ...target.metadata,
+      activeVersion: 0,
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const { result } = renderHook(() => useChatMessageActions({
+    ...options,
+    updateMessagesForConversation: (_convId, updater) => {
+      visibleMessages = updater(visibleMessages);
+      options.messagesRef.current = visibleMessages;
+    },
+    refreshMessagesForConversation: async convId => {
+      refreshed.push(convId);
+      visibleMessages = visibleMessages.slice(-200);
+      options.messagesRef.current = visibleMessages;
+    },
+    refreshMessageCountsForConversation: async convId => {
+      countRefreshes.push(convId);
+    },
+  }));
+  await act(async () => {
+    await result.current.handleSwitchVersion('assistant-target', 0);
+  });
+
+  assert.equal(visibleMessages.length, 205);
+  assert.equal(visibleMessages[0].id, 'assistant-target');
+  assert.equal(visibleMessages[0].content, 'older version');
+  assert.equal(visibleMessages[0].metadata.activeVersion, 0);
+  assert.deepEqual(refreshed, []);
+  assert.deepEqual(countRefreshes, ['conv-a']);
 });

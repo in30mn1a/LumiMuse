@@ -64,6 +64,7 @@ type UseChatMessageActionsOptions = {
   setStreamingUsage: (usage: { convId: string; usage: StreamingUsage } | null) => void;
   pollMemoryTask: (convId: string) => void | Promise<void>;
   refreshMessagesForConversation: (conversationId: string) => Promise<void>;
+  refreshMessageCountsForConversation: (conversationId: string) => Promise<void>;
   /** 聊天/重生成成功后局部更新对话摘要，避免全量重拉对话与记忆 */
   touchConversation: (conversationId: string) => void;
   updateMessagesForConversation: UpdateMessagesForConversation;
@@ -88,6 +89,7 @@ export function useChatMessageActions({
   setStreamingUsage,
   pollMemoryTask,
   refreshMessagesForConversation,
+  refreshMessageCountsForConversation,
   touchConversation,
   updateMessagesForConversation,
   markSkipNextScroll,
@@ -331,11 +333,11 @@ export function useChatMessageActions({
       updateMessagesForConversation(updated.conversation_id, messages => messages.map(message => (
         message.id === messageId ? updated : message
       )));
-      await refreshMessagesForConversation(updated.conversation_id);
+      await refreshMessageCountsForConversation(updated.conversation_id);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
-  }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
+  }, [refreshMessageCountsForConversation, showToast, t, updateMessagesForConversation]);
 
   return {
     sendChatStream,

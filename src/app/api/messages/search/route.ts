@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { getDb } from '@/lib/db';
+import { loadSettings } from '@/lib/settings';
+import { currentYearInZone, zonedDayRangeToUtc } from '@/lib/chat-time';
 import type { TextHighlightRange } from '@/lib/text-highlight';
 
 function escapeLikePattern(value: string): string {
@@ -61,15 +63,11 @@ function ftsHighlightRanges(
  * 尝试把用户输入解析为日期范围
  * 支持格式：2026/3/30、2026-03-30、3月30日、3/30 等
  * 返回 [startISO, endISO] 或 null
+ *
+ * 必须按用户时区解析：消息 created_at 存的是 UTC，而用户说的「3月30日」指他本地那一天。
+ * 服务器时区（容器默认 UTC）与用户不同时，日边界会整体偏移，搜出来的结果头尾都不对。
  */
-function isValidParsedDate(year: number, month: number, day: number, startDate: Date): boolean {
-  return startDate.getFullYear() === year
-    && startDate.getMonth() === month - 1
-    && startDate.getDate() === day;
-}
-
-function parseDateRange(input: string): [string, string] | null {
-  const now = new Date();
+function parseDateRange(input: string, timeZone?: string): [string, string] | null {
   let year: number | null = null;
   let month: number | null = null;
   let day: number | null = null;
@@ -96,7 +94,7 @@ function parseDateRange(input: string): [string, string] | null {
   if (!match) {
     match = input.match(/^(\d{1,2})月(\d{1,2})日?$/);
     if (match) {
-      year = now.getFullYear();
+      year = currentYearInZone(timeZone);
       month = parseInt(match[1]);
       day = parseInt(match[2]);
     }
@@ -106,7 +104,7 @@ function parseDateRange(input: string): [string, string] | null {
   if (!match) {
     match = input.match(/^(\d{1,2})[/\-.](\d{1,2})$/);
     if (match) {
-      year = now.getFullYear();
+      year = currentYearInZone(timeZone);
       month = parseInt(match[1]);
       day = parseInt(match[2]);
     }
@@ -115,11 +113,8 @@ function parseDateRange(input: string): [string, string] | null {
   if (!year || !month || !day) return null;
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
 
-  // 用本地时间构造当天 00:00 和 23:59:59，toISOString 会自动转为 UTC
-  const startDate = new Date(year, month - 1, day, 0, 0, 0, 0);
-  if (!isValidParsedDate(year, month, day, startDate)) return null;
-  const endDate = new Date(year, month - 1, day, 23, 59, 59, 999);
-  return [startDate.toISOString(), endDate.toISOString()];
+  // 日期合法性（如 2 月 30 日）由 zonedDayRangeToUtc 内部按日历判定，与时区无关
+  return zonedDayRangeToUtc(year, month, day, timeZone);
 }
 
 /**
@@ -142,8 +137,8 @@ export async function GET(request: NextRequest) {
   const highlightStartMarker = `\u001e${markerId}:start\u001f`;
   const highlightEndMarker = `\u001e${markerId}:end\u001f`;
 
-  // 检测是否为日期搜索
-  const dateRange = parseDateRange(q);
+  // 检测是否为日期搜索。按用户上报时区解析，否则容器 UTC 会让日边界整体偏移
+  const dateRange = parseDateRange(q, loadSettings().client_timezone);
 
   // 角色过滤：子句紧跟 role 条件，参数插在关键词之后、分页参数之前
   const charClause = characterId ? 'AND ch.id = ?' : '';

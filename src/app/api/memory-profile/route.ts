@@ -14,6 +14,8 @@ import {
   type MemoryProfilePatch,
 } from '@/lib/memory-profile';
 import { getDb } from '@/lib/db';
+import { loadSettings } from '@/lib/settings';
+import { formatExtractionTimestamp } from '@/lib/chat-time';
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -201,6 +203,8 @@ export async function POST(request: NextRequest) {
 
       const parts: string[] = [];
       const charName = character.name || '角色';
+      // 后台画像构建没有客户端上下文，时间戳按浏览器上报并持久化的时区渲染
+      const clientTimeZone = loadSettings().client_timezone;
 
       // ── 角色信息 ──
       const charInfoParts: string[] = [];
@@ -264,16 +268,16 @@ export async function POST(request: NextRequest) {
 
           const lines: string[] = [];
           for (const um of userMsgs) {
-            const d = new Date(um.created_at);
-            const ts = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            // 与记忆提取同源：按用户时区渲染，否则容器 UTC 会把凌晨对话记成前一天，
+            // 而这个日期会被写进画像内容持久化下去。
+            const ts = formatExtractionTimestamp(um.created_at, clientTimeZone);
             lines.push(`用户 (${ts}): ${um.content}`);
 
             // 一次批量查询只返回采样用户各自的下一条回复，避免读取采样点之后的整段长会话。
             const nextAssistant = assistantByUserId.get(um.id);
 
             if (nextAssistant) {
-              const ad = new Date(nextAssistant.created_at);
-              const ats = `${ad.getFullYear()}/${ad.getMonth() + 1}/${ad.getDate()} ${String(ad.getHours()).padStart(2, '0')}:${String(ad.getMinutes()).padStart(2, '0')}`;
+              const ats = formatExtractionTimestamp(nextAssistant.created_at, clientTimeZone);
               lines.push(`${charName} (${ats}): ${nextAssistant.content}`);
             }
           }

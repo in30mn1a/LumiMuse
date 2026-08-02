@@ -184,6 +184,7 @@ function loadChatRoute(db, capturedEnqueues, settingsOverrides = {}) {
         memory_trigger_time_enabled: false,
         ...settingsOverrides,
       }),
+      recordClientTimezone: () => {},
     },
     '@/lib/chat-engine': {
       runChat: async (conversationId, content, settings, callbacks) => {

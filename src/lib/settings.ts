@@ -60,6 +60,36 @@ function normalizeMemoryRetrievalMode(settings: MemoryEngineSettings): void {
   }
 }
 
+/**
+ * 记录浏览器上报的 IANA 时区，供没有客户端上下文的后台任务（记忆提取 / 画像更新）
+ * 把消息时间戳渲染成用户本地时间。
+ *
+ * 只在与已存值不同时写库：聊天是热路径，不能每轮都写一次 settings。
+ * 必须校验后再存——该值来自客户端且最终会喂给 Intl.DateTimeFormat，
+ * 非法值会让格式化抛错，而调用方在后台任务里，抛错等于丢记忆。
+ */
+export function recordClientTimezone(timeZone: unknown, current: string): void {
+  if (typeof timeZone !== 'string') return;
+  const trimmed = timeZone.trim();
+  if (!trimmed || trimmed === current || trimmed.length > 64) return;
+
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: trimmed });
+  } catch {
+    return;
+  }
+
+  try {
+    getDb().prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    ).run('client_timezone', JSON.stringify(trimmed));
+  } catch {
+    // 写失败（DB 锁/只读/迁移未完成等）不得让聊天请求失败——
+    // 这只是个诊断性偏好，下一轮聊天还会再试。getDb() 也放在 try 内：
+    // 它在迁移失败时会抛，不能依赖"调用方一定先初始化过"这种顺序保证。
+  }
+}
+
 export function loadSettings(): Settings {
   const db = getDb();
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];

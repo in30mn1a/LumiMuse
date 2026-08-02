@@ -175,6 +175,7 @@ function routeMocks(runChatImpl, dbRows = []) {
       loadSettings() {
         return { streaming: true };
       },
+      recordClientTimezone() {},
     },
     '@/lib/memory-queue': {
       enqueueExtraction() {

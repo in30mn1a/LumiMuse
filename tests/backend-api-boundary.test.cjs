@@ -240,6 +240,9 @@ function loadRoute(modulePath, db) {
   return requireFreshWithMocks(modulePath, {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    // 搜索路由按用户上报时区解析日期范围；这里的 db 是按 SQL 分派的手写 stub，
+    // 不认识 settings 表查询。空时区 = 沿用服务器本地时区，与这些用例的既有断言一致。
+    '@/lib/settings': { loadSettings: () => ({ client_timezone: '' }) },
   });
 }
 
@@ -916,6 +919,9 @@ test('/api/memory-profile init_from_memories batches sampled messages instead of
   const route = requireFreshWithMocks('../src/app/api/memory-profile/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    // 画像构建按用户上报时区渲染对话时间戳；这里的 db 是按 SQL 分派的手写 stub，
+    // 不认识 settings 表查询，故直接 mock 掉。
+    '@/lib/settings': { loadSettings: () => ({ client_timezone: 'Asia/Tokyo' }) },
     '@/lib/memory-profile': {
       deleteMemoryProfileVersion: () => 0,
       enqueueMemoryProfileUpdate: () => ({ id: 1 }),

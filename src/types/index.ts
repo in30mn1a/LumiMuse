@@ -428,6 +428,13 @@ export interface Settings {
   memory_background_reasoning_effort: ReasoningEffort;
   theme: 'light' | 'dark';
   show_timestamps: boolean;
+  /**
+   * 用户浏览器上报的 IANA 时区（如 Asia/Tokyo），由聊天请求自动写入。
+   * 后台任务（记忆提取 / 画像更新）没有客户端上下文，靠它把消息时间戳
+   * 渲染成用户本地时间——否则容器默认 UTC 会让凌晨的对话被记成前一天，
+   * 而这个错误日期会跟着记忆内容持久化下去。空串表示尚未上报，回退服务器本地时区。
+   */
+  client_timezone: string;
   limit_inject: boolean;
   language: 'zh' | 'en';
   font_style: FontStyle;
@@ -479,6 +486,7 @@ export const DEFAULT_SETTINGS: Settings = {
   memory_background_reasoning_effort: 'medium',
   theme: 'light',
   show_timestamps: true,
+  client_timezone: '',
   limit_inject: false,
   language: 'zh',
   font_style: 'wenkai',

@@ -15,6 +15,7 @@ import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { enqueueMemoryProfilePatchExtraction, triggerMemoryProfileQueue } from '@/lib/memory-profile';
 import { structuredLog } from '@/lib/structured-log';
+import { formatExtractionTimestamp } from '@/lib/chat-time';
 
 const extractionTaskQueue = createDbTaskQueue({
   table: 'memory_tasks',
@@ -41,16 +42,19 @@ type ExtractionTaskRow = {
 function formatExtractionMessage(
   message: { role: string; content: string; created_at: string },
   characterName: string,
+  timeZone: string,
 ): string {
   const speaker = message.role === 'user' ? '用户' : characterName;
-  const d = new Date(message.created_at);
-  const ts = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  // 必须按用户时区渲染：提取 prompt 要求把日期前置写进记忆内容，
+  // 而容器默认 UTC 会让凌晨的对话被记成前一天，这个错误日期会随记忆持久化。
+  const ts = formatExtractionTimestamp(message.created_at, timeZone);
   return `${speaker} (${ts}): ${message.content}`;
 }
 
 function buildExtractionText(
   messages: Array<{ id: string; role: string; content: string; created_at: string }>,
   characterName: string,
+  timeZone: string,
 ): { text: string; includedCompleteUserIds: Set<string> } {
   const lines: string[] = [];
   const includedCompleteUserIds = new Set<string>();
@@ -58,7 +62,7 @@ function buildExtractionText(
   for (const message of messages) {
     if (!message.content) continue;
 
-    const line = formatExtractionMessage(message, characterName);
+    const line = formatExtractionMessage(message, characterName, timeZone);
     lines.push(line);
     if (message.role === 'user') includedCompleteUserIds.add(message.id);
   }
@@ -255,7 +259,11 @@ async function processOneExtractionTask(): Promise<{ claimed: number }> {
       const charRow = db.prepare('SELECT name FROM characters WHERE id = ?').get(task.character_id) as { name: string } | undefined;
       const characterName = charRow?.name || '角色';
 
-      const { text: convText, includedCompleteUserIds } = buildExtractionText(messages, characterName);
+      const { text: convText, includedCompleteUserIds } = buildExtractionText(
+        messages,
+        characterName,
+        settings.client_timezone,
+      );
       if (!convText) {
         extractionTaskQueue.complete(db, task);
         return { claimed: 1 };

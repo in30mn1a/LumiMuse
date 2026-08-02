@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { runChat } from '@/lib/chat-engine';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
-import { loadSettings } from '@/lib/settings';
+import { loadSettings, recordClientTimezone } from '@/lib/settings';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages } from '@/lib/messages';
@@ -79,6 +79,9 @@ export async function POST(request: NextRequest) {
 
   const db = getDb();
   const settings = loadSettings();
+  // 记录浏览器时区：后台任务（记忆提取 / 画像更新）没有客户端上下文，
+  // 靠这个值把消息时间戳渲染成用户本地时间。仅在变化时写库。
+  recordClientTimezone(client_timezone, settings.client_timezone);
   const timeContext: ChatTimeContext = {
     clientNowIso: client_now_iso,
     timeZone: client_timezone,

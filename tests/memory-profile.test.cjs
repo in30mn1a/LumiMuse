@@ -438,6 +438,7 @@ test('memory profile API 从记忆初始化会同步处理画像并返回更新�
           },
         },
         '@/lib/settings': {
+          recordClientTimezone: () => {},
           loadSettings: () => ({
             api_base: 'https://llm.example/v1',
             api_key: 'secret',
@@ -631,6 +632,7 @@ test('memory profile API 从记忆初始化未产生画像变更时返回 no_cha
           chatCompletion: async () => JSON.stringify({ patch: {} }),
         },
         '@/lib/settings': {
+          recordClientTimezone: () => {},
           loadSettings: () => ({
             api_base: 'https://llm.example/v1',
             api_key: 'secret',
@@ -712,6 +714,7 @@ test('memory profile API 从记忆初始化失败时返回错误而不是成功'
           },
         },
         '@/lib/settings': {
+          recordClientTimezone: () => {},
           loadSettings: () => ({
             api_base: 'https://llm.example/v1',
             api_key: 'secret',

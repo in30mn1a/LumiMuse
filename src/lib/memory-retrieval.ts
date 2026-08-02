@@ -22,6 +22,14 @@ import {
   MEMORY_USAGE_PRINCIPLES,
 } from '@/lib/memory-prompt-contract';
 
+const MEMORY_LAYER_TITLES = [
+  '重要固定记忆',
+  '角色需要兑现的承诺',
+  '主人的偏好与长期信息',
+  '关系与重要事件',
+  '本轮相关回忆',
+] as const;
+
 export interface MemoryEngineConfig {
   enabled: boolean;
   allow_memory_context_in_chat: boolean;
@@ -367,7 +375,7 @@ function renderPackage(memories: Memory[], profileText = ''): string {
   if (memories.length === 0 && !profileText) return '';
 
   const groups = new Map<string, string[]>();
-  for (const title of ['重要固定记忆', '角色需要兑现的承诺', '主人的偏好与长期信息', '关系与重要事件', '本轮相关回忆']) {
+  for (const title of MEMORY_LAYER_TITLES) {
     groups.set(title, []);
   }
 
@@ -381,8 +389,9 @@ function renderPackage(memories: Memory[], profileText = ''): string {
   if (profileText) {
     sections.push(`### 记忆画像\n${profileText.replace(/^记忆画像：\n?/u, '').trim()}`);
   }
-  for (const [title, lines] of groups) {
-    if (lines.length === 0) continue;
+  for (const title of MEMORY_LAYER_TITLES) {
+    const lines = groups.get(title);
+    if (!lines || lines.length === 0) continue;
     sections.push(`### ${title}\n${lines.join('\n')}`);
   }
   sections.push(MEMORY_USAGE_PRINCIPLES);
@@ -426,6 +435,66 @@ interface TrimByTokenBudgetOptions {
   skipOversizedOrdinary?: boolean;
 }
 
+/**
+ * 增量装箱状态：用「骨架 + 分层标题 + 行 bullet」分项累加近似整包 token。
+ *
+ * js-tiktoken 对整包（数万字符）encode 极慢；full-inject 若反复整包 encode 会卡数秒。
+ * 短片段 encode 总和 ≈ 同量字符但避免大串反复完整 BPE。
+ * BPE 跨界合并使分项和略 ≥ 真实整包 → 装箱偏保守；最终再精确整包一次回写 tokenCount。
+ */
+class PackagePacker {
+  private readonly tokenCounter: (text: string) => number;
+  private readonly profileText: string;
+  private readonly lineCache = new Map<string, number>();
+  private readonly openLayers = new Set<string>();
+  private running: number;
+
+  constructor(profileText: string, tokenCounter: (text: string) => number) {
+    this.tokenCounter = tokenCounter;
+    this.profileText = profileText;
+    // 标题 + 原则始终存在；画像可选。段间 '\n\n' 用固定松弛覆盖。
+    const skeletonParts = [MEMORY_CONTEXT_TITLE];
+    if (profileText) {
+      skeletonParts.push(`### 记忆画像\n${profileText.replace(/^记忆画像：\n?/u, '').trim()}`);
+    }
+    skeletonParts.push(MEMORY_USAGE_PRINCIPLES);
+    // +8：段间换行与 bullet 行间 '\n' 的粗松弛起点
+    this.running = tokenCounter(skeletonParts.join('\n\n')) + 8;
+  }
+
+  lineTokens(content: string): number {
+    const cached = this.lineCache.get(content);
+    if (cached !== undefined) return cached;
+    const tokens = content ? this.tokenCounter(`- ${content}`) : 0;
+    this.lineCache.set(content, tokens);
+    return tokens;
+  }
+
+  /** 若加入该记忆，running 会变成多少（不修改状态） */
+  costIfAdd(memory: Memory): number {
+    const content = memory.content.trim();
+    if (!content) return this.running;
+    const layer = layerForMemory(memory);
+    let extra = this.lineTokens(content) + 1; // +1 行间换行
+    if (!this.openLayers.has(layer)) {
+      extra += this.tokenCounter(`### ${layer}`) + 2; // 新层标题 + 段间距
+    }
+    return this.running + extra;
+  }
+
+  add(memory: Memory): void {
+    const content = memory.content.trim();
+    if (!content) return;
+    const layer = layerForMemory(memory);
+    this.running = this.costIfAdd(memory);
+    this.openLayers.add(layer);
+  }
+
+  get tokens(): number {
+    return this.running;
+  }
+}
+
 function trimByTokenBudget(
   ranked: RetrievedMemory[],
   config: MemoryEngineConfig,
@@ -451,32 +520,22 @@ function trimByTokenBudget(
   }
 
   const limit = Math.min(ranked.length, Math.max(0, maxMemoryCount));
+  const packer = new PackagePacker(effectiveProfile, countTokens);
 
-  // renderPackage(前 k 条) 的 token 随 k 单调不减,二分出预算内能容纳的最长高分前缀。
-  // 选「前缀」而非贪心装箱,保证被丢弃候选的 finalScore 不高于已选候选;
-  // 同时把整包渲染从 O(n) 次降到 O(log n) 次(原贪心每个候选都重渲染整包)。
-  const prefixFits = (k: number): boolean => {
-    const text = renderPackage(ranked.slice(0, k).map(candidate => candidate.memory), effectiveProfile);
-    return (text ? countTokens(text) : 0) <= budget;
-  };
-
+  // ── 阶段一：最长高分前缀（行级累加，零整包 encode）────────────────────
+  // 关闭增强记忆 full-inject 时这里是主热路径：旧实现 O(log n) 次整包 tiktoken。
   let lo = 0;
-  let hi = limit;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (prefixFits(mid)) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
+  while (lo < limit && packer.costIfAdd(ranked[lo].memory) <= budget) {
+    packer.add(ranked[lo].memory);
+    lo += 1;
   }
 
-  const selected = ranked.slice(0, lo).map(candidate => candidate.memory);
-  const canAppend = (memory: Memory): boolean => {
-    const text = renderPackage([...selected, memory], effectiveProfile);
-    return (text ? countTokens(text) : 0) <= budget;
-  };
+  const selected: Memory[] = ranked.slice(0, lo).map(candidate => candidate.memory);
 
+  // ── 阶段二：尾部扫描 ──────────────────────────────────────────────────
+  // skipOversizedOrdinary：跳过超长普通，继续装后面的短记忆。
+  // 高优先级装不下时精确截断（整包二分，低频）。
+  // skipOversizedOrdinary=false：只处理高优先级，普通尾项不 tokenize 行内容。
   for (let index = lo; index < limit && selected.length < maxMemoryCount; index += 1) {
     const memory = ranked[index].memory;
     const highPriority = isHighPriorityMemory(memory);
@@ -485,29 +544,47 @@ function trimByTokenBudget(
       continue;
     }
 
-    if (canAppend(memory)) {
+    const content = memory.content.trim();
+    if (!content) continue;
+
+    if (packer.costIfAdd(memory) <= budget) {
       if (options.skipOversizedOrdinary || highPriority) {
+        packer.add(memory);
         selected.push(memory);
       }
       continue;
     }
 
     if (highPriority) {
-      const truncated = truncateMemoryForBudget(memory, budget, effectiveProfile, countTokens, selected);
+      const truncated = truncateMemoryForBudget(
+        memory,
+        budget,
+        effectiveProfile,
+        countTokens,
+        selected,
+      );
       if (truncated) {
         selected.push(truncated);
-        continue;
       }
+      // 高优先级截断后预算已贴边，结束尾部扫描（避免截断内容与 packer 累加漂移）
       break;
     }
 
+    // 普通记忆装不下：skip 后继续
     if (!options.skipOversizedOrdinary) {
       continue;
     }
   }
 
-  const text = renderPackage(selected, effectiveProfile);
-  const tokenCount = text ? countTokens(text) : 0;
+  // 最终整包精确校验；分项偶发低估时从尾部回退
+  let text = renderPackage(selected, effectiveProfile);
+  let tokenCount = text ? countTokens(text) : 0;
+  while (tokenCount > budget && selected.length > 0) {
+    selected.pop();
+    text = renderPackage(selected, effectiveProfile);
+    tokenCount = text ? countTokens(text) : 0;
+  }
+
   return { text, selected, tokenCount };
 }
 

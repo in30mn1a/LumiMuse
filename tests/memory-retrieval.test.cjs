@@ -3133,8 +3133,10 @@ test('trimByTokenBudget 两种 ordinary skip 模式保持 profile、预算边界
       tokenCount: budget,
     },
   ]);
-  assert.equal(snapshots[0].tokenCounterCalls, 13, 'false 模式应复用最终整包的精确 token 结果');
-  assert.ok(snapshots[1].tokenCounterCalls <= 15, `true 模式应复用完全相同文本的精确 token 结果，actual=${snapshots[1].tokenCounterCalls}`);
+  // 行级累加装箱后，调用次数取决于分层标题/行 bullet/截断二分，不再固定为旧整包二分的 13。
+  // 仍应远小于「对每个候选整包 encode」的 O(n) 量级（此处候选仅 4 条，截断二分占大头）。
+  assert.ok(snapshots[0].tokenCounterCalls <= 40, `false 模式调用次数应受控，actual=${snapshots[0].tokenCounterCalls}`);
+  assert.ok(snapshots[1].tokenCounterCalls <= 40, `true 模式调用次数应受控，actual=${snapshots[1].tokenCounterCalls}`);
 });
 
 test('trimByTokenBudget skipOversizedOrdinary=false 不应 tokenize 行为上必定跳过的 ordinary 尾项', () => {
@@ -3180,8 +3182,15 @@ test('trimByTokenBudget skipOversizedOrdinary=false 不应 tokenize 行为上必
   const hugeProbe = renderPackage([first, oversizedOrdinary], profileText);
   const laterProbe = renderPackage([first, laterOrdinary], profileText);
   assert.deepEqual(result.selected.map(item => item.id), ['calls-first', 'calls-promise']);
-  assert.equal(calls.filter(text => text === hugeProbe).length, 1, `calls=${calls.length}`);
+  // 前缀装箱可能对超长 ordinary 做一次行级 token（`- …`），但不应整包 probe；
+  // skipOversized=false 时后续 ordinary 尾项必须完全跳过，连行级也不该碰。
+  assert.equal(calls.filter(text => text === hugeProbe).length, 0, `不应整包 probe 超长 ordinary, calls=${calls.length}`);
   assert.equal(calls.filter(text => text === laterProbe).length, 0, `calls=${calls.length}`);
+  assert.equal(
+    calls.filter(text => text.includes('无效调用后续短普通')).length,
+    0,
+    'skipOversizedOrdinary=false 不得 tokenize 后续普通记忆',
+  );
 });
 
 test('全量注入不受历史 300 条候选上限截断（回归）', async () => {

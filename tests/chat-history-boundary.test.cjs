@@ -396,6 +396,26 @@ test('runChat preserves regenerate target time even when the target is before th
   assert.doesNotMatch(JSON.stringify(probe.capture.messages), /later summary|later question|old answer/);
 });
 
+test('finalizeAssistantResponse 清理带星期的残留时间戳前缀（含不带星期的旧格式）', (t) => {
+  const probe = createDbProbe();
+  t.after(() => probe.database.close());
+  const { finalizeAssistantResponse } = loadChatEngine(probe.db, {});
+
+  const strip = (rawText) => finalizeAssistantResponse(
+    rawText,
+    { storyPlotStrip: false, stripTags: [], characterImageTags: '' },
+  ).fullText;
+
+  // 新格式（带英文星期缩写）——消息时间戳已含星期，模型可能照历史消息的样子误输出
+  assert.equal(strip('[2026-08-02 Sun 14:30] 我记住了'), '我记住了');
+  assert.equal(strip('[2026/08/02 Sun 14:30] 我记住了'), '我记住了');
+  // 旧格式（不带星期）仍应清理
+  assert.equal(strip('[2026-05-13 14:30] 我记住了'), '我记住了');
+  // 时间戳不在开头、或格式不对（星期超 3 字母）→ 不误伤正文
+  assert.equal(strip('前缀 [2026-08-02 Sun 14:30] 我记住了'), '前缀 [2026-08-02 Sun 14:30] 我记住了');
+  assert.equal(strip('[2026-08-02 Sunday 14:30] 我记住了'), '[2026-08-02 Sunday 14:30] 我记住了');
+});
+
 test('finalizeAssistantResponse 先提取 IMG 再剥 story XML，保留正文和生图提示词', (t) => {
   const probe = createDbProbe();
   t.after(() => probe.database.close());

@@ -73,7 +73,7 @@ export interface WorkingMemoryPackage {
    * - local: 增强记忆本地检索（无 embedding）或 legacy 限制注入（limit_inject=true）
    * - hybrid: 增强记忆混合检索（向量 + 本地）
    * - vector: 增强记忆纯向量检索
-   * - full: 关闭增强记忆 + 全量注入（limit_inject=false），不检索只按预算裁剪
+   * - full: 关闭增强记忆 + 全量注入（limit_inject=false），不检索、不设任何上限，注入全部 active 记忆
    */
   mode: 'local' | 'hybrid' | 'vector' | 'full';
   usedFallback: boolean;
@@ -143,6 +143,7 @@ export function resolveMemoryEngineConfig(settings: Settings): MemoryEngineConfi
   const merged = { ...DEFAULT_MEMORY_ENGINE_CONFIG, ...raw };
   const legacyLimit = finiteNumber(settings.memory_max_inject, DEFAULT_MEMORY_ENGINE_CONFIG.final_top_k);
   const engineEnabled = merged.enabled !== false;
+  const isFullInjectionMode = !engineEnabled && !settings.limit_inject;
   const allowExternalMemoryPayloads = merged.allow_external_memory_payloads !== false;
 
   return {
@@ -155,7 +156,11 @@ export function resolveMemoryEngineConfig(settings: Settings): MemoryEngineConfi
     embedding_enabled: engineEnabled && allowExternalMemoryPayloads && merged.embedding_enabled,
     reranker_enabled: engineEnabled && allowExternalMemoryPayloads && merged.reranker_enabled,
     // 不设上界:预算大小由用户自行决定。下界由 finiteNumber 的 >0 判断兜底回默认值。
-    memory_package_token_budget: finiteNumber(merged.memory_package_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.memory_package_token_budget),
+    // 例外:全量注入模式（引擎关闭 + limit_inject=false）不允许任何 token 上限,
+    // 用 Number.MAX_SAFE_INTEGER 防止下游调用方/测试直接复用该预算做钳制。
+    memory_package_token_budget: isFullInjectionMode
+      ? Number.MAX_SAFE_INTEGER
+      : finiteNumber(merged.memory_package_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.memory_package_token_budget),
     retrieval_token_budget: finiteNumber(merged.retrieval_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.retrieval_token_budget),
     vector_top_k: Math.floor(finiteNumber(merged.vector_top_k, DEFAULT_MEMORY_ENGINE_CONFIG.vector_top_k)),
     keyword_top_k: Math.floor(finiteNumber(merged.keyword_top_k, DEFAULT_MEMORY_ENGINE_CONFIG.keyword_top_k)),
@@ -195,7 +200,7 @@ function loadDefaultPriorityMemories(characterId: string): Memory[] {
 
 function loadDefaultLegacyMemories(characterId: string): Memory[] {
   const db = getDb();
-  // 全量注入路径不设条数上限:裁剪统一交给 trimByTokenBudget 的 token 预算兜底
+  // 全量注入路径不设条数上限，也没有任何 token 预算裁剪（见 buildLegacyFullMemoryPackage 的 full 分支）
   const rows = db.prepare(
     `SELECT * FROM memories
      WHERE character_id = ?
@@ -766,24 +771,34 @@ function buildLegacyFullMemoryPackage(
     finalScore: 1 - index / 100_000,
     source: 'local' as const,
   }));
-  const maxMemoryCount = options.settings.limit_inject
-    ? maxSelectedMemoryCount(options.settings, config)
-    : ranked.length;
+  if (!options.settings.limit_inject) {
+    // 真·全量注入：不做任何 token 预算裁剪、条数限制或单条截断，
+    // 全部 active 记忆整包注入（产品决策 2026-08-03：full 模式不允许任何上限）。
+    const text = renderPackage(legacyMemories);
+    return {
+      text,
+      selectedMemories: legacyMemories,
+      tokenCount: text ? tokenCounter(text) : 0,
+      mode: 'full',
+      usedFallback: false,
+      diagnostics: { candidateCount: ranked.length },
+    };
+  }
+
   const trimmed = trimByTokenBudget(
     ranked,
     config,
     tokenCounter,
     '',
-    maxMemoryCount,
-    { skipOversizedOrdinary: !options.settings.limit_inject },
+    maxSelectedMemoryCount(options.settings, config),
   );
 
   return {
     text: trimmed.text,
     selectedMemories: trimmed.selected,
     tokenCount: trimmed.tokenCount,
-    // limit_inject=false 是全量注入（不检索，只按预算裁剪）；limit_inject=true 是 legacy 本地关键词检索
-    mode: options.settings.limit_inject ? 'local' : 'full',
+    // limit_inject=true 是 legacy 本地关键词检索（仍受 token 预算与条数限制）
+    mode: 'local',
     usedFallback: false,
     diagnostics: { candidateCount: ranked.length },
   };

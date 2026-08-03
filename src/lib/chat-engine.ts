@@ -22,6 +22,7 @@ import {
   MEMORY_USAGE_PRINCIPLES,
 } from '@/lib/memory-prompt-contract';
 import { allocateAssistantInsertAfterUser } from '@/lib/message-seq-insert';
+import { structuredLog } from '@/lib/structured-log';
 import {
   prepareImageTagsForLlm,
   restoreSensitiveImageTagsToPrompt,
@@ -590,9 +591,10 @@ export async function runChat(
       // 记忆包预算额外受当前 context_window 钳制:不超过「可用预算(context_window - max_tokens)」的一半,
       // 为系统提示、对话历史和当前用户消息留出空间,避免记忆包撑爆上下文、挤掉当前对话。
       // 正常大窗口配置(默认 context_window=131072)下该上限远大于记忆预算,不产生影响;仅在窗口调得很小时收紧。
+      // 例外:limit_inject=false（全量注入）不允许任何上限（产品决策 2026-08-03），跳过钳制、超限时仅打预警日志。
       const availableBudget = Math.max(0, settings.context_window - settings.max_tokens);
       const memoryBudgetCap = Math.floor(availableBudget / 2);
-      const retrievalSettings = memoryBudgetCap > 0 && memoryBudgetCap < settings.memory_engine.memory_package_token_budget
+      const retrievalSettings = settings.limit_inject && memoryBudgetCap > 0 && memoryBudgetCap < settings.memory_engine.memory_package_token_budget
         ? { ...settings, memory_engine: { ...settings.memory_engine, memory_package_token_budget: memoryBudgetCap } }
         : settings;
       const workingMemoryPackage = await retrieveWorkingMemoryPackage({
@@ -600,6 +602,13 @@ export async function runChat(
         queryText,
         settings: retrievalSettings,
       });
+      if (workingMemoryPackage.mode === 'full' && memoryBudgetCap > 0 && workingMemoryPackage.tokenCount > memoryBudgetCap) {
+        structuredLog('warn', 'memory.full_inject_oversize', {
+          characterId: conversation.character_id,
+          tokenCount: workingMemoryPackage.tokenCount,
+          budgetCap: memoryBudgetCap,
+        });
+      }
       memoryContents = workingMemoryPackage.text;
       lastMemoryInjection = {
         count: workingMemoryPackage.selectedMemories.length,

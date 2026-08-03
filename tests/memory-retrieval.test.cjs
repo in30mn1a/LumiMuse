@@ -3004,11 +3004,11 @@ test('memory_engine.enabled=false 且 limit_inject=false 时全量注入 active 
   assert.doesNotMatch(result.text, /增强关闭且不限量时不应走本地检索/);
 });
 
-test('legacy full injection 遇到超长普通记忆会 skip 后继续扫描短记忆', async () => {
+test('legacy full injection 无任何预算裁剪，超长普通记忆也整包注入', async () => {
   const markedIds = [];
   const result = await retrieveWorkingMemoryPackage({
     characterId: 'char-a',
-    queryText: '全量注入时不要被中间的超长普通记忆挡住',
+    queryText: '真·全量注入不允许任何上限',
     settings: baseSettings({
       limit_inject: false,
       memory_engine: {
@@ -3035,12 +3035,14 @@ test('legacy full injection 遇到超长普通记忆会 skip 后继续扫描短�
   });
   await new Promise(resolve => setImmediate(resolve));
 
-  assert.deepEqual(result.selectedMemories.map(item => item.id), ['legacy-short-a', 'legacy-short-b']);
+  // full 注入不做任何 trim：三条全选、内容全在、tokenCount 超出旧预算 70 也不裁剪
+  assert.deepEqual(result.selectedMemories.map(item => item.id), ['legacy-short-a', 'legacy-huge-ordinary', 'legacy-short-b']);
   assert.match(result.text, /第一条短旧版记忆/);
+  assert.match(result.text, /超长普通旧版记忆/);
   assert.match(result.text, /后续短旧版记忆仍应进入/);
-  assert.doesNotMatch(result.text, /超长普通旧版记忆/);
-  assert.deepEqual(markedIds, ['legacy-short-a', 'legacy-short-b']);
-  assert.ok(result.tokenCount <= 70);
+  assert.deepEqual(markedIds, ['legacy-short-a', 'legacy-huge-ordinary', 'legacy-short-b']);
+  assert.ok(result.tokenCount > 70);
+  assert.equal(result.mode, 'full');
 });
 
 test('trimByTokenBudget 两种 ordinary skip 模式保持 profile、预算边界与高优先级截断的 golden 输出', () => {
@@ -3284,19 +3286,20 @@ test('预算裁剪优先保留 pinned 与高 importance 记忆', async () => {
   assert.ok(result.tokenCount <= 70);
 });
 
-test('token 硬预算会裁剪普通记忆，limit_inject=false 也不会无限注入', async () => {
+test('token 硬预算不裁剪普通记忆，limit_inject=false 时全量注入', async () => {
   const result = await retrieveWorkingMemoryPackage({
     characterId: 'char-a',
     queryText: '普通话题',
     settings: baseSettings({
       limit_inject: false,
       memory_engine: {
+        enabled: false,
         memory_package_token_budget: 54,
         final_top_k: 50,
       },
     }),
     deps: {
-      localRetrieve: () => Array.from({ length: 20 }, (_, idx) => memory({
+      loadLegacyMemories: () => Array.from({ length: 20 }, (_, idx) => memory({
         id: `m-${idx}`,
         content: `普通相关回忆 ${idx}：这是一段会占用预算的内容。`,
         importance: 0.2,
@@ -3305,8 +3308,9 @@ test('token 硬预算会裁剪普通记忆，limit_inject=false 也不会无限�
     },
   });
 
-  assert.ok(result.selectedMemories.length < 20);
-  assert.ok(result.tokenCount <= 54);
+  assert.equal(result.selectedMemories.length, 20);
+  assert.ok(result.tokenCount > 54);
+  assert.equal(result.mode, 'full');
 });
 
 test('total_retrieval_timeout_ms 会限制整条增强检索链路并回退本地工作记忆', async () => {
@@ -3464,33 +3468,32 @@ test('默认 usage 回写会批量更新已注入记忆的 usage_count 和 last_
   assert.equal(unused.last_used_at, null);
 });
 
-test('limit_inject=false 时最终注入不受 final_top_k 条数限制，只受 token 预算限制', async () => {
+test('limit_inject=false 时最终注入不受任何限制（条数与 token 预算均不设限）', async () => {
   const result = await retrieveWorkingMemoryPackage({
     characterId: 'char-a',
     queryText: '这些短记忆都能放进预算',
     settings: baseSettings({
       limit_inject: false,
       memory_engine: {
+        enabled: false,
         memory_package_token_budget: 1000,
         keyword_top_k: 40,
         final_top_k: 3,
       },
     }),
     deps: {
-      localRetrieve: (_query, _characterId, limit) => {
-        assert.ok(limit >= 10);
-        return Array.from({ length: 10 }, (_, idx) => memory({
-          id: `limit-free-${idx}`,
-          content: `短记忆 ${idx}。`,
-          importance: 0.5,
-        }));
-      },
+      loadLegacyMemories: () => Array.from({ length: 10 }, (_, idx) => memory({
+        id: `limit-free-${idx}`,
+        content: `短记忆 ${idx}。`,
+        importance: 0.5,
+      })),
       tokenCounter: text => Math.ceil(text.length / 50),
     },
   });
 
-  assert.ok(result.selectedMemories.length > 3);
-  assert.ok(result.tokenCount <= 1000);
+  assert.equal(result.selectedMemories.length, 10);
+  assert.ok(result.tokenCount > 0);
+  assert.equal(result.mode, 'full');
 });
 
 test('reranker 前优先传入召回相关性最高的候选，而不是业务分最高的候选', async () => {

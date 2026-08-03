@@ -17,6 +17,8 @@ const SAFE_FIELDS = new Set([
   'durationMs',
   'httpStatus',
   'attempt',
+  'tokenCount',
+  'budgetCap',
 ]);
 
 function serializeError(error: unknown): { name: string; message: string } | undefined {

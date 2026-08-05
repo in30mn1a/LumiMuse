@@ -81,7 +81,7 @@ export function MemoryIndexPanel({
           <button
             type="button"
             onClick={onRebuild}
-            disabled={busy || status?.canRebuild === false}
+            disabled={busy}
             className="soft-button soft-button-secondary text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {rebuilding ? (

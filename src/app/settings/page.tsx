@@ -364,6 +364,7 @@ export default function SettingsPage() {
       applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
       applyFontSize((settings.font_size || 'medium') as FontSize);
       showToast(t('settings.saveSuccess'), 'success');
+      const backfillReason = saved.memory_index_backfill?.reason ?? null;
       const backfillQueued = Number(saved.memory_index_backfill?.queued || 0);
       if (backfillQueued > 0) {
         showToast(
@@ -372,8 +373,27 @@ export default function SettingsPage() {
           }),
           'success',
         );
-        void loadMemoryIndexStatus();
-        void loadMemoryDiagnostics();
+      }
+      if (backfillReason === 'target_changed') {
+        // 换模型/维度后旧 target 的 embedding 行仍在库内但检索不再使用；
+        // 此时用户可能不在 memory tab、status 未拉取，只能主动 GET 一次判断。
+        try {
+          const index = await parseJsonResponse<{ other_target_ready?: number; embedding_rows?: number }>(
+            await fetch('/api/memory-index'),
+          );
+          const otherTargetReady = index.other_target_ready ?? 0;
+          if (otherTargetReady > 0) {
+            showToast(
+              formatTemplate(t('settings.memoryIndexOtherTargetHint'), {
+                count: String(otherTargetReady),
+                rows: String(index.embedding_rows ?? 0),
+              }),
+              'info',
+            );
+          }
+        } catch {
+          // 提示失败不阻塞保存主流程
+        }
       }
     } catch (err) {
       showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');

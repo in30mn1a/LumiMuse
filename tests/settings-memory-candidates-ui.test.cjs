@@ -270,6 +270,17 @@ test('settings memory tab exposes clear index and stop current index actions', (
   assert.ok(memoryIndexHook.includes('(status?.pending ?? status?.queued ?? 0) + (status?.processing ?? 0)'));
 });
 
+test('settings save flow surfaces other-target index hint after target change', () => {
+  const settingsPage = readProjectFile('src/app/settings/page.tsx');
+
+  // 换 model/dimension 保存后主动 GET /api/memory-index 判断是否有旧 target 残留
+  assert.ok(settingsPage.includes("backfillReason === 'target_changed'"));
+  assert.ok(settingsPage.includes("await fetch('/api/memory-index')"));
+  assert.ok(settingsPage.includes("t('settings.memoryIndexOtherTargetHint')"));
+  // 提示 toast 不应影响保存主流程
+  assert.match(settingsPage, /提示失败不阻塞保存主流程/);
+});
+
 test('settings memory tab exposes unindexed index action, AI archive stop, and profile version deletion', () => {
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
   const memoryIndexHook = readProjectFile('src/hooks/settings/useMemoryIndexPanel.ts');

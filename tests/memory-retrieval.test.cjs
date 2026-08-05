@@ -113,6 +113,7 @@ const {
 const {
   blobToEmbedding,
   clearMemoryIndex,
+  clearOtherTargetMemoryEmbeddings,
   dotProduct,
   embeddingToBlob,
   enqueueRebuildMemoryEmbeddings,
@@ -566,6 +567,10 @@ test('/api/models 用已保存的 memory_engine 密钥获取 embedding/reranker 
 test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应兼容性', async () => {
   const db = new Database(':memory:');
   db.exec(`
+    CREATE TABLE characters (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    );
     CREATE TABLE memories (
       id TEXT PRIMARY KEY,
       character_id TEXT NOT NULL,
@@ -574,13 +579,29 @@ test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应�
     CREATE TABLE memory_embeddings (
       memory_id TEXT NOT NULL,
       character_id TEXT NOT NULL,
-      status TEXT NOT NULL
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      dimension INTEGER NOT NULL,
+      embedding_blob BLOB NOT NULL DEFAULT X'00',
+      normalized INTEGER NOT NULL DEFAULT 1,
+      embedding_text_hash TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00.000Z',
+      updated_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00.000Z'
     );
     CREATE TABLE memory_embedding_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id TEXT NOT NULL DEFAULT '',
       character_id TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'created',
       status TEXT NOT NULL,
-      error_message TEXT
+      claim_token TEXT,
+      lease_expires_at TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00.000Z',
+      updated_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00.000Z'
     );
     CREATE TABLE memory_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -613,20 +634,24 @@ test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应�
       updated_at TEXT NOT NULL
     );
 
+    INSERT INTO characters (id, name) VALUES
+      ('char-a', 'A'),
+      ('char-b', 'B');
     INSERT INTO memories (id, character_id, status) VALUES
       ('mem-a', 'char-a', 'active'),
       ('mem-b', 'char-a', 'archived'),
       ('mem-c', 'char-a', 'summarized'),
+      ('mem-d', 'char-a', 'active'),
       ('mem-other', 'char-b', 'active');
-    INSERT INTO memory_embeddings (memory_id, character_id, status) VALUES
-      ('mem-a', 'char-a', 'ready'),
-      ('mem-b', 'char-a', 'failed'),
-      ('mem-other', 'char-b', 'ready');
-    INSERT INTO memory_embedding_tasks (character_id, status, error_message) VALUES
-      ('char-a', 'pending', NULL),
-      ('char-a', 'processing', NULL),
-      ('char-a', 'failed', 'embedding secret response body'),
-      ('char-b', 'pending', NULL);
+    INSERT INTO memory_embeddings (memory_id, character_id, provider, model, dimension, status) VALUES
+      ('mem-a', 'char-a', 'openai-compatible', 'current-model', 2, 'ready'),
+      ('mem-b', 'char-a', 'openai-compatible', 'old-model', 2, 'ready'),
+      ('mem-other', 'char-b', 'openai-compatible', 'current-model', 2, 'ready');
+    INSERT INTO memory_embedding_tasks (memory_id, character_id, status, error_message) VALUES
+      ('mem-c', 'char-a', 'pending', NULL),
+      ('mem-b', 'char-a', 'processing', NULL),
+      ('mem-d', 'char-a', 'failed', 'embedding secret response body'),
+      ('mem-other', 'char-b', 'pending', NULL);
     INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, error_message) VALUES
       ('char-a', 'conv-a', '["private-message-a"]', 'pending', NULL),
       ('char-a', 'conv-a', '["private-message-b"]', 'failed', 'extraction private payload'),
@@ -646,6 +671,14 @@ test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应�
   const route = requireFreshWithMocks('../src/app/api/memory-diagnostics/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        memory_engine: {
+          embedding_model: 'current-model',
+          embedding_dimension: 2,
+        },
+      }),
+    },
   });
 
   const filteredPayload = await route.GET(jsonRequest(null, 'http://test.local/api/memory-diagnostics?character_id=char-a'))
@@ -653,7 +686,15 @@ test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应�
 
   assert.equal(filteredPayload.ok, true);
   assert.equal(filteredPayload.character_id, 'char-a');
-  assert.deepEqual(filteredPayload.index, { total: 2, ready: 1, failed: 1 });
+  assert.deepEqual(filteredPayload.index, {
+    ready: 1,
+    total: 2,
+    failed: 1,
+    library_rows: 2,
+    other_target_ready: 1,
+    target_model: 'current-model',
+    target_dimension: 2,
+  });
   assert.deepEqual(filteredPayload.tasks, { pending: 1, processing: 1, failed: 1 });
   assert.deepEqual(filteredPayload.queues, {
     extraction: { pending: 1, processing: 0, failed: 1 },
@@ -2079,9 +2120,94 @@ test('getMemoryIndexStatus filters ready and unresolved failed by current embedd
   assert.equal(currentStatus.ready, 1);
   assert.equal(currentStatus.failed, 2);
   assert.equal(currentStatus.latest_error, 'current dimension failed');
+  assert.equal(currentStatus.embedding_rows, 3);
+  assert.equal(currentStatus.other_target_ready, 2);
+  assert.equal(currentStatus.target_model, 'current-model');
   assert.equal(flexibleDimensionStatus.ready, 2);
   assert.equal(flexibleDimensionStatus.failed, 1);
   assert.equal(flexibleDimensionStatus.latest_error, 'current model failed');
+});
+
+test('getMemoryIndexStatus 只计活跃记忆；clearOtherTarget 只删非当前模型行', () => {
+  const db = createMemoryDb();
+  ensureMemoryEmbeddingTables(db);
+  db.exec(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+      usage_count, metadata, created_at, updated_at
+    )
+    VALUES
+      (
+        'mem-active-current', 'char-a', '话题历史', '活跃且当前模型 ready。', 0.9, '[]', '[]',
+        'general', 0.5, 0, 'active', 0, NULL, 0, '{}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      ),
+      (
+        'mem-active-old', 'char-a', '话题历史', '活跃但只有旧模型 ready。', 0.9, '[]', '[]',
+        'general', 0.5, 0, 'active', 0, NULL, 0, '{}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      ),
+      (
+        'mem-archived-old', 'char-a', '话题历史', '归档记忆旧模型 ready 不应计入 total/ready。', 0.9, '[]', '[]',
+        'general', 0.5, 0, 'archived', 0, NULL, 0, '{}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      );
+
+    INSERT INTO memory_embeddings (
+      memory_id, character_id, provider, model, dimension, embedding_blob,
+      normalized, embedding_text_hash, status, created_at, updated_at
+    )
+    VALUES
+      (
+        'mem-active-current', 'char-a', 'openai-compatible', 'current-model', 2, X'000000000000803F',
+        1, 'active-current-hash', 'ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      ),
+      (
+        'mem-active-old', 'char-a', 'openai-compatible', 'old-model', 2, X'000000000000803F',
+        1, 'active-old-hash', 'ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      ),
+      (
+        'mem-archived-old', 'char-a', 'openai-compatible', 'old-model', 2, X'000000000000803F',
+        1, 'archived-old-hash', 'ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      );
+  `);
+
+  const target = {
+    provider: 'openai-compatible',
+    model: 'current-model',
+    dimension: 2,
+  };
+  const before = getMemoryIndexStatus('char-a', db, target);
+  assert.equal(before.total, 2);
+  assert.equal(before.ready, 1);
+  assert.equal(before.embedding_rows, 3);
+  assert.equal(before.other_target_ready, 2);
+
+  const queued = enqueueUnindexedMemoryEmbeddings('char-a', {
+    provider: 'openai-compatible',
+    model: 'current-model',
+    dimension: 2,
+    db,
+  });
+  assert.equal(queued, 1);
+  const queuedMemoryIds = db.prepare(`
+    SELECT memory_id FROM memory_embedding_tasks WHERE reason = 'semantic_backfill' ORDER BY memory_id
+  `).all().map(row => row.memory_id);
+  assert.deepEqual(queuedMemoryIds, ['mem-active-old']);
+
+  const cleared = clearOtherTargetMemoryEmbeddings('char-a', target, db);
+  assert.equal(cleared.cleared_embeddings, 2);
+  const remaining = db.prepare(`
+    SELECT memory_id, model FROM memory_embeddings ORDER BY memory_id
+  `).all();
+  assert.deepEqual(remaining, [
+    { memory_id: 'mem-active-current', model: 'current-model' },
+  ]);
+  const after = getMemoryIndexStatus('char-a', db, target);
+  assert.equal(after.ready, 1);
+  assert.equal(after.embedding_rows, 1);
+  assert.equal(after.other_target_ready, 0);
 });
 
 test('blank current embedding model does not match ready embeddings as a wildcard', () => {

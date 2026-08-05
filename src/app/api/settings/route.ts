@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import {
+  enqueueUnindexedMemoryEmbeddings,
+  ensureMemoryEmbeddingTables,
+} from '@/lib/memory-embeddings';
+import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { loadSettings } from '@/lib/settings';
-import { DEFAULT_SETTINGS, Settings } from '@/types';
+import { DEFAULT_SETTINGS, Settings, type MemoryEngineSettings } from '@/types';
 import { API_KEY_MASK } from '@/lib/constants';
 import { formatZodFieldErrors, settingsUpdateSchema } from '@/lib/schemas';
 import { requireAuth } from '@/lib/route-auth';
+import { structuredLog } from '@/lib/structured-log';
 
 
 // 对设置中的敏感密钥做脱敏，返回可安全回传给前端的结构。
@@ -139,6 +145,68 @@ export async function PUT(request: NextRequest) {
   });
 
   transaction();
+
+  const nextSettings = loadSettings();
+  const memoryIndexBackfill = maybeBackfillMemoryIndexAfterSettingsChange(
+    currentSettings.memory_engine,
+    nextSettings.memory_engine,
+  );
+
   // 与 GET 保持一致的脱敏结构，避免明文密钥随写入响应回流到前端
-  return NextResponse.json(maskSettings(loadSettings()));
+  return NextResponse.json({
+    ...maskSettings(nextSettings),
+    memory_index_backfill: memoryIndexBackfill,
+  });
+}
+
+function isEmbeddingIndexRunnable(engine: MemoryEngineSettings | undefined): boolean {
+  if (!engine?.enabled || !engine.embedding_enabled) return false;
+  return Boolean(engine.embedding_api_base?.trim() && engine.embedding_model?.trim());
+}
+
+/**
+ * 开启 embedding / 切换模型或维度后，自动为当前 target 补齐未索引的活跃记忆。
+ * 不会删除旧模型索引行（可用「清理其他模型索引」）。
+ */
+function maybeBackfillMemoryIndexAfterSettingsChange(
+  previousEngine: MemoryEngineSettings | undefined,
+  nextEngine: MemoryEngineSettings,
+): { queued: number; processing_started: boolean; reason: string | null } {
+  if (!isEmbeddingIndexRunnable(nextEngine)) {
+    return { queued: 0, processing_started: false, reason: null };
+  }
+
+  const becameRunnable = !isEmbeddingIndexRunnable(previousEngine);
+  const previousModel = previousEngine?.embedding_model?.trim() || '';
+  const nextModel = nextEngine.embedding_model.trim();
+  const previousDimension = Math.floor(Number(previousEngine?.embedding_dimension || 0));
+  const nextDimension = Math.floor(Number(nextEngine.embedding_dimension || 0));
+  const targetChanged = previousModel !== nextModel || previousDimension !== nextDimension;
+
+  if (!becameRunnable && !targetChanged) {
+    return { queued: 0, processing_started: false, reason: null };
+  }
+
+  try {
+    const db = getDb();
+    ensureMemoryEmbeddingTables(db);
+    const queued = enqueueUnindexedMemoryEmbeddings(undefined, {
+      provider: 'openai-compatible',
+      model: nextModel,
+      dimension: nextDimension,
+      db,
+    });
+    const processing_started = queued > 0 ? triggerMemoryIndexProcessing() : false;
+    return {
+      queued,
+      processing_started,
+      reason: becameRunnable ? 'embedding_enabled' : 'target_changed',
+    };
+  } catch (error) {
+    structuredLog('error', 'memory.index.auto_backfill_failed', {
+      operation: 'settings_auto_backfill',
+      status: 'failed',
+    }, error);
+    return { queued: 0, processing_started: false, reason: null };
+  }
 }

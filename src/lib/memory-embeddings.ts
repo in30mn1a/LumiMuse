@@ -58,12 +58,21 @@ export interface MemoryEmbeddingTask {
 }
 
 export interface MemoryIndexStatus {
+  /** 活跃记忆条数（当前模型应覆盖的目标集合） */
   total: number;
+  /** 当前 embedding target 下 ready 的活跃记忆数（DISTINCT memory_id） */
   ready: number;
   pending: number;
   processing: number;
   failed: number;
   latest_error?: string | null;
+  /** memory_embeddings 表总行数（含各模型/维度，按行计） */
+  embedding_rows: number;
+  /** 非当前 target 的 ready 行数（换模型后残留，检索不会使用） */
+  other_target_ready: number;
+  target_provider?: string | null;
+  target_model?: string | null;
+  target_dimension?: number | null;
 }
 
 export interface MemoryEmbeddingTarget {
@@ -125,6 +134,40 @@ function buildReadyEmbeddingTargetFilter(
 
   return {
     sql: filters.length > 0 ? ` AND ${filters.join(' AND ')}` : '',
+    params,
+  };
+}
+
+/** 匹配「非当前 target」的行：用于统计/清理换模型后的残留索引 */
+function buildOtherTargetEmbeddingFilter(
+  target: MemoryEmbeddingTarget | undefined,
+  columnPrefix = '',
+): { sql: string; params: unknown[] } {
+  if (!target) return { sql: '', params: [] };
+
+  const prefix = columnPrefix ? `${columnPrefix}.` : '';
+  const provider = target.provider?.trim();
+  const model = target.model?.trim();
+  const dimension = Math.floor(Number(target.dimension || 0));
+
+  // 没有有效 model 时无法定义「当前 target」，不把任何行标为 other
+  if (!model) return { sql: ' AND 1 = 0', params: [] };
+
+  const matchParts: string[] = [];
+  const params: unknown[] = [];
+  if (provider) {
+    matchParts.push(`${prefix}provider = ?`);
+    params.push(provider);
+  }
+  matchParts.push(`${prefix}model = ?`);
+  params.push(model);
+  if (dimension > 0) {
+    matchParts.push(`${prefix}dimension = ?`);
+    params.push(dimension);
+  }
+
+  return {
+    sql: ` AND NOT (${matchParts.join(' AND ')})`,
     params,
   };
 }
@@ -532,7 +575,8 @@ export function enqueueUnindexedMemoryEmbeddings(
   const rows = db.prepare(`
     SELECT m.id, m.character_id
     FROM memories m
-    WHERE NOT EXISTS (
+    WHERE m.status = 'active'
+      AND NOT EXISTS (
       SELECT 1
       FROM memory_embeddings e
       WHERE e.memory_id = m.id
@@ -577,6 +621,36 @@ export function clearMemoryIndex(
       cleared_tasks: taskResult.changes,
     };
   })();
+}
+
+/**
+ * 删除非当前 embedding target 的残留索引行（换模型/维度后旧向量）。
+ * 不碰 tasks；不碰当前 target 的 ready 行。
+ */
+export function clearOtherTargetMemoryEmbeddings(
+  characterId: string | undefined,
+  target: MemoryEmbeddingTarget,
+  db: Database.Database = getDb(),
+): { cleared_embeddings: number } {
+  ensureMemoryEmbeddingTables(db);
+  const model = target.model?.trim();
+  if (!model) {
+    return { cleared_embeddings: 0 };
+  }
+
+  const otherFilter = buildOtherTargetEmbeddingFilter(target);
+  const characterFilter = characterId ? 'AND character_id = ?' : '';
+  const params: unknown[] = [...otherFilter.params];
+  if (characterId) params.push(characterId);
+
+  const result = db.prepare(`
+    DELETE FROM memory_embeddings
+    WHERE 1 = 1
+      ${otherFilter.sql}
+      ${characterFilter}
+  `).run(...params);
+
+  return { cleared_embeddings: result.changes };
 }
 
 export function stopCurrentMemoryIndexTasks(
@@ -664,25 +738,46 @@ export function getMemoryIndexStatus(
   target?: MemoryEmbeddingTarget,
 ): MemoryIndexStatus {
   ensureMemoryEmbeddingTables(db);
-  const memoryWhere = characterId ? 'WHERE character_id = ?' : '';
+  const memoryWhere = characterId
+    ? "WHERE character_id = ? AND status = 'active'"
+    : "WHERE status = 'active'";
   const memoryParams = characterId ? [characterId] : [];
   const taskCharacterFilter = characterId ? 'AND t.character_id = ?' : '';
   const taskParams = characterId ? [characterId] : [];
-  const readyTarget = buildReadyEmbeddingTargetFilter(target);
+  const readyTarget = buildReadyEmbeddingTargetFilter(target, 'e');
   const failedReadyTarget = buildReadyEmbeddingTargetFilter(target, 'e');
-  const readyParams: unknown[] = [...memoryParams, ...readyTarget.params];
+  const otherTarget = buildOtherTargetEmbeddingFilter(target);
+  const readyParams: unknown[] = [...readyTarget.params];
+  if (characterId) readyParams.push(characterId);
   const failedParams: unknown[] = characterId ? [characterId] : [];
   failedParams.push(...failedReadyTarget.params);
   const latestFailedParams: unknown[] = characterId ? [characterId] : [];
   latestFailedParams.push(...failedReadyTarget.params);
+  const embeddingRowsParams = characterId ? [characterId] : [];
+  const otherTargetParams: unknown[] = [...otherTarget.params];
+  if (characterId) otherTargetParams.push(characterId);
 
   const total = (db.prepare(`SELECT COUNT(*) as n FROM memories ${memoryWhere}`).get(...memoryParams) as { n: number }).n;
   const ready = (db.prepare(`
-    SELECT COUNT(DISTINCT memory_id) as n
-    FROM memory_embeddings
-    WHERE status = 'ready' ${characterId ? 'AND character_id = ?' : ''}
+    SELECT COUNT(DISTINCT e.memory_id) as n
+    FROM memory_embeddings e
+    INNER JOIN memories m ON m.id = e.memory_id AND m.status = 'active'
+    WHERE e.status = 'ready'
       ${readyTarget.sql}
+      ${characterId ? 'AND e.character_id = ?' : ''}
   `).get(...readyParams) as { n: number }).n;
+  const embeddingRows = (db.prepare(`
+    SELECT COUNT(*) as n
+    FROM memory_embeddings
+    ${characterId ? 'WHERE character_id = ?' : ''}
+  `).get(...embeddingRowsParams) as { n: number }).n;
+  const otherTargetReady = (db.prepare(`
+    SELECT COUNT(*) as n
+    FROM memory_embeddings
+    WHERE status = 'ready'
+      ${otherTarget.sql}
+      ${characterId ? 'AND character_id = ?' : ''}
+  `).get(...otherTargetParams) as { n: number }).n;
   const activeTasks = db.prepare(`
     SELECT t.status, COUNT(DISTINCT t.memory_id) as n
     FROM memory_embedding_tasks
@@ -728,6 +823,11 @@ export function getMemoryIndexStatus(
   `).get(...latestFailedParams) as { error_message: string } | undefined;
 
   const byStatus = new Map(activeTasks.map(row => [row.status, row.n]));
+  const targetModel = target?.model?.trim() || null;
+  const targetProvider = target?.provider?.trim() || null;
+  const targetDimension = target && Object.prototype.hasOwnProperty.call(target, 'dimension')
+    ? Math.floor(Number(target.dimension || 0))
+    : null;
   return {
     total,
     ready,
@@ -735,6 +835,11 @@ export function getMemoryIndexStatus(
     processing: byStatus.get('processing') || 0,
     failed: unresolvedFailed.n || 0,
     latest_error: latestFailed?.error_message || null,
+    embedding_rows: embeddingRows,
+    other_target_ready: otherTargetReady,
+    target_provider: targetProvider,
+    target_model: targetModel,
+    target_dimension: targetDimension,
   };
 }
 

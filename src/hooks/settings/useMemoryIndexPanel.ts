@@ -20,16 +20,30 @@ export interface MemoryIndexStatus {
   canRebuild?: boolean;
   latest_error?: string | null;
   processing_blocked_reason?: MemoryIndexProcessingBlockedReason;
+  embedding_rows?: number;
+  other_target_ready?: number;
+  target_provider?: string | null;
+  target_model?: string | null;
+  target_dimension?: number | null;
 }
 
 interface MemoryIndexActionResponse {
   ok: boolean;
   queued?: number;
+  cleared_embeddings?: number;
   processing_blocked_reason?: MemoryIndexProcessingBlockedReason;
 }
 
 export interface MemoryDiagnostics {
-  index: { total: number; ready: number; failed: number };
+  index: {
+    total: number;
+    ready: number;
+    failed: number;
+    library_rows?: number;
+    other_target_ready?: number;
+    target_model?: string | null;
+    target_dimension?: number | null;
+  };
   tasks: Record<string, number>;
   queues?: {
     extraction: Record<string, number>;
@@ -62,6 +76,7 @@ export function useMemoryIndexPanel({
   const [retrying, setRetrying] = useState(false);
   const [indexingUnindexed, setIndexingUnindexed] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [clearingOther, setClearingOther] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<MemoryDiagnostics | null>(null);
@@ -197,6 +212,32 @@ export function useMemoryIndexPanel({
     }
   };
 
+  const handleClearOtherTargetMemoryIndex = async () => {
+    setClearingOther(true);
+    setError(null);
+    try {
+      const result = await parseJsonResponse<MemoryIndexActionResponse>(await fetch('/api/memory-index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear_other_targets' }),
+      }));
+      showToast(
+        formatTemplate(t('settings.memoryIndexClearOtherSuccess'), {
+          count: String(result.cleared_embeddings ?? 0),
+        }),
+        'success',
+      );
+      await loadMemoryIndexStatus();
+      await loadMemoryDiagnostics();
+    } catch (err) {
+      const message = getErrorMessage(err);
+      setError(message);
+      showToast(`${t('settings.memoryIndexClearOtherFailed')}: ${message}`, 'error');
+    } finally {
+      setClearingOther(false);
+    }
+  };
+
   const handleStopCurrentMemoryTask = async () => {
     setStopping(true);
     setError(null);
@@ -246,6 +287,7 @@ export function useMemoryIndexPanel({
     retrying,
     indexingUnindexed,
     clearing,
+    clearingOther,
     stopping,
     error,
     activeTasks,
@@ -259,6 +301,7 @@ export function useMemoryIndexPanel({
     handleRetryFailedMemoryIndex,
     handleIndexUnindexedMemoryIndex,
     handleClearMemoryIndex,
+    handleClearOtherTargetMemoryIndex,
     handleStopCurrentMemoryTask,
   };
 }

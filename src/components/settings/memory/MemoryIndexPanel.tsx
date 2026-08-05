@@ -10,6 +10,7 @@ interface MemoryIndexPanelProps {
   retrying: boolean;
   indexingUnindexed: boolean;
   clearing: boolean;
+  clearingOther: boolean;
   stopping: boolean;
   error: string | null;
   activeTasks: number;
@@ -19,6 +20,7 @@ interface MemoryIndexPanelProps {
   onRebuild: () => void;
   onIndexUnindexed: () => void;
   onClear: () => void;
+  onClearOtherTargets: () => void;
   onStopCurrent: () => void;
 }
 
@@ -30,6 +32,7 @@ export function MemoryIndexPanel({
   retrying,
   indexingUnindexed,
   clearing,
+  clearingOther,
   stopping,
   error,
   activeTasks,
@@ -39,25 +42,33 @@ export function MemoryIndexPanel({
   onRebuild,
   onIndexUnindexed,
   onClear,
+  onClearOtherTargets,
   onStopCurrent,
 }: MemoryIndexPanelProps) {
+  const busy = loading || rebuilding || retrying || indexingUnindexed || clearing || clearingOther || stopping;
+  const otherTargetReady = status?.other_target_ready ?? 0;
+  const embeddingRows = status?.embedding_rows ?? 0;
+  const targetLabel = status?.target_model
+    ? formatTemplate(t('settings.memoryIndexCurrentTarget'), {
+        model: status.target_model,
+        dimension: String(status.target_dimension ?? 0),
+      })
+    : null;
+
   return (
     <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryIndexStatus')}</h3>
+        <div>
+          <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryIndexStatus')}</h3>
+          {targetLabel && (
+            <p className="mt-1 text-xs text-text-muted">{targetLabel}</p>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={onRetryFailed}
-            disabled={
-              retrying ||
-              loading ||
-              rebuilding ||
-              indexingUnindexed ||
-              clearing ||
-              stopping ||
-              (status?.failed ?? 0) === 0
-            }
+            disabled={busy || (status?.failed ?? 0) === 0}
             className="soft-button soft-button-secondary text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {retrying ? (
@@ -70,15 +81,7 @@ export function MemoryIndexPanel({
           <button
             type="button"
             onClick={onRebuild}
-            disabled={
-              rebuilding ||
-              retrying ||
-              indexingUnindexed ||
-              loading ||
-              clearing ||
-              stopping ||
-              status?.canRebuild === false
-            }
+            disabled={busy || status?.canRebuild === false}
             className="soft-button soft-button-secondary text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {rebuilding ? (
@@ -91,15 +94,7 @@ export function MemoryIndexPanel({
           <button
             type="button"
             onClick={onIndexUnindexed}
-            disabled={
-              indexingUnindexed ||
-              rebuilding ||
-              retrying ||
-              loading ||
-              clearing ||
-              stopping ||
-              !embeddingModel.trim()
-            }
+            disabled={busy || !embeddingModel.trim()}
             className="soft-button soft-button-secondary text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {indexingUnindexed ? (
@@ -111,16 +106,21 @@ export function MemoryIndexPanel({
           </button>
           <button
             type="button"
+            onClick={onClearOtherTargets}
+            disabled={busy || otherTargetReady === 0}
+            className="soft-button soft-button-secondary text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {clearingOther ? (
+              <span className="spinner-sm" aria-hidden="true" />
+            ) : (
+              <RefreshIcon className="h-3.5 w-3.5" />
+            )}
+            {clearingOther ? t('settings.memoryIndexClearingOther') : t('settings.memoryIndexClearOther')}
+          </button>
+          <button
+            type="button"
             onClick={onClear}
-            disabled={
-              clearing ||
-              stopping ||
-              loading ||
-              rebuilding ||
-              retrying ||
-              indexingUnindexed ||
-              (status?.total ?? 0) === 0
-            }
+            disabled={busy || embeddingRows === 0}
             className="soft-button soft-button-danger text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {clearing ? (
@@ -133,15 +133,7 @@ export function MemoryIndexPanel({
           <button
             type="button"
             onClick={onStopCurrent}
-            disabled={
-              stopping ||
-              clearing ||
-              loading ||
-              rebuilding ||
-              retrying ||
-              indexingUnindexed ||
-              activeTasks === 0
-            }
+            disabled={busy || activeTasks === 0}
             className="soft-button soft-button-secondary text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {stopping ? (
@@ -153,7 +145,7 @@ export function MemoryIndexPanel({
           </button>
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
         <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryIndexIndexed')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : status?.indexed ?? 0}</span>
@@ -174,7 +166,19 @@ export function MemoryIndexPanel({
           <span className="block text-text-muted">{t('settings.memoryIndexProcessing')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : status?.processing ?? 0}</span>
         </div>
+        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+          <span className="block text-text-muted">{t('settings.memoryIndexOtherTarget')}</span>
+          <span className="text-sm font-medium text-text-primary">{loading ? '...' : otherTargetReady}</span>
+        </div>
       </div>
+      {otherTargetReady > 0 && (
+        <p className="mt-3 text-xs text-amber-600">
+          {formatTemplate(t('settings.memoryIndexOtherTargetHint'), {
+            count: String(otherTargetReady),
+            rows: String(embeddingRows),
+          })}
+        </p>
+      )}
       {error && (
         <p className="mt-3 text-xs text-red-500">{t('common.loadFailed')}: {error}</p>
       )}

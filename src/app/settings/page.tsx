@@ -13,7 +13,8 @@ import {
 import { applyFontSize, applyFontStyle } from '@/lib/font-stacks';
 import { writeThemeStorage } from '@/lib/theme-provider';
 import { API_KEY_MASK } from '@/lib/constants';
-import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { formatTemplate } from '@/lib/i18n';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
@@ -350,13 +351,30 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
       });
-      await expectOkResponse(response);
+      const saved = await parseJsonResponse<{
+        memory_index_backfill?: {
+          queued?: number;
+          processing_started?: boolean;
+          reason?: string | null;
+        };
+      }>(response);
       setLang(settings.language);
       document.documentElement.classList.toggle('dark', settings.theme === 'dark');
       writeThemeStorage(settings.theme);
       applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
       applyFontSize((settings.font_size || 'medium') as FontSize);
       showToast(t('settings.saveSuccess'), 'success');
+      const backfillQueued = Number(saved.memory_index_backfill?.queued || 0);
+      if (backfillQueued > 0) {
+        showToast(
+          formatTemplate(t('settings.memoryIndexAutoBackfillQueued'), {
+            count: String(backfillQueued),
+          }),
+          'success',
+        );
+        void loadMemoryIndexStatus();
+        void loadMemoryDiagnostics();
+      }
     } catch (err) {
       showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
@@ -711,6 +729,7 @@ export default function SettingsPage() {
                 retrying={memoryIndexPanel.retrying}
                 indexingUnindexed={memoryIndexPanel.indexingUnindexed}
                 clearing={memoryIndexPanel.clearing}
+                clearingOther={memoryIndexPanel.clearingOther}
                 stopping={memoryIndexPanel.stopping}
                 error={memoryIndexPanel.error}
                 activeTasks={memoryIndexPanel.activeTasks}
@@ -720,6 +739,7 @@ export default function SettingsPage() {
                 onRebuild={memoryIndexPanel.handleRebuildMemoryIndex}
                 onIndexUnindexed={memoryIndexPanel.handleIndexUnindexedMemoryIndex}
                 onClear={memoryIndexPanel.handleClearMemoryIndex}
+                onClearOtherTargets={memoryIndexPanel.handleClearOtherTargetMemoryIndex}
                 onStopCurrent={memoryIndexPanel.handleStopCurrentMemoryTask}
               />
 

@@ -230,6 +230,8 @@ test('settings memory tab exposes clear index and stop current index actions', (
   for (const snippet of [
     'handleClearMemoryIndex',
     "body: JSON.stringify({ action: 'clear_index' })",
+    'handleClearOtherTargetMemoryIndex',
+    "body: JSON.stringify({ action: 'clear_other_targets' })",
     'handleStopCurrentMemoryTask',
     "body: JSON.stringify({ action: 'stop_current' })",
   ]) {
@@ -238,8 +240,11 @@ test('settings memory tab exposes clear index and stop current index actions', (
 
   for (const snippet of [
     'clearing',
+    'clearingOther',
     'stopping',
     'activeTasks === 0',
+    'other_target_ready',
+    'embedding_rows',
   ]) {
     assert.ok(memoryIndexPanel.includes(snippet), `missing panel snippet: ${snippet}`);
   }
@@ -249,6 +254,10 @@ test('settings memory tab exposes clear index and stop current index actions', (
     'settings.memoryIndexClearing',
     'settings.memoryIndexClearSuccess',
     'settings.memoryIndexClearFailed',
+    'settings.memoryIndexClearOther',
+    'settings.memoryIndexClearingOther',
+    'settings.memoryIndexClearOtherSuccess',
+    'settings.memoryIndexClearOtherFailed',
     'settings.memoryIndexStopCurrent',
     'settings.memoryIndexStopping',
     'settings.memoryIndexStopCurrentSuccess',

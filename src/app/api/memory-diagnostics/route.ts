@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { ensureMemoryEmbeddingTables, getMemoryIndexStatus } from '@/lib/memory-embeddings';
+import { loadSettings } from '@/lib/settings';
 
 type CountMap = Record<string, number>;
 
@@ -36,12 +38,30 @@ function statusCounts(
   return result;
 }
 
-function memoryIndexOverview(db: ReturnType<typeof getDb>, characterId?: string) {
-  const counts = statusCounts(db, 'memory_embeddings', ['ready', 'failed'], characterId);
+function getCurrentEmbeddingTarget() {
+  const engine = loadSettings().memory_engine;
   return {
-    total: counts.ready + counts.failed,
-    ready: counts.ready,
-    failed: counts.failed,
+    provider: 'openai-compatible',
+    model: engine.embedding_model,
+    dimension: engine.embedding_dimension,
+  };
+}
+
+/**
+ * 与索引面板对齐：ready/total 按当前 embedding target + 活跃记忆计数；
+ * library_rows / other_target_ready 暴露库内多模型残留，避免「总数超过记忆」的误解。
+ */
+function memoryIndexOverview(db: ReturnType<typeof getDb>, characterId?: string) {
+  ensureMemoryEmbeddingTables(db);
+  const status = getMemoryIndexStatus(characterId, db, getCurrentEmbeddingTarget());
+  return {
+    ready: status.ready,
+    total: status.total,
+    failed: status.failed,
+    library_rows: status.embedding_rows,
+    other_target_ready: status.other_target_ready,
+    target_model: status.target_model,
+    target_dimension: status.target_dimension,
   };
 }
 

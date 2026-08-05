@@ -51,6 +51,18 @@ export function MemoryDiagnosticsPanel({
           </span>
         </div>
         <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+          <span className="block text-text-muted">{t('settings.memoryDiagnosticsLibraryRows')}</span>
+          <span className="text-sm font-medium text-text-primary">
+            {loading ? '...' : diagnostics?.index.library_rows ?? 0}
+          </span>
+        </div>
+        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+          <span className="block text-text-muted">{t('settings.memoryDiagnosticsOtherTarget')}</span>
+          <span className="text-sm font-medium text-text-primary">
+            {loading ? '...' : diagnostics?.index.other_target_ready ?? 0}
+          </span>
+        </div>
+        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryDiagnosticsExtractionQueue')}</span>
           <span className="text-sm font-medium text-text-primary">
             {loading ? '...' : queueSummary(extractionQueue)}

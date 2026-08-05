@@ -89,6 +89,7 @@ function loadSettingsPage() {
     retrying: false,
     indexingUnindexed: false,
     clearing: false,
+    clearingOther: false,
     stopping: false,
     error: null,
     activeTasks: [],
@@ -102,6 +103,7 @@ function loadSettingsPage() {
     handleRebuildMemoryIndex: noop,
     handleIndexUnindexedMemoryIndex: noop,
     handleClearMemoryIndex: noop,
+    handleClearOtherTargetMemoryIndex: noop,
     handleStopCurrentMemoryTask: noop,
   };
   const memoryManagementPanel = {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getDb } from '@/lib/db';
 import {
   clearMemoryIndex,
+  clearOtherTargetMemoryEmbeddings,
   ensureMemoryEmbeddingTables,
   enqueueRebuildMemoryEmbeddings,
   enqueueUnindexedMemoryEmbeddings,
@@ -24,6 +25,7 @@ const memoryIndexActionSchema = z.enum([
   'rebuild',
   'retry_failed',
   'clear_index',
+  'clear_other_targets',
   'stop_current',
   'index_unindexed',
 ]);
@@ -49,6 +51,11 @@ function toStatusResponse(status: MemoryIndexStatus, characterId: string | null)
     processing: status.processing,
     failed: status.failed,
     latest_error: status.latest_error,
+    embedding_rows: status.embedding_rows,
+    other_target_ready: status.other_target_ready,
+    target_provider: status.target_provider,
+    target_model: status.target_model,
+    target_dimension: status.target_dimension,
   };
   if (status.pending > 0 && status.processing === 0) {
     const blockedReason = getMemoryIndexProcessingBlockedReason();
@@ -68,6 +75,11 @@ function emptyStatusResponse(characterId: string | null, error: string): IndexSt
     queued: 0,
     processing: 0,
     failed: 0,
+    embedding_rows: 0,
+    other_target_ready: 0,
+    target_provider: null,
+    target_model: null,
+    target_dimension: null,
     error,
   };
 }
@@ -166,6 +178,16 @@ export async function POST(request: NextRequest) {
     if (action === 'clear_index') {
       stopMemoryIndexProcessing();
       const result = clearMemoryIndex(characterId, db);
+      return NextResponse.json({
+        ok: true,
+        action,
+        character_id: characterId || null,
+        ...result,
+      });
+    }
+
+    if (action === 'clear_other_targets') {
+      const result = clearOtherTargetMemoryEmbeddings(characterId, getCurrentEmbeddingTarget(), db);
       return NextResponse.json({
         ok: true,
         action,

@@ -450,7 +450,7 @@ test('预设详情新增和保存都用 pending guard 防止重复写请求', as
   });
   await waitFor(() => assert.equal(addButton.disabled, false));
 
-  fireEvent.click(view.getByRole('button', { name: 'preset.edit' }));
+  fireEvent.click(view.getByRole('button', { name: `preset.edit: ${ENTRY.name}` }));
   const saveButton = view.getByRole('button', { name: 'preset.save' });
   fireEvent.click(saveButton);
   fireEvent.click(saveButton);
@@ -462,6 +462,55 @@ test('预设详情新增和保存都用 pending guard 防止重复写请求', as
     await saveRequest.promise;
   });
   await waitFor(() => assert.equal(view.queryByRole('button', { name: 'preset.save' }), null));
+});
+
+test('预设详情条目使用移动端友好的可访问图标操作', async () => {
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    const method = init.method || 'GET';
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'GET') {
+      return jsonResponse(PRESET);
+    }
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}/entries` && method === 'GET') {
+      return jsonResponse({ entries: [ENTRY] });
+    }
+    throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
+  };
+
+  const { Component } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  const entryName = await view.findByText(ENTRY.name);
+  const row = entryName.closest('li');
+
+  assert.match(row.className, /\bflex-col\b/);
+  assert.match(row.className, /\bsm:flex-row\b/);
+  assert.match(entryName.className, /\bline-clamp-2\b/);
+  assert.match(entryName.className, /\bbasis-full\b/);
+
+  const labels = [
+    `preset.enabled: ${ENTRY.name}`,
+    `preset.edit: ${ENTRY.name}`,
+    `preset.delete: ${ENTRY.name}`,
+  ];
+  const buttons = labels.map(label => view.getByRole('button', { name: label }));
+
+  assert.equal(buttons[0].getAttribute('aria-pressed'), 'true');
+  assert.match(buttons[0].parentElement.className, /\bself-end\b/);
+  for (const [index, button] of buttons.entries()) {
+    assert.equal(button.type, 'button');
+    assert.equal(button.title, labels[index]);
+    assert.equal(button.textContent, '');
+    assert.ok(button.querySelector('[aria-hidden="true"]'));
+    assert.match(button.className, /\bh-11\b/);
+    assert.match(button.className, /\bw-11\b/);
+    assert.match(button.className, /\bmin-h-11\b/);
+    assert.match(button.className, /\bmin-w-11\b/);
+    assert.match(button.className, /\bfocus-visible:ring-2\b/);
+    assert.match(button.className, /\bdisabled:opacity-40\b/);
+  }
 });
 
 test('预设详情切换条目时保持行 DOM 节点稳定', async () => {
@@ -488,7 +537,7 @@ test('预设详情切换条目时保持行 DOM 节点稳定', async () => {
     { unwrapParams: true },
   );
   const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
-  const toggleButton = await view.findByRole('button', { name: 'preset.enabled' });
+  const toggleButton = await view.findByRole('button', { name: `preset.enabled: ${ENTRY.name}` });
   const rowBeforeToggle = view.getByText(ENTRY.name).closest('li');
 
   fireEvent.click(toggleButton);
@@ -502,10 +551,11 @@ test('预设详情切换条目时保持行 DOM 节点稳定', async () => {
     await toggleRequest.promise;
   });
 
-  const disabledButton = await view.findByRole('button', { name: 'preset.disabled' });
+  const disabledButton = await view.findByRole('button', { name: `preset.disabled: ${ENTRY.name}` });
   assert.equal(view.getByText(ENTRY.name).closest('li'), rowBeforeToggle);
   assert.equal(rowBeforeToggle.isConnected, true);
   assert.equal(disabledButton.disabled, false);
+  assert.equal(disabledButton.getAttribute('aria-pressed'), 'false');
 });
 
 test('角色预设选择器保持 follow / none / explicit 三态并在卸载时 abort', async () => {

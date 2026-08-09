@@ -474,6 +474,54 @@ test('/api/image-gen still persists normal small remote images', async () => {
   assert.equal(harness.writes[0].size, pngBytes().byteLength);
 });
 
+test('/api/image-gen persists first-party images inside the character directory', async () => {
+  const harness = createImageGenHarness({
+    imageGenSettings: sdSettings(),
+    safeFetchImpl: async () => new Response(JSON.stringify({
+      images: [Buffer.from(pngBytes()).toString('base64')],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const response = await harness.route.POST(jsonRequest({
+    prompt: 'character portrait',
+    character_id: 'char_A-12',
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.url, '/api/files/generated/char_A-12/11111111-1111-4111-8111-111111111111.png');
+  assert.equal(harness.mkdirs.length, 1);
+  assert.equal(harness.mkdirs[0].options.recursive, true);
+  assert.match(harness.mkdirs[0].dir, /public[\\/]generated[\\/]char_A-12$/);
+  assert.match(
+    harness.writes[0].filePath,
+    /public[\\/]generated[\\/]char_A-12[\\/]11111111-1111-4111-8111-111111111111\.png$/,
+  );
+});
+
+test('/api/image-gen rejects unsafe character directory segments before calling upstream', async () => {
+  const harness = createImageGenHarness({
+    imageGenSettings: sdSettings(),
+    safeFetchImpl: async () => {
+      throw new Error('safeFetch should not be called for an unsafe character id');
+    },
+  });
+
+  const response = await harness.route.POST(jsonRequest({
+    prompt: 'character portrait',
+    character_id: '../escape',
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, 'Invalid request body');
+  assert.deepEqual(harness.safeFetchCalls, []);
+  assert.deepEqual(harness.writes, []);
+});
+
 test('/api/image-gen sends the exact SD WebUI txt2img payload with a composed signal', async () => {
   let capturedInit;
   const harness = createImageGenHarness({

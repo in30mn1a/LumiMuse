@@ -174,6 +174,7 @@ export default function CharacterEditor({ params }: Props) {
   const router = useRouter();
   const [character, setCharacter] = useState<Character | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [showAiGenerator, setShowAiGenerator] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -184,6 +185,7 @@ export default function CharacterEditor({ params }: Props) {
   const [pendingImport, setPendingImport] = useState<{ fileName: string; file: File } | null>(null);
   const characterImportRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const deleteInFlightRef = useRef(false);
   const { t } = useTranslation();
   const { showToast } = useToast();
   // dirty 标记：表单是否存在未保存的修改。
@@ -257,7 +259,10 @@ export default function CharacterEditor({ params }: Props) {
   };
 
   const handleDelete = async () => {
+    if (deleteInFlightRef.current) return;
     if (!confirm(t('editor.deleteConfirm'))) return;
+    deleteInFlightRef.current = true;
+    setDeleting(true);
     try {
       // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
       const response = await fetch(`/api/characters/${id}`, {
@@ -274,7 +279,9 @@ export default function CharacterEditor({ params }: Props) {
       setDirty(false);
       router.push('/');
     } catch (err) {
-      showToast(`${t('editor.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      deleteInFlightRef.current = false;
+      setDeleting(false);
+      showToast(`${t('editor.deleteFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
@@ -458,9 +465,13 @@ export default function CharacterEditor({ params }: Props) {
                 <SparkIcon className="h-4 w-4" />
                 {duplicating ? t('editor.duplicating') : t('editor.duplicate')}
               </button>
-              <button onClick={handleDelete} className="soft-button soft-button-danger">
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="soft-button soft-button-danger disabled:cursor-not-allowed disabled:opacity-50"
+              >
                 <TrashIcon className="h-4 w-4" />
-                {t('editor.delete')}
+                {deleting ? t('editor.deleting') : t('editor.delete')}
               </button>
               <button type="button" onClick={() => characterImportRef.current?.click()} className="soft-button soft-button-secondary">
                               {t('editor.importTitle')}

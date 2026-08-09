@@ -6,7 +6,7 @@ import { use } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { useToast } from '@/components/ui/Toast';
-import { ArrowLeftIcon } from '@/components/ui/icons';
+import { ArrowLeftIcon, CheckIcon, PencilIcon, XIcon } from '@/components/ui/icons';
 import { LEGACY_STORY_PLOT_TAGS, usesLegacyStoryPlotRules } from '@/lib/story-plot-strip';
 
 interface PresetEntry {
@@ -51,9 +51,14 @@ interface EntryRowProps {
 }
 
 function EntryRow({ entry, pending, t, onToggle, onEdit, onDelete }: EntryRowProps) {
+  const toggleLabel = `${entry.enabled ? t('preset.enabled') : t('preset.disabled')}: ${entry.name}`;
+  const editLabel = `${t('preset.edit')}: ${entry.name}`;
+  const deleteLabel = `${t('preset.delete')}: ${entry.name}`;
+  const iconButtonClassName = 'soft-button h-11 min-h-11 w-11 min-w-11 shrink-0 touch-manipulation rounded-xl p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0';
+
   return (
     <li
-      className={`flex items-start justify-between gap-3 rounded-xl border px-4 py-3 ${
+      className={`flex flex-col gap-3 rounded-xl border px-4 py-3 sm:flex-row sm:items-start sm:justify-between ${
         entry.enabled
           ? 'border-border-light bg-surface'
           : 'border-border-light/50 bg-surface/50 opacity-60'
@@ -61,7 +66,12 @@ function EntryRow({ entry, pending, t, onToggle, onEdit, onDelete }: EntryRowPro
     >
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium text-text-primary">{entry.name}</span>
+          <span
+            className="line-clamp-2 basis-full break-words text-sm font-medium text-text-primary sm:basis-auto"
+            title={entry.name}
+          >
+            {entry.name}
+          </span>
           <span className={`rounded-full px-2 py-0.5 text-xs ${
             entry.role === 'system' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' :
             entry.role === 'user' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' :
@@ -85,31 +95,41 @@ function EntryRow({ entry, pending, t, onToggle, onEdit, onDelete }: EntryRowPro
           <p className="mt-1 line-clamp-2 text-xs text-text-muted">{entry.content}</p>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
         <button
+          type="button"
           onClick={() => onToggle(entry)}
-          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+          className={`${iconButtonClassName} ${
             entry.enabled
               ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300'
               : 'bg-zinc-200 text-zinc-600 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-400'
           }`}
           disabled={pending}
+          aria-label={toggleLabel}
+          aria-pressed={entry.enabled}
+          title={toggleLabel}
         >
-          {entry.enabled ? t('preset.enabled') : t('preset.disabled')}
+          <CheckIcon className="h-5 w-5" />
         </button>
         <button
+          type="button"
           onClick={() => onEdit(entry)}
-          className="soft-button soft-button-secondary text-xs"
+          className={`${iconButtonClassName} soft-button-secondary`}
           disabled={pending}
+          aria-label={editLabel}
+          title={editLabel}
         >
-          {t('preset.edit')}
+          <PencilIcon className="h-5 w-5" />
         </button>
         <button
+          type="button"
           onClick={() => onDelete(entry)}
-          className="soft-button soft-button-danger text-xs"
+          className={`${iconButtonClassName} soft-button-danger`}
           disabled={pending}
+          aria-label={deleteLabel}
+          title={deleteLabel}
         >
-          {t('preset.delete')}
+          <XIcon className="h-5 w-5" />
         </button>
       </div>
     </li>

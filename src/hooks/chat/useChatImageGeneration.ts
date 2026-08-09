@@ -28,6 +28,8 @@ type GenerateImageFn = (
   conversationIdOverride?: string,
   /** 流刚结束后 messagesRef 可能尚未同步；自动出图传入服务端快照避免找不到消息 */
   messageSnapshot?: Message,
+  /** 自动出图与流所属会话同时捕获角色，避免异步回调读取到切换后的角色 */
+  characterIdSnapshot?: string | null,
 ) => Promise<boolean>;
 
 const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
@@ -35,19 +37,21 @@ const isAbortError = (error: unknown) => error instanceof DOMException && error.
 export function useChatImageGeneration({
   activeConvId,
   activeConvIdRef,
-  characterRef: _characterRef,
+  characterRef,
   messagesRef,
   updateMessagesForConversation,
   markSkipNextScroll,
   showToast,
   t,
 }: UseChatImageGenerationOptions) {
-  // characterRef 仍由 ChatView 传入以保持 hook 签名稳定；生图链路不依赖角色对象
-  void _characterRef;
   const generateImageRef = useRef<GenerateImageFn | null>(null);
   const autoImagedMsgIdsRef = useRef<Set<string>>(new Set());
   const imageRequestSeqRef = useRef(0);
-  const activeImageRequestsRef = useRef<Map<number, { controller: AbortController; conversationId: string }>>(new Map());
+  const activeImageRequestsRef = useRef<Map<number, {
+    controller: AbortController;
+    conversationId: string;
+    characterId: string | null;
+  }>>(new Map());
   const inFlightMessageIdsRef = useRef<Set<string>>(new Set());
   const [generatingImageMessageIds, setGeneratingImageMessageIds] = useState<Set<string>>(() => new Set());
 
@@ -74,8 +78,9 @@ export function useChatImageGeneration({
     return request?.controller === controller
       && request.conversationId === conversationId
       && activeConvIdRef.current === conversationId
+      && request.characterId === (characterRef.current?.id ?? null)
       && !controller.signal.aborted;
-  }, [activeConvIdRef]);
+  }, [activeConvIdRef, characterRef]);
 
   const handleGenerateImage = useCallback<GenerateImageFn>(async (
     messageId,
@@ -83,9 +88,13 @@ export function useChatImageGeneration({
     replaceImageId,
     conversationIdOverride,
     messageSnapshot,
+    characterIdSnapshot,
   ) => {
     const targetConversationId = conversationIdOverride || activeConvIdRef.current;
     if (!targetConversationId) return false;
+    const targetCharacterId = characterIdSnapshot === undefined
+      ? (characterRef.current?.id ?? null)
+      : characterIdSnapshot;
 
     const currentMessages = messagesRef.current;
     const targetFromList = currentMessages.find(m => m.id === messageId);
@@ -106,7 +115,11 @@ export function useChatImageGeneration({
     const placeholderId = replaceImageId || Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const requestId = ++imageRequestSeqRef.current;
     const controller = new AbortController();
-    activeImageRequestsRef.current.set(requestId, { controller, conversationId: targetConversationId });
+    activeImageRequestsRef.current.set(requestId, {
+      controller,
+      conversationId: targetConversationId,
+      characterId: targetCharacterId,
+    });
 
     const canWriteImageRequest = (allowCompletedRequest = false) => {
       if (allowCompletedRequest) {
@@ -199,10 +212,14 @@ export function useChatImageGeneration({
         });
       }
 
+      if (!isCurrentImageRequest(requestId, targetConversationId, controller)) return true;
       const imgRes = await fetch('/api/image-gen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: generatedPrompt }),
+        body: JSON.stringify({
+          prompt: generatedPrompt,
+          ...(targetCharacterId ? { character_id: targetCharacterId } : {}),
+        }),
         signal: controller.signal,
       });
       const imgData = await parseJsonResponse<{ url?: string; error?: string }>(imgRes);
@@ -284,7 +301,7 @@ export function useChatImageGeneration({
         return next;
       });
     }
-  }, [activeConvIdRef, isCurrentImageRequest, markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
+  }, [activeConvIdRef, characterRef, isCurrentImageRequest, markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
 
   useEffect(() => {
     generateImageRef.current = handleGenerateImage;
@@ -296,10 +313,16 @@ export function useChatImageGeneration({
     options?: { assistantMessageId?: string; retry?: boolean },
   ) => {
     try {
+      if (activeConvIdRef.current !== cid) return;
+      const targetCharacterId = characterRef.current?.id ?? null;
       const settingsRes = await fetch('/api/settings');
       const s = await parseJsonResponse<Partial<Settings>>(settingsRes);
       const imgCfg = s.image_gen;
       if (!imgCfg?.enabled) return;
+      if (
+        activeConvIdRef.current !== cid
+        || (characterRef.current?.id ?? null) !== targetCharacterId
+      ) return;
 
       // 发送链路统一传入显式 assistantMessageId；无目标时不猜末尾气泡，避免 mid-insert 误打
       if (!options?.assistantMessageId) return;
@@ -338,6 +361,7 @@ export function useChatImageGeneration({
         undefined,
         cid,
         targetAssistant,
+        targetCharacterId,
       );
       if (started) {
         autoImagedMsgIdsRef.current.add(targetAssistant.id);
@@ -345,7 +369,7 @@ export function useChatImageGeneration({
     } catch (err) {
       showToast(`${t('chat.autoImageGenFailed')}: ${getErrorMessage(err)}`, 'error');
     }
-  }, [showToast, t]);
+  }, [activeConvIdRef, characterRef, showToast, t]);
 
   const handleDeleteImage = useCallback(async (messageId: string, imgId: string, versionId?: string) => {
     try {

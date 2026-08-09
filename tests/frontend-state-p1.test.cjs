@@ -1038,8 +1038,174 @@ test('chat image generation aborts on active conversation change and skips stale
   }
 });
 
+test('chat auto image generation drops a settings-delayed stale inline callback and keeps current manual ownership', async () => {
+  const settingsRequest = createDeferred();
+  const messageA = {
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    role: 'assistant',
+    content: 'draw Alice',
+    token_count: 0,
+    created_at: '2026-06-07T00:00:00.000Z',
+    metadata: { inlineImagePrompt: 'alice prompt' },
+  };
+  const messageB = {
+    id: 'msg-b',
+    conversation_id: 'conv-b',
+    role: 'assistant',
+    content: 'draw Bob',
+    token_count: 0,
+    created_at: '2026-06-07T00:01:00.000Z',
+    metadata: {},
+  };
+  const activeConvIdRef = { current: 'conv-a' };
+  const characterRef = { current: { id: 'char-a', name: 'Alice' } };
+  const messagesRef = { current: [messageA] };
+  let activeConvId = 'conv-a';
+  const imageRequestBodies = [];
+  const messageWrites = [];
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname === '/api/settings') {
+      return settingsRequest.promise;
+    }
+    if (parsedUrl.pathname.startsWith('/api/messages/')) {
+      messageWrites.push(parsedUrl.pathname);
+      return jsonResponse({ ok: true });
+    }
+    if (parsedUrl.pathname === '/api/image-gen') {
+      imageRequestBodies.push(JSON.parse(String(init.body)));
+      return jsonResponse({ url: '/api/files/generated/current.png' });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useChatImageGeneration } = requireFreshWithMocks('../src/hooks/chat/useChatImageGeneration.ts', {
+          react: reactMock,
+        });
+        return useChatImageGeneration;
+      },
+      () => ({
+        activeConvId,
+        activeConvIdRef,
+        characterRef,
+        messagesRef,
+        updateMessagesForConversation: (_conversationIdToUpdate, updater) => {
+          messagesRef.current = updater(messagesRef.current);
+        },
+        markSkipNextScroll: () => {},
+        showToast: () => {},
+        t: key => key,
+      }),
+    );
+
+    runtime.render();
+    const staleAutoGeneration = runtime.current.maybeAutoGenerateImageFromMessages(
+      'conv-a',
+      [messageA],
+      { assistantMessageId: 'msg-a' },
+    );
+    await new Promise(resolve => setImmediate(resolve));
+
+    activeConvIdRef.current = 'conv-b';
+    activeConvId = 'conv-b';
+    characterRef.current = { id: 'char-b', name: 'Bob' };
+    messagesRef.current = [messageB];
+    runtime.render();
+
+    settingsRequest.resolve(jsonResponse({
+      image_gen: { enabled: true, inline_prompt: true, auto_generate: false },
+    }));
+    await staleAutoGeneration;
+
+    assert.deepEqual(imageRequestBodies, [], 'stale inline callback must stop before POST /api/image-gen');
+    assert.deepEqual(messageWrites, [], 'stale auto generation must not persist an image placeholder');
+
+    const manualStarted = await runtime.current.handleGenerateImage('msg-b', 'bob manual prompt');
+    assert.equal(manualStarted, true);
+    assert.deepEqual(imageRequestBodies, [
+      { prompt: 'bob manual prompt', character_id: 'char-b' },
+    ], 'manual generation in the current conversation must retain the current character owner');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('chat image generation rechecks inline prompt freshness after a delayed placeholder write', async () => {
+  const placeholderWrite = createDeferred();
+  const messageA = {
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    role: 'assistant',
+    content: 'draw Alice',
+    token_count: 0,
+    created_at: '2026-06-07T00:00:00.000Z',
+    metadata: { inlineImagePrompt: 'alice inline prompt' },
+  };
+  const activeConvIdRef = { current: 'conv-a' };
+  const characterRef = { current: { id: 'char-a', name: 'Alice' } };
+  let activeConvId = 'conv-a';
+  const imageRequestBodies = [];
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname === '/api/messages/msg-a') {
+      return placeholderWrite.promise;
+    }
+    if (parsedUrl.pathname === '/api/image-gen') {
+      imageRequestBodies.push(JSON.parse(String(init.body)));
+      return jsonResponse({ url: '/api/files/generated/stale.png' });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useChatImageGeneration } = requireFreshWithMocks('../src/hooks/chat/useChatImageGeneration.ts', {
+          react: reactMock,
+        });
+        return useChatImageGeneration;
+      },
+      () => ({
+        activeConvId,
+        activeConvIdRef,
+        characterRef,
+        messagesRef: { current: [messageA] },
+        updateMessagesForConversation: () => {},
+        markSkipNextScroll: () => {},
+        showToast: () => {},
+        t: key => key,
+      }),
+    );
+
+    runtime.render();
+    const generation = runtime.current.handleGenerateImage('msg-a');
+    await new Promise(resolve => setImmediate(resolve));
+
+    activeConvIdRef.current = 'conv-b';
+    activeConvId = 'conv-b';
+    characterRef.current = { id: 'char-b', name: 'Bob' };
+    runtime.render();
+
+    placeholderWrite.resolve(jsonResponse({ ok: true }));
+    await generation;
+
+    assert.deepEqual(imageRequestBodies, [], 'an inline prompt must be revalidated immediately before image generation');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('chat image generation serializes the same message, keeps other messages concurrent, and clears busy state for retry', async () => {
   const imageRequests = [];
+  const imageRequestBodies = [];
   const messages = ['msg-a', 'msg-b'].map((id, index) => ({
     id,
     conversation_id: 'conv-a',
@@ -1061,6 +1227,7 @@ test('chat image generation serializes the same message, keeps other messages co
     }
     if (parsedUrl.pathname === '/api/image-gen') {
       const deferred = createDeferred();
+      imageRequestBodies.push(JSON.parse(String(init.body)));
       imageRequests.push(deferred);
       return deferred.promise;
     }
@@ -1097,6 +1264,10 @@ test('chat image generation serializes the same message, keeps other messages co
 
     assert.deepEqual([...runtime.current.generatingImageMessageIds].sort(), ['msg-a', 'msg-b']);
     assert.equal(imageRequests.length, 2, 'same-message duplicate must be rejected while another message may run concurrently');
+    assert.deepEqual(imageRequestBodies, [
+      { prompt: 'prompt a', character_id: 'char-a' },
+      { prompt: 'prompt b', character_id: 'char-a' },
+    ]);
     assert.equal(messageWrites.length, 2, 'only one placeholder write per message should occur');
 
     imageRequests[0].resolve(jsonResponse({ url: '/generated/a.png' }));
@@ -1109,6 +1280,7 @@ test('chat image generation serializes the same message, keeps other messages co
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual([...runtime.current.generatingImageMessageIds], ['msg-a']);
     assert.equal(imageRequests.length, 3, 'finally must clear the guard so the same message can retry');
+    assert.deepEqual(imageRequestBodies[2], { prompt: 'prompt a retry', character_id: 'char-a' });
 
     imageRequests[2].resolve(jsonResponse({ url: '/generated/a-retry.png' }));
     await retryA;

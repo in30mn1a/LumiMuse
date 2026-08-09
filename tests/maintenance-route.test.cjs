@@ -108,7 +108,10 @@ function createMaintenanceDb() {
     'content image: /api/files/attachments/abc123.png',
     JSON.stringify({
       attachments: [{ url: '/api/files/attachments/metadata-live.png' }],
-      generatedImages: [{ data: '/generated/generated-live.png' }],
+      generatedImages: [
+        { data: '/generated/generated-live.png' },
+        { url: '/api/files/generated/character-live/nested-live.png' },
+      ],
     }),
   );
   db.prepare('INSERT INTO messages (id, conversation_id, content, metadata) VALUES (?, ?, ?, ?)')
@@ -136,8 +139,9 @@ function createMaintenanceDb() {
 
 function writeFixtureFile(workspace, dirName, filename) {
   const dir = path.join(workspace, 'public', dirName);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, filename), filename, 'utf8');
+  const filePath = path.join(dir, filename);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, filename, 'utf8');
 }
 
 test('maintenance preview finds orphans and cleanup preserves avatar/content/metadata references', async () => {
@@ -154,7 +158,12 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
     for (const [dirName, filenames] of Object.entries({
       avatars: ['avatar-live.png', 'avatar-orphan.png'],
       attachments: ['abc123.png', 'metadata-live.png', 'attachment-orphan.png'],
-      generated: ['generated-live.png', 'generated-orphan.png'],
+      generated: [
+        'generated-live.png',
+        'generated-orphan.png',
+        'character-live/nested-live.png',
+        'character-live/nested-orphan.png',
+      ],
     })) {
       for (const filename of filenames) writeFixtureFile(workspace, dirName, filename);
     }
@@ -164,6 +173,7 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
       ['avatars', 'avatar-orphan.png'],
       ['attachments', 'attachment-orphan.png'],
       ['generated', 'generated-orphan.png'],
+      ['generated', 'character-live/nested-orphan.png'],
     ]) {
       const filepath = path.join(workspace, 'public', dirName, filename);
       fs.utimesSync(filepath, oldMtime, oldMtime);
@@ -201,7 +211,7 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
     assert.deepEqual(preview.orphanFiles, {
       avatars: { total: 2, orphanCount: 1 },
       attachments: { total: 3, orphanCount: 1 },
-      generated: { total: 2, orphanCount: 1 },
+      generated: { total: 4, orphanCount: 2 },
     });
 
     const cleanupResponse = await route.POST({});
@@ -212,7 +222,7 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
     assert.deepEqual(cleanup.fileResults, {
       avatars: { deleted: 1, errors: 0 },
       attachments: { deleted: 1, errors: 0 },
-      generated: { deleted: 1, errors: 0 },
+      generated: { deleted: 2, errors: 0 },
     });
     assert.deepEqual(cleanup.after, {
       conversations: 1,
@@ -242,6 +252,7 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
       ['attachments', 'abc123.png'],
       ['attachments', 'metadata-live.png'],
       ['generated', 'generated-live.png'],
+      ['generated', 'character-live/nested-live.png'],
     ]) {
       assert.equal(fs.existsSync(path.join(workspace, 'public', dirName, filename)), true);
     }
@@ -249,6 +260,7 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
       ['avatars', 'avatar-orphan.png'],
       ['attachments', 'attachment-orphan.png'],
       ['generated', 'generated-orphan.png'],
+      ['generated', 'character-live/nested-orphan.png'],
     ]) {
       assert.equal(fs.existsSync(path.join(workspace, 'public', dirName, filename)), false);
     }

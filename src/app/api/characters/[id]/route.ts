@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Character } from '@/types';
-import { collectAllLocalAssetUrls, collectCharacterLocalAssetUrls, deleteLocalAssetUrls } from '@/lib/character-file-utils';
+import {
+  collectCharacterLocalAssetUrls,
+  deleteLocalAssetUrls,
+  filterUnreferencedLocalAssetUrls,
+} from '@/lib/character-file-utils';
 import { characterUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET(
@@ -103,8 +107,7 @@ export async function DELETE(
   const changes = deleteCharacter();
   if (changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const remainingUrls = collectAllLocalAssetUrls(db);
-  const orphanUrls = [...fileUrls].filter(url => !remainingUrls.has(url));
+  const orphanUrls = filterUnreferencedLocalAssetUrls(db, fileUrls);
   await deleteLocalAssetUrls(orphanUrls);
   return NextResponse.json({ ok: true });
 }

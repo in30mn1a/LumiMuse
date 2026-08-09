@@ -122,6 +122,15 @@ export function PencilIcon(props: IconProps) {
   );
 }
 
+export function XIcon(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M18 6L6 18" />
+      <path d="M6 6l12 12" />
+    </BaseIcon>
+  );
+}
+
 export function TrashIcon(props: IconProps) {
   return (
     <BaseIcon {...props}>

@@ -6,7 +6,20 @@ const { registerTsLoader } = require('./helpers/register-ts-loader.cjs');
 registerTsLoader();
 
 const modulePath = path.resolve(__dirname, '../src/lib/inline-image-prompt.ts');
-const { extractInlinePrompt, stripInlinePrompt } = require(modulePath);
+const { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } = require(modulePath);
+
+test('inline image prompt keeps non-intimate scenes character-only and excludes user tags', () => {
+  const instruction = buildInlinePromptInstruction(
+    '1girl, silver hair, blue eyes',
+    '1boy, black hair, glasses',
+  );
+
+  assert.match(instruction, /不是角色与用户的亲密互动/);
+  assert.match(instruction, /不得包含任何用户外貌标签/);
+  assert.match(instruction, /只包含角色的单人场景/);
+  assert.match(instruction, /亲密互动.*用户外貌标签：1boy, black hair, glasses/);
+  assert.match(instruction, /固定外貌标签：1girl, silver hair, blue eyes/);
+});
 
 test('inline image prompt extracts a case-insensitive multiline block and strips it from the reply', () => {
   const text = '今晚一起看雨吧。\n[img]\n1girl, blue hair, rainy window\n[/IMG]   ';

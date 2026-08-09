@@ -213,6 +213,24 @@ function getReferencedFiles(dirName: string): Set<string> {
   return referenced;
 }
 
+async function listGeneratedFilesRecursively(
+  rootDir: string,
+  currentDir: string = rootDir,
+): Promise<string[]> {
+  const entries = await readdir(currentDir, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(currentDir, entry.name);
+    if (entry.isFile()) {
+      files.push(path.relative(rootDir, entryPath).split(path.sep).join('/'));
+    } else if (entry.isDirectory()) {
+      files.push(...await listGeneratedFilesRecursively(rootDir, entryPath));
+    }
+    // 不跟随 symlink；避免维护扫描越过 public/generated 根目录。
+  }
+  return files;
+}
+
 /**
  * 扫描目录找出不被任何 DB 记录引用的孤儿文件
  */
@@ -221,7 +239,9 @@ async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphan
   if (!existsSync(dir)) return { total: 0, orphans: [] };
 
   const entries = await readdir(dir, { withFileTypes: true });
-  const files = entries.filter(e => e.isFile()).map(e => e.name);
+  const files = dirName === 'generated'
+    ? await listGeneratedFilesRecursively(dir)
+    : entries.filter(e => e.isFile()).map(e => e.name);
 
   const referenced = getReferencedFiles(dirName);
   const now = Date.now();
@@ -229,7 +249,7 @@ async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphan
   for (const filename of files) {
     if (referenced.has(filename)) continue;
     try {
-      const info = await stat(path.join(dir, filename));
+      const info = await stat(path.join(dir, ...filename.split('/')));
       // 只清理「够老」的无引用文件，给上传→落库两阶段操作留出宽限期。
       if (now - info.mtimeMs >= ORPHAN_FILE_MIN_AGE_MS) {
         orphans.push(filename);
@@ -382,7 +402,7 @@ export async function POST(request: NextRequest) {
 
     for (const filename of orphans) {
       try {
-        const filepath = path.join(process.cwd(), 'public', dirName, filename);
+        const filepath = path.join(process.cwd(), 'public', dirName, ...filename.split('/'));
         await unlink(filepath);
         deleted++;
       } catch {

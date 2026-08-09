@@ -6,6 +6,12 @@ import type { Database } from 'better-sqlite3';
 const LOCAL_ASSET_DIRS = ['avatars', 'generated', 'attachments'] as const;
 type LocalAssetDir = typeof LOCAL_ASSET_DIRS[number];
 
+const GENERATED_CHARACTER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+interface CopyLocalAssetOptions {
+  generatedCharacterId?: string;
+}
+
 type MessageRow = {
   metadata: string | Record<string, unknown>;
 };
@@ -31,9 +37,24 @@ export function resolveLocalAssetUrl(url: unknown): { dir: LocalAssetDir; filena
     const matchedPrefix = prefixes.find(prefix => url.startsWith(prefix));
     if (!matchedPrefix) continue;
 
-    const rawFilename = url.slice(matchedPrefix.length).split(/[?#]/)[0];
-    const filename = path.basename(rawFilename);
-    if (!filename || filename !== rawFilename || filename.includes('..')) return null;
+    const rawRelativePath = url.slice(matchedPrefix.length).split(/[?#]/)[0];
+    if (
+      !rawRelativePath
+      || rawRelativePath.includes('\\')
+      || rawRelativePath.includes('\0')
+      || /%(?:2f|5c|00)/i.test(rawRelativePath)
+    ) return null;
+
+    const segments = rawRelativePath.split('/');
+    if (segments.some(segment => !segment || segment === '.' || segment === '..')) return null;
+    if (dir === 'generated') {
+      if (segments.length > 2) return null;
+      if (segments.length === 2 && !GENERATED_CHARACTER_ID_PATTERN.test(segments[0])) return null;
+    } else if (segments.length !== 1) {
+      return null;
+    }
+
+    const filename = segments.join('/');
 
     const allowedBase = path.resolve(getPublicRoot(), dir);
     const filePath = path.resolve(allowedBase, filename);
@@ -50,13 +71,16 @@ function toAssetUrl(dir: LocalAssetDir, filename: string): string {
   return `/api/files/${dir}/${filename}`;
 }
 
-function getLocalAssetUrlAliases(url: string): string[] {
+function getLocalAssetIdentity(url: unknown): string | null {
   const asset = resolveLocalAssetUrl(url);
-  if (!asset) return [url];
-  return [`/${asset.dir}/${asset.filename}`, `/api/files/${asset.dir}/${asset.filename}`];
+  return asset ? `${asset.dir}/${asset.filename}` : null;
 }
 
-export async function copyLocalAssetUrl(url: unknown, copiedUrls: Map<string, string>): Promise<unknown> {
+export async function copyLocalAssetUrl(
+  url: unknown,
+  copiedUrls: Map<string, string>,
+  options: CopyLocalAssetOptions = {},
+): Promise<unknown> {
   if (typeof url !== 'string') return url;
   if (copiedUrls.has(url)) return copiedUrls.get(url) as string;
 
@@ -66,23 +90,37 @@ export async function copyLocalAssetUrl(url: unknown, copiedUrls: Map<string, st
   const ext = path.extname(asset.filename);
   const newFilename = `${randomUUID().slice(0, 12)}${ext}`;
   const targetDir = path.resolve(getPublicRoot(), asset.dir);
-  const targetPath = path.resolve(targetDir, newFilename);
+  const targetRelativePath = asset.dir === 'generated' && options.generatedCharacterId
+    ? `${options.generatedCharacterId}/${newFilename}`
+    : newFilename;
+  if (
+    asset.dir === 'generated'
+    && options.generatedCharacterId
+    && !GENERATED_CHARACTER_ID_PATTERN.test(options.generatedCharacterId)
+  ) {
+    throw new Error('Invalid generated character directory');
+  }
+  const targetPath = path.resolve(targetDir, ...targetRelativePath.split('/'));
   const allowedPrefix = targetDir.endsWith(path.sep) ? targetDir : `${targetDir}${path.sep}`;
   if (targetPath !== targetDir && !targetPath.startsWith(allowedPrefix)) return url;
 
-  await mkdir(targetDir, { recursive: true });
+  await mkdir(path.dirname(targetPath), { recursive: true });
   await copyFile(asset.filePath, targetPath);
 
-  const newUrl = toAssetUrl(asset.dir, newFilename);
+  const newUrl = toAssetUrl(asset.dir, targetRelativePath);
   copiedUrls.set(url, newUrl);
   return newUrl;
 }
 
-async function duplicateValueFiles(value: unknown, copiedUrls: Map<string, string>): Promise<unknown> {
+async function duplicateValueFiles(
+  value: unknown,
+  copiedUrls: Map<string, string>,
+  options: CopyLocalAssetOptions,
+): Promise<unknown> {
   if (Array.isArray(value)) {
     const items: unknown[] = [];
     for (const item of value) {
-      items.push(await duplicateValueFiles(item, copiedUrls));
+      items.push(await duplicateValueFiles(item, copiedUrls, options));
     }
     return items;
   }
@@ -92,15 +130,19 @@ async function duplicateValueFiles(value: unknown, copiedUrls: Map<string, strin
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     result[key] = key === 'url' || key === 'data'
-      ? await copyLocalAssetUrl(item, copiedUrls)
-      : await duplicateValueFiles(item, copiedUrls);
+      ? await copyLocalAssetUrl(item, copiedUrls, options)
+      : await duplicateValueFiles(item, copiedUrls, options);
   }
   return result;
 }
 
-export async function duplicateCharacterFilesInMetadata(metadata: unknown, copiedUrls: Map<string, string>): Promise<string> {
+export async function duplicateCharacterFilesInMetadata(
+  metadata: unknown,
+  copiedUrls: Map<string, string>,
+  options: CopyLocalAssetOptions = {},
+): Promise<string> {
   const parsed = parseMetadata(metadata);
-  return JSON.stringify(await duplicateValueFiles(parsed, copiedUrls));
+  return JSON.stringify(await duplicateValueFiles(parsed, copiedUrls, options));
 }
 
 function collectValueUrls(value: unknown, urls: Set<string>): void {
@@ -131,14 +173,17 @@ export function collectLocalAssetUrlsFromMetadata(metadata: unknown): Set<string
 /**
  * 从消息内容中提取本地资源 URL（处理嵌入在文本中的图片等）
  */
-const ASSET_URL_REGEX = /\/api\/files\/(avatars|generated|attachments)\/([a-f0-9-]+\.\w+)/gi;
+const CONTENT_URL_TOKEN_REGEX = /(?:[a-z][a-z0-9+.-]*:)?\/\/[^\s<>"']+|\/(?:api\/files\/)?(?:avatars|attachments)\/[a-z0-9._-]+|\/(?:api\/files\/)?generated\/(?:[a-z0-9_-]+\/)?[a-z0-9._-]+/gi;
 
 export function collectLocalAssetUrlsFromContent(content: string | null): Set<string> {
   const urls = new Set<string>();
   if (!content) return urls;
   let match: RegExpExecArray | null;
-  while ((match = ASSET_URL_REGEX.exec(content)) !== null) {
-    urls.add(match[0]);
+  while ((match = CONTENT_URL_TOKEN_REGEX.exec(content)) !== null) {
+    const token = match[0];
+    // 先吞掉完整的绝对/协议相对 URL，避免从其 path、query 或 hash 中截出伪本地路径。
+    if (!token.startsWith('/') || token.startsWith('//')) continue;
+    if (resolveLocalAssetUrl(token)) urls.add(token);
   }
   return urls;
 }
@@ -184,38 +229,50 @@ export function collectConversationLocalAssetUrls(db: Database, conversationId: 
 }
 
 /**
- * 高效判断候选 URL 是否仍被任意行引用，返回"已无引用"的 URL 子集。
- * 与 collectAllLocalAssetUrls 相比，按需逐个 LIKE 查询，避免全表 JSON 解析。
+ * 判断候选 URL 是否仍被任意行引用，返回"已无引用"的资源子集。
+ * 所有候选以资源身份去重，剩余表各迭代一次，避免候选数量放大全表扫描次数。
  */
 export function filterUnreferencedLocalAssetUrls(db: Database, candidates: Iterable<string>): string[] {
-  const unique = new Set<string>();
+  const remaining = new Map<string, string>();
   for (const url of candidates) {
-    if (resolveLocalAssetUrl(url)) unique.add(url);
+    const identity = getLocalAssetIdentity(url);
+    if (identity && !remaining.has(identity)) remaining.set(identity, url);
   }
-  if (unique.size === 0) return [];
+  if (remaining.size === 0) return [];
 
-  // 预编译三条查询：metadata（JSON 字符串）、content、avatar_url。
-  // LIKE 模式以 URL 直接匹配，?# 等查询串后缀不会落在 metadata 持久化值里。
-  const metadataStmt = db.prepare(
-    "SELECT 1 FROM messages WHERE metadata LIKE '%' || ? || '%' LIMIT 1",
-  );
-  const contentStmt = db.prepare(
-    "SELECT 1 FROM messages WHERE content LIKE '%' || ? || '%' LIMIT 1",
-  );
-  const avatarStmt = db.prepare(
-    'SELECT 1 FROM characters WHERE avatar_url = ? LIMIT 1',
-  );
+  const markReferenced = (url: unknown): void => {
+    const identity = getLocalAssetIdentity(url);
+    if (identity) remaining.delete(identity);
+  };
 
-  const orphans: string[] = [];
-  for (const url of unique) {
-    const aliases = getLocalAssetUrlAliases(url);
-    const referenced =
-      aliases.some(alias => metadataStmt.get(alias) !== undefined) ||
-      aliases.some(alias => contentStmt.get(alias) !== undefined) ||
-      aliases.some(alias => avatarStmt.get(alias) !== undefined);
-    if (!referenced) orphans.push(url);
+  const characters = db.prepare('SELECT avatar_url FROM characters')
+    .iterate() as Iterable<{ avatar_url: string | null }>;
+  for (const character of characters) {
+    markReferenced(character.avatar_url);
+    if (remaining.size === 0) return [];
   }
-  return orphans;
+
+  const messages = db.prepare('SELECT metadata, content FROM messages')
+    .iterate() as Iterable<MessageRow & { content: string | null }>;
+  for (const message of messages) {
+    for (const url of collectLocalAssetUrlsFromMetadata(message.metadata)) {
+      markReferenced(url);
+      if (remaining.size === 0) return [];
+    }
+    const metadataText = typeof message.metadata === 'string'
+      ? message.metadata
+      : JSON.stringify(message.metadata);
+    for (const url of collectLocalAssetUrlsFromContent(metadataText || null)) {
+      markReferenced(url);
+      if (remaining.size === 0) return [];
+    }
+    for (const url of collectLocalAssetUrlsFromContent(message.content)) {
+      markReferenced(url);
+      if (remaining.size === 0) return [];
+    }
+  }
+
+  return [...remaining.values()];
 }
 
 export function collectAllLocalAssetUrls(db: Database): Set<string> {

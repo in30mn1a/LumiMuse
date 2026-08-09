@@ -189,6 +189,7 @@ const imageGenOverrideSchema = z.object({
 export const imageGenBodySchema = z.object({
   prompt: z.string().optional(),
   negative_prompt: z.string().optional(),
+  character_id: z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
   override: imageGenOverrideSchema.optional(),
 });
 export type ImageGenBody = z.infer<typeof imageGenBodySchema>;

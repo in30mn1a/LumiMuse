@@ -94,6 +94,25 @@ test('/api/files generated image 304 responses keep one year private browser cac
   assert.equal(response.headers.get('Cache-Control'), 'private, max-age=31536000, immutable');
 });
 
+test('/api/files serves generated images from a character subdirectory', async () => {
+  let statPath = null;
+  const route = loadFilesRoute({
+    stat: async filePath => {
+      statPath = filePath;
+      return mockFileStat;
+    },
+  });
+
+  const response = await route.GET(
+    requestWithHeaders(),
+    { params: Promise.resolve({ path: ['generated', 'char-a', 'sample.png'] }) },
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(statPath, /public[\\/]generated[\\/]char-a[\\/]sample\.png$/);
+  assert.equal(response.headers.get('Cache-Control'), 'private, max-age=31536000, immutable');
+});
+
 test('/api/files avatars use one year private browser cache', async () => {
   const route = loadFilesRoute();
 

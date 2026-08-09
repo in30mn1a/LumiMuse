@@ -142,8 +142,10 @@ function replaceWorkflowPromptPlaceholders(value: unknown, replacements: Record<
 }
 
 // 确保生图输出目录存在
-async function ensureOutputDir(): Promise<string> {
-  const dir = path.join(process.cwd(), 'public', 'generated');
+async function ensureOutputDir(characterId?: string): Promise<string> {
+  const dir = characterId
+    ? path.join(process.cwd(), 'public', 'generated', characterId)
+    : path.join(process.cwd(), 'public', 'generated');
   await mkdir(dir, { recursive: true });
   return dir;
 }
@@ -237,7 +239,7 @@ async function safeFetchImage(
  * 将一段已经在内存里的 buffer 落地为生图文件：校验大小 + magic bytes，
  * 通过则按真实格式写入，并返回可访问 URL。
  */
-async function persistImageBuffer(buffer: Buffer | Uint8Array): Promise<string> {
+async function persistImageBuffer(buffer: Buffer | Uint8Array, characterId?: string): Promise<string> {
   if (buffer.length === 0) {
     throw new Error('图片数据为空');
   }
@@ -248,15 +250,17 @@ async function persistImageBuffer(buffer: Buffer | Uint8Array): Promise<string> 
   if (!fmt) {
     throw new Error('未识别的图片格式（仅支持 PNG / JPEG / WEBP）');
   }
-  const dir = await ensureOutputDir();
+  const dir = await ensureOutputDir(characterId);
   const filename = `${crypto.randomUUID()}.${extForFormat(fmt)}`;
   const filepath = path.join(dir, filename);
   await writeFile(filepath, buffer);
-  return `/api/files/generated/${filename}`;
+  return characterId
+    ? `/api/files/generated/${characterId}/${filename}`
+    : `/api/files/generated/${filename}`;
 }
 
 // 保存 base64 图片到本地（自动按 magic bytes 选择扩展名 + 大小限制）
-async function saveBase64Image(base64: string): Promise<string> {
+async function saveBase64Image(base64: string, characterId?: string): Promise<string> {
   // 提前估算解码后大小，避免对超大 base64 字符串先解码再丢弃
   // base64 每 4 字符约对应 3 字节
   const approxDecodedSize = Math.floor((base64.length * 3) / 4);
@@ -264,13 +268,17 @@ async function saveBase64Image(base64: string): Promise<string> {
     throw new Error(`图片过大: 约 ${approxDecodedSize} 字节超过上限 ${MAX_IMAGE_SIZE}`);
   }
   const buffer = Buffer.from(base64, 'base64');
-  return persistImageBuffer(buffer);
+  return persistImageBuffer(buffer, characterId);
 }
 
 // 保存远程图片 URL 到本地（远端 URL 必须经过 SSRF 校验，避免恶意 ComfyUI/custom 输出指向内网）
-async function saveRemoteImage(imageUrl: string, init?: Parameters<typeof safeFetch>[1]): Promise<string> {
+async function saveRemoteImage(
+  imageUrl: string,
+  characterId?: string,
+  init?: Parameters<typeof safeFetch>[1],
+): Promise<string> {
   const { buffer } = await safeFetchImage(imageUrl, MAX_IMAGE_SIZE, init);
-  return persistImageBuffer(buffer);
+  return persistImageBuffer(buffer, characterId);
 }
 
 // ========== SD WebUI ==========
@@ -278,6 +286,7 @@ async function generateSD(
   prompt: string,
   negativePrompt: string,
   cfg: ImageGenSettings,
+  characterId?: string,
   clientSignal?: AbortSignal,
 ): Promise<string> {
   const fullPrompt = cfg.quality_tags ? `${cfg.quality_tags}, ${prompt}` : prompt;
@@ -313,7 +322,7 @@ async function generateSD(
     const base64 = data.images?.[0];
     if (!base64) throw new Error('SD WebUI 未返回图片');
 
-    return saveBase64Image(base64);
+    return saveBase64Image(base64, characterId);
   } catch (err) {
     throw wrapTimeoutError(err, 'SD WebUI');
   } finally {
@@ -326,6 +335,7 @@ async function generateNAI(
   prompt: string,
   negativePrompt: string,
   cfg: ImageGenSettings,
+  characterId?: string,
   clientSignal?: AbortSignal,
 ): Promise<string> {
   // 画师串放在最前面
@@ -419,7 +429,7 @@ async function generateNAI(
     if (contentType.includes('application/json')) {
       const data = JSON.parse(buffer.toString('utf8'));
       if (data.output?.[0]) {
-        return saveBase64Image(data.output[0]);
+        return saveBase64Image(data.output[0], characterId);
       }
     }
 
@@ -439,12 +449,12 @@ async function generateNAI(
       const fileData = await firstEntry.async('nodebuffer');
       console.log('[image-gen/nai] 从 zip 解压成功, 文件名:', firstEntry.name, '解压后大小:', fileData.length);
       // persistImageBuffer 会做 magic bytes + 大小校验
-      return persistImageBuffer(fileData);
+      return persistImageBuffer(fileData, characterId);
     }
 
     // 非 zip：直接当作图片二进制处理，由 persistImageBuffer 识别 PNG / JPEG / WEBP
     // 无法识别时抛出明确错误，不再静默兜底写入未知二进制（防止把错误页/HTML 当图片落地）
-    return persistImageBuffer(buffer);
+    return persistImageBuffer(buffer, characterId);
   } catch (err) {
     throw wrapTimeoutError(err, 'NovelAI');
   } finally {
@@ -457,6 +467,7 @@ async function generateComfyUI(
   prompt: string,
   negativePrompt: string,
   cfg: ImageGenSettings,
+  characterId?: string,
   clientSignal?: AbortSignal,
 ): Promise<string> {
   const fullPrompt = cfg.quality_tags ? `${cfg.quality_tags}, ${prompt}` : prompt;
@@ -521,7 +532,7 @@ async function generateComfyUI(
     // 下载第一张图片（saveRemoteImage 已内置大小 + magic bytes 校验）
     const img = outputImages[0];
     const imgUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
-    return saveRemoteImage(imgUrl, { signal });
+    return saveRemoteImage(imgUrl, characterId, { signal });
   } catch (err) {
     throw wrapTimeoutError(err, 'ComfyUI');
   } finally {
@@ -556,7 +567,12 @@ function buildDefaultComfyWorkflow(prompt: string, negPrompt: string, cfg: Image
 }
 
 // ========== 自定义 API（兼容 OpenAI Images API 格式）==========
-async function generateCustom(prompt: string, cfg: ImageGenSettings, clientSignal?: AbortSignal): Promise<string> {
+async function generateCustom(
+  prompt: string,
+  cfg: ImageGenSettings,
+  characterId?: string,
+  clientSignal?: AbortSignal,
+): Promise<string> {
   const fullPrompt = cfg.quality_tags ? `${cfg.quality_tags}, ${prompt}` : prompt;
   const url = cfg.custom_url.replace(/\/$/, '');
 
@@ -590,17 +606,17 @@ async function generateCustom(prompt: string, cfg: ImageGenSettings, clientSigna
 
     // 兼容 OpenAI 格式
     if (data.data?.[0]?.b64_json) {
-      return saveBase64Image(data.data[0].b64_json);
+      return saveBase64Image(data.data[0].b64_json, characterId);
     }
     if (data.data?.[0]?.url) {
-      return saveRemoteImage(data.data[0].url, { signal });
+      return saveRemoteImage(data.data[0].url, characterId, { signal });
     }
     // 兼容直接返回 base64 的格式
     if (data.images?.[0]) {
-      return saveBase64Image(data.images[0]);
+      return saveBase64Image(data.images[0], characterId);
     }
     if (data.image) {
-      return saveBase64Image(data.image);
+      return saveBase64Image(data.image, characterId);
     }
 
     throw new Error('自定义 API 返回格式无法解析');
@@ -640,7 +656,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { prompt = '', negative_prompt, override } = parsed.data;
+  const { prompt = '', negative_prompt, character_id, override } = parsed.data;
   let logEngine: ImageGenSettings['engine'] | undefined;
 
   try {
@@ -673,16 +689,16 @@ export async function POST(request: NextRequest) {
 
     switch (imgCfg.engine) {
       case 'sd':
-        url = await generateSD(prompt, negative_prompt || '', imgCfg, request.signal);
+        url = await generateSD(prompt, negative_prompt || '', imgCfg, character_id, request.signal);
         break;
       case 'nai':
-        url = await generateNAI(prompt, negative_prompt || '', imgCfg, request.signal);
+        url = await generateNAI(prompt, negative_prompt || '', imgCfg, character_id, request.signal);
         break;
       case 'comfyui':
-        url = await generateComfyUI(prompt, negative_prompt || '', imgCfg, request.signal);
+        url = await generateComfyUI(prompt, negative_prompt || '', imgCfg, character_id, request.signal);
         break;
       case 'custom':
-        url = await generateCustom(prompt, imgCfg, request.signal);
+        url = await generateCustom(prompt, imgCfg, character_id, request.signal);
         break;
       default:
         return NextResponse.json({ error: `不支持的引擎: ${imgCfg.engine}` }, { status: 400 });

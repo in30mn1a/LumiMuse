@@ -598,10 +598,35 @@ test('message search migration keeps a trigram index synchronized and adds an in
   __migrateForTests(db);
   __migrateForTests(db);
 
+  for (const triggerName of ['messages_fts_ad', 'messages_fts_trigram_ad']) {
+    const trigger = db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type = 'trigger' AND name = ?
+    `).get(triggerName);
+    assert.match(trigger.sql, /DELETE FROM messages_fts(?:_trigram)? WHERE rowid = old\.rowid/);
+  }
+
   db.prepare(`
     INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
     VALUES ('msg-search-cjk', 'conv-legacy', 'user', '主人今天很开心', 1, '2026-07-11T00:00:00.000Z', 3, '{}')
   `).run();
+
+  for (const table of ['messages_fts', 'messages_fts_trigram']) {
+    assert.deepEqual(
+      db.prepare(`
+        SELECT m.id
+        FROM messages m
+        JOIN ${table} fts ON fts.id = m.id
+        WHERE fts.rowid != m.rowid
+      `).all(),
+      [],
+      `${table} rowid must stay aligned with messages.rowid`,
+    );
+    const deletePlan = db.prepare(`
+      EXPLAIN QUERY PLAN DELETE FROM ${table} WHERE rowid = ?
+    `).all(1);
+    assert.ok(deletePlan.some(row => String(row.detail).includes('VIRTUAL TABLE INDEX 0:=')));
+  }
 
   const trigramPlan = db.prepare(`
     EXPLAIN QUERY PLAN
@@ -634,7 +659,54 @@ test('message search migration keeps a trigram index synchronized and adds an in
   );
 
   db.prepare("DELETE FROM messages WHERE id = 'msg-search-cjk'").run();
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM messages_fts').get().count, 2);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM messages_fts_trigram').get().count, 2);
+});
+
+test('message search migration repairs equal-count FTS rows whose rowids are misaligned', () => {
+  const db = createLegacyMigrationDb();
+  const { __migrateForTests } = requireFreshWithMocks('../src/lib/db.ts');
+  __migrateForTests(db);
+
+  for (const table of ['messages_fts', 'messages_fts_trigram']) {
+    db.exec(`
+      DELETE FROM ${table};
+      INSERT INTO ${table}(rowid, id, content, role, conversation_id, created_at, seq)
+      SELECT rowid + 1000, id, content, role, conversation_id, created_at, seq
+      FROM messages;
+    `);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count, 2);
+  }
+  db.exec(`
+    DROP TRIGGER messages_fts_ad;
+    CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
+      DELETE FROM messages_fts WHERE id = old.id;
+    END;
+    DROP TRIGGER messages_fts_trigram_ad;
+    CREATE TRIGGER messages_fts_trigram_ad AFTER DELETE ON messages BEGIN
+      DELETE FROM messages_fts_trigram WHERE id = old.id;
+    END;
+  `);
+  db.pragma('user_version = 1');
+
+  __migrateForTests(db);
+
+  for (const table of ['messages_fts', 'messages_fts_trigram']) {
+    assert.deepEqual(
+      db.prepare(`
+        SELECT m.id
+        FROM messages m
+        JOIN ${table} fts ON fts.id = m.id
+        WHERE fts.rowid != m.rowid
+      `).all(),
+      [],
+      `${table} must be rebuilt even when its row count already matches messages`,
+    );
+  }
+  for (const triggerName of ['messages_fts_ad', 'messages_fts_trigram_ad']) {
+    const trigger = db.prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(triggerName);
+    assert.match(trigger.sql, /WHERE rowid = old\.rowid/);
+  }
 });
 
 test('seq/sort_order/started_at 迁移会补完旧版本遗留的半迁移状态', () => {

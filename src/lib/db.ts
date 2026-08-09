@@ -9,10 +9,15 @@ import {
   MEMORY_EMBEDDING_INDEX_DDL,
   MEMORY_EMBEDDING_TABLE_DDL,
 } from '@/lib/memory-embedding-schema';
+import {
+  enableGeneratedImageFolderMigrationTracking,
+  installGeneratedImageFolderMigrationTracking,
+} from '@/lib/generated-image-folder-migration';
 
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'lumimuse.db');
-export const CURRENT_SCHEMA_VERSION = 1;
+const GENERATED_IMAGE_FOLDER_MIGRATION_KEY = 'migration_generated_images_by_character_v1';
+export const CURRENT_SCHEMA_VERSION = 2;
 
 let _db: Database.Database | null = null;
 
@@ -126,6 +131,7 @@ export function getDb(): Database.Database {
     throw err;
   }
   _db = db;
+  enableGeneratedImageFolderMigrationTracking(db);
 
   // 生产环境未设置访问密码时发出警告：proxy.ts 与 /api/auth 都会在 ACCESS_PASSWORD 缺失时直接放行，
   // 这是本地开发模式的有意设计；但生产部署若忘记配置，会导致整个应用无鉴权暴露。
@@ -201,6 +207,17 @@ const BACKGROUND_QUEUE_BOOT: Array<{
     onError: (err) => {
       structuredLog('error', 'memory.embedding.recovery_failed', {
         operation: 'recover_stale', status: 'failed',
+      }, err);
+    },
+  },
+  {
+    run: async () => {
+      const { triggerGeneratedImageFolderMigration } = await import('@/lib/generated-image-folder-migration');
+      await triggerGeneratedImageFolderMigration({ db: getDb() });
+    },
+    onError: (err) => {
+      structuredLog('error', 'image.folder_migration.boot_failed', {
+        operation: 'migrate_legacy_generated_images', status: 'failed',
       }, err);
     },
   },
@@ -339,6 +356,12 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_memories_character ON memories(character_id);
     CREATE INDEX IF NOT EXISTS idx_conversations_character ON conversations(character_id);
   `);
+
+  // 文件系统迁移不得阻塞同步 schema migration。这里只初始化一次性 marker；
+  // getDb() 缓存健康连接后再由 BACKGROUND_QUEUE_BOOT 异步搬迁历史平铺生成图片。
+  db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
+    .run(GENERATED_IMAGE_FOLDER_MIGRATION_KEY, '0');
+  installGeneratedImageFolderMigrationTracking(db);
 
   ensureMemoryProfileTables(db);
 
@@ -498,59 +521,89 @@ function migrate(db: Database.Database): void {
       seq UNINDEXED,
       tokenize = 'trigram'
     );
+  `);
 
+  // v2：FTS 的 id 列是 UNINDEXED，按 id 删除会对虚表做全扫描；角色/对话批量删除时，
+  // 每条 messages DELETE 都触发两次全扫描，整体退化为 O(n²)。让 FTS rowid 与 messages.rowid
+  // 一一对应后，触发器可以走 FTS5 的 rowid 等值路径。旧触发器必须显式重建，
+  // CREATE TRIGGER IF NOT EXISTS 不会替换已经存在的 v1 定义。
+  if (schemaVersion < 2) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS messages_fts_ai;
+      DROP TRIGGER IF EXISTS messages_fts_ad;
+      DROP TRIGGER IF EXISTS messages_fts_au;
+      DROP TRIGGER IF EXISTS messages_fts_trigram_ai;
+      DROP TRIGGER IF EXISTS messages_fts_trigram_ad;
+      DROP TRIGGER IF EXISTS messages_fts_trigram_au;
+    `);
+  }
+
+  db.exec(`
     CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
-      INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
-      VALUES (new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
+      INSERT INTO messages_fts(rowid, id, content, role, conversation_id, created_at, seq)
+      VALUES (new.rowid, new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
     END;
 
     CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
-      DELETE FROM messages_fts WHERE id = old.id;
+      DELETE FROM messages_fts WHERE rowid = old.rowid;
     END;
 
     CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content, role, conversation_id, created_at, seq ON messages BEGIN
-      DELETE FROM messages_fts WHERE id = old.id;
-      INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
-      VALUES (new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
+      DELETE FROM messages_fts WHERE rowid = old.rowid;
+      INSERT INTO messages_fts(rowid, id, content, role, conversation_id, created_at, seq)
+      VALUES (new.rowid, new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
     END;
 
     CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_ai AFTER INSERT ON messages BEGIN
-      INSERT INTO messages_fts_trigram(id, content, role, conversation_id, created_at, seq)
-      VALUES (new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
+      INSERT INTO messages_fts_trigram(rowid, id, content, role, conversation_id, created_at, seq)
+      VALUES (new.rowid, new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
     END;
 
     CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_ad AFTER DELETE ON messages BEGIN
-      DELETE FROM messages_fts_trigram WHERE id = old.id;
+      DELETE FROM messages_fts_trigram WHERE rowid = old.rowid;
     END;
 
     CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_au AFTER UPDATE OF content, role, conversation_id, created_at, seq ON messages BEGIN
-      DELETE FROM messages_fts_trigram WHERE id = old.id;
-      INSERT INTO messages_fts_trigram(id, content, role, conversation_id, created_at, seq)
-      VALUES (new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
+      DELETE FROM messages_fts_trigram WHERE rowid = old.rowid;
+      INSERT INTO messages_fts_trigram(rowid, id, content, role, conversation_id, created_at, seq)
+      VALUES (new.rowid, new.id, new.content, new.role, new.conversation_id, new.created_at, new.seq);
     END;
   `);
 
   const ftsCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts').get() as { count: number }).count;
   const messageCount = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
-  // 触发器同步下 FTS 与 messages 行数应严格相等。
-  // 用 !== 同时覆盖「缺失」与「多出/重复」损坏；旧条件 ftsCount < messageCount
-  // 无法自愈「孤儿 FTS 行数恰好补齐」的半损坏状态（与 messages_fts_trigram 对齐）。
-  if (messageCount > 0 && ftsCount !== messageCount) {
+  const ftsRowidMismatch = ftsCount === messageCount && db.prepare(`
+      SELECT 1
+      FROM messages_fts fts
+      LEFT JOIN messages m ON m.id = fts.id
+      WHERE m.id IS NULL OR fts.rowid != m.rowid
+      LIMIT 1
+    `).get() !== undefined;
+  // 行数一致仍可能是「孤儿行补齐缺行」或 v1 自增 rowid 与 messages.rowid 错位。
+  // 两种情况都要重建；否则新的 rowid 删除触发器会删错行或留下索引孤儿。
+  if (ftsCount !== messageCount || ftsRowidMismatch) {
     // 重建前先清空，避免与残留索引行冲突 / 产生重复
     db.exec(`DELETE FROM messages_fts`);
     db.exec(`
-      INSERT INTO messages_fts(id, content, role, conversation_id, created_at, seq)
-      SELECT id, content, role, conversation_id, created_at, seq
+      INSERT INTO messages_fts(rowid, id, content, role, conversation_id, created_at, seq)
+      SELECT rowid, id, content, role, conversation_id, created_at, seq
       FROM messages
     `);
   }
 
   const trigramCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts_trigram').get() as { count: number }).count;
-  if (trigramCount !== messageCount) {
+  const trigramRowidMismatch = trigramCount === messageCount && db.prepare(`
+      SELECT 1
+      FROM messages_fts_trigram fts
+      LEFT JOIN messages m ON m.id = fts.id
+      WHERE m.id IS NULL OR fts.rowid != m.rowid
+      LIMIT 1
+    `).get() !== undefined;
+  if (trigramCount !== messageCount || trigramRowidMismatch) {
     db.exec(`DELETE FROM messages_fts_trigram`);
     db.exec(`
-      INSERT INTO messages_fts_trigram(id, content, role, conversation_id, created_at, seq)
-      SELECT id, content, role, conversation_id, created_at, seq
+      INSERT INTO messages_fts_trigram(rowid, id, content, role, conversation_id, created_at, seq)
+      SELECT rowid, id, content, role, conversation_id, created_at, seq
       FROM messages
     `);
   }

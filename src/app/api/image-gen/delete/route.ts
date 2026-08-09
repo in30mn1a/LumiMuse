@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import path from 'path';
 import { getDb } from '@/lib/db';
-import { deleteLocalAssetUrls, filterUnreferencedLocalAssetUrls } from '@/lib/character-file-utils';
+import {
+  deleteLocalAssetUrls,
+  filterUnreferencedLocalAssetUrls,
+  resolveLocalAssetUrl,
+} from '@/lib/character-file-utils';
 import { readJsonObject } from '@/lib/request-json';
 
 export async function POST(request: NextRequest) {
@@ -21,15 +24,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '不允许删除该路径' }, { status: 403 });
     }
 
-    // 提取文件名，防止路径穿越
-    const filename = path.basename(url);
-    if (!filename || filename.includes('..') || filename.includes('/')) {
+    const asset = resolveLocalAssetUrl(url);
+    if (!asset || asset.dir !== 'generated') {
       return NextResponse.json({ error: '非法文件名' }, { status: 400 });
     }
 
-    const normalizedUrl = url.startsWith('/generated/')
-      ? `/api/files/generated/${filename}`
-      : `/api/files/generated/${filename}`;
+    const normalizedUrl = `/api/files/generated/${asset.filename}`;
     const orphanUrls = filterUnreferencedLocalAssetUrls(getDb(), [normalizedUrl]);
     await deleteLocalAssetUrls(orphanUrls);
 

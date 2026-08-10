@@ -35,7 +35,7 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 
 ### 构图
 - 画幅区域：full body / upper body / lower body / bust shot
-- 视角：front view / from above / from below / from behind（禁止 POV，不要输出 pov / first-person view / viewer perspective 等 pov 相关 tag）
+- 视角：front view / from above / from below / from behind；可以在亲密互动时适当使用 POV 视角（如 pov / first-person view / viewer perspective）
 - 角度：cinematic angle / dutch angle / dynamic angle
 - 焦点：face focus / ass focus / chest focus
 - 其他：depth of field / bokeh / wide-angle
@@ -93,7 +93,7 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 - 用户未出场（仅角色独白/旁白/单人场景）：不包含用户外貌标签
 
 # 生成限制
-- 默认第三人称视角，禁止 POV 视角，不要输出 pov 或任何第一人称视角相关 tag
+- 默认第三人称视角；可以在亲密互动时适当使用 POV 视角
 - 禁止矛盾 tag（如 facing viewer + buttocks visible）
 - 每张图为单一静态瞬间，不描述连续动作
 - SFW场景不要出现男性角色 tag，除非用户外貌标签中明确标注了用户为男性（如 1boy），或男女之间的亲密互动如kiss,hugging；对话明确要求 NSFW 互动时允许男性角色 tag

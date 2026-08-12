@@ -312,6 +312,29 @@ function seedTailExactMemory(db, distractorCount, specialId) {
   })();
 }
 
+function seedLocalRetrievalCompletenessFixture(db) {
+  const insert = db.prepare(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+      usage_count, metadata, created_at, updated_at
+    )
+    VALUES (?, 'char-a', '话题历史', ?, 0.9, '[]', '[]', 'general', ?, 0,
+      'active', 0, NULL, 0, '{}', ?, ?)
+  `);
+  const rows = [
+    ['zero-high-new', '与当前查询完全无关的高重要度近况。', 0.9, '2026-04-01T00:00:00.000Z'],
+    ['match-weak', 'espresso 以及一段很长很长的日常背景描述。', 0.1, '2026-03-01T00:00:00.000Z'],
+    ['match-strong', 'espresso tonic', 0.1, '2026-02-01T00:00:00.000Z'],
+    ['zero-low-old', '另一条与查询完全无关的旧记录。', 0.1, '2026-01-01T00:00:00.000Z'],
+  ];
+  db.transaction(() => {
+    for (const [id, content, importance, timestamp] of rows) {
+      insert.run(id, content, importance, timestamp, timestamp);
+    }
+  })();
+}
+
 function seedPriorityMemoriesPastLegacyCap(db, specialId) {
   const insert = db.prepare(`
     INSERT INTO memories (
@@ -876,6 +899,50 @@ test('retrieveRelevantMemories 可召回第 500 条之后低 importance、较旧
 
   assert.ok(result.some(memory => memory.id === 'tail-exact-match'));
   assert.equal(unlimited[0]?.id, 'tail-exact-match', '不限条数仍应按关键词相关性排序，而非数据库 importance 顺序');
+  assert.equal(unlimited.length, 601, '不限条数时不能丢弃零关键词交集的 active 记忆');
+  assert.equal(new Set(unlimited.map(memory => memory.id)).size, 601);
+});
+
+test('retrieveRelevantMemories 不限条数时相关项优先且保留全部零交集候选，有限语义不变', () => {
+  const db = createCoreDb();
+  seedLocalRetrievalCompletenessFixture(db);
+  const { retrieveRelevantMemories } = requireFreshWithMocks('../src/lib/memory-engine.ts', {
+    '@/lib/db': { getDb: () => db },
+  });
+
+  const unlimited = retrieveRelevantMemories('espresso tonic', 'char-a', Number.POSITIVE_INFINITY);
+  assert.deepEqual(
+    unlimited.map(memory => memory.id),
+    ['match-strong', 'match-weak', 'zero-high-new', 'zero-low-old'],
+  );
+  assert.deepEqual(
+    retrieveRelevantMemories('espresso tonic', 'char-a', 2).map(memory => memory.id),
+    ['match-strong', 'match-weak'],
+  );
+  assert.deepEqual(
+    retrieveRelevantMemories('espresso tonic', 'char-a', 10).map(memory => memory.id),
+    ['zero-high-new', 'match-weak', 'match-strong', 'zero-low-old'],
+  );
+});
+
+test('retrieveRelevantMemories 空查询或完全无命中时保持完整数据库顺序', () => {
+  const db = createCoreDb();
+  seedLocalRetrievalCompletenessFixture(db);
+  const { retrieveRelevantMemories } = requireFreshWithMocks('../src/lib/memory-engine.ts', {
+    '@/lib/db': { getDb: () => db },
+  });
+  const expectedAll = ['zero-high-new', 'match-weak', 'match-strong', 'zero-low-old'];
+
+  for (const query of ['', 'completely absent query']) {
+    assert.deepEqual(
+      retrieveRelevantMemories(query, 'char-a', Number.POSITIVE_INFINITY).map(memory => memory.id),
+      expectedAll,
+    );
+    assert.deepEqual(
+      retrieveRelevantMemories(query, 'char-a', 2).map(memory => memory.id),
+      expectedAll.slice(0, 2),
+    );
+  }
 });
 
 test('增强记忆的 priority 召回不会在 300 条处截断仍然有效的高优先级记忆', async () => {

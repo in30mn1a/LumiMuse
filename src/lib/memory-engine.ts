@@ -183,7 +183,18 @@ export function retrieveRelevantMemories(
   }
 
   scored.sort((a, b) => b[0] - a[0]);
-  return scored.slice(0, maxMemories).map(([, memory]) => memory);
+  const matchedMemories = scored.map(([, memory]) => memory);
+  if (maxMemories !== Number.POSITIVE_INFINITY) {
+    return matchedMemories.slice(0, maxMemories);
+  }
+
+  // 不限条数表示候选池必须完整：关键词命中项按相关性排在前面，
+  // 零交集项仍按数据库的稳定优先级顺序保留，最后统一交给 token 预算装箱。
+  const matchedIds = new Set(matchedMemories.map(memory => memory.id));
+  return [
+    ...matchedMemories,
+    ...normalizedMemories.filter(memory => !matchedIds.has(memory.id)),
+  ];
 }
 
 function extractAnchors(text: string): Set<string> {

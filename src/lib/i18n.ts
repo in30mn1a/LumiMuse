@@ -66,7 +66,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.modelLoadFail': '模型列表加载失败，请检查 API 设置',
     'input.reasoningEffort': '思考强度',
     'input.reasoningEffortDefault': 'default',
-    'input.reasoningEffortHint': '思考强度（reasoning effort）：默认时不在请求体里发送该字段，交给模型自身默认行为',
+    'input.reasoningEffortHint': '思考强度（reasoning effort）：默认时不在请求体里发送该字段，交给模型自身默认行为。每个模型会记住上次选择',
 
     'status.tokens': 'token',
     'status.streaming': '正在生成',
@@ -902,7 +902,7 @@ const translations: Record<Lang, Record<string, string>> = {
     'input.modelLoadFail': 'Failed to load models. Please check API settings.',
     'input.reasoningEffort': 'Reasoning',
     'input.reasoningEffortDefault': 'default',
-    'input.reasoningEffortHint': 'Reasoning effort. Default sends no reasoning_effort field, keeping the model\'s own behavior.',
+    'input.reasoningEffortHint': 'Reasoning effort. Default sends no reasoning_effort field, keeping the model\'s own behavior. Each model remembers its last choice.',
 
     'status.tokens': 'tokens',
     'status.streaming': 'Generating',

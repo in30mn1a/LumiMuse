@@ -207,6 +207,42 @@ test('/api/settings PUT rejects object api_base without writing settings', async
   await assertInvalidSettingsPut({ api_base: {} });
 });
 
+test('/api/settings PUT accepts reasoning_effort_by_model and rejects invalid effort values', async () => {
+  const harness = createSettingsHarness();
+
+  const accepted = await harness.route.PUT(jsonRequest({
+    reasoning_effort: 'high',
+    reasoning_effort_by_model: {
+      'gpt-5': 'high',
+      'local-model': 'default',
+    },
+  }));
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(harness.settingsState.reasoning_effort_by_model, {
+    'gpt-5': 'high',
+    'local-model': 'default',
+  });
+
+  await assertInvalidSettingsPut({
+    reasoning_effort_by_model: { 'gpt-5': 'extreme' },
+  });
+});
+
+test('loadSettings sanitizes invalid reasoning_effort_by_model entries', () => {
+  const settings = loadSettingsFromRows([
+    {
+      key: 'reasoning_effort_by_model',
+      value: JSON.stringify({
+        'gpt-5': 'high',
+        bad: 'nope',
+        '': 'low',
+      }),
+    },
+  ]);
+
+  assert.deepEqual(settings.reasoning_effort_by_model, { 'gpt-5': 'high' });
+});
+
 test('/api/settings PUT accepts known typed fields and preserves unknown fields', async () => {
   const harness = createSettingsHarness();
 

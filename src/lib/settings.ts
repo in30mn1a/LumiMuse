@@ -1,4 +1,5 @@
 import { getDb } from '@/lib/db';
+import { sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
 import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, Settings } from '@/types';
 
 const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
@@ -116,6 +117,8 @@ export function loadSettings(): Settings {
     normalizeBooleanSettings(merged.memory_engine as unknown as Record<string, unknown>, MEMORY_ENGINE_BOOLEAN_KEYS);
     normalizeMemoryRetrievalMode(merged.memory_engine);
   }
+
+  merged.reasoning_effort_by_model = sanitizeReasoningEffortByModel(map.reasoning_effort_by_model);
 
   return merged;
 }

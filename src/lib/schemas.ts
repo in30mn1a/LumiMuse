@@ -130,6 +130,10 @@ export const settingsUpdateSchema = z.looseObject({
   seed: z.union([z.null(), z.number().int().min(0).max(2_147_483_647)]).optional(),
   // 思考强度：'default' 表示不发送 reasoning_effort 字段
   reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  reasoning_effort_by_model: z.record(
+    settingModelSchema.min(1),
+    z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']),
+  ).refine((value) => Object.keys(value).length <= 256).optional(),
   streaming: z.boolean().optional(),
   example_dialogue: z.boolean().optional(),
   memory_inject: z.boolean().optional(),

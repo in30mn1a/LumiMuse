@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Character, Message, ReasoningEffort, Settings } from '@/types';
+import {
+  planModelReasoningSwitch,
+  rememberReasoningEffortForModel,
+  resolveReasoningEffortForModel,
+  sanitizeReasoningEffortByModel,
+} from '@/lib/reasoning-effort';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
 import ChatHeader from './ChatHeader';
@@ -80,6 +86,7 @@ export default function ChatView({
   const [currentModel, setCurrentModel] = useState('');
   // 思考强度：'default' 时请求体不发送 reasoning_effort 字段
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('default');
+  const [reasoningEffortByModel, setReasoningEffortByModel] = useState<Record<string, ReasoningEffort>>({});
   // 记忆包 token 预算（后端 trimByTokenBudget 的裁剪上限）与记忆注入开关，用于前端估算实际注入量
   const [memoryPackageBudget, setMemoryPackageBudget] = useState(12000);
   const [memoryInjectEnabled, setMemoryInjectEnabled] = useState(true);
@@ -427,8 +434,23 @@ export default function ChatView({
       .then(r => parseJsonResponse<Partial<Settings>>(r))
       .then(s => {
         setShowTimestamps(s.show_timestamps ?? true);
-        setCurrentModel(s.model || '');
-        setReasoningEffort(s.reasoning_effort ?? 'default');
+        const model = s.model || '';
+        const storedEffort = s.reasoning_effort ?? 'default';
+        const byModel = sanitizeReasoningEffortByModel(s.reasoning_effort_by_model);
+        const effort = resolveReasoningEffortForModel(model, byModel, storedEffort);
+        setCurrentModel(model);
+        setReasoningEffort(effort);
+        setReasoningEffortByModel(byModel);
+        // 设置页改模型不会改思考强度；进入聊天时按该模型上次记录对齐，避免 UI 和实际请求不一致
+        if (effort !== storedEffort) {
+          void fetch('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reasoning_effort: effort }),
+          }).catch(() => {
+            // 对齐失败不挡聊天：本轮仍用页面上的 effort，下次进入会再试
+          });
+        }
         setMemoryPackageBudget(s.memory_engine?.memory_package_token_budget ?? 12000);
         setMemoryInjectEnabled(s.memory_inject ?? true);
         setLimitInject(s.limit_inject ?? false);
@@ -843,31 +865,55 @@ export default function ChatView({
             isGenerating={isStreamingHere}
             currentModel={currentModel}
             onModelChange={async (model: string) => {
+              if (model === currentModel) return;
               const previousModel = currentModel;
+              const previousEffort = reasoningEffort;
+              const previousByModel = reasoningEffortByModel;
+              const planned = planModelReasoningSwitch({
+                previousModel,
+                previousEffort,
+                nextModel: model,
+                byModel: previousByModel,
+              });
               setCurrentModel(model);
+              setReasoningEffort(planned.effort);
+              setReasoningEffortByModel(planned.byModel);
               try {
                 await parseJsonResponse<void>(await fetch('/api/settings', {
                   method: 'PUT',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ model }),
+                  body: JSON.stringify({
+                    model,
+                    reasoning_effort: planned.effort,
+                    reasoning_effort_by_model: planned.byModel,
+                  }),
                 }));
               } catch (err) {
                 setCurrentModel(previousModel);
+                setReasoningEffort(previousEffort);
+                setReasoningEffortByModel(previousByModel);
                 showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
               }
             }}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={async (effort: ReasoningEffort) => {
               const previousEffort = reasoningEffort;
+              const previousByModel = reasoningEffortByModel;
+              const nextByModel = rememberReasoningEffortForModel(previousByModel, currentModel, effort);
               setReasoningEffort(effort);
+              setReasoningEffortByModel(nextByModel);
               try {
                 await parseJsonResponse<void>(await fetch('/api/settings', {
                   method: 'PUT',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ reasoning_effort: effort }),
+                  body: JSON.stringify({
+                    reasoning_effort: effort,
+                    reasoning_effort_by_model: nextByModel,
+                  }),
                 }));
               } catch (err) {
                 setReasoningEffort(previousEffort);
+                setReasoningEffortByModel(previousByModel);
                 showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
               }
             }}

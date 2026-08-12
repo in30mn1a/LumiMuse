@@ -450,6 +450,8 @@ export interface Settings {
   seed: number | null;
   // 思考强度：'default' 时请求体不包含 reasoning_effort 字段（部分模型不支持）。
   reasoning_effort: ReasoningEffort;
+  // 聊天框按模型记住的思考强度；切模型时还原对应条目。
+  reasoning_effort_by_model: Record<string, ReasoningEffort>;
   // 生图设置
   image_gen: ImageGenSettings;
   memory_engine: MemoryEngineSettings;
@@ -496,6 +498,7 @@ export const DEFAULT_SETTINGS: Settings = {
   repetition_penalty: null,
   seed: null,
   reasoning_effort: 'default',
+  reasoning_effort_by_model: {},
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
   memory_engine: { ...DEFAULT_MEMORY_ENGINE_SETTINGS },
   artist_strings: [],

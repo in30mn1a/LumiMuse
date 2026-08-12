@@ -973,7 +973,7 @@ test('renderMemoryProfile 将非空结构化 profile 渲染为自然语言并省
   assert.match(rendered, /关系状态：主人和艾莉丝已经建立稳定亲密的陪伴关系。/);
   assert.match(rendered, /情绪基线：主人最近压力偏高，需要更柔和的回应。/);
   assert.match(rendered, /进行中的话题：毕业设计进度；周末去看展/);
-  assert.match(rendered, /主人画像：主人偏好直接但温柔的中文解释。/);
+  assert.match(rendered, /用户画像：主人偏好直接但温柔的中文解释。/);
   assert.doesNotMatch(rendered, /近期故事状态/);
   assert.doesNotMatch(rendered, /置顶摘要/);
 });

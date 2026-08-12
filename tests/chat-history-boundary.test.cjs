@@ -261,11 +261,27 @@ async function runWithProbe(rows, options) {
   const { runChat } = loadChatEngine(probe.db, capture);
   const errors = [];
 
-  await runChat('conv-a', '', settings(), {
-    onChunk() {},
-    onDone() {},
-    onError(error) { errors.push(error); },
-  }, { skipUserInsert: true, ...options });
+  // runChat 会在执行期惰性导入预设模块；这里也必须覆盖执行窗口，
+  // 否则测试会读取开发机真实 settings/default preset，破坏 :memory: 隔离。
+  const loadBeforeRun = Module._load;
+  Module._load = function loadRunMocks(request, parent, isMain) {
+    if (request === '@/lib/prompt-presets') {
+      return {
+        resolveActivePreset: () => null,
+        loadEnabledEntries: () => [],
+      };
+    }
+    return loadBeforeRun.call(this, request, parent, isMain);
+  };
+  try {
+    await runChat('conv-a', '', settings(), {
+      onChunk() {},
+      onDone() {},
+      onError(error) { errors.push(error); },
+    }, { skipUserInsert: true, ...options });
+  } finally {
+    Module._load = loadBeforeRun;
+  }
 
   assert.deepEqual(errors, []);
   return { ...probe, capture };

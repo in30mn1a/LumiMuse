@@ -308,6 +308,66 @@ test('memory model labels keep one target id for input and select variants', () 
   }
 });
 
+test('memory package token budget stays blank while editing and resets on blur', () => {
+  const { DEFAULT_MEMORY_ENGINE_SETTINGS, DEFAULT_SETTINGS } = require('../src/types/index.ts');
+  const { MemoryEngineSection } = loadSettingsComponents();
+
+  function MemoryBudgetHarness() {
+    const [memoryEngine, setMemoryEngine] = React.useState({
+      ...DEFAULT_MEMORY_ENGINE_SETTINGS,
+      enabled: true,
+      memory_package_token_budget: 51200,
+    });
+
+    return React.createElement(MemoryEngineSection, {
+      settings: {
+        ...DEFAULT_SETTINGS,
+        memory_engine: memoryEngine,
+      },
+      providers: [],
+      bgModelList: [],
+      bgModelLoading: false,
+      bgModelError: null,
+      embeddingModelList: [],
+      embeddingModelLoading: false,
+      embeddingModelError: null,
+      rerankerModelList: [],
+      rerankerModelLoading: false,
+      rerankerModelError: null,
+      memoryModePreset: 'balanced',
+      update: noop,
+      updateMemoryEngine: (key, value) => {
+        setMemoryEngine(previous => ({ ...previous, [key]: value }));
+      },
+      onMemoryModeChange: noop,
+      onFetchBgModels: noop,
+      onFetchEmbeddingModels: noop,
+      onFetchRerankerModels: noop,
+      onClearBgModelList: noop,
+      onClearEmbeddingModelList: noop,
+      onClearRerankerModelList: noop,
+      parseNumber,
+      t,
+      children: null,
+    });
+  }
+
+  const view = render(React.createElement(MemoryBudgetHarness));
+  const input = view.getByLabelText('settings.memoryPackageTokenBudget');
+
+  assert.equal(input.value, '51200');
+  fireEvent.change(input, { target: { value: '' } });
+  assert.equal(input.value, '');
+
+  fireEvent.blur(input);
+  assert.equal(input.value, '12000');
+
+  fireEvent.change(input, { target: { value: '64000' } });
+  assert.equal(input.value, '64000');
+  fireEvent.blur(input);
+  assert.equal(input.value, '64000');
+});
+
 test('settings source has no unassociated label elements', () => {
   for (const relativePath of [
     'src/app/settings/page.tsx',

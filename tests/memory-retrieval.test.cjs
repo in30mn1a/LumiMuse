@@ -3171,6 +3171,306 @@ test('legacy full injection 无任何预算裁剪，超长普通记忆也整包�
   assert.equal(result.mode, 'full');
 });
 
+test('工作记忆按层职责呈现，时间层只按 created_at 升序且不改变分数选人顺序', () => {
+  const { trimByTokenBudget } = loadMemoryRetrievalBudgetInternals();
+  const fixedNew = memory({
+    id: 'fixed-new',
+    content: '正文写着 1900 年的固定新记忆。',
+    memory_kind: 'general',
+    importance: 0.4,
+    pinned: true,
+    created_at: '2026-03-01T00:00:00.000Z',
+    updated_at: '2000-01-01T00:00:00.000Z',
+  });
+  const promiseNew = memory({
+    id: 'promise-new',
+    content: '正文写着 1900 年的新承诺。',
+    memory_kind: 'character_promise',
+    importance: 0.8,
+    pinned: false,
+    created_at: '2026-03-01T00:00:00.000Z',
+    updated_at: '2000-01-01T00:00:00.000Z',
+  });
+  const preferenceScoreFirst = memory({
+    id: 'preference-score-first',
+    content: '高分偏好（创建较晚）。',
+    memory_kind: 'user_preference',
+    importance: 0.6,
+    pinned: false,
+    created_at: '2026-03-01T00:00:00.000Z',
+  });
+  const relationshipNew = memory({
+    id: 'relationship-new',
+    content: '正文写着 1900 年的关系新事件。',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: '2026-03-01T00:00:00.000Z',
+    updated_at: '2000-01-01T00:00:00.000Z',
+  });
+  const relevantScoreFirst = memory({
+    id: 'relevant-score-first',
+    content: '高分本轮回忆（创建较晚）。',
+    memory_kind: 'general',
+    importance: 0.4,
+    pinned: false,
+    created_at: '2026-03-01T00:00:00.000Z',
+  });
+  const relationshipTieSecond = memory({
+    id: 'relationship-tie-second',
+    content: '同一创建时间中分数更高、应稳定在前的 ISO 关系事件。',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: '2026-02-01T00:00:00.000Z',
+  });
+  const relationshipTieFirst = memory({
+    id: 'relationship-tie-first',
+    content: '同一创建时间中分数更低、应稳定在后的 SQLite 关系事件。',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: '2026-02-01 00:00:00',
+  });
+  const relationshipInvalidFirst = memory({
+    id: 'relationship-invalid-first',
+    content: '无效时间但分数更高、应稳定在未知时间组前面的关系事件。',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: 'invalid-created-at',
+  });
+  const relationshipInvalidSecond = memory({
+    id: 'relationship-invalid-second',
+    content: '空时间且分数更低、应稳定在未知时间组后面的关系事件。',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: '',
+  });
+  const fixedOld = memory({
+    id: 'fixed-old',
+    content: '正文写着 2099 年的固定旧记忆。',
+    memory_kind: 'general',
+    importance: 0.4,
+    pinned: true,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2099-01-01T00:00:00.000Z',
+  });
+  const promiseOld = memory({
+    id: 'promise-old',
+    content: '正文写着 2099 年的旧承诺。',
+    memory_kind: 'character_promise',
+    importance: 0.8,
+    pinned: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2099-01-01T00:00:00.000Z',
+  });
+  const preferenceScoreSecond = memory({
+    id: 'preference-score-second',
+    content: '低分偏好（创建较早）。',
+    memory_kind: 'user_preference',
+    importance: 0.6,
+    pinned: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+  });
+  const relationshipOld = memory({
+    id: 'relationship-old',
+    content: '正文写着 2099 年的关系旧事件。',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2099-01-01T00:00:00.000Z',
+  });
+  const relevantScoreSecond = memory({
+    id: 'relevant-score-second',
+    content: '低分本轮回忆（创建较早）。',
+    memory_kind: 'general',
+    importance: 0.4,
+    pinned: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+  });
+  const rankedMemories = [
+    fixedNew,
+    promiseNew,
+    preferenceScoreFirst,
+    relationshipNew,
+    relevantScoreFirst,
+    relationshipInvalidFirst,
+    relationshipTieSecond,
+    relationshipTieFirst,
+    relationshipInvalidSecond,
+    fixedOld,
+    promiseOld,
+    preferenceScoreSecond,
+    relationshipOld,
+    relevantScoreSecond,
+  ];
+  const result = trimByTokenBudget(
+    rankedMemories.map(rankedMemory),
+    {
+      ...baseSettings().memory_engine,
+      memory_package_token_budget: 100_000,
+      final_top_k: rankedMemories.length,
+    },
+    text => text.length,
+    '',
+    rankedMemories.length,
+  );
+  const sectionLines = title => result.text
+    .split(`### ${title}\n`)[1]
+    .split('\n\n### ')[0]
+    .split('\n');
+
+  assert.deepEqual(
+    result.selected.map(item => item.id),
+    rankedMemories.map(item => item.id),
+    '渲染重排不得改变按分数选中的记忆及其返回顺序',
+  );
+  assert.deepEqual(sectionLines('重要固定记忆'), [
+    `- ${fixedOld.content}`,
+    `- ${fixedNew.content}`,
+  ]);
+  assert.deepEqual(sectionLines('角色需要兑现的承诺'), [
+    `- ${promiseOld.content}`,
+    `- ${promiseNew.content}`,
+  ]);
+  assert.deepEqual(sectionLines('用户的偏好与长期信息'), [
+    `- ${preferenceScoreFirst.content}`,
+    `- ${preferenceScoreSecond.content}`,
+  ]);
+  assert.deepEqual(sectionLines('关系与重要事件'), [
+    `- ${relationshipInvalidFirst.content}`,
+    `- ${relationshipInvalidSecond.content}`,
+    `- ${relationshipOld.content}`,
+    `- ${relationshipTieSecond.content}`,
+    `- ${relationshipTieFirst.content}`,
+    `- ${relationshipNew.content}`,
+  ]);
+  assert.deepEqual(sectionLines('本轮相关回忆'), [
+    `- ${relevantScoreFirst.content}`,
+    `- ${relevantScoreSecond.content}`,
+  ]);
+});
+
+test('时间呈现重排因 BPE 边界超预算时回退分数序 canonical，且不删除已选记忆', () => {
+  const { trimByTokenBudget } = loadMemoryRetrievalBudgetInternals();
+  const scoreFirst = memory({
+    id: 'canonical-score-first',
+    content: 'ZyD_成0',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: '2026-03-01T00:00:00.000Z',
+  });
+  const timeFirst = memory({
+    id: 'presentation-time-first',
+    content: 'Xo焦yZ丝 _!.',
+    memory_kind: 'relationship_event',
+    importance: 0.7,
+    pinned: false,
+    created_at: '2026-01-01T00:00:00.000Z',
+  });
+  const budget = 100;
+  const exactPackageCalls = [];
+  const result = trimByTokenBudget(
+    [scoreFirst, timeFirst].map(rankedMemory),
+    {
+      ...baseSettings().memory_engine,
+      memory_package_token_budget: budget,
+      final_top_k: 2,
+    },
+    text => {
+      if (text.includes(scoreFirst.content) && text.includes(timeFirst.content)) {
+        exactPackageCalls.push(text);
+        return text.indexOf(scoreFirst.content) < text.indexOf(timeFirst.content)
+          ? budget
+          : budget + 1;
+      }
+      return 1;
+    },
+    '',
+    2,
+  );
+
+  assert.ok(
+    exactPackageCalls.some(text => text.indexOf(timeFirst.content) < text.indexOf(scoreFirst.content)),
+    '应精确检查 created_at 时间呈现副本的 token 数',
+  );
+  assert.deepEqual(result.selected.map(item => item.id), [scoreFirst.id, timeFirst.id]);
+  assert.ok(result.text.indexOf(scoreFirst.content) < result.text.indexOf(timeFirst.content));
+  assert.equal(result.tokenCount, budget);
+});
+
+test('记忆使用原则只补充同一事项以较新状态为准，不附加持续性承诺规则', () => {
+  const { MEMORY_USAGE_PRINCIPLES } = require('../src/lib/memory-prompt-contract.ts');
+
+  assert.ok(MEMORY_USAGE_PRINCIPLES.endsWith('同一事项存在明确的时间演进时，以较新的状态为准。'));
+  assert.doesNotMatch(MEMORY_USAGE_PRINCIPLES, /持续性承诺|明确撤销|仍视为有效/u);
+});
+
+test('未启用条数限制时不从 token 预算派生召回或最终条数 cap，显式限制仍生效', async () => {
+  const candidates = Array.from({ length: 137 }, (_, index) => memory({
+    id: `uncapped-${String(index).padStart(3, '0')}`,
+    content: `短记忆 ${index}`,
+    memory_kind: 'general',
+    importance: 0.4,
+    pinned: false,
+  }));
+  let unlimitedLocalLimit;
+  const unlimited = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: '预算足够时全部进入',
+    settings: baseSettings({
+      limit_inject: false,
+      memory_engine: {
+        memory_package_token_budget: 5050,
+        final_top_k: 7,
+      },
+    }),
+    deps: {
+      loadPriorityMemories: () => [],
+      localRetrieve: (_query, _characterId, limit) => {
+        unlimitedLocalLimit = limit;
+        return candidates;
+      },
+      tokenCounter: () => 1,
+    },
+  });
+
+  assert.ok(
+    unlimitedLocalLimit >= candidates.length,
+    `不限条数时 localRetrieve limit 不得由 5050 / 50 派生，actual=${unlimitedLocalLimit}`,
+  );
+  assert.deepEqual(unlimited.selectedMemories.map(item => item.id).sort(), candidates.map(item => item.id).sort());
+
+  let explicitLocalLimit;
+  const explicitlyLimited = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: '显式限制仍生效',
+    settings: baseSettings({
+      limit_inject: true,
+      memory_max_inject: 7,
+      memory_engine: {
+        memory_package_token_budget: 5050,
+        final_top_k: 7,
+      },
+    }),
+    deps: {
+      loadPriorityMemories: () => [],
+      localRetrieve: (_query, _characterId, limit) => {
+        explicitLocalLimit = limit;
+        return candidates;
+      },
+      tokenCounter: () => 1,
+    },
+  });
+
+  assert.equal(explicitLocalLimit, 7);
+  assert.equal(explicitlyLimited.selectedMemories.length, 7);
+});
+
 test('trimByTokenBudget 两种 ordinary skip 模式保持 profile、预算边界与高优先级截断的 golden 输出', () => {
   const { trimByTokenBudget, renderPackage } = loadMemoryRetrievalBudgetInternals();
   const profileText = '关系状态：主人和角色保持稳定陪伴。';

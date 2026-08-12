@@ -805,7 +805,7 @@ export function renderMemoryProfile(profile: CharacterMemoryProfile): string {
     profile.recent_story_state.trim() ? `近期故事状态：${profile.recent_story_state.trim()}` : '',
     profile.emotional_baseline.trim() ? `情绪基线：${profile.emotional_baseline.trim()}` : '',
     profile.open_threads.length > 0 ? `进行中的话题：${profile.open_threads.join('；')}` : '',
-    profile.user_profile_summary.trim() ? `主人画像：${profile.user_profile_summary.trim()}` : '',
+    profile.user_profile_summary.trim() ? `用户画像：${profile.user_profile_summary.trim()}` : '',
     profile.pinned_summary.trim() ? `置顶摘要：${profile.pinned_summary.trim()}` : '',
   ].filter(Boolean);
 

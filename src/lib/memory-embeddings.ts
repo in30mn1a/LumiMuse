@@ -83,8 +83,8 @@ export interface MemoryEmbeddingTarget {
 
 const MAX_RECOVERABLE_EMBEDDING_ATTEMPTS = 3;
 const RECOVERABLE_EMBEDDING_RETRY_DELAY_MS = 30_000;
-// From the audit remediation performance spec: keep vector retrieval's synchronous
-// SQLite read and JS ranking bounded as memory history grows.
+// 非聊天调用方未指定 limit 时保留历史默认值；聊天工作包会显式传 Infinity，
+// 让全部 ready active 向量参与相关性排名，避免在 token 预算前静默截断候选。
 const VECTOR_RETRIEVAL_SCAN_LIMIT = 5_000;
 const HOST_IS_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
@@ -468,6 +468,7 @@ export function loadReadyMemoryEmbeddings(
   const db = options.db || getDb();
   ensureMemoryEmbeddingTables(db);
 
+  const unlimited = options.limit === Number.POSITIVE_INFINITY;
   const scanLimit = Number.isFinite(options.limit) && Number(options.limit) > 0
     ? Math.floor(Number(options.limit))
     : VECTOR_RETRIEVAL_SCAN_LIMIT;
@@ -498,10 +499,13 @@ export function loadReadyMemoryEmbeddings(
       COALESCE(m.importance, 0) DESC,
       e.updated_at DESC,
       e.memory_id ASC
-    LIMIT ?
   `;
+  if (!unlimited) {
+    sql += ' LIMIT ?';
+    params.push(scanLimit);
+  }
   const stmt = db.prepare(sql);
-  return stmt.all(...params, scanLimit) as MemoryEmbeddingRow[];
+  return stmt.all(...params) as MemoryEmbeddingRow[];
 }
 
 export function enqueueMemoryEmbeddingTask(

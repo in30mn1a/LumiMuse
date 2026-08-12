@@ -279,6 +279,69 @@ function seedManyMemories(db, total, specialId) {
   write();
 }
 
+function seedTailExactMemory(db, distractorCount, specialId) {
+  const insert = db.prepare(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+      usage_count, metadata, created_at, updated_at
+    )
+    VALUES (?, 'char-a', '话题历史', ?, 0.9, ?, '[]', ?, ?, 0, 'active', 0, NULL, 0, '{}', ?, ?)
+  `);
+  db.transaction(() => {
+    for (let i = 0; i < distractorCount; i += 1) {
+      insert.run(
+        `tail-noise-${i}`,
+        `高重要度但无关的日常记录 ${i}。`,
+        '[]',
+        'general',
+        0.8,
+        '2026-03-01T00:00:00.000Z',
+        '2026-03-01T00:00:00.000Z',
+      );
+    }
+    insert.run(
+      specialId,
+      '用户明确说过最喜欢的饮品是 espresso tonic。',
+      JSON.stringify(['espresso', 'tonic']),
+      'user_preference',
+      0.1,
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+    );
+  })();
+}
+
+function seedPriorityMemoriesPastLegacyCap(db, specialId) {
+  const insert = db.prepare(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+      usage_count, metadata, created_at, updated_at
+    )
+    VALUES (?, 'char-a', '关系动态', ?, 0.9, '[]', '[]', 'character_promise', ?, 0.8,
+      'active', 0, NULL, 0, '{}', ?, ?)
+  `);
+  db.transaction(() => {
+    for (let i = 0; i < 300; i += 1) {
+      insert.run(
+        `priority-noise-${i}`,
+        `高分承诺 ${i}。`,
+        0.95,
+        '2026-03-01T00:00:00.000Z',
+        '2026-03-01T00:00:00.000Z',
+      );
+    }
+    insert.run(
+      specialId,
+      '较早但仍然有效的持续承诺。',
+      0.85,
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T00:00:00.000Z',
+    );
+  })();
+}
+
 function seedManyReadyEmbeddings(db, total, specialId) {
   const blob = Buffer.from(new Float32Array([1, 0]).buffer);
   const insert = db.prepare(`
@@ -300,7 +363,7 @@ function seedManyReadyEmbeddings(db, total, specialId) {
   assert.ok(rows.some(row => row.id === specialId));
 }
 
-function seedSemanticVectorRows(db) {
+function seedSemanticVectorRows(db, distractorCount = 500) {
   const insertMemoryRow = db.prepare(`
     INSERT INTO memories (
       id, character_id, category, content, confidence, tags, source_msg_ids,
@@ -324,7 +387,7 @@ function seedSemanticVectorRows(db) {
   const exactBlob = Buffer.from(new Float32Array([1, 0]).buffer);
 
   db.transaction(() => {
-    for (let i = 0; i < 500; i += 1) {
+    for (let i = 0; i < distractorCount; i += 1) {
       const id = `semantic-noise-${i}`;
       const day = String((i % 28) + 1).padStart(2, '0');
       const updatedAt = `2026-05-${day}T00:00:00.000Z`;
@@ -801,26 +864,54 @@ test('迁移旧无 FK embedding 表会重建约束，并通过 cascade 清理旧
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_embedding_tasks').get().n, 0);
 });
 
-test('retrieveRelevantMemories 在 500 和 2000 条 active memories 下只读取有界候选并保留高优先级相关记忆', () => {
-  for (const total of [500, 2000]) {
-    const db = createCoreDb();
-    seedManyMemories(db, total, `bounded-special-${total}`);
-    const tracked = createTrackedDb(db);
-    const { retrieveRelevantMemories } = requireFreshWithMocks('../src/lib/memory-engine.ts', {
-      '@/lib/db': { getDb: () => tracked.db },
-    });
+test('retrieveRelevantMemories 可召回第 500 条之后低 importance、较旧但精确相关的 active 记忆', () => {
+  const db = createCoreDb();
+  seedTailExactMemory(db, 600, 'tail-exact-match');
+  const { retrieveRelevantMemories } = requireFreshWithMocks('../src/lib/memory-engine.ts', {
+    '@/lib/db': { getDb: () => db },
+  });
 
-    const started = performance.now();
-    const result = retrieveRelevantMemories('espresso tonic 饮品偏好', 'char-a', 5);
-    const elapsedMs = performance.now() - started;
+  const result = retrieveRelevantMemories('espresso tonic', 'char-a', 5);
+  const unlimited = retrieveRelevantMemories('espresso tonic', 'char-a', Number.POSITIVE_INFINITY);
 
-    assert.ok(
-      tracked.stats.memorySelectRows.every(count => count <= 500),
-      `${total} active memories should not load more than 500 candidates, got ${tracked.stats.memorySelectRows.join(', ')}`,
-    );
-    assert.ok(result.some(memory => memory.id === `bounded-special-${total}`));
-    assert.ok(elapsedMs < 1000, `${total} active memories retrieval took ${elapsedMs}ms`);
-  }
+  assert.ok(result.some(memory => memory.id === 'tail-exact-match'));
+  assert.equal(unlimited[0]?.id, 'tail-exact-match', '不限条数仍应按关键词相关性排序，而非数据库 importance 顺序');
+});
+
+test('增强记忆的 priority 召回不会在 300 条处截断仍然有效的高优先级记忆', async () => {
+  const db = createCoreDb();
+  seedPriorityMemoriesPastLegacyCap(db, 'priority-after-300');
+  const { retrieveWorkingMemoryPackage } = requireFreshWithMocks('../src/lib/memory-retrieval.ts', {
+    '@/lib/db': { getDb: () => db },
+  });
+
+  const result = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: '与目标承诺无关的当前消息',
+    settings: {
+      memory_inject: true,
+      limit_inject: false,
+      memory_max_inject: 30,
+      memory_engine: {
+        enabled: true,
+        embedding_enabled: false,
+        reranker_enabled: false,
+        fallback_local_enabled: true,
+        memory_package_token_budget: 50000,
+        retrieval_token_budget: 1000,
+        final_top_k: 30,
+      },
+    },
+    deps: {
+      localRetrieve: () => [],
+      loadMemoryProfile: () => null,
+      markMemoriesUsed: () => {},
+      tokenCounter: text => Math.ceil(text.length / 100),
+    },
+  });
+
+  assert.equal(result.diagnostics.candidateCount, 301);
+  assert.ok(result.selectedMemories.some(memory => memory.id === 'priority-after-300'));
 });
 
 test('legacy fallback 在 limit_inject=false 时读取全部 active 记忆，并优先保留 pinned/high-importance/recent', async () => {
@@ -925,6 +1016,55 @@ test('vector retrieval 单次扫描等价候选集并召回低 importance 的精
   });
 
   assert.deepEqual(tracked.stats.embeddingSelectRows, [501]);
+  assert.equal(result.mode, 'vector');
+  assert.ok(result.selectedMemories.some(memory => memory.id === 'semantic-exact'));
+  assert.match(result.text, /青柠气泡水/);
+});
+
+test('vector retrieval 可召回默认第 5000 条之后低 importance 但精确相关的向量记忆', async () => {
+  const db = createCoreDb();
+  const { ensureMemoryEmbeddingTables } = requireFreshWithMocks('../src/lib/memory-embeddings.ts');
+  ensureMemoryEmbeddingTables(db);
+  seedSemanticVectorRows(db, 5000);
+  const tracked = createTrackedDb(db);
+  const { retrieveWorkingMemoryPackage } = requireFreshWithMocks('../src/lib/memory-retrieval.ts', {
+    '@/lib/db': { getDb: () => tracked.db },
+  });
+
+  const result = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: '青柠气泡水',
+    settings: {
+      memory_inject: true,
+      limit_inject: true,
+      memory_max_inject: 5,
+      memory_engine: {
+        enabled: true,
+        embedding_enabled: true,
+        embedding_api_base: 'https://example.com/v1',
+        embedding_api_key: 'test-key',
+        embedding_model: 'embed',
+        embedding_dimension: 2,
+        fallback_local_enabled: false,
+        reranker_enabled: false,
+        memory_package_token_budget: 5000,
+        vector_top_k: 1,
+        final_top_k: 5,
+        total_retrieval_timeout_ms: 10_000,
+      },
+    },
+    deps: {
+      embedText: async () => [1, 0],
+      localRetrieve: () => {
+        throw new Error('local fallback should stay disabled');
+      },
+      loadMemoryProfile: () => null,
+      markMemoriesUsed: () => {},
+      tokenCounter: text => Math.ceil(text.length / 100),
+    },
+  });
+
+  assert.deepEqual(tracked.stats.embeddingSelectRows, [5001]);
   assert.equal(result.mode, 'vector');
   assert.ok(result.selectedMemories.some(memory => memory.id === 'semantic-exact'));
   assert.match(result.text, /青柠气泡水/);

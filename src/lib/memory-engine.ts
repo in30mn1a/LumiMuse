@@ -29,10 +29,8 @@ const CJK_STOPWORDS = new Set([
   '知道', '看到', '听到', '想到', '感觉', '希望', '如果', '因为', '所以', '但是',
 ]);
 
-const LOCAL_RETRIEVAL_CANDIDATE_LIMIT = 500;
-
 // ── 检索 token 集缓存 ──────────────────────────────────────────
-// retrieveRelevantMemories 每轮都会对最多 500 条 active 记忆做 tokenizeForRetrieval
+// retrieveRelevantMemories 每轮都会对 active 记忆做 tokenizeForRetrieval
 // （正则 + CJK bigram + 去停用词），是同步热路径。记忆内容在两轮检索间通常不变，
 // 故按 memory.id 缓存「content tokens ∪ tags ∪ category」合集。
 // 用 content 的 hash 判定内容是否变化：upsert/supersede 改 content 后自动失效重建，
@@ -149,12 +147,13 @@ export function retrieveRelevantMemories(
      ORDER BY
        COALESCE(pinned, 0) DESC,
        COALESCE(importance, 0) DESC,
-       updated_at DESC
-     LIMIT ?`
-  ).all(characterId, LOCAL_RETRIEVAL_CANDIDATE_LIMIT) as Memory[];
+       updated_at DESC`
+  ).all(characterId) as Memory[];
   const normalizedMemories = allMemories.map(normalizeMemory);
 
-  if (normalizedMemories.length <= maxMemories) {
+  // Infinity 表示未启用显式条数限制：仍需对全部 active 记忆做相关性评分，
+  // 不能因为“全部都装得下”而退化成数据库 importance 顺序。
+  if (Number.isFinite(maxMemories) && normalizedMemories.length <= maxMemories) {
     return normalizedMemories;
   }
 

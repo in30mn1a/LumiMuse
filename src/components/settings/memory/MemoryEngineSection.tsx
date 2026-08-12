@@ -221,7 +221,7 @@ export function MemoryEngineSection({
               type="number"
               min="1"
               step="500"
-              value={settings.memory_engine.memory_package_token_budget}
+              value={settings.memory_engine.memory_package_token_budget || ''}
               onChange={e => updateMemoryEngine('memory_package_token_budget', parseNumber(e.target.value))}
               onBlur={e => {
                 const parsed = Math.round(parseNumber(e.target.value) || 0);

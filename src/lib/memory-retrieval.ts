@@ -22,13 +22,15 @@ import {
   MEMORY_USAGE_PRINCIPLES,
 } from '@/lib/memory-prompt-contract';
 
-const MEMORY_LAYER_TITLES = [
-  '重要固定记忆',
-  '角色需要兑现的承诺',
-  '主人的偏好与长期信息',
-  '关系与重要事件',
-  '本轮相关回忆',
+const MEMORY_LAYERS = [
+  { id: 'fixed', title: '重要固定记忆', sortByCreatedAt: true },
+  { id: 'promises', title: '角色需要兑现的承诺', sortByCreatedAt: true },
+  { id: 'user_context', title: '用户的偏好与长期信息', sortByCreatedAt: false },
+  { id: 'relationship_events', title: '关系与重要事件', sortByCreatedAt: true },
+  { id: 'relevant', title: '本轮相关回忆', sortByCreatedAt: false },
 ] as const;
+
+type MemoryLayerId = (typeof MEMORY_LAYERS)[number]['id'];
 
 export interface MemoryEngineConfig {
   enabled: boolean;
@@ -191,8 +193,7 @@ function loadDefaultPriorityMemories(characterId: string): Memory[] {
      ORDER BY
        COALESCE(pinned, 0) DESC,
        COALESCE(importance, 0) DESC,
-       updated_at DESC
-     LIMIT 300`,
+       updated_at DESC`,
   ).all(characterId) as Memory[];
 
   return rows.map(normalizeMemoryRecord);
@@ -344,16 +345,26 @@ function rankCandidates(candidates: Iterable<RetrievedMemory>): RetrievedMemory[
   });
 }
 
-function layerForMemory(memory: Memory): string {
+function layerForMemory(memory: Memory): MemoryLayerId {
   const kind = getMemoryKind(memory);
   const pinned = memory.pinned;
   const importance = clamp01(memory.importance, inferMemoryDefaults(memory.category).importance);
 
-  if (pinned || importance >= 0.9) return '重要固定记忆';
-  if (kind === 'character_promise') return '角色需要兑现的承诺';
-  if (kind === 'user_preference' || kind === 'user_fact') return '主人的偏好与长期信息';
-  if (kind === 'relationship_event' || kind === 'world_state') return '关系与重要事件';
-  return '本轮相关回忆';
+  if (pinned || importance >= 0.9) return 'fixed';
+  if (kind === 'character_promise') return 'promises';
+  if (kind === 'user_preference' || kind === 'user_fact') return 'user_context';
+  if (kind === 'relationship_event' || kind === 'world_state') return 'relationship_events';
+  return 'relevant';
+}
+
+function parseCreatedAtForPresentation(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)
+    ? `${trimmed.replace(' ', 'T')}Z`
+    : trimmed;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function trimProfileText(
@@ -376,15 +387,55 @@ function trimProfileText(
   return selected.length > 1 ? selected.join('\n') : '';
 }
 
-function renderPackage(memories: Memory[], profileText = ''): string {
-  if (memories.length === 0 && !profileText) return '';
-
-  const groups = new Map<string, string[]>();
-  for (const title of MEMORY_LAYER_TITLES) {
-    groups.set(title, []);
+function orderMemoriesForPresentation(memories: Memory[]): Memory[] {
+  const groups = new Map<MemoryLayerId, Array<{
+    memory: Memory;
+    selectionIndex: number;
+    createdAt: number | null;
+  }>>();
+  for (const layer of MEMORY_LAYERS) {
+    groups.set(layer.id, []);
   }
 
-  for (const memory of memories) {
+  memories.forEach((memory, selectionIndex) => {
+    groups.get(layerForMemory(memory))?.push({
+      memory,
+      selectionIndex,
+      createdAt: parseCreatedAtForPresentation(memory.created_at || ''),
+    });
+  });
+
+  const ordered: Memory[] = [];
+  for (const layer of MEMORY_LAYERS) {
+    const layerEntries = groups.get(layer.id) || [];
+    if (!layer.sortByCreatedAt) {
+      ordered.push(...layerEntries.map(entry => entry.memory));
+      continue;
+    }
+
+    ordered.push(...[...layerEntries].sort((a, b) => {
+      if (a.createdAt === null && b.createdAt === null) {
+        return a.selectionIndex - b.selectionIndex;
+      }
+      if (a.createdAt === null) return -1;
+      if (b.createdAt === null) return 1;
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      return a.selectionIndex - b.selectionIndex;
+    }).map(entry => entry.memory));
+  }
+  return ordered;
+}
+
+function renderPackage(memories: Memory[], profileText = '', presentationOrder = false): string {
+  if (memories.length === 0 && !profileText) return '';
+
+  const groups = new Map<MemoryLayerId, string[]>();
+  for (const layer of MEMORY_LAYERS) {
+    groups.set(layer.id, []);
+  }
+
+  const renderedMemories = presentationOrder ? orderMemoriesForPresentation(memories) : memories;
+  for (const memory of renderedMemories) {
     const content = memory.content.trim();
     if (!content) continue;
     groups.get(layerForMemory(memory))?.push(`- ${content}`);
@@ -394,10 +445,10 @@ function renderPackage(memories: Memory[], profileText = ''): string {
   if (profileText) {
     sections.push(`### 记忆画像\n${profileText.replace(/^记忆画像：\n?/u, '').trim()}`);
   }
-  for (const title of MEMORY_LAYER_TITLES) {
-    const lines = groups.get(title);
+  for (const layer of MEMORY_LAYERS) {
+    const lines = groups.get(layer.id);
     if (!lines || lines.length === 0) continue;
-    sections.push(`### ${title}\n${lines.join('\n')}`);
+    sections.push(`### ${layer.title}\n${lines.join('\n')}`);
   }
   sections.push(MEMORY_USAGE_PRINCIPLES);
   return sections.join('\n\n');
@@ -405,7 +456,7 @@ function renderPackage(memories: Memory[], profileText = ''): string {
 
 function isHighPriorityMemory(memory: Memory): boolean {
   const layer = layerForMemory(memory);
-  return layer === '重要固定记忆' || layer === '角色需要兑现的承诺';
+  return layer === 'fixed' || layer === 'promises';
 }
 
 // 单条高优先级记忆即使整条超预算,也截断内容后注入,避免承诺/钉选被整条丢弃。
@@ -451,7 +502,7 @@ class PackagePacker {
   private readonly tokenCounter: (text: string) => number;
   private readonly profileText: string;
   private readonly lineCache = new Map<string, number>();
-  private readonly openLayers = new Set<string>();
+  private readonly openLayers = new Set<MemoryLayerId>();
   private running: number;
 
   constructor(profileText: string, tokenCounter: (text: string) => number) {
@@ -482,7 +533,8 @@ class PackagePacker {
     const layer = layerForMemory(memory);
     let extra = this.lineTokens(content) + 1; // +1 行间换行
     if (!this.openLayers.has(layer)) {
-      extra += this.tokenCounter(`### ${layer}`) + 2; // 新层标题 + 段间距
+      const title = MEMORY_LAYERS.find(item => item.id === layer)?.title || layer;
+      extra += this.tokenCounter(`### ${title}`) + 2; // 新层标题 + 段间距
     }
     return this.running + extra;
   }
@@ -590,6 +642,12 @@ function trimByTokenBudget(
     tokenCount = text ? countTokens(text) : 0;
   }
 
+  const presentationText = renderPackage(selected, effectiveProfile, true);
+  const presentationTokenCount = presentationText ? countTokens(presentationText) : 0;
+  if (presentationTokenCount <= budget) {
+    return { text: presentationText, selected, tokenCount: presentationTokenCount };
+  }
+
   return { text, selected, tokenCount };
 }
 
@@ -677,11 +735,13 @@ async function addVectorCandidates(
     provider: 'openai-compatible',
     model: config.embedding_model,
     dimension: config.embedding_dimension,
+    limit: Number.POSITIVE_INFINITY,
   });
   if (rows.length === 0 && config.embedding_dimension > 0) {
     const mismatchedRows = loadRows(characterId, {
       provider: 'openai-compatible',
       model: config.embedding_model,
+      limit: Number.POSITIVE_INFINITY,
     });
     const mismatchedDimensions = [...new Set(mismatchedRows
       .map(row => Number((row as unknown as { dimension?: unknown }).dimension))
@@ -707,22 +767,14 @@ function localMemoryLimit(settings: Settings, config: MemoryEngineConfig): numbe
   if (settings.limit_inject) {
     return Math.max(1, settings.memory_max_inject || config.final_top_k);
   }
-  const baseLimit = Math.max(config.keyword_top_k, config.final_top_k * 2, 100);
-  // 按 token 预算放宽本地召回上限，与 maxSelectedMemoryCount 保持一致，
-  // 避免候选池太小导致 token 预算用不完（例如 32000 budget 只召回 100 条本地候选）
-  const budgetLimit = Math.floor(config.memory_package_token_budget / 50);
-  return Math.max(baseLimit, budgetLimit);
+  return Number.POSITIVE_INFINITY;
 }
 
 function maxSelectedMemoryCount(settings: Settings, config: MemoryEngineConfig): number {
   if (settings.limit_inject) {
     return Math.max(1, config.final_top_k);
   }
-  const baseCap = Math.max(100, config.keyword_top_k, config.vector_top_k, config.final_top_k * 2);
-  // 按 token 预算放宽条数上限：每 50 token 至少允许 1 条候选进入裁剪，
-  // 避免 budget 还有大量余量却被条数卡死（例如 32000 budget 只注入 120 条/7588 token）
-  const budgetCap = Math.floor(config.memory_package_token_budget / 50);
-  return Math.max(baseCap, budgetCap);
+  return Number.POSITIVE_INFINITY;
 }
 
 function withTotalTimeout<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
@@ -774,7 +826,7 @@ function buildLegacyFullMemoryPackage(
   if (!options.settings.limit_inject) {
     // 真·全量注入：不做任何 token 预算裁剪、条数限制或单条截断，
     // 全部 active 记忆整包注入（产品决策 2026-08-03：full 模式不允许任何上限）。
-    const text = renderPackage(legacyMemories);
+    const text = renderPackage(legacyMemories, '', true);
     return {
       text,
       selectedMemories: legacyMemories,

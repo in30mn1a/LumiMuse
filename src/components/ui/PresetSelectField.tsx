@@ -3,6 +3,9 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 
+/** 与服务端 PRESET_ID_NONE 对齐；客户端组件避免导入含 db 的 prompt-presets 模块。 */
+const PRESET_ID_NONE = '__none__';
+
 interface PresetSummary {
   id: string;
   name: string;
@@ -11,9 +14,8 @@ interface PresetSummary {
 
 interface Props {
   /**
-   * 当前绑定值：null=跟随全局默认 / '__none__'=禁用 / 其他字符串=具体预设 id。
-   * 注意：DB 列 active_preset_id 在「跟随全局默认」语义下为 NULL；
-   * UI 用空字符串 '' 与 null 之间的互转（这里接受 null，向下游 onChange 交出 null/string）。
+   * 当前绑定值：null / '__none__' = 不使用预设；其他字符串 = 具体预设 id。
+   * 历史数据中的 null 与 '__none__' 在 UI 上统一显示为「不使用预设」。
    */
   value: string | null;
   onChange: (nextValue: string | null) => void;
@@ -47,8 +49,7 @@ export default function PresetSelectField({ value, onChange }: Props) {
     };
   }, []);
 
-  // null → '__follow_global__'（UI 内部表示）
-  const uiValue = value === null ? '__follow_global__' : value;
+  const uiValue = value == null || value === '' ? PRESET_ID_NONE : value;
 
   return (
     <div>
@@ -64,20 +65,16 @@ export default function PresetSelectField({ value, onChange }: Props) {
         disabled={loading || !!error}
         value={uiValue}
         onChange={(e) => {
-          const v = e.target.value;
-          if (v === '__follow_global__') onChange(null);
-          else onChange(v);
+          const nextValue = e.target.value;
+          onChange(nextValue === PRESET_ID_NONE ? PRESET_ID_NONE : nextValue);
         }}
       >
-        <option value="__follow_global__">
-          {t('preset.optionFollowGlobal')}
-        </option>
-        <option value="__none__">
+        <option value={PRESET_ID_NONE}>
           {t('preset.optionDisablePreset')}
         </option>
-        {presets.map(p => (
-          <option key={p.id} value={p.id}>
-            {p.name}{typeof p.entry_count === 'number' ? ` (${p.entry_count})` : ''}
+        {presets.map(presetSummary => (
+          <option key={presetSummary.id} value={presetSummary.id}>
+            {presetSummary.name}{typeof presetSummary.entry_count === 'number' ? ` (${presetSummary.entry_count})` : ''}
           </option>
         ))}
       </select>

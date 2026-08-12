@@ -142,7 +142,7 @@ test('loadEnabledEntries 仅返回 enabled=1，且按 sort_order 排序', () => 
   assert.deepEqual(enabled.map(e => e.name), ['d', 'a', 'c'], '只取 enabled，按 sort_order 升序');
 });
 
-test('deletePreset 级联删除条目、解绑角色并清理全局默认且保留其他设置字段', () => {
+test('deletePreset 级联删除条目并解绑角色', () => {
   const p = lib.createPreset({ name: 'preset-C' });
   lib.upsertEntry({ preset_id: p.id, name: 'x', role: 'user', sort_order: 10 });
 
@@ -150,11 +150,6 @@ test('deletePreset 级联删除条目、解绑角色并清理全局默认且保�
     INSERT INTO characters (id, name, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, active_preset_id, created_at, updated_at)
     VALUES ('char-1', 'T', '', '', '', '', '', '', '', '', '', ?, datetime('now'), datetime('now'))
   `).run(p.id);
-  db.prepare(`INSERT INTO settings (key, value) VALUES ('prompt_preset', ?)`)
-    .run(JSON.stringify({
-      default_preset_id: p.id,
-      future_option: 'keep-me',
-    }));
 
   lib.deletePreset(p.id);
 
@@ -162,32 +157,21 @@ test('deletePreset 级联删除条目、解绑角色并清理全局默认且保�
   assert.equal(lib.listEntries(p.id).length, 0);
   const row = db.prepare('SELECT active_preset_id FROM characters WHERE id = ?').get('char-1');
   assert.equal(row.active_preset_id, null);
-  const setting = JSON.parse(
-    db.prepare(`SELECT value FROM settings WHERE key = 'prompt_preset'`).get().value
-  );
-  assert.equal(setting.default_preset_id, null);
-  assert.equal(setting.future_option, 'keep-me');
 });
 
-test('resolveActivePreset 三态：role override / follow global / disabled', () => {
-  const globalPreset = lib.createPreset({ name: 'Global Default' });
+test('resolveActivePreset：角色绑定 / 禁用 / 空值', () => {
   const rolePreset = lib.createPreset({ name: 'Role Override' });
 
-  db.prepare(`INSERT INTO settings (key, value) VALUES ('prompt_preset', ?)`)
-    .run(JSON.stringify({ default_preset_id: globalPreset.id }));
-
   let resolved = lib.resolveActivePreset({ active_preset_id: null });
-  assert.ok(resolved);
-  assert.equal(resolved.id, globalPreset.id, '未覆盖时走全局默认');
+  assert.equal(resolved, null, 'null 表示不使用预设');
 
   resolved = lib.resolveActivePreset({ active_preset_id: rolePreset.id });
   assert.ok(resolved);
-  assert.equal(resolved.id, rolePreset.id, '角色覆盖优先于全局默认');
+  assert.equal(resolved.id, rolePreset.id, '绑定具体预设 id');
 
   resolved = lib.resolveActivePreset({ active_preset_id: '__none__' });
   assert.equal(resolved, null, '__none__ 必须返回 null');
 
-  db.prepare(`DELETE FROM settings WHERE key = 'prompt_preset'`).run();
-  resolved = lib.resolveActivePreset({ active_preset_id: null });
-  assert.equal(resolved, null, '无预设绑定');
+  resolved = lib.resolveActivePreset({ active_preset_id: '' });
+  assert.equal(resolved, null, '空字符串表示不使用预设');
 });

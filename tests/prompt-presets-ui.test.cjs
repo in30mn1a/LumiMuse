@@ -110,7 +110,6 @@ function loadUiModule(relativePath, { unwrapParams = false } = {}) {
   }
 }
 
-const EMPTY_SETTINGS = { prompt_preset: { default_preset_id: null } };
 const PRESET = {
   id: 'preset-a',
   name: 'Preset A',
@@ -153,7 +152,6 @@ test.after(() => {
 test('预设列表把非 2xx 加载失败显示在页面上，而不是伪装成空列表', async () => {
   global.fetch = async url => {
     if (String(url) === '/api/prompt-presets') return jsonResponse({ error: 'boom' }, 503);
-    if (String(url) === '/api/settings') return jsonResponse(EMPTY_SETTINGS);
     throw new Error(`unexpected fetch: ${url}`);
   };
   const { Component, toastCalls } = loadUiModule('src/app/settings/prompt-presets/page.tsx');
@@ -178,7 +176,6 @@ test('预设列表创建使用同步 pending guard，快速双击只发送一次
     if (requestUrl === '/api/prompt-presets' && method === 'GET') {
       return jsonResponse({ presets: [] });
     }
-    if (requestUrl === '/api/settings') return jsonResponse(EMPTY_SETTINGS);
     if (requestUrl === '/api/prompt-presets' && method === 'POST') {
       createCalls += 1;
       return createRequest.promise;
@@ -209,9 +206,7 @@ test('预设列表创建使用同步 pending guard，快速双击只发送一次
 
 test('预设列表忽略刷新前的迟到响应', async () => {
   const oldPresets = deferred();
-  const oldSettings = deferred();
   let presetReads = 0;
-  let settingsReads = 0;
   global.fetch = async (url, init = {}) => {
     const requestUrl = String(url);
     const method = init.method || 'GET';
@@ -223,10 +218,6 @@ test('预设列表忽略刷新前的迟到响应', async () => {
       return presetReads === 1
         ? oldPresets.promise
         : jsonResponse({ presets: [{ ...PRESET, name: 'New preset', entry_count: 1, enabled_count: 1 }] });
-    }
-    if (requestUrl === '/api/settings') {
-      settingsReads += 1;
-      return settingsReads === 1 ? oldSettings.promise : jsonResponse(EMPTY_SETTINGS);
     }
     throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
   };
@@ -243,18 +234,17 @@ test('预设列表忽略刷新前的迟到响应', async () => {
     oldPresets.resolve(jsonResponse({
       presets: [{ ...PRESET, name: 'Old preset', entry_count: 1, enabled_count: 1 }],
     }));
-    oldSettings.resolve(jsonResponse(EMPTY_SETTINGS));
-    await Promise.all([oldPresets.promise, oldSettings.promise]);
+    await oldPresets.promise;
   });
 
   assert.ok(!view.queryByText('Old preset'));
   assert.ok(view.getByText('New preset'));
 });
 
-test('预设列表在默认项写入期间阻止重复写和其他删除操作', async () => {
-  const defaultRequest = deferred();
-  let defaultCalls = 0;
+test('预设列表在删除期间阻止重复删除', async () => {
+  const deleteRequest = deferred();
   let deleteCalls = 0;
+  window.confirm = () => true;
   global.fetch = async (url, init = {}) => {
     const requestUrl = String(url);
     const method = init.method || 'GET';
@@ -263,36 +253,27 @@ test('预设列表在默认项写入期间阻止重复写和其他删除操作',
         presets: [{ ...PRESET, entry_count: 1, enabled_count: 1, is_built_in: false }],
       });
     }
-    if (requestUrl === '/api/settings' && method === 'GET') return jsonResponse(EMPTY_SETTINGS);
-    if (requestUrl === '/api/settings' && method === 'PUT') {
-      defaultCalls += 1;
-      return defaultRequest.promise;
-    }
     if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'DELETE') {
       deleteCalls += 1;
-      return jsonResponse({ ok: true });
+      return deleteRequest.promise;
     }
     throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
   };
 
   const { Component } = loadUiModule('src/app/settings/prompt-presets/page.tsx');
   const view = render(React.createElement(Component));
-  const defaultButton = await view.findByRole('button', { name: 'preset.setDefault' });
-  const deleteButton = view.getByTitle('preset.delete');
-  fireEvent.click(defaultButton);
-  fireEvent.click(defaultButton);
+  const deleteButton = await view.findByTitle('preset.delete');
+  fireEvent.click(deleteButton);
   fireEvent.click(deleteButton);
 
-  assert.equal(defaultCalls, 1);
-  assert.equal(deleteCalls, 0);
-  assert.equal(defaultButton.disabled, true);
+  assert.equal(deleteCalls, 1);
   assert.equal(deleteButton.disabled, true);
 
   await act(async () => {
-    defaultRequest.resolve(jsonResponse({ ok: true }));
-    await defaultRequest.promise;
+    deleteRequest.resolve(jsonResponse({ ok: true }));
+    await deleteRequest.promise;
   });
-  await waitFor(() => assert.equal(defaultButton.disabled, false));
+  await waitFor(() => assert.equal(deleteButton.disabled, false));
 });
 
 test('预设详情把非 2xx 加载失败显示为 alert', async () => {
@@ -558,7 +539,7 @@ test('预设详情切换条目时保持行 DOM 节点稳定', async () => {
   assert.equal(disabledButton.getAttribute('aria-pressed'), 'false');
 });
 
-test('角色预设选择器保持 follow / none / explicit 三态并在卸载时 abort', async () => {
+test('角色预设选择器保持 none / explicit 两态并在卸载时 abort', async () => {
   let capturedSignal;
   global.fetch = async (url, init = {}) => {
     assert.equal(String(url), '/api/prompt-presets');
@@ -580,12 +561,11 @@ test('角色预设选择器保持 follow / none / explicit 三态并在卸载时
 
   const select = await view.findByLabelText('preset.fieldLabel');
   await waitFor(() => assert.equal(select.disabled, false));
-  assert.equal(select.value, '__follow_global__');
+  assert.equal(select.value, '__none__');
 
-  fireEvent.change(select, { target: { value: '__none__' } });
   fireEvent.change(select, { target: { value: 'preset-b' } });
-  fireEvent.change(select, { target: { value: '__follow_global__' } });
-  assert.deepEqual(changes, ['__none__', 'preset-b', null]);
+  fireEvent.change(select, { target: { value: '__none__' } });
+  assert.deepEqual(changes, ['preset-b', '__none__']);
 
   view.unmount();
   assert.equal(capturedSignal.aborted, true);

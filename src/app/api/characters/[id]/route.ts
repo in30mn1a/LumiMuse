@@ -62,7 +62,7 @@ export async function PUT(
     body.other_info ?? existing.other_info ?? '',
     body.image_tags ?? existing.image_tags ?? '',
     body.user_image_tags ?? existing.user_image_tags ?? '',
-    // 预设绑定（三态）：未传 active_preset_id 字段时保留旧值；显式 null 解绑跟随全局默认；'__none__' 强制禁用
+    // 预设绑定：未传 active_preset_id 时保留旧值；显式 null/''/'__none__' 表示不使用预设
     body.active_preset_id !== undefined
       ? (body.active_preset_id === null || body.active_preset_id === '' ? null : body.active_preset_id)
       : ((existing as Character & { active_preset_id?: string | null }).active_preset_id ?? null),

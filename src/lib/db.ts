@@ -757,8 +757,7 @@ function migrate(db: Database.Database): void {
 
   // 增量迁移：预设提示词（SillyTavern preset prompts 移植）
   // 设计：单层启用（entries.enabled 直接决定启用）+ sort_order 排序
-  // 双层绑定：characters.active_preset_id 覆盖 settings.prompt_preset.default_preset_id
-  // active_preset_id 三态：NULL=跟随全局默认 / '__none__'=禁用预设 / uuid=具体预设
+  // 角色绑定 characters.active_preset_id：NULL/'__none__'=不使用预设 / uuid=具体预设
   db.exec(`
     CREATE TABLE IF NOT EXISTS prompt_presets (
       id TEXT PRIMARY KEY,
@@ -915,6 +914,9 @@ function migrate(db: Database.Database): void {
   if (!charPresetCols.some(c => c.name === 'active_preset_id')) {
     db.exec(`ALTER TABLE characters ADD COLUMN active_preset_id TEXT`);
   }
+
+  // settings.prompt_preset 已废弃；每次启动清掉历史行，避免 GET /api/settings 经 loadSettings 再带出该键
+  db.prepare("DELETE FROM settings WHERE key = 'prompt_preset'").run();
 
   db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
 }

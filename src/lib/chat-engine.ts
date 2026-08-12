@@ -634,9 +634,9 @@ export async function runChat(
     }
   }
 
-  // 预设提示词分支（Q1/Q4 决定）：惰性导入避免在旧路径触发 db 模块加载（保留测试 mock 边界）。
-  //   - 角色绑定 active_preset_id 或全局默认 prompt_preset.default_preset_id 非空 → 走预设组装管线
-  //   - 都为空 / active_preset_id === '__none__' → 走原 assemblePrompt 骨架（行为零变化）
+  // 预设提示词分支：惰性导入避免在旧路径触发 db 模块加载（保留测试 mock 边界）。
+  //   - 角色绑定 active_preset_id 为具体预设 id → 走预设组装管线
+  //   - null / '' / '__none__' → 走原 assemblePrompt 骨架
   let chatMessages: ChatMessage[];
   const { resolveActivePreset, loadEnabledEntries } = await import('@/lib/prompt-presets');
   const activePreset = resolveActivePreset(character);

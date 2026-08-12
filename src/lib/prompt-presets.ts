@@ -1,9 +1,9 @@
 /**
  * 预设提示词（SillyTavern preset prompts 移植）数据访问层。
  *
- * 双层绑定（Q4）：
- *   - 全局默认：settings.prompt_preset.default_preset_id
- *   - 角色覆盖：characters.active_preset_id（三态：NULL=跟随全局/'__none__'=禁用/uuid=具体预设）
+ * 角色绑定：characters.active_preset_id
+ *   - null / '' / '__none__'：不使用预设（LumiMuse 传统骨架）
+ *   - uuid：使用该预设
  *
  * 单层启用（Q2）：prompt_preset_entries.enabled 直接决定启用，无单独 order 表。
  */
@@ -11,7 +11,6 @@
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { stripTagRulesSchema } from '@/lib/schemas';
-import { loadSettings } from '@/lib/settings';
 import {
   Character,
   PresetEntry,
@@ -19,7 +18,7 @@ import {
   PromptPreset,
 } from '@/types';
 
-/** 特殊 sentinel：characters.active_preset_id === '__none__' 表示禁用预设（与全局默认无关）。 */
+/** 新建角色的落库 sentinel；解析层与 null / '' 同义，都不使用预设。 */
 export const PRESET_ID_NONE = '__none__';
 
 function parseStripTags(value: unknown): string[] {
@@ -169,30 +168,6 @@ export function deletePreset(id: string): void {
   db.transaction(() => {
     // SQLite ALTER TABLE 无法真加 FK；这里应用层兜底，删除预设时把所有角色的 active_preset_id 解绑。
     db.prepare('UPDATE characters SET active_preset_id = NULL WHERE active_preset_id = ?').run(id);
-    const promptPresetSetting = db.prepare(
-      "SELECT value FROM settings WHERE key = 'prompt_preset'"
-    ).get() as { value: string } | undefined;
-    if (promptPresetSetting) {
-      try {
-        const parsed = JSON.parse(promptPresetSetting.value) as unknown;
-        if (
-          parsed
-          && typeof parsed === 'object'
-          && !Array.isArray(parsed)
-          && (parsed as { default_preset_id?: unknown }).default_preset_id === id
-        ) {
-          const nextValue = {
-            ...(parsed as Record<string, unknown>),
-            default_preset_id: null,
-          };
-          db.prepare(
-            "UPDATE settings SET value = ? WHERE key = 'prompt_preset'"
-          ).run(JSON.stringify(nextValue));
-        }
-      } catch {
-        // 非法历史值交由 settings 读取层按原有兼容逻辑处理；删除预设不应扩大修改范围。
-      }
-    }
     // prompt_preset_entries 由 REFERENCES ... ON DELETE CASCADE 处理；若因 PRAGMA foreign_keys=off 失效，手动兜底：
     db.prepare('DELETE FROM prompt_preset_entries WHERE preset_id = ?').run(id);
     db.prepare('DELETE FROM prompt_presets WHERE id = ?').run(id);
@@ -305,20 +280,19 @@ export function deleteEntry(entryId: string): void {
 }
 
 /**
- * 双层绑定：characters.active_preset_id ?? settings.prompt_preset.default_preset_id
+ * 解析角色绑定的预设。
  *
- * 三态语义：
- *   - character.active_preset_id === PRESET_ID_NONE ('__none__')：禁用预设（不走预设路径）
- *   - character.active_preset_id === null：跟随全局默认
- *   - 其他字符串：使用该 id
+ *   - null / '' / PRESET_ID_NONE：不使用预设
+ *   - 其他非空字符串：使用该预设 id（不存在则返回 null）
  */
 export function resolveActivePreset(character: Character): PromptPreset | null {
-  if (character.active_preset_id === PRESET_ID_NONE) return null;
-  if (typeof character.active_preset_id === 'string' && character.active_preset_id.length > 0) {
-    return getPreset(character.active_preset_id);
+  const activePresetId = character.active_preset_id;
+  if (
+    activePresetId == null
+    || activePresetId === ''
+    || activePresetId === PRESET_ID_NONE
+  ) {
+    return null;
   }
-  const settings = loadSettings();
-  const defaultId = settings.prompt_preset?.default_preset_id ?? null;
-  if (!defaultId || defaultId === PRESET_ID_NONE) return null;
-  return getPreset(defaultId);
+  return getPreset(activePresetId);
 }

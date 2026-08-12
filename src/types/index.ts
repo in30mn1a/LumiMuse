@@ -14,10 +14,11 @@ export interface Character {
   image_tags: string;
   user_image_tags: string;
   /**
-   * 预设提示词绑定（Q4 双层绑定）。
-   * - `null`：跟随全局默认 `settings.prompt_preset.default_preset_id`
-   * - `'__none__'`：禁用预设（不走预设组装路径，使用 LumiMuse 传统骨架）
-   * - 其他字符串：预设 id，覆盖全局默认
+   * 角色绑定的预设提示词。
+   * - `null` / `'__none__'`：不使用预设（LumiMuse 传统骨架）
+   * - 其他字符串：预设 id
+   *
+   * 新建角色默认 `'__none__'`。
    */
   active_preset_id: string | null;
   created_at: string;
@@ -454,10 +455,6 @@ export interface Settings {
   memory_engine: MemoryEngineSettings;
   // 画师串管理
   artist_strings: ArtistString[];
-  // 预设提示词（双层绑定的全局默认；角色可在 active_preset_id 覆盖）
-  prompt_preset: {
-    default_preset_id: string | null;
-  };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -502,7 +499,6 @@ export const DEFAULT_SETTINGS: Settings = {
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
   memory_engine: { ...DEFAULT_MEMORY_ENGINE_SETTINGS },
   artist_strings: [],
-  prompt_preset: { default_preset_id: null },
 };
 export interface ChatRequest {
   conversation_id: string;

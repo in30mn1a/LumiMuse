@@ -23,7 +23,6 @@ export default function PromptPresetsPage() {
   const [presets, setPresets] = useState<PresetSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [defaultPresetId, setDefaultPresetId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const loadRequestRef = useRef<{ controller: AbortController; sequence: number } | null>(null);
@@ -57,20 +56,11 @@ export default function PromptPresetsPage() {
     loadRequestRef.current = { controller, sequence };
     setLoadError(null);
     try {
-      const [presetsRes, settingsRes] = await Promise.all([
-        fetch('/api/prompt-presets', { signal: controller.signal }),
-        fetch('/api/settings', { signal: controller.signal }),
-      ]);
+      const presetsRes = await fetch('/api/prompt-presets', { signal: controller.signal });
       if (!presetsRes.ok) throw new Error(`/api/prompt-presets: HTTP ${presetsRes.status}`);
-      if (!settingsRes.ok) throw new Error(`/api/settings: HTTP ${settingsRes.status}`);
-      const [presetsData, settingsData] = await Promise.all([
-        presetsRes.json(),
-        settingsRes.json(),
-      ]);
+      const presetsData = await presetsRes.json();
       if (loadSequenceRef.current !== sequence || controller.signal.aborted) return;
       setPresets(Array.isArray(presetsData.presets) ? presetsData.presets : []);
-      const dpi = settingsData?.prompt_preset?.default_preset_id;
-      setDefaultPresetId(typeof dpi === 'string' && dpi ? dpi : null);
     } catch (err) {
       if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) return;
       if (loadSequenceRef.current !== sequence) return;
@@ -131,42 +121,6 @@ export default function PromptPresetsPage() {
       await load();
     } catch (err) {
       showToast(`${t('preset.deleteError')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
-    } finally {
-      finishAction();
-    }
-  };
-
-  const handleSetDefault = async (presetId: string) => {
-    if (!beginAction(`default:${presetId}`)) return;
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt_preset: { default_preset_id: presetId } }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setDefaultPresetId(presetId);
-      showToast(t('preset.setDefaultSuccess'), 'success');
-    } catch (err) {
-      showToast(`${t('preset.setDefaultError')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
-    } finally {
-      finishAction();
-    }
-  };
-
-  const handleClearDefault = async () => {
-    if (!beginAction('default:clear')) return;
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt_preset: { default_preset_id: null } }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setDefaultPresetId(null);
-      showToast(t('preset.clearDefaultSuccess'), 'success');
-    } catch (err) {
-      showToast(`${t('preset.setDefaultError')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
       finishAction();
     }
@@ -272,34 +226,12 @@ export default function PromptPresetsPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium text-text-primary">{p.name}</span>
-                      {defaultPresetId === p.id && (
-                        <span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs text-accent-dark">
-                          {t('preset.badgeDefault')}
-                        </span>
-                      )}
                     </div>
                     <p className="mt-1 text-xs text-text-muted">
                       {formatTemplate(t('preset.entryCount'), { total: p.entry_count, enabled: p.enabled_count })}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {defaultPresetId === p.id ? (
-                      <button
-                        onClick={handleClearDefault}
-                        className="soft-button soft-button-secondary text-xs"
-                        disabled={pendingAction !== null}
-                      >
-                        {t('preset.clearDefault')}
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleSetDefault(p.id)}
-                        className="soft-button soft-button-secondary text-xs"
-                        disabled={pendingAction !== null}
-                      >
-                        {t('preset.setDefault')}
-                      </button>
-                    )}
                     <Link href={`/settings/prompt-presets/${p.id}`} className="soft-button soft-button-primary text-xs">
                       {t('preset.manage')}
                     </Link>

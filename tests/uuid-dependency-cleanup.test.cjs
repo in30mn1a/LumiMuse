@@ -94,7 +94,7 @@ function createCharacterDb() {
       }
       if (sql.includes('INSERT INTO characters')) {
         return {
-          run(id, name, avatarUrl, basicInfo, personality, scenario, greeting, exampleDialogue, systemPrompt, otherInfo, imageTags, userImageTags, sortOrder, createdAt, updatedAt) {
+          run(id, name, avatarUrl, basicInfo, personality, scenario, greeting, exampleDialogue, systemPrompt, otherInfo, imageTags, userImageTags, activePresetId, sortOrder, createdAt, updatedAt) {
             inserted = {
               id,
               name,
@@ -108,6 +108,7 @@ function createCharacterDb() {
               other_info: otherInfo,
               image_tags: imageTags,
               user_image_tags: userImageTags,
+              active_preset_id: activePresetId,
               sort_order: sortOrder,
               created_at: createdAt,
               updated_at: updatedAt,
@@ -177,6 +178,7 @@ test('/api/characters POST creates 12-character IDs from crypto.randomUUID', asy
   assert.equal(response.status, 201);
   assert.equal(body.id, '12345678-abc');
   assert.equal(body.id.length, 12);
+  assert.equal(body.active_preset_id, '__none__');
 });
 
 test('package manifests do not keep legacy uuid dependencies', () => {

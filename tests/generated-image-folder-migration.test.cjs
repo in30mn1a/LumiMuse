@@ -78,6 +78,35 @@ function addMessage(db, id, conversationId, content, metadata) {
     .run(id, conversationId, content, JSON.stringify(metadata));
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function removeWorkspace(workspace) {
+  const relative = path.relative(root, workspace);
+  assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+  // Windows runners can briefly lock newly written files (Defender / indexer).
+  // recursive rmdir then races with ENOTEMPTY even after assertions passed.
+  const maxAttempts = process.platform === 'win32' ? 8 : 1;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      fs.rmSync(workspace, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = error && error.code;
+      if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY') {
+        throw error;
+      }
+      if (attempt < maxAttempts) {
+        sleepSync(50 * attempt);
+      }
+    }
+  }
+  throw lastError;
+}
+
 function createWorkspace(t) {
   const tempRoot = path.join(root, '.tmp-tests');
   fs.mkdirSync(tempRoot, { recursive: true });
@@ -85,9 +114,7 @@ function createWorkspace(t) {
   const generatedRoot = path.join(workspace, 'public', 'generated');
   fs.mkdirSync(generatedRoot, { recursive: true });
   t.after(() => {
-    const relative = path.relative(root, workspace);
-    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-    fs.rmSync(workspace, { recursive: true, force: true });
+    removeWorkspace(workspace);
   });
   return generatedRoot;
 }

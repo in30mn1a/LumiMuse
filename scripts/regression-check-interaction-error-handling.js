@@ -31,7 +31,10 @@ const chatMessageActions = read('src/hooks/chat/useChatMessageActions.ts');
 assert(chatView.includes('parseJsonResponse'), '聊天页使用统一 HTTP 错误处理工具');
 assert(chatView.includes('const previousActiveConvId = activeConvIdRef.current;'), '删除对话失败时能恢复当前对话');
 assert(chatView.includes('setDeleteOpen(true);'), '删除对话失败时重新打开确认弹窗/保留上下文');
-assert(chatView.includes('await expectOkResponse(await fetch(`/api/conversations/${targetConvId}`'), '删除对话会检查服务端失败');
+assert(
+  chatView.includes('await parseJsonResponse<{ ok: boolean; deletedUrls?: string[] }>(await fetch(`/api/conversations/${targetConvId}`'),
+  '删除对话会检查服务端失败',
+);
 assert(chatView.includes('t(\'chat.deleteError\')'), '删除对话失败会提示用户');
 assert(chatView.includes('await expectOkResponse(await fetch(`/api/conversations/${activeConvId}`'), '忽略记忆切换会检查服务端失败');
 assert(chatView.includes('t(\'chat.ignoreToggleFail\')'), '忽略记忆切换失败会提示用户');

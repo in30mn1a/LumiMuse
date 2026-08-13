@@ -3,6 +3,7 @@ import type { Message } from '@/types';
 import type { ToastType } from '@/components/ui/Toast';
 import type { AttachmentItem } from '@/lib/chat-engine';
 import { parseJsonResponse } from '@/lib/http';
+import { forgetImageBlobs } from '@/lib/image-blob-cache';
 import {
   buildClientTimePayload,
   fetchMessagesPage,
@@ -30,6 +31,14 @@ function findAssistantInsertedAfterUser(messages: Message[], userMessageId: stri
 
 function findLastAssistantId(messages: Message[]): string | undefined {
   return [...messages].reverse().find(message => message.role === 'assistant')?.id;
+}
+
+async function invalidateDeletedImageBlobs(deletedUrls: string[]): Promise<void> {
+  try {
+    await forgetImageBlobs(deletedUrls);
+  } catch (error) {
+    console.warn('[image-cache] 服务端操作已成功，但本地图片缓存失效失败：', error);
+  }
 }
 
 export type SendChatStreamOpts =
@@ -104,11 +113,13 @@ export function useChatMessageActions({
     attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>,
   ) => {
     try {
-      const updated = await parseJsonResponse<Message>(await fetch(`/api/messages/${id}`, {
+      const response = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, attachments: attachments ?? [] }),
       }));
+      const { deletedUrls = [], ...updated } = response;
+      await invalidateDeletedImageBlobs(deletedUrls);
       updateMessagesForConversation(updated.conversation_id, messages => messages.map(message => (
         message.id === id ? updated : message
       )));
@@ -129,8 +140,10 @@ export function useChatMessageActions({
         deleted: 'message' | 'version';
         conversation_id: string;
         message?: Message;
+        deletedUrls?: string[];
       }>(res);
       if (!data.ok) throw new Error(t('message.deleteFailed'));
+      await invalidateDeletedImageBlobs(data.deletedUrls ?? []);
       const convId = data.conversation_id;
       if (!convId) throw new Error(t('message.deleteFailed'));
       if (data.deleted === 'version' && data.message) {
@@ -325,11 +338,13 @@ export function useChatMessageActions({
 
   const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {
     try {
-      const updated = await parseJsonResponse<Message>(await fetch(`/api/messages/${messageId}`, {
+      const response = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${messageId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activeVersion: versionIndex }),
       }));
+      const { deletedUrls = [], ...updated } = response;
+      await invalidateDeletedImageBlobs(deletedUrls);
       updateMessagesForConversation(updated.conversation_id, messages => messages.map(message => (
         message.id === messageId ? updated : message
       )));

@@ -394,6 +394,7 @@ export async function POST(request: NextRequest) {
 
   // 6. 清理孤儿文件
   const fileResults: Record<string, { deleted: number; errors: number }> = {};
+  const deletedUrls: string[] = [];
 
   for (const dirName of ['avatars', 'attachments', 'generated'] as const) {
     const { orphans } = await scanOrphanFiles(dirName);
@@ -405,7 +406,15 @@ export async function POST(request: NextRequest) {
         const filepath = path.join(process.cwd(), 'public', dirName, ...filename.split('/'));
         await unlink(filepath);
         deleted++;
-      } catch {
+        deletedUrls.push(`/api/files/${dirName}/${filename}`);
+        deletedUrls.push(`/${dirName}/${filename}`);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          deleted++;
+          deletedUrls.push(`/api/files/${dirName}/${filename}`);
+          deletedUrls.push(`/${dirName}/${filename}`);
+          continue;
+        }
         errors++;
       }
     }
@@ -421,5 +430,5 @@ export async function POST(request: NextRequest) {
     memory_tasks: (db.prepare('SELECT COUNT(*) as n FROM memory_tasks').get() as { n: number }).n,
   };
 
-  return NextResponse.json({ dbDeleted, fileResults, after });
+  return NextResponse.json({ dbDeleted, fileResults, deletedUrls, after });
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { Character, Message, Settings } from '@/types';
 import { sanitizeGeneratedImages, type GeneratedImage } from '@/lib/generated-image-assets';
 import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { forgetImageBlobs } from '@/lib/image-blob-cache';
 
 type UpdateMessagesForConversation = (
   conversationIdToUpdate: string,
@@ -411,11 +412,16 @@ export function useChatImageGeneration({
         meta.inlineImagePrompt = '';
       }
 
-      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
+      const updated = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${messageId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ metadata: meta }),
       }));
+      try {
+        await forgetImageBlobs(updated.deletedUrls ?? []);
+      } catch (error) {
+        console.warn('[image-cache] 图片删除已成功，但本地图片缓存失效失败：', error);
+      }
 
       markSkipNextScroll();
       updateMessagesForConversation(targetMsg.conversation_id, messages => (

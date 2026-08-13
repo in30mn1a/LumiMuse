@@ -108,6 +108,6 @@ export async function DELETE(
   if (changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   const orphanUrls = filterUnreferencedLocalAssetUrls(db, fileUrls);
-  await deleteLocalAssetUrls(orphanUrls);
-  return NextResponse.json({ ok: true });
+  const deletedUrls = await deleteLocalAssetUrls(orphanUrls);
+  return NextResponse.json({ ok: true, deletedUrls });
 }

@@ -29,15 +29,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '非法文件名' }, { status: 400 });
     }
 
-    const normalizedUrl = `/api/files/generated/${asset.filename}`;
-    const orphanUrls = filterUnreferencedLocalAssetUrls(getDb(), [normalizedUrl]);
-    await deleteLocalAssetUrls(orphanUrls);
+    // 保留调用方实际使用的 URL 形式，确保返回后能精确失效对应的缓存 key。
+    const orphanUrls = filterUnreferencedLocalAssetUrls(getDb(), [url]);
+    const deletedUrls = await deleteLocalAssetUrls(orphanUrls);
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, deletedUrls });
   } catch (err) {
     // 文件不存在也视为成功（幂等）
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, deletedUrls: [] });
     }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

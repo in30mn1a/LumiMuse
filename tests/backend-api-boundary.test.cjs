@@ -382,6 +382,54 @@ test('/api/conversations/[id] PUT writes ISO updated_at for title and ignore_mem
   assert.match(ignorePayload.updated_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 });
 
+test('/api/conversations/[id] DELETE reports only files no longer referenced after deletion', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE characters (id TEXT PRIMARY KEY, avatar_url TEXT);
+    CREATE TABLE conversations (id TEXT PRIMARY KEY, character_id TEXT NOT NULL);
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      content TEXT
+    );
+    CREATE TABLE memory_tasks (id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL);
+    INSERT INTO characters VALUES ('char-a', NULL);
+    INSERT INTO conversations VALUES ('conv-delete', 'char-a'), ('conv-keep', 'char-a');
+    INSERT INTO messages VALUES (
+      'msg-delete',
+      'conv-delete',
+      '{"generatedImages":[{"url":"/api/files/generated/deleted.png"},{"url":"/api/files/generated/shared.png"}]}',
+      NULL
+    );
+    INSERT INTO messages VALUES (
+      'msg-keep',
+      'conv-keep',
+      '{"generatedImages":[{"url":"/api/files/generated/shared.png"}]}',
+      NULL
+    );
+    INSERT INTO memory_tasks VALUES (1, 'conv-delete');
+  `);
+  const route = loadRoute('../src/app/api/conversations/[id]/route.ts', db);
+
+  try {
+    const response = await route.DELETE({}, {
+      params: Promise.resolve({ id: 'conv-delete' }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      deletedUrls: [
+        '/generated/deleted.png',
+        '/api/files/generated/deleted.png',
+      ],
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test('/api/conversations/[id]/messages POST returns 404 without inserting for a missing conversation', async () => {
   const db = createConversationMessagesDb();
   const route = loadRoute('../src/app/api/conversations/[id]/messages/route.ts', db);
@@ -507,6 +555,10 @@ test('/api/messages/[id] PUT metadata merge honors explicit empty values for one
   );
   assert.deepEqual(stored.generatedImages, []);
   assert.equal(stored.inlineImagePrompt, '');
+  assert.deepEqual((await response.json()).deletedUrls, [
+    '/generated/a.png',
+    '/api/files/generated/a.png',
+  ]);
 });
 
 test('/api/messages/[id] DELETE returns the owning conversation id for precise cache invalidation', async () => {
@@ -528,6 +580,7 @@ test('/api/messages/[id] DELETE returns the owning conversation id for precise c
     ok: true,
     deleted: 'message',
     conversation_id: 'conv-a',
+    deletedUrls: [],
   });
 });
 

@@ -10,6 +10,7 @@ import Modal from '@/components/ui/Modal';
 import PresetSelectField from '@/components/ui/PresetSelectField';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { clearCharacterContext } from '@/lib/character-context-cache';
+import { forgetImageBlobs } from '@/lib/image-blob-cache';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -269,9 +270,11 @@ export default function CharacterEditor({ params }: Props) {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
+      const data = await parseJsonResponse<{ ok: boolean; deletedUrls?: string[] }>(response);
+      try {
+        await forgetImageBlobs(data.deletedUrls ?? []);
+      } catch (error) {
+        console.warn('[image-cache] 角色删除已成功，但本地图片缓存失效失败：', error);
       }
       // 删除成功后清掉该角色的本地上下文缓存（内存 + IndexedDB），避免同 id 重建/导入时闪幽灵快照
       clearCharacterContext(id);

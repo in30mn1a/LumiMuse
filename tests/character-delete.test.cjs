@@ -116,7 +116,9 @@ test('character DELETE checks only collected candidates and preserves other char
       return ['/api/files/generated/target.png'];
     },
     async deleteLocalAssetUrls(urls) {
-      calls.deleted.push([...urls]);
+      const candidates = [...urls];
+      calls.deleted.push(candidates);
+      return candidates;
     },
   });
 
@@ -125,7 +127,10 @@ test('character DELETE checks only collected candidates and preserves other char
   });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true });
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    deletedUrls: ['/api/files/generated/target.png'],
+  });
   assert.deepEqual(calls.filter, [[...candidateUrls]]);
   assert.deepEqual(calls.deleted, [['/api/files/generated/target.png']]);
   assert.deepEqual(db.prepare('SELECT id FROM characters ORDER BY id').all(), [{ id: 'char-keep' }]);

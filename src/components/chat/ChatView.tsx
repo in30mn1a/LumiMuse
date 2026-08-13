@@ -46,6 +46,7 @@ import {
   removeCharacterConversation,
 } from '@/lib/character-context-cache';
 import { loadCharacterImageList } from '@/lib/character-image-list-cache';
+import { forgetImageBlobs } from '@/lib/image-blob-cache';
 import { MenuIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
@@ -502,10 +503,15 @@ export default function ChatView({
       // 关键点：DELETE 用上面快照下来的 targetConvId，
       // 即便用户在 await 期间又切到别的对话也只会删自己最初确认的那一条
       // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
-      await expectOkResponse(await fetch(`/api/conversations/${targetConvId}`, {
+      const data = await parseJsonResponse<{ ok: boolean; deletedUrls?: string[] }>(await fetch(`/api/conversations/${targetConvId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
       }));
+      try {
+        await forgetImageBlobs(data.deletedUrls ?? []);
+      } catch (error) {
+        console.warn('[image-cache] 对话删除已成功，但本地图片缓存失效失败：', error);
+      }
       clearCachedMessages(targetConvId);
       setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
       if (character?.id) removeCharacterConversation(character.id, targetConvId);

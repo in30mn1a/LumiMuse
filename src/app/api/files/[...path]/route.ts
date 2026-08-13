@@ -27,6 +27,9 @@ function cacheControlForDir(dir: string): string {
  *
  * 在 standalone 模式下，运行时写入 public/ 的文件无法通过 Next.js 静态服务访问，
  * 通过此路由读取磁盘文件并返回。
+ *
+ * Cache-Control 虽是一年 immutable，但 App Router 仍会给响应追加 RSC Vary；
+ * 浏览器 HTTP 缓存因此不稳定。跨会话秒开依赖客户端 image-blob-cache 的 Cache API。
  */
 export async function GET(
   request: NextRequest,

@@ -15,6 +15,7 @@ const root = path.resolve(__dirname, '..');
 const hookPath = path.join(root, 'src/hooks/chat/useChatMessageActions.ts');
 const originalResolveFilename = Module._resolveFilename;
 const originalFetch = global.fetch;
+const originalConsoleWarn = console.warn;
 
 Module._resolveFilename = function resolveFilename(request, parent, isMain, options) {
   if (request.startsWith('@/')) {
@@ -28,6 +29,9 @@ Module._resolveFilename = function resolveFilename(request, parent, isMain, opti
 
 require.extensions['.ts'] = loadTypeScript;
 require.extensions['.tsx'] = loadTypeScript;
+
+const imageBlobCache = require('../src/lib/image-blob-cache.ts');
+const originalForgetImageBlobs = imageBlobCache.forgetImageBlobs;
 
 function loadTypeScript(module, filename) {
   const source = fs.readFileSync(filename, 'utf8');
@@ -98,6 +102,8 @@ function createOptions(overrides = {}) {
 test.afterEach(() => {
   cleanup();
   global.fetch = originalFetch;
+  console.warn = originalConsoleWarn;
+  imageBlobCache.forgetImageBlobs = originalForgetImageBlobs;
 });
 
 test.after(() => {
@@ -308,6 +314,124 @@ test('delete uses the response conversation id and refreshes its authoritative c
   assert.equal(cached.totalTokens, 42);
 });
 
+test('delete waits for invalidating only server-confirmed image URLs before refreshing', async () => {
+  const useChatMessageActions = loadHook();
+  const events = [];
+  let resolveForget;
+  imageBlobCache.forgetImageBlobs = urls => {
+    events.push({ type: 'forget-start', urls: [...urls] });
+    return new Promise(resolve => { resolveForget = resolve; });
+  };
+  global.fetch = async () => new Response(JSON.stringify({
+    ok: true,
+    deleted: 'message',
+    conversation_id: 'conv-a',
+    deletedUrls: ['/api/files/generated/deleted.png'],
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const { result } = renderHook(() => useChatMessageActions(createOptions({
+    refreshMessagesForConversation: async () => { events.push({ type: 'refresh' }); },
+  })));
+  let deletion;
+  await act(async () => {
+    deletion = result.current.handleDeleteMessage('assistant-target');
+    await new Promise(resolve => setImmediate(resolve));
+  });
+
+  assert.deepEqual(events, [{
+    type: 'forget-start',
+    urls: ['/api/files/generated/deleted.png'],
+  }]);
+  await act(async () => {
+    resolveForget();
+    await deletion;
+  });
+  assert.deepEqual(events, [
+    { type: 'forget-start', urls: ['/api/files/generated/deleted.png'] },
+    { type: 'refresh' },
+  ]);
+});
+
+test('successful delete still commits authoritative state when local image invalidation rejects', async () => {
+  const useChatMessageActions = loadHook();
+  const warnings = [];
+  const toasts = [];
+  const refreshed = [];
+  let visibleMessages = [
+    message('user-nearest', 'user', 'nearest question'),
+    message('assistant-target', 'assistant', 'target answer'),
+  ];
+  imageBlobCache.forgetImageBlobs = async () => {
+    throw new Error('cache storage unavailable');
+  };
+  console.warn = (...args) => warnings.push(args);
+  global.fetch = async () => new Response(JSON.stringify({
+    ok: true,
+    deleted: 'message',
+    conversation_id: 'conv-a',
+    deletedUrls: ['/api/files/generated/deleted.png'],
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const { result } = renderHook(() => useChatMessageActions(createOptions({
+    updateMessagesForConversation: (_convId, updater) => {
+      visibleMessages = updater(visibleMessages);
+    },
+    refreshMessagesForConversation: async convId => { refreshed.push(convId); },
+    showToast: (messageText, type) => toasts.push({ messageText, type }),
+  })));
+  await act(async () => {
+    await result.current.handleDeleteMessage('assistant-target');
+  });
+
+  assert.deepEqual(visibleMessages.map(item => item.id), ['user-nearest']);
+  assert.deepEqual(refreshed, ['conv-a']);
+  assert.deepEqual(toasts, [], 'cache invalidation failure must not masquerade as an API delete failure');
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0][0]), /本地图片缓存失效失败/);
+});
+
+test('successful edit still refreshes and keeps deletedUrls out of the authoritative Message when invalidation rejects', async () => {
+  const useChatMessageActions = loadHook();
+  const warnings = [];
+  const toasts = [];
+  const refreshed = [];
+  let committedMessage;
+  imageBlobCache.forgetImageBlobs = async () => {
+    throw new Error('cache storage unavailable');
+  };
+  console.warn = (...args) => warnings.push(args);
+  global.fetch = async () => new Response(JSON.stringify({
+    ...message('assistant-target', 'assistant', 'edited answer'),
+    deletedUrls: ['/api/files/generated/deleted.png'],
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const { result } = renderHook(() => useChatMessageActions(createOptions({
+    updateMessagesForConversation: (_convId, updater) => {
+      committedMessage = updater([message('assistant-target', 'assistant', 'old answer')])[0];
+    },
+    refreshMessagesForConversation: async convId => { refreshed.push(convId); },
+    showToast: (messageText, type) => toasts.push({ messageText, type }),
+  })));
+  await act(async () => {
+    await result.current.handleEditMessage('assistant-target', 'edited answer');
+  });
+
+  assert.equal(committedMessage.content, 'edited answer');
+  assert.equal(Object.hasOwn(committedMessage, 'deletedUrls'), false);
+  assert.deepEqual(refreshed, ['conv-a']);
+  assert.deepEqual(toasts, []);
+  assert.equal(warnings.length, 1);
+});
+
 test('delete failure is consumed and shown as an error toast', async () => {
   const useChatMessageActions = loadHook();
   const toasts = [];
@@ -331,6 +455,7 @@ test('edit refreshes the message owner while version switch refreshes only its c
   const options = createOptions();
   const refreshed = [];
   const countRefreshes = [];
+  imageBlobCache.forgetImageBlobs = async () => {};
   global.fetch = async (_url, init) => {
     options.activeConvIdRef.current = 'conv-b';
     return new Response(JSON.stringify(message('assistant-target', 'assistant', init.method === 'PUT' ? 'updated' : 'unchanged')), {
@@ -376,10 +501,12 @@ test('version switch keeps a search-loaded message outside the latest 200-messag
   options.messagesRef.current = visibleMessages;
   const refreshed = [];
   const countRefreshes = [];
+  imageBlobCache.forgetImageBlobs = async () => {};
   global.fetch = async () => new Response(JSON.stringify({
     ...target,
     content: 'older version',
     token_count: 2,
+    deletedUrls: ['/api/files/generated/removed-version.png'],
     metadata: {
       ...target.metadata,
       activeVersion: 0,
@@ -412,6 +539,7 @@ test('version switch keeps a search-loaded message outside the latest 200-messag
   assert.equal(visibleMessages[0].id, 'assistant-target');
   assert.equal(visibleMessages[0].content, 'older version');
   assert.equal(visibleMessages[0].metadata.activeVersion, 0);
+  assert.equal(Object.hasOwn(visibleMessages[0], 'deletedUrls'), false);
   assert.deepEqual(refreshed, []);
   assert.deepEqual(countRefreshes, ['conv-a']);
 });

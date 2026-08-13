@@ -27,6 +27,11 @@ interface ModalProps {
   ariaLabel?: string;
   /** backdrop/overlay 容器额外或替代布局类。 */
   overlayClassName?: string;
+  /**
+   * 上方另有嵌套 modal 时，暂停当前层的 ESC、焦点陷阱和辅助技术暴露。
+   * 当前层仍保持挂载，以保留界面状态并让顶层关闭后恢复原触发点焦点。
+   */
+  suspended?: boolean;
 }
 
 /**
@@ -51,6 +56,7 @@ export default function Modal({
   dialogClassName,
   ariaLabel,
   overlayClassName,
+  suspended = false,
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // 保存打开 modal 之前的焦点元素，用于关闭后恢复
@@ -88,7 +94,7 @@ export default function Modal({
 
   // ESC 关闭 + Tab 焦点陷阱
   useEffect(() => {
-    if (!open) return;
+    if (!open || suspended) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -127,7 +133,7 @@ export default function Modal({
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, suspended]);
 
   if (!open || !mounted) {
     // 未挂载或未打开时不渲染 Portal
@@ -140,16 +146,18 @@ export default function Modal({
     <div
       className={overlayClassName ?? 'fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm'}
       onClick={() => {
-        if (closeOnBackdrop) onClose();
+        if (!suspended && closeOnBackdrop) onClose();
       }}
       aria-hidden="false"
     >
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={suspended ? undefined : 'true'}
+        aria-hidden={suspended || undefined}
         aria-labelledby={titleId}
         aria-label={title ? undefined : ariaLabel}
+        inert={suspended || undefined}
         tabIndex={-1}
         className={
           dialogClassName ??

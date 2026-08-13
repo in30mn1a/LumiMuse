@@ -36,6 +36,7 @@ import { ApiSettingsSection } from '@/components/settings/ApiSettingsSection';
 import { ProviderSettingsSection } from '@/components/settings/ProviderSettingsSection';
 import { useSettingsAuth } from '@/hooks/settings/useSettingsAuth';
 import { useSettingsProviders } from '@/hooks/settings/useSettingsProviders';
+import { forgetImageBlobs } from '@/lib/image-blob-cache';
 
 type MemoryModePreset = 'local' | 'balanced' | 'continuity';
 type ModelCredentialSource = 'chat' | 'embedding' | 'reranker';
@@ -994,7 +995,16 @@ function MaintenanceSection({ t }: { t: (key: string) => string }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      const data = await parseJsonResponse<{ dbDeleted: number; fileResults: Record<string, { deleted: number; errors: number }> }>(res);
+      const data = await parseJsonResponse<{
+        dbDeleted: number;
+        fileResults: Record<string, { deleted: number; errors: number }>;
+        deletedUrls?: string[];
+      }>(res);
+      try {
+        await forgetImageBlobs(data.deletedUrls ?? []);
+      } catch (error) {
+        console.warn('[image-cache] 维护清理已成功，但本地图片缓存失效失败：', error);
+      }
       setCleanedCount(data.dbDeleted);
       setFileResults(data.fileResults);
       setStatus('done');

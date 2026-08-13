@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { collectConversationLocalAssetUrls, collectAllLocalAssetUrls, deleteLocalAssetUrls } from '@/lib/character-file-utils';
+import {
+  collectConversationLocalAssetUrls,
+  deleteLocalAssetUrls,
+  filterUnreferencedLocalAssetUrls,
+} from '@/lib/character-file-utils';
 import { conversationUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET(
@@ -33,11 +37,10 @@ export async function DELETE(
   if (changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   // 清理该对话独有的本地文件
-  const remainingUrls = collectAllLocalAssetUrls(db);
-  const orphanUrls = [...fileUrls].filter(url => !remainingUrls.has(url));
-  await deleteLocalAssetUrls(orphanUrls);
+  const orphanUrls = filterUnreferencedLocalAssetUrls(db, fileUrls);
+  const deletedUrls = await deleteLocalAssetUrls(orphanUrls);
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, deletedUrls });
 }
 
 

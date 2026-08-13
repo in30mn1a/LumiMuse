@@ -105,6 +105,37 @@ test('ChatView write handlers validate failed responses before local mutation or
   assert.match(switchBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);
 });
 
+test('successful deletion and maintenance operations isolate cache invalidation failures from authoritative state commits', () => {
+  const chatView = readProjectFile('src/components/chat/ChatView.tsx');
+  const characterPage = readProjectFile('src/app/characters/[id]/page.tsx');
+  const imageHook = readProjectFile('src/hooks/chat/useChatImageGeneration.ts');
+  const settingsPage = readProjectFile('src/app/settings/page.tsx');
+
+  const conversationDelete = sliceBetween(chatView, 'const handleDeleteConv = async', '  const handleSummarize');
+  assert.match(
+    conversationDelete,
+    /try \{\s*await forgetImageBlobs\(data\.deletedUrls \?\? \[\]\);\s*\} catch \(error\) \{\s*console\.warn\([^;]+;\s*\}\s*clearCachedMessages\(targetConvId\);/,
+  );
+
+  const characterDelete = sliceBetween(characterPage, 'const handleDelete = async', '  const handleDuplicate');
+  assert.match(
+    characterDelete,
+    /try \{\s*await forgetImageBlobs\(data\.deletedUrls \?\? \[\]\);\s*\} catch \(error\) \{\s*console\.warn\([^;]+;\s*\}[\s\S]*clearCharacterContext\(id\);/,
+  );
+
+  const imageDelete = sliceBetween(imageHook, 'const handleDeleteImage = useCallback', '  const handleEditImagePrompt');
+  assert.match(
+    imageDelete,
+    /try \{\s*await forgetImageBlobs\(updated\.deletedUrls \?\? \[\]\);\s*\} catch \(error\) \{\s*console\.warn\([^;]+;\s*\}\s*markSkipNextScroll\(\);/,
+  );
+
+  const maintenanceCleanup = sliceBetween(settingsPage, 'const handleCleanup = async', '  const fileOrphanCount');
+  assert.match(
+    maintenanceCleanup,
+    /try \{\s*await forgetImageBlobs\(data\.deletedUrls \?\? \[\]\);\s*\} catch \(error\) \{\s*console\.warn\([^;]+;\s*\}\s*setCleanedCount\(data\.dbDeleted\);/,
+  );
+});
+
 test('automatic image generation records inline failure state without blocking chat flow', () => {
   const source = readProjectFile('src/hooks/chat/useChatImageGeneration.ts');
   const chatView = readProjectFile('src/components/chat/ChatView.tsx');
@@ -130,7 +161,7 @@ test('maintenance preview and cleanup failures show inline errors and do not rep
 
   assert.match(maintenance, /const \[errorMessage, setErrorMessage\] = useState<string \| null>\(null\);/);
   assert.match(maintenance, /await parseJsonResponse<\{ total: number; orphanFiles: Record<string, OrphanFileInfo> \}>\(res\);/);
-  assert.match(maintenance, /await parseJsonResponse<\{ dbDeleted: number; fileResults: Record<string, \{ deleted: number; errors: number \}> \}>\(res\);/);
+  assert.match(maintenance, /await parseJsonResponse<\{[\s\S]*dbDeleted: number;[\s\S]*fileResults: Record<string, \{ deleted: number; errors: number \}>;[\s\S]*deletedUrls\?: string\[\];[\s\S]*\}>\(res\);/);
   assert.match(maintenance, /setErrorMessage\(`\$\{t\('settings\.cleanupPreviewFailed'\)\}: \$\{getErrorMessage\(err\)\}`\);/);
   assert.match(maintenance, /setErrorMessage\(`\$\{t\('settings\.cleanupFailed'\)\}: \$\{getErrorMessage\(err\)\}`\);/);
   assert.match(maintenance, /status === 'error' \? 'text-red-600'/);

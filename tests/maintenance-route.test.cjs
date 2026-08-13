@@ -224,6 +224,16 @@ test('maintenance preview finds orphans and cleanup preserves avatar/content/met
       attachments: { deleted: 1, errors: 0 },
       generated: { deleted: 2, errors: 0 },
     });
+    assert.deepEqual(cleanup.deletedUrls.sort(), [
+      '/api/files/attachments/attachment-orphan.png',
+      '/api/files/avatars/avatar-orphan.png',
+      '/api/files/generated/character-live/nested-orphan.png',
+      '/api/files/generated/generated-orphan.png',
+      '/attachments/attachment-orphan.png',
+      '/avatars/avatar-orphan.png',
+      '/generated/character-live/nested-orphan.png',
+      '/generated/generated-orphan.png',
+    ].sort());
     assert.deepEqual(cleanup.after, {
       conversations: 1,
       messages: 1,

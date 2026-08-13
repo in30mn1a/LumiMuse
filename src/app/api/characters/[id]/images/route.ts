@@ -136,8 +136,8 @@ export async function DELETE(
     cleanup();
   }
 
-  const deletedUrls = filterUnreferencedLocalAssetUrls(db, fileUrls);
-  await deleteLocalAssetUrls(deletedUrls);
+  const orphanUrls = filterUnreferencedLocalAssetUrls(db, fileUrls);
+  const deletedUrls = await deleteLocalAssetUrls(orphanUrls);
 
   return NextResponse.json({
     ok: true,

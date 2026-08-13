@@ -1203,6 +1203,143 @@ test('chat image generation rechecks inline prompt freshness after a delayed pla
   }
 });
 
+test('chat image deletion waits for invalidating server-confirmed URLs before local mutation', async () => {
+  const forgetRequest = createDeferred();
+  const messagesRef = { current: [{
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    role: 'assistant',
+    content: 'image reply',
+    token_count: 0,
+    created_at: '2026-06-07T00:00:00.000Z',
+    metadata: {
+      generatedImages: [{
+        id: 'img-a',
+        url: '/api/files/generated/deleted.png',
+        prompt: 'prompt',
+      }],
+    },
+  }] };
+  const invalidations = [];
+  const localWrites = [];
+  const originalFetch = global.fetch;
+  global.fetch = async () => jsonResponse({
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    deletedUrls: ['/api/files/generated/deleted.png'],
+  });
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useChatImageGeneration } = requireFreshWithMocks('../src/hooks/chat/useChatImageGeneration.ts', {
+          react: reactMock,
+          '@/lib/image-blob-cache': {
+            forgetImageBlobs: urls => {
+              invalidations.push([...urls]);
+              return forgetRequest.promise;
+            },
+          },
+        });
+        return useChatImageGeneration;
+      },
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef: { current: 'conv-a' },
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        messagesRef,
+        updateMessagesForConversation: (conversationId, updater) => {
+          localWrites.push({ conversationId, messages: updater(messagesRef.current) });
+        },
+        markSkipNextScroll: () => {},
+        showToast: () => {},
+        t: key => key,
+      }),
+    );
+
+    runtime.render();
+    const deletion = runtime.current.handleDeleteImage('msg-a', 'img-a');
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepEqual(invalidations, [['/api/files/generated/deleted.png']]);
+    assert.deepEqual(localWrites, []);
+
+    forgetRequest.resolve();
+    await deletion;
+    assert.equal(localWrites.length, 1);
+    assert.equal(localWrites[0].conversationId, 'conv-a');
+    assert.deepEqual(localWrites[0].messages[0].metadata.generatedImages, []);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('chat image deletion still applies the server-confirmed mutation when cache invalidation rejects', async () => {
+  const messagesRef = { current: [{
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    role: 'assistant',
+    content: 'image reply',
+    token_count: 0,
+    created_at: '2026-06-07T00:00:00.000Z',
+    metadata: {
+      generatedImages: [{
+        id: 'img-a',
+        url: '/api/files/generated/deleted.png',
+        prompt: 'prompt',
+      }],
+    },
+  }] };
+  const localWrites = [];
+  const toasts = [];
+  const warnings = [];
+  const originalFetch = global.fetch;
+  const originalConsoleWarn = console.warn;
+  global.fetch = async () => jsonResponse({
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    deletedUrls: ['/api/files/generated/deleted.png'],
+  });
+  console.warn = (...args) => warnings.push(args);
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useChatImageGeneration } = requireFreshWithMocks('../src/hooks/chat/useChatImageGeneration.ts', {
+          react: reactMock,
+          '@/lib/image-blob-cache': {
+            forgetImageBlobs: async () => { throw new Error('cache storage unavailable'); },
+          },
+        });
+        return useChatImageGeneration;
+      },
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef: { current: 'conv-a' },
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        messagesRef,
+        updateMessagesForConversation: (conversationId, updater) => {
+          localWrites.push({ conversationId, messages: updater(messagesRef.current) });
+        },
+        markSkipNextScroll: () => {},
+        showToast: (message, type) => toasts.push({ message, type }),
+        t: key => key,
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.handleDeleteImage('msg-a', 'img-a');
+
+    assert.equal(localWrites.length, 1);
+    assert.deepEqual(localWrites[0].messages[0].metadata.generatedImages, []);
+    assert.deepEqual(toasts, [], 'cache invalidation failure must not be presented as an image delete failure');
+    assert.equal(warnings.length, 1);
+  } finally {
+    global.fetch = originalFetch;
+    console.warn = originalConsoleWarn;
+  }
+});
+
 test('chat image generation serializes the same message, keeps other messages concurrent, and clears busy state for retry', async () => {
   const imageRequests = [];
   const imageRequestBodies = [];

@@ -9,6 +9,7 @@ import {
   setCharacterImageListCache,
   subscribeCharacterImageList,
 } from '@/lib/character-image-list-cache';
+import { forgetImageBlobs, peekImageBlobUrl, warmImageBlob } from '@/lib/image-blob-cache';
 import { ImageIcon, TrashIcon } from '@/components/ui/icons';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
@@ -16,6 +17,90 @@ import Modal from '@/components/ui/Modal';
 
 const PAGE_SIZE = 12;
 const DOWNLOAD_CONCURRENCY = 5;
+
+function CachedGalleryImage({
+  url,
+  className,
+  loading,
+  alt,
+  placeholderClassName,
+  loadingLabel,
+}: {
+  url: string;
+  className?: string;
+  loading?: 'eager' | 'lazy';
+  alt?: string;
+  placeholderClassName?: string;
+  loadingLabel?: string;
+}) {
+  return (
+    <CachedGalleryImageInner
+      key={url}
+      url={url}
+      className={className}
+      loading={loading}
+      alt={alt}
+      placeholderClassName={placeholderClassName}
+      loadingLabel={loadingLabel}
+    />
+  );
+}
+
+function CachedGalleryImageInner({
+  url,
+  className,
+  loading,
+  alt = '',
+  placeholderClassName,
+  loadingLabel,
+}: {
+  url: string;
+  className?: string;
+  loading?: 'eager' | 'lazy';
+  alt?: string;
+  placeholderClassName?: string;
+  loadingLabel?: string;
+}) {
+  const [src, setSrc] = useState(() => peekImageBlobUrl(url) || '');
+
+  useEffect(() => {
+    let cancelled = false;
+    void warmImageBlob(url).then((objectUrl) => {
+      if (cancelled) return;
+      setSrc(objectUrl || url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (!src) {
+    return (
+      <div
+        className={placeholderClassName ?? className}
+        role={loadingLabel ? 'status' : undefined}
+        aria-hidden={loadingLabel ? undefined : true}
+      >
+        {loadingLabel}
+      </div>
+    );
+  }
+
+  return (
+    // 展示来自 /api/files/... 的生成图，路径动态、非静态资源，next/image 无法优化
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      loading={loading}
+      decoding="async"
+      onError={() => {
+        if (src !== url) setSrc(url);
+      }}
+    />
+  );
+}
 
 type CharacterImage = UniqueGeneratedImageItem;
 
@@ -36,7 +121,8 @@ async function fetchImagesWithConcurrency(images: CharacterImage[]): Promise<Arr
     const batch = images.slice(i, i + DOWNLOAD_CONCURRENCY);
     const blobs = await Promise.all(
       batch.map(async img => {
-        const res = await fetch(img.url);
+        const cached = peekImageBlobUrl(img.url);
+        const res = await fetch(cached || img.url);
         if (!res.ok) throw new Error(`Failed to load ${img.url}`);
         return { blob: await res.blob(), url: img.url };
       }),
@@ -131,8 +217,9 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items }),
       });
-      const data = await res.json() as { ok: boolean };
+      const data = await res.json() as { ok: boolean; deletedUrls?: string[] };
       if (!data.ok) throw new Error(t('chat.imageDeleteFail'));
+      const deletedUrls = data.deletedUrls ?? [];
       setSelected(new Set());
       setPreviewIndex(null);
       // 乐观写回缓存（抬高 epoch），再 force 拉权威列表，避免在飞 pre-delete GET 覆盖
@@ -140,6 +227,11 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
         const remaining = images.filter(img => !selected.has(img.url));
         setCharacterImageListCache(characterId, remaining);
         setImages(remaining);
+        try {
+          await forgetImageBlobs(deletedUrls);
+        } catch (error) {
+          console.warn('[image-cache] 图库删除已成功，但本地图片缓存失效失败：', error);
+        }
       }
       await reload({ force: true, quiet: true });
       // 通知父组件刷新主消息列表（图片已从 metadata 中剥离）
@@ -198,6 +290,8 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
       <Modal
         open
         onClose={close}
+        ariaLabel={t('chat.imageManagerTitle')}
+        suspended={previewImage !== null}
         padded={false}
         dialogClassName="surface-panel flex w-full max-w-3xl flex-col overflow-hidden outline-none"
       >
@@ -275,15 +369,11 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
                         onClick={() => setPreviewIndex(globalIndex)}
                         aria-label={t('chat.imageViewLarge')}
                       >
-                        {/* 展示来自 /api/files/... 的生成/上传图片，路径动态、非静态资源，next/image 无法优化 */}
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={img.url}
-                          alt=""
+                        <CachedGalleryImage
+                          url={img.url}
                           className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
                           // 首屏网格用 eager，避免 lazy 在弹窗刚打开时还不触发解码
                           loading={indexInPage < PAGE_SIZE ? 'eager' : 'lazy'}
-                          decoding="async"
                         />
                       </button>
                       <button
@@ -354,6 +444,7 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
         <Modal
           open
           onClose={() => setPreviewIndex(null)}
+          ariaLabel={t('chat.imagePreviewTitle')}
           padded={false}
           dialogClassName="relative flex max-h-[90dvh] max-w-[90vw] items-center justify-center bg-transparent outline-none"
         >
@@ -366,12 +457,16 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
               <span className="block text-xl leading-none">‹</span>
             </button>
           )}
-          {/* 展示来自 /api/files/... 的生成/上传图片，路径动态、非静态资源，next/image 无法优化 */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={previewImage.url}
-            alt=""
+          <CachedGalleryImage
+            url={previewImage.url}
             className="max-h-[90dvh] max-w-[90vw] rounded-2xl shadow-2xl"
+            alt={formatTemplate(t('chat.imagePreviewAlt'), {
+              current: previewIndex! + 1,
+              total: images.length,
+            })}
+            placeholderClassName="flex h-[70dvh] w-[90vw] max-w-5xl items-center justify-center rounded-2xl bg-black/20 text-sm text-white/80"
+            loadingLabel={t('common.loading')}
+            loading="eager"
           />
           {canNext && (
             <button

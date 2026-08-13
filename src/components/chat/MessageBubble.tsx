@@ -754,11 +754,13 @@ function ImageLightbox({
         onPointerDown={handleImagePointerDown}
         onPointerUp={handleImagePointerUp}
       >
-        <img
+        <ReservedChatImage
           src={img.url}
-          alt=""
-          className="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl"
-          draggable={false}
+          alt={formatTemplate(t('message.imagePreviewAlt'), { current: idx + 1, total })}
+          maxWidthClassName="max-w-[90vw]"
+          maxWidth="90vw"
+          maxHeight="85vh"
+          className="rounded-xl shadow-2xl"
         />
       </div>
     </>
@@ -768,7 +770,7 @@ function ImageLightbox({
     <Modal
       open
       onClose={onClose}
-      ariaLabel={t('message.imageCloseTitle')}
+      ariaLabel={t('message.imagePreviewTitle')}
       padded={false}
       overlayClassName="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm"
       dialogClassName="relative flex h-full w-full flex-col items-center justify-center bg-transparent outline-none"

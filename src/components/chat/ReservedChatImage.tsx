@@ -5,7 +5,6 @@ import {
   DEFAULT_IMAGE_ASPECT_RATIO,
   peekImageAspectRatio,
   rememberImageAspectRatio,
-  warmImageAspectRatio,
 } from '@/lib/image-aspect-cache';
 import {
   isInMemoryImageSrc,
@@ -54,7 +53,9 @@ function ReservedChatImageInner({
   onClick,
 }: Props & { src: string }) {
   const [ratio, setRatio] = useState(() => peekImageAspectRatio(src) ?? DEFAULT_IMAGE_ASPECT_RATIO);
-  const [displaySrc, setDisplaySrc] = useState(() => peekImageBlobUrl(src) || src);
+  const [displaySrc, setDisplaySrc] = useState(() => (
+    peekImageBlobUrl(src) || (isInMemoryImageSrc(src) ? src : '')
+  ));
   const [loaded, setLoaded] = useState(
     () => Boolean(peekImageBlobUrl(src)) || isInMemoryImageSrc(src) || peekImageAspectRatio(src) != null,
   );
@@ -64,7 +65,7 @@ function ReservedChatImageInner({
 
   useEffect(() => {
     let cancelled = false;
-    const expectedSrc = peekImageBlobUrl(src) || src;
+    const expectedSrc = peekImageBlobUrl(src) || (isInMemoryImageSrc(src) ? src : '');
 
     // 下一帧检查 img 是否已 complete（HTTP 磁盘缓存命中时同步可用），立即亮起免淡入。
     // 校验 DOM src 仍是本轮期望值，防止把旧图比率记到新 URL 名下。
@@ -79,29 +80,13 @@ function ReservedChatImageInner({
       setLoaded(true);
     });
 
-    const hasBlob = Boolean(peekImageBlobUrl(src)) || isInMemoryImageSrc(src);
-    if (!hasBlob) {
-      // 后台灌内存，供下次 remount 秒开。
-      // 本轮若远程 img 已 complete，不替换 src，避免二次闪烁。
-      void warmImageBlob(src).then((objectUrl) => {
-        if (cancelled || !objectUrl) return;
-        if (imgRef.current?.complete && imgRef.current.naturalWidth > 0) {
-          setLoaded(true);
-          return;
-        }
-        setDisplaySrc(objectUrl);
-        setLoaded(true);
-      });
-    }
-
-    // data:/blob: 不进宽高比缓存（键太大/临时），由 onLoad 就地设置
-    if (!lockedRef.current && !isInMemoryImageSrc(src)) {
-      void warmImageAspectRatio(src).then((r) => {
-        if (cancelled || lockedRef.current) return;
-        setRatio(r);
-        lockedRef.current = true;
-      });
-    }
+    // 始终消费一次权威 warm 结果：render miss、effect 时内存 hit 的竞态下，
+    // warm 会立即返回已缓存 object URL；持久缓存 miss 后才回退原始 URL。
+    void warmImageBlob(src).then((objectUrl) => {
+      if (cancelled) return;
+      setDisplaySrc(objectUrl || src);
+      if (objectUrl) setLoaded(true);
+    });
 
     return () => {
       cancelled = true;
@@ -127,44 +112,46 @@ function ReservedChatImageInner({
       className={`relative w-full overflow-hidden bg-black/[0.04] dark:bg-white/[0.06] ${maxWidthClassName} ${className}`}
       style={sizeStyle}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element -- 用户/生图 URL 动态，走同源 /api/files 或 blob: */}
-      <img
-        ref={imgRef}
-        src={displaySrc}
-        alt={alt}
-        loading="eager"
-        decoding="async"
-        draggable={false}
-        onClick={onClick}
-        className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-100 ${
-          loaded ? 'opacity-100' : 'opacity-0'
-        }`}
-        onLoad={(e) => {
-          const el = e.currentTarget;
-          if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-            const r = el.naturalWidth / el.naturalHeight;
-            rememberImageAspectRatio(src, r);
-            if (!lockedRef.current) {
-              lockedRef.current = true;
-              setRatio(r);
+      {displaySrc && (
+        // eslint-disable-next-line @next/next/no-img-element -- 用户/生图 URL 动态，走同源 /api/files 或 blob:
+        <img
+          ref={imgRef}
+          src={displaySrc}
+          alt={alt}
+          loading="eager"
+          decoding="async"
+          draggable={false}
+          onClick={onClick}
+          className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-100 ${
+            loaded ? 'opacity-100' : 'opacity-0'
+          }`}
+          onLoad={(e) => {
+            const el = e.currentTarget;
+            if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+              const r = el.naturalWidth / el.naturalHeight;
+              rememberImageAspectRatio(src, r);
+              if (!lockedRef.current) {
+                lockedRef.current = true;
+                setRatio(r);
+              }
             }
-          }
-          setLoaded(true);
-          // 首次从网络/磁盘 decode 成功后灌入内存 blob，供下次切对话秒开
-          if (!isInMemoryImageSrc(src) && !peekImageBlobUrl(src)) {
-            void warmImageBlob(src);
-          }
-        }}
-        onError={() => {
-          // blob 被淘汰 revoke / 加载失败：回退原始 URL 重试一次；
-          // 已在原始 URL 上失败则露出浏览器破图态，而非永久 opacity-0 空盒
-          if (displaySrc !== src) {
-            setDisplaySrc(src);
-          } else {
             setLoaded(true);
-          }
-        }}
-      />
+            // 首次从网络/磁盘 decode 成功后灌入内存 blob，供下次切对话秒开
+            if (!isInMemoryImageSrc(src) && !peekImageBlobUrl(src)) {
+              void warmImageBlob(src);
+            }
+          }}
+          onError={() => {
+            // blob 被淘汰 revoke / 加载失败：回退原始 URL 重试一次；
+            // 已在原始 URL 上失败则露出浏览器破图态，而非永久 opacity-0 空盒
+            if (displaySrc !== src) {
+              setDisplaySrc(src);
+            } else {
+              setLoaded(true);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

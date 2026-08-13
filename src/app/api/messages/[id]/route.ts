@@ -54,12 +54,12 @@ function collectMessageLocalAssetUrls(message: MessageRecord): Set<string> {
 async function deleteUnreferencedLocalAssets(
   db: ReturnType<typeof getDb>,
   previousFileUrls: Set<string>,
-): Promise<void> {
-  if (previousFileUrls.size === 0) return;
+): Promise<string[]> {
+  if (previousFileUrls.size === 0) return [];
 
   // 只对修改前出现过的 URL 做"是否仍被引用"检查，避免全表扫描所有资源。
   const orphanUrls = filterUnreferencedLocalAssetUrls(db, previousFileUrls);
-  await deleteLocalAssetUrls(orphanUrls);
+  return deleteLocalAssetUrls(orphanUrls);
 }
 
 function mergeMessageMetadata(
@@ -191,9 +191,12 @@ export async function PUT(
   })();
 
   // deleteUnreferencedLocalAssets 涉及文件 IO，必须在事务外执行
-  await deleteUnreferencedLocalAssets(db, previousFileUrls);
+  const deletedUrls = await deleteUnreferencedLocalAssets(db, previousFileUrls);
   const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
-  return NextResponse.json(serializeMessage(updated));
+  return NextResponse.json({
+    ...serializeMessage(updated),
+    deletedUrls,
+  });
 }
 
 export async function DELETE(
@@ -232,12 +235,13 @@ export async function DELETE(
         .run(target.content, tokenResult.tokenCount, JSON.stringify(meta), id);
       return db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
     })();
-    await deleteUnreferencedLocalAssets(db, previousFileUrls);
+    const deletedUrls = await deleteUnreferencedLocalAssets(db, previousFileUrls);
     return NextResponse.json({
       ok: true,
       deleted: 'version',
       conversation_id: String(existing.conversation_id),
       message: serializeMessage(updated),
+      deletedUrls,
     });
   }
 
@@ -248,10 +252,11 @@ export async function DELETE(
     return db.prepare('DELETE FROM messages WHERE id = ?').run(id);
   })();
   if (result.changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  await deleteUnreferencedLocalAssets(db, previousFileUrls);
+  const deletedUrls = await deleteUnreferencedLocalAssets(db, previousFileUrls);
   return NextResponse.json({
     ok: true,
     deleted: 'message',
     conversation_id: String(existing.conversation_id),
+    deletedUrls,
   });
 }

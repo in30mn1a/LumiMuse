@@ -9,7 +9,7 @@ import { warmImageBlobs } from '@/lib/image-blob-cache';
  * - writeEpoch：本地写入（删除后写回）递增；在飞 GET 仅当 epoch 未变时才写回，
  *   避免慢请求覆盖用户刚完成的删除结果
  *
- * 列表层只缓存元数据（url/引用）；图片二进制由 image-blob-cache + 浏览器 HTTP cache 负责。
+ * 列表层只缓存元数据（url/引用）；图片二进制由 image-blob-cache（内存 + Cache API）负责。
  */
 
 const cache = new Map<string, UniqueGeneratedImageItem[]>();

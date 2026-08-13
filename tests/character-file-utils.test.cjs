@@ -10,9 +10,70 @@ registerTsLoader();
 const {
   collectLocalAssetUrlsFromContent,
   copyLocalAssetUrl,
+  deleteLocalAssetUrls,
   filterUnreferencedLocalAssetUrls,
   resolveLocalAssetUrl,
 } = require(path.resolve(__dirname, '../src/lib/character-file-utils.ts'));
+
+test('deleting local assets reports both canonical aliases only for files confirmed absent', async () => {
+  const tempRoot = path.resolve(__dirname, '../.tmp-tests');
+  fs.mkdirSync(tempRoot, { recursive: true });
+  const workspace = fs.mkdtempSync(path.join(tempRoot, 'character-delete-files-'));
+  const previousCwd = process.cwd();
+
+  try {
+    const existingPath = path.join(workspace, 'public', 'generated', 'char-a', 'existing.png');
+    fs.mkdirSync(path.dirname(existingPath), { recursive: true });
+    fs.writeFileSync(existingPath, 'image');
+    process.chdir(workspace);
+
+    const deletedUrls = await deleteLocalAssetUrls([
+      '/api/files/generated/char-a/existing.png?cache=1',
+      '/generated/char-a/existing.png#duplicate-alias',
+      '/api/files/generated/char-a/missing.png',
+      'https://example.com/not-local.png',
+    ]);
+
+    assert.deepEqual(deletedUrls, [
+      '/generated/char-a/existing.png',
+      '/api/files/generated/char-a/existing.png',
+      '/generated/char-a/missing.png',
+      '/api/files/generated/char-a/missing.png',
+    ]);
+    assert.equal(fs.existsSync(existingPath), false);
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('deleting local assets excludes files whose unlink failed', async () => {
+  const tempRoot = path.resolve(__dirname, '../.tmp-tests');
+  fs.mkdirSync(tempRoot, { recursive: true });
+  const workspace = fs.mkdtempSync(path.join(tempRoot, 'character-delete-error-'));
+  const previousCwd = process.cwd();
+  const originalWarn = console.warn;
+
+  try {
+    fs.mkdirSync(path.join(workspace, 'public', 'generated', 'char-a', 'directory.png'), { recursive: true });
+    process.chdir(workspace);
+    console.warn = () => {};
+
+    const deletedUrls = await deleteLocalAssetUrls([
+      '/api/files/generated/char-a/directory.png',
+      '/api/files/generated/char-a/missing.png',
+    ]);
+
+    assert.deepEqual(deletedUrls, [
+      '/generated/char-a/missing.png',
+      '/api/files/generated/char-a/missing.png',
+    ]);
+  } finally {
+    console.warn = originalWarn;
+    process.chdir(previousCwd);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
 
 test('generated asset URLs accept one safe character directory and preserve the relative path', () => {
   const asset = resolveLocalAssetUrl('/api/files/generated/char_A-12/image-1.png?cache=1');

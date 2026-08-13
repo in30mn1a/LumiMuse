@@ -71,6 +71,10 @@ function toAssetUrl(dir: LocalAssetDir, filename: string): string {
   return `/api/files/${dir}/${filename}`;
 }
 
+function toAssetUrlAliases(dir: LocalAssetDir, filename: string): [string, string] {
+  return [`/${dir}/${filename}`, toAssetUrl(dir, filename)];
+}
+
 function getLocalAssetIdentity(url: unknown): string | null {
   const asset = resolveLocalAssetUrl(url);
   return asset ? `${asset.dir}/${asset.filename}` : null;
@@ -295,18 +299,36 @@ export function collectAllLocalAssetUrls(db: Database): Set<string> {
   return urls;
 }
 
-export async function deleteLocalAssetUrls(urls: Iterable<string>): Promise<void> {
+/**
+ * 删除本地资源，并仅返回已确认不再存在的 URL。
+ *
+ * ENOENT 也算成功：文件已经不存在，客户端仍需清掉可能残留的持久缓存。
+ * 其它错误不返回，避免服务端删除失败时误导客户端失效仍有效的图片。
+ */
+export async function deleteLocalAssetUrls(urls: Iterable<string>): Promise<string[]> {
+  const deletedUrls = new Set<string>();
+  const confirmedAssets = new Set<string>();
   for (const url of urls) {
     const asset = resolveLocalAssetUrl(url);
     if (!asset) continue;
+    const identity = `${asset.dir}/${asset.filename}`;
+    if (confirmedAssets.has(identity)) continue;
+
     try {
       await unlink(asset.filePath);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         console.warn(`删除本地文件失败：${asset.filePath}`, err);
+        continue;
       }
     }
+
+    confirmedAssets.add(identity);
+    for (const alias of toAssetUrlAliases(asset.dir, asset.filename)) {
+      deletedUrls.add(alias);
+    }
   }
+  return [...deletedUrls];
 }
 
 export function remapJsonStringIds(value: string, idMap: Map<string, string>): string {

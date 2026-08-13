@@ -12,7 +12,7 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 1 });
 Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 1 });
 
-const { cleanup, render, within } = require('@testing-library/react');
+const { cleanup, render, waitFor, within } = require('@testing-library/react');
 const userEvent = require('@testing-library/user-event').default;
 
 const root = path.resolve(__dirname, '..');
@@ -57,6 +57,17 @@ function loadMessageBubble() {
     }
     if (request === '@/components/ui/icons') {
       return new Proxy({}, { get: () => icon });
+    }
+    if (request === '@/components/chat/ReservedChatImage') {
+      return {
+        __esModule: true,
+        default: ({ src, alt = '', className = '', onClick }) => React.createElement('img', {
+          src: `blob:${src}`,
+          alt,
+          className,
+          onClick,
+        }),
+      };
     }
     if (request === 'react-markdown') {
       return { __esModule: true, default: ({ children }) => React.createElement('span', null, children) };
@@ -122,15 +133,18 @@ test.after(() => {
 test('generated image thumbnail is keyboard operable and opens the lightbox', async () => {
   const user = userEvent.setup({ document });
   const view = renderBubble();
-  const image = view.container.querySelector('.generated-image-card img');
-  assert.ok(image, 'expected a generated image thumbnail');
-
+  const image = await waitFor(() => {
+    const element = view.container.querySelector('.generated-image-card img');
+    assert.ok(element, 'expected a generated image thumbnail');
+    return element;
+  });
   const trigger = image.closest('button');
   assert.ok(trigger, 'generated image thumbnail must be rendered as a real button');
   trigger.focus();
   await user.keyboard('{Enter}');
 
-  assert.ok(within(document.body).getByRole('dialog'));
+  assert.ok(within(document.body).getByRole('dialog', { name: 'message.imagePreviewTitle' }));
+  assert.ok(within(document.body).getByRole('img', { name: 'message.imagePreviewAlt' }));
 });
 
 test('image generation controls expose busy state and reject repeated activation for the same message', async () => {
@@ -151,11 +165,13 @@ test('image generation controls expose busy state and reject repeated activation
 test('image lightbox traps focus, closes with Escape, and restores thumbnail focus', async () => {
   const user = userEvent.setup({ document });
   const view = renderBubble();
-  const image = view.container.querySelector('.generated-image-card img');
-  assert.ok(image, 'expected a generated image thumbnail');
-
+  const image = await waitFor(() => {
+    const element = view.container.querySelector('.generated-image-card img');
+    assert.ok(element, 'expected a generated image thumbnail');
+    return element;
+  });
   await user.click(image);
-  const dialog = within(document.body).getByRole('dialog');
+  const dialog = within(document.body).getByRole('dialog', { name: 'message.imagePreviewTitle' });
   const buttons = within(dialog).getAllByRole('button');
   assert.ok(buttons.length >= 2, 'lightbox should expose navigation and close controls');
   const enabledButtons = buttons.filter(button => !button.disabled);

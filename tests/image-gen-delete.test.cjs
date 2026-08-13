@@ -78,6 +78,7 @@ test('/api/image-gen/delete preserves the character directory while checking nes
       },
       async deleteLocalAssetUrls(candidates) {
         deletedCandidates = [...candidates];
+        return deletedCandidates;
       },
     },
   });
@@ -87,4 +88,78 @@ test('/api/image-gen/delete preserves the character directory while checking nes
   assert.equal(response.status, 200);
   assert.deepEqual(checkedCandidates, ['/api/files/generated/char-a/image.png']);
   assert.deepEqual(deletedCandidates, checkedCandidates);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    deletedUrls: ['/api/files/generated/char-a/image.png'],
+  });
+});
+
+test('/api/characters/[id]/images returns only URLs confirmed physically absent', async () => {
+  const db = {
+    prepare(sql) {
+      if (sql.includes('WHERE messages.id = ?') && sql.includes('conversations.character_id = ?')) {
+        return { get: () => undefined };
+      }
+      if (sql.includes('WHERE conversations.character_id = ?') && sql.includes("messages.role = 'assistant'")) {
+        return { all: () => [{ id: 'msg-a', metadata: '{}' }] };
+      }
+      if (sql.startsWith('UPDATE messages SET metadata')) {
+        return { run: () => ({ changes: 1 }) };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    },
+    transaction(callback) {
+      return () => callback();
+    },
+  };
+  const candidates = [
+    '/api/files/generated/deleted.png',
+    '/api/files/generated/failed.png',
+  ];
+  const route = requireFreshWithMocks('../src/app/api/characters/[id]/images/route.ts', {
+    'next/server': {
+      NextResponse: {
+        json(body, init = {}) {
+          return { status: init.status ?? 200, json: async () => body };
+        },
+      },
+    },
+    '@/lib/db': { getDb: () => db },
+    '@/lib/request-json': {
+      readJsonObject: async () => ({
+        ok: true,
+        data: { items: [{ url: '/api/files/generated/deleted.png' }] },
+      }),
+    },
+    '@/lib/generated-image-assets': {
+      collectUniqueGeneratedImageItems: () => [],
+      removeGeneratedImageReferences: () => ({
+        changed: true,
+        removedUrls: candidates,
+        metadata: {},
+      }),
+    },
+    '@/lib/character-file-utils': {
+      filterUnreferencedLocalAssetUrls(receivedDb, urls) {
+        assert.equal(receivedDb, db);
+        assert.deepEqual([...urls], candidates);
+        return candidates;
+      },
+      async deleteLocalAssetUrls(urls) {
+        assert.deepEqual([...urls], candidates);
+        return ['/api/files/generated/deleted.png'];
+      },
+    },
+  });
+
+  const response = await route.DELETE({}, {
+    params: Promise.resolve({ id: 'char-a' }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    deletedCount: 2,
+    deletedUrls: ['/api/files/generated/deleted.png'],
+  });
 });

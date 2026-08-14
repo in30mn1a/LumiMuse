@@ -371,11 +371,17 @@ export function useChatScrollController({
     clearHighlightTimer();
   }, [clearHighlightTimer]);
 
+  // 流式跟随：直接写 scrollTop 而非 scrollIntoView('smooth')。
+  // 每帧发起平滑动画会与流式内容的高度增长竞态（目标位置每帧都在变，动画可能停在过时偏移，
+  // 移动端浏览器上表现为回跳到上一条气泡）；直接赋值每帧小步跟随，增量小、视觉上依然平滑。
+  // 赋值超出范围时浏览器会自动钳制到 scrollHeight - clientHeight，即真正的底部。
   useEffect(() => {
-    if (streamingText && !streamingTargetId && streamingConvId === activeConvId && isMessageListNearBottom()) {
-      scrollToBottom('smooth');
+    if (!streamingText || streamingTargetId || streamingConvId !== activeConvId || !isMessageListNearBottom()) {
+      return;
     }
-  }, [activeConvId, isMessageListNearBottom, scrollToBottom, streamingConvId, streamingTargetId, streamingText]);
+    const scroller = scrollContainerRef.current;
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }, [activeConvId, isMessageListNearBottom, scrollContainerRef, streamingConvId, streamingTargetId, streamingText]);
 
   useEffect(() => {
     if (skipScrollRef.current) {

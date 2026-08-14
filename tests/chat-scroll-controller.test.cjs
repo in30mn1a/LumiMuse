@@ -107,6 +107,40 @@ test('top sentinel observer stays stable when only message count changes', () =>
   );
 });
 
+test('streaming follow writes scrollTop directly and stays gated on the near-bottom check', () => {
+  const hook = readProjectFile('src/hooks/chat/useChatScrollController.ts');
+
+  // 每帧起一次平滑动画会与流式内容的高度增长竞态：目标位置每帧都在变，动画可能停在过时偏移，
+  // 移动端表现为回跳到上一条气泡。直接赋值让每帧只走一小步，不留动画尾巴。
+  // 全文唯一 —— usePrependScrollAnchor 写的是 scrollTop = nextScrollTop。
+  const marker = hook.search(/scrollTop = \w+\.scrollHeight/);
+  assert.notEqual(
+    marker,
+    -1,
+    'streaming follow must jump straight to the bottom instead of animating toward a moving target',
+  );
+
+  const effectStart = hook.lastIndexOf('useEffect(() => {', marker);
+  const effectEnd = hook.indexOf('}, [', marker);
+  assert.notEqual(effectStart, -1, 'missing streaming follow effect start');
+  assert.notEqual(effectEnd, -1, 'missing streaming follow effect end');
+
+  const followEffect = hook.slice(effectStart, effectEnd);
+
+  assert.match(followEffect, /streamingText/, 'the direct scrollTop write should live in the streaming follow effect');
+  assert.doesNotMatch(
+    followEffect,
+    /scrollToBottom\(|scrollIntoView\(/,
+    'streaming follow must not fall back to animated scrolling',
+  );
+  // 少了这道判定，用户往上翻看历史时会被每个 chunk 拽回底部。
+  assert.match(
+    followEffect,
+    /isMessageListNearBottom\(\)/,
+    'streaming follow must only engage while the viewport is already near the bottom',
+  );
+});
+
 test('ChatMessageList uses explicit scroll refs and delegates virtualizer scroll anchoring to the scroll hook', () => {
   const source = readProjectFile('src/components/chat/ChatMessageList.tsx');
 
@@ -117,4 +151,25 @@ test('ChatMessageList uses explicit scroll refs and delegates virtualizer scroll
   assert.ok(!source.includes('messagesEndRef.current.parentElement'));
   assert.ok(!source.includes('endRef must keep'));
   assert.ok(!source.includes('parentElement ==='));
+});
+
+test('the scroll container opts out of native scroll anchoring', () => {
+  const source = readProjectFile('src/components/chat/ChatMessageList.tsx');
+  // 文件顶部注释里的结构示意图也含 ref={scrollContainerRef} + overflow-y-auto，必须取真实 JSX 标签。
+  const tagStart = source.lastIndexOf('ref={scrollContainerRef}');
+  assert.notEqual(tagStart, -1, 'missing scroll container element');
+  const tagEnd = source.indexOf('>', tagStart);
+  assert.notEqual(tagEnd, -1, 'missing scroll container tag end');
+
+  const scrollerTag = source.slice(tagStart, tagEnd);
+
+  assert.match(scrollerTag, /className=/, 'should have matched the JSX tag, not the doc comment sketch');
+  assert.match(scrollerTag, /overflow-y-auto/, 'scrollContainerRef should stay on the scrolling element');
+  // 虚拟列表流式期间行高持续变化，原生锚定会把视口钉在上一条稳定气泡上，与跟随滚底互相拉扯；
+  // 加载更早消息时它还会在 usePrependScrollAnchor 的手动补偿之上再补一次。
+  assert.match(
+    scrollerTag,
+    /\[overflow-anchor:none\]/,
+    'native scroll anchoring must stay disabled on the message scroll container',
+  );
 });

@@ -222,7 +222,9 @@ function ChatMessageList(
   return (
     <div
       ref={scrollContainerRef}
-      className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 md:py-5"
+      // overflow-anchor:none：禁用浏览器原生滚动锚定。虚拟列表流式期间行高持续变化，
+      // 原生锚定会把视口钉在上一条稳定气泡上，与跟随滚底互相拉扯（移动端表现为回跳）。
+      className="[overflow-anchor:none] min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-5 md:py-5"
     >
       {/* 对话切换加载骨架屏：消息为空但对话存在时显示 */}
       {isEmpty && activeConvId && (

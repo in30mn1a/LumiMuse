@@ -543,3 +543,36 @@ test('version switch keeps a search-loaded message outside the latest 200-messag
   assert.deepEqual(refreshed, []);
   assert.deepEqual(countRefreshes, ['conv-a']);
 });
+
+test('stream finish runs before the auto-image page fetch and only once per stream', async () => {
+  const useChatMessageActions = loadHook();
+  const events = [];
+  const encoder = new TextEncoder();
+  global.fetch = async url => {
+    if (String(url).startsWith('/api/chat')) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: chunk\ndata: {"text":"hi"}\n\n'));
+          controller.close();
+        },
+      }), { status: 200 });
+    }
+    events.push('auto-image-page-fetch');
+    return new Response(JSON.stringify({ messages: [], hasMore: false, oldestSeq: null }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const { result } = renderHook(() => useChatMessageActions(createOptions({
+    refreshMessagesForConversation: async () => { events.push('refresh'); },
+    finishStream: () => { events.push('finish'); },
+  })));
+  await act(async () => {
+    await result.current.handleRegenerate('assistant-target');
+  });
+
+  // finish 必须早于装饰性收尾（否则真实气泡与流式气泡并存），
+  // 且只能执行一次（该窗口内同一对话可能已开新流，二次 finish 会清掉新流的状态）。
+  assert.deepEqual(events, ['refresh', 'finish', 'auto-image-page-fetch']);
+});

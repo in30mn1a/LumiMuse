@@ -176,6 +176,16 @@ export function useChatMessageActions({
     });
     const streamConversationId = convId;
 
+    // 收尾只允许生效一次：气泡在装饰性收尾（triggerAutoImage）之前就被收掉，
+    // 该窗口内同一对话可能已开始新的流；finally 的兜底若再次执行，
+    // 会把新流的 isLoading / activeStreams / AbortController 一并清掉。
+    let streamSettled = false;
+    const settleStream = () => {
+      if (streamSettled) return;
+      streamSettled = true;
+      finishStream(streamConversationId, { clearRegenerationState: mode !== 'new' });
+    };
+
     // 三种 mode 均按显式目标 id 触发自动出图；定位失败则不触发（不再靠 effect 兜底）。
     // 属收尾装饰步骤：拉页失败只提示加载失败，不得误报为发送失败；
     // new 模式沿用旧行为，仅在用户仍停留在该对话时出图。
@@ -250,6 +260,10 @@ export function useChatMessageActions({
       if (mode === 'regenerate') markSkipNextScroll();
       await refreshMessagesForConversation(streamConversationId);
 
+      // 真实消息已入列，立即收掉流式气泡；否则下方 triggerAutoImage 的网络往返期间
+      // 真实气泡与流式气泡会内容重复地并存（慢网下肉眼可见）。
+      settleStream();
+
       // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
       touchConversation(streamConversationId);
 
@@ -258,17 +272,25 @@ export function useChatMessageActions({
       if (error instanceof Error && error.name === 'AbortError') {
         // 中止的部分回复已落库，仍尝试自动出图（尾部 [IMG] 块可能已流完）
         await refreshMessagesForConversation(streamConversationId);
+        settleStream();
         await triggerAutoImage();
-      } else if (error instanceof TypeError) {
-        showToast(t('chat.errorNetwork'));
-        onFailureCleanup?.();
       } else {
-        const message = error instanceof Error ? error.message : String(error);
-        showToast(message || t('chat.errorGeneral'));
+        if (error instanceof TypeError) {
+          showToast(t('chat.errorNetwork'), 'error');
+        } else {
+          const message = error instanceof Error ? error.message : String(error);
+          showToast(message || t('chat.errorGeneral'), 'error');
+        }
+        // 上游中途出错/断网时服务端可能已落库部分回复（api-client 先保存再抛），尽力拉回显示，
+        // 免得收掉流式气泡后这条消息要等下次进对话才可见；拉取失败不影响上面的错误提示。
+        try {
+          await refreshMessagesForConversation(streamConversationId);
+        } catch { /* 网络已异常，静默 */ }
+        settleStream();
         onFailureCleanup?.();
       }
     } finally {
-      finishStream(streamConversationId, { clearRegenerationState: mode !== 'new' });
+      settleStream();
     }
   }, [
     activeConvIdRef,

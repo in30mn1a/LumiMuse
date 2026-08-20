@@ -603,6 +603,80 @@ test('RONG 旧协议预设：不生效的 strip_tags 被划掉并给出模式提
   assert.ok(chipClass('content').includes('line-through'), 'content 在旧协议下不生效，应划掉');
 });
 
+test('预设详情页头在窄屏纵向堆叠，避免导出按钮挤扁剥离规则', async () => {
+  const kedaiPreset = {
+    ...PRESET,
+    story_plot_strip: true,
+    strip_tags: ['content', 'scene', '#think', '#thinking', '#output-template'],
+  };
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    const method = init.method || 'GET';
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && method === 'GET') return jsonResponse(kedaiPreset);
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}/entries` && method === 'GET') {
+      return jsonResponse({ entries: [] });
+    }
+    throw new Error(`unexpected fetch: ${method} ${requestUrl}`);
+  };
+
+  const { Component } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  const heading = await view.findByRole('heading', { name: PRESET.name });
+  const header = heading.closest('header');
+  assert.ok(header);
+  assert.match(header.className, /\bmin-w-0\b/);
+
+  const headerStack = header.firstElementChild;
+  assert.match(headerStack.className, /\bflex-col\b/);
+  assert.match(headerStack.className, /\bmin-w-0\b/);
+
+  const titleRow = heading.parentElement.parentElement;
+  assert.match(titleRow.className, /\bflex-col\b/);
+  assert.match(titleRow.className, /\bsm:flex-row\b/);
+  assert.equal(heading.parentElement.className.includes('flex-1'), true);
+
+  const backLink = view.getByRole('link', { name: /preset.backList/ });
+  const exportLumi = view.getByRole('link', { name: 'preset.exportLumiMuse' });
+  const exportSt = view.getByRole('link', { name: 'preset.exportSt' });
+  assert.equal(backLink.parentElement, exportLumi.parentElement);
+  assert.equal(backLink.parentElement, exportSt.parentElement);
+  assert.match(backLink.parentElement.className, /\bflex-wrap\b/);
+  assert.match(backLink.parentElement.className, /\bmin-w-0\b/);
+  assert.notEqual(
+    backLink.parentElement,
+    heading.parentElement,
+    '导出按钮不得与标题/剥离规则挤在同一个未换行 flex 子项里',
+  );
+
+  const hint = view.getByText('preset.stripTagsHint');
+  assert.match(hint.className, /\bbreak-words\b/);
+  assert.match(hint.className, /\bmin-w-0\b/);
+  assert.equal(hint.closest('header'), header);
+
+  const labelText = view.getByText('preset.storyPlotStripLabel');
+  assert.equal(labelText.tagName, 'SPAN');
+  assert.match(labelText.className, /\bbreak-words\b/);
+
+  const addInput = view.getByPlaceholderText('preset.stripTagPlaceholder');
+  assert.match(addInput.className, /\bflex-1\b/);
+  assert.match(addInput.className, /\bmin-w-0\b/);
+  assert.ok(!/\bw-48\b/.test(addInput.className), '固定 w-48 会在窄屏溢出或把相邻按钮挤出视口');
+
+  const longTag = view.getByText('#output-template');
+  assert.match(longTag.className, /\bbreak-all\b/);
+  assert.match(longTag.closest('span').className, /\bmax-w-full\b/);
+
+  const addEntry = view.getByRole('button', { name: 'preset.addEntry' });
+  const relativeHeading = view.getByRole('heading', { name: 'preset.relativeEntries' });
+  assert.match(relativeHeading.className, /\bmin-w-0\b/);
+  assert.match(relativeHeading.className, /\bflex-1\b/);
+  assert.match(addEntry.className, /\bshrink-0\b/);
+  assert.equal(addEntry.parentElement, relativeHeading.parentElement);
+});
+
 test('参数化预设：strip_tags 全部生效，不显示旧协议提示', async () => {
   const kedaiPreset = {
     ...PRESET,

@@ -414,95 +414,100 @@ export default function PresetDetailPage({ params }: Props) {
   return (
     <div className="app-shell min-h-screen px-4 py-4">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
-        <header className="surface-hero px-5 py-5">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <h1 className="section-title text-2xl truncate">{preset.name}</h1>
-              {preset.description && (
-                <p className="mt-1 section-copy">{preset.description}</p>
-              )}
-              <div className="mt-3 flex flex-col gap-2">
-                <label className="flex items-center gap-2 text-xs text-text-muted">
-                  <input
-                    type="checkbox"
-                    checked={preset.story_plot_strip}
-                    onChange={toggleStoryPlotStrip}
-                    disabled={pendingAction !== null}
-                  />
-                  {t('preset.storyPlotStripLabel')}
-                </label>
-                {preset.story_plot_strip && (
-                  <div className="flex flex-col gap-1.5">
-                    <p className="text-xs text-text-muted">{t('preset.stripTagsHint')}</p>
-                    {legacyStoryPlotMode && (
-                      <p className="text-xs text-amber-600 dark:text-amber-400">{t('preset.stripTagsLegacyHint')}</p>
-                    )}
-                    <div className="flex flex-wrap gap-1.5">
-                      {preset.strip_tags.map(tag => {
-                        const effective = isStripTagEffective(tag, legacyStoryPlotMode);
-                        return (
-                          <span
-                            key={tag}
-                            title={effective ? undefined : t('preset.stripTagInactiveToast')}
-                            className={`inline-flex items-center gap-1 rounded bg-surface-2 px-2 py-0.5 text-xs ${
-                              effective ? 'text-text-secondary' : 'text-text-muted line-through opacity-60'
-                            }`}
-                          >
-                            <code>{tag}</code>
-                            <button
-                              type="button"
-                              onClick={() => void removeStripTag(tag)}
-                              disabled={pendingAction !== null}
-                              className="text-text-muted hover:text-red-400 disabled:opacity-40"
-                              aria-label={`remove ${tag}`}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="text"
-                        value={newTagInput}
-                        onChange={e => setNewTagInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') void addStripTag(); }}
-                        placeholder={t('preset.stripTagPlaceholder')}
-                        disabled={pendingAction !== null}
-                        className="w-48 rounded border border-border bg-surface px-2 py-1 text-xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void addStripTag()}
-                        disabled={pendingAction !== null || !newTagInput.trim()}
-                        className="soft-button soft-button-secondary px-2 py-1 text-xs disabled:opacity-40"
-                      >
-                        {t('preset.stripTagAdd')}
-                      </button>
-                    </div>
-                  </div>
+        <header className="surface-hero min-w-0 px-5 py-5">
+          <div className="flex min-w-0 flex-col gap-4">
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0 flex-1">
+                <h1 className="section-title text-2xl break-words">{preset.name}</h1>
+                {preset.description && (
+                  <p className="mt-1 section-copy break-words">{preset.description}</p>
                 )}
               </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
+                <Link href="/settings/prompt-presets" className="soft-button soft-button-secondary shrink-0 px-3 py-2">
+                  <ArrowLeftIcon className="h-4 w-4" />
+                  {t('preset.backList')}
+                </Link>
+                <a
+                  href={`/api/prompt-presets/${preset.id}/export?format=lumimuse`}
+                  className="soft-button soft-button-secondary shrink-0 text-xs"
+                  download
+                >
+                  {t('preset.exportLumiMuse')}
+                </a>
+                <a
+                  href={`/api/prompt-presets/${preset.id}/export?format=sillytavern`}
+                  className="soft-button soft-button-secondary shrink-0 text-xs"
+                  download
+                >
+                  {t('preset.exportSt')}
+                </a>
+              </div>
             </div>
-            <Link href="/settings/prompt-presets" className="soft-button soft-button-secondary shrink-0 px-3 py-2">
-              <ArrowLeftIcon className="h-4 w-4" />
-              {t('preset.backList')}
-            </Link>
-            <a
-              href={`/api/prompt-presets/${preset.id}/export?format=lumimuse`}
-              className="soft-button soft-button-secondary shrink-0 text-xs"
-              download
-            >
-              {t('preset.exportLumiMuse')}
-            </a>
-            <a
-              href={`/api/prompt-presets/${preset.id}/export?format=sillytavern`}
-              className="soft-button soft-button-secondary shrink-0 text-xs"
-              download
-            >
-              {t('preset.exportSt')}
-            </a>
+            <div className="flex min-w-0 flex-col gap-2">
+              <label className="flex min-w-0 items-start gap-2 text-xs text-text-muted">
+                <input
+                  type="checkbox"
+                  checked={preset.story_plot_strip}
+                  onChange={toggleStoryPlotStrip}
+                  disabled={pendingAction !== null}
+                  className="mt-0.5 shrink-0"
+                />
+                <span className="min-w-0 break-words">{t('preset.storyPlotStripLabel')}</span>
+              </label>
+              {preset.story_plot_strip && (
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <p className="min-w-0 break-words text-xs text-text-muted">{t('preset.stripTagsHint')}</p>
+                  {legacyStoryPlotMode && (
+                    <p className="min-w-0 break-words text-xs text-amber-600 dark:text-amber-400">{t('preset.stripTagsLegacyHint')}</p>
+                  )}
+                  <div className="flex min-w-0 flex-wrap gap-1.5">
+                    {preset.strip_tags.map(tag => {
+                      const effective = isStripTagEffective(tag, legacyStoryPlotMode);
+                      return (
+                        <span
+                          key={tag}
+                          title={effective ? undefined : t('preset.stripTagInactiveToast')}
+                          className={`inline-flex max-w-full min-w-0 items-center gap-1 rounded bg-surface-2 px-2 py-0.5 text-xs ${
+                            effective ? 'text-text-secondary' : 'text-text-muted line-through opacity-60'
+                          }`}
+                        >
+                          <code className="min-w-0 break-all">{tag}</code>
+                          <button
+                            type="button"
+                            onClick={() => void removeStripTag(tag)}
+                            disabled={pendingAction !== null}
+                            className="shrink-0 text-text-muted hover:text-red-400 disabled:opacity-40"
+                            aria-label={`remove ${tag}`}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={newTagInput}
+                      onChange={e => setNewTagInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') void addStripTag(); }}
+                      placeholder={t('preset.stripTagPlaceholder')}
+                      disabled={pendingAction !== null}
+                      className="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void addStripTag()}
+                      disabled={pendingAction !== null || !newTagInput.trim()}
+                      className="soft-button soft-button-secondary shrink-0 px-2 py-1 text-xs disabled:opacity-40"
+                    >
+                      {t('preset.stripTagAdd')}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -513,11 +518,11 @@ export default function PresetDetailPage({ params }: Props) {
         )}
 
         <section className="surface-panel p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-text-primary">{t('preset.relativeEntries')}</h2>
+          <div className="flex items-start justify-between gap-2">
+            <h2 className="min-w-0 flex-1 break-words text-base font-semibold text-text-primary">{t('preset.relativeEntries')}</h2>
             <button
               onClick={handleAddEntry}
-              className="soft-button soft-button-secondary text-xs"
+              className="soft-button soft-button-secondary shrink-0 text-xs"
               disabled={pendingAction !== null}
             >
               {t('preset.addEntry')}
@@ -541,7 +546,7 @@ export default function PresetDetailPage({ params }: Props) {
         </section>
 
         <section className="surface-panel p-5">
-          <h2 className="text-base font-semibold text-text-primary">{t('preset.inChatEntries')}</h2>
+          <h2 className="min-w-0 break-words text-base font-semibold text-text-primary">{t('preset.inChatEntries')}</h2>
           <p className="mt-1 text-xs text-text-muted">{t('preset.inChatHint2')}</p>
           <ul className="mt-3 space-y-2">
             {inChatEntries.length === 0 && <li className="text-sm text-text-muted">{t('preset.noEntries')}</li>}

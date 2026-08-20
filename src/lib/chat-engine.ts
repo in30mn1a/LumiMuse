@@ -161,12 +161,14 @@ export function finalizeAssistantResponse(
     storyPlotStrip: boolean;
     stripTags: string[];
     characterImageTags: string;
+    userImageTags?: string;
   },
 ): { fullText: string; inlinePrompt: string } {
   const withoutTimestamp = stripTimestampPrefix(rawText);
   const rawInlinePrompt = extractInlinePrompt(withoutTimestamp);
+  const originalTags = [options.characterImageTags, options.userImageTags].filter(Boolean).join(', ');
   const inlinePrompt = rawInlinePrompt
-    ? restoreSensitiveImageTagsToPrompt(rawInlinePrompt, options.characterImageTags)
+    ? restoreSensitiveImageTagsToPrompt(rawInlinePrompt, originalTags)
     : '';
   const withoutInlinePrompt = rawInlinePrompt
     ? stripInlinePrompt(withoutTimestamp)
@@ -420,7 +422,8 @@ export async function assemblePrompt(
   // 指令里的固定外貌标签先剥敏感词，落库时再拼回（与 /api/image-gen/prompt 一致）。
   if (settings.image_gen?.enabled && settings.image_gen?.inline_prompt) {
     const { tagsForLlm } = prepareImageTagsForLlm(character.image_tags);
-    const instruction = buildInlinePromptInstruction(tagsForLlm, character.user_image_tags);
+    const { tagsForLlm: userTagsForLlm } = prepareImageTagsForLlm(character.user_image_tags);
+    const instruction = buildInlinePromptInstruction(tagsForLlm, userTagsForLlm);
     for (let i = merged.length - 1; i >= 0; i -= 1) {
       const msg = merged[i];
       if (msg.role !== 'user') continue;
@@ -668,6 +671,7 @@ export async function runChat(
       storyPlotStrip: activePreset?.story_plot_strip === true,
       stripTags: activePreset?.strip_tags ?? [],
       characterImageTags: character.image_tags,
+      userImageTags: character.user_image_tags,
     });
     const tokenResult = createMessageTokenCount(fullText, 'assistant');
     const tokenCount = tokenResult.tokenCount;

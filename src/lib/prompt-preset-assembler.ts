@@ -379,7 +379,8 @@ export async function assemblePresetPrompt(
   let inlinePromptInstruction = '';
   if (settings.image_gen?.enabled && settings.image_gen?.inline_prompt) {
     const { tagsForLlm } = prepareImageTagsForLlm(character.image_tags);
-    inlinePromptInstruction = buildInlinePromptInstruction(tagsForLlm, character.user_image_tags);
+    const { tagsForLlm: userTagsForLlm } = prepareImageTagsForLlm(character.user_image_tags);
+    inlinePromptInstruction = buildInlinePromptInstruction(tagsForLlm, userTagsForLlm);
   }
 
   let baseTokens = estimateTokens(behaviorAndTimeContent);

@@ -39,20 +39,46 @@ const {
   imageTagCoreForSensitivity,
   prepareImageTagsForLlm,
   restoreSensitiveImageTagsToPrompt,
+  splitTags,
 } = require('../src/lib/image-prompt-sensitive-tags.ts');
 
-test('imageTagCoreForSensitivity unwraps weighted tags', () => {
+test('imageTagCoreForSensitivity unwraps weighted tags, brackets and special syntax', () => {
   assert.equal(imageTagCoreForSensitivity('1.3::loli::'), 'loli');
   assert.equal(imageTagCoreForSensitivity('1.3::loli'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('1.3 :: loli ::'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('::loli::'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('{1.3::loli::}'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('{{{loli}}}'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('(loli:1.3)'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('(loli: 1.3)'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('((loli))'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('[loli]'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('[loli:0.8]'), 'loli');
+  assert.equal(imageTagCoreForSensitivity('<lora:loli_model:0.8>'), 'loli_model');
   assert.equal(imageTagCoreForSensitivity('1.2::kindergarten uniform::'), 'kindergarten uniform');
   assert.equal(imageTagCoreForSensitivity('blue eyes'), 'blue eyes');
 });
 
-test('isSensitiveImageTag matches weighted sensitive cores', () => {
+test('splitTags handles commas, Chinese commas, semicolons, and newlines', () => {
+  assert.deepEqual(
+    splitTags('1girl, 1.3::loli::，blonde hair; blue eyes；smile\nred ribbon'),
+    ['1girl', '1.3::loli::', 'blonde hair', 'blue eyes', 'smile', 'red ribbon'],
+  );
+});
+
+test('isSensitiveImageTag matches weighted sensitive cores and variations', () => {
   assert.equal(isSensitiveImageTag('1.3::loli::'), true);
+  assert.equal(isSensitiveImageTag('{1.3::loli::}'), true);
+  assert.equal(isSensitiveImageTag('(loli:1.3)'), true);
+  assert.equal(isSensitiveImageTag('((loli))'), true);
   assert.equal(isSensitiveImageTag('0.8::shota::'), true);
   assert.equal(isSensitiveImageTag('1.1::child'), true);
+  assert.equal(isSensitiveImageTag('kindergartener'), true);
+  assert.equal(isSensitiveImageTag('elementary school student'), true);
+  assert.equal(isSensitiveImageTag('little girl'), true);
+  assert.equal(isSensitiveImageTag('萝莉'), true);
   assert.equal(isSensitiveImageTag('best quality'), false);
+  assert.equal(isSensitiveImageTag('high school student'), false);
 });
 
 test('partitionSensitiveImageTags preserves original weighted spelling for rejoin', () => {
@@ -61,6 +87,10 @@ test('partitionSensitiveImageTags preserves original weighted spelling for rejoi
   );
   assert.equal(safeForLlm, 'blue eyes, red hair');
   assert.equal(strippedForRejoin, '1.3::loli::, 1.2::kindergarten uniform::');
+
+  const braced = partitionSensitiveImageTags('blue eyes, {1.3::loli::}，(loli:1.3), red hair');
+  assert.equal(braced.safeForLlm, 'blue eyes, red hair');
+  assert.equal(braced.strippedForRejoin, '{1.3::loli::}, (loli:1.3)');
 });
 
 test('rejoinSensitiveTagsFromOriginalOrder inserts after left neighbor from image_tags', () => {
@@ -143,6 +173,18 @@ test('restoreSensitiveImageTagsToPrompt uses original order for every model', ()
     'blue eyes, 1.3::loli::, red hair',
   );
   assert.equal(restored, 'masterpiece, 1girl, blue eyes, 1.3::loli::, long hair');
+
+  const bracedRestored = restoreSensitiveImageTagsToPrompt(
+    'masterpiece, 1girl, blue eyes, long hair',
+    'blue eyes, {1.3::loli::}, red hair',
+  );
+  assert.equal(bracedRestored, 'masterpiece, 1girl, blue eyes, {1.3::loli::}, long hair');
+
+  const sdRestored = restoreSensitiveImageTagsToPrompt(
+    'masterpiece, 1girl, blue eyes, long hair',
+    'blue eyes, (loli:1.3), red hair',
+  );
+  assert.equal(sdRestored, 'masterpiece, 1girl, blue eyes, (loli:1.3), long hair');
 
   const noTags = restoreSensitiveImageTagsToPrompt('masterpiece, 1girl, long hair', '');
   assert.equal(noTags, 'masterpiece, 1girl, long hair');

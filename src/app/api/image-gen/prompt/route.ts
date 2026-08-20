@@ -10,6 +10,7 @@ import {
   partitionSensitiveImageTags,
   rejoinSensitiveTagsFromOriginalOrder,
 } from '@/lib/image-prompt-sensitive-tags';
+import { stripInlinePrompt } from '@/lib/inline-image-prompt';
 
 /**
  * AI 生成图片 prompt — 根据对话上下文和角色信息生成适合文生图的英文标签
@@ -177,7 +178,10 @@ export async function POST(request: NextRequest) {
 
     // 构建上下文
     let context = '';
-    const originalImageTags = character?.image_tags?.trim() || '';
+    const originalImageTags = [character?.image_tags, character?.user_image_tags]
+      .filter(Boolean)
+      .join(', ')
+      .trim();
     if (character) {
       context += `【角色信息】\n`;
       context += `角色名：${character.name}\n`;
@@ -190,14 +194,17 @@ export async function POST(request: NextRequest) {
         }
       }
       if (character.user_image_tags) {
-        context += `\n【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时才包含在 POSITIVE 中；用户未出场则忽略这些标签）】\n${character.user_image_tags}\n`;
+        const { safeForLlm: safeUserTags } = partitionSensitiveImageTags(character.user_image_tags);
+        if (safeUserTags) {
+          context += `\n【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时才包含在 POSITIVE 中；用户未出场则忽略这些标签）】\n${safeUserTags}\n`;
+        }
       }
     }
 
     context += '\n【最近对话（用于推断当前场景、动作、情绪）】\n';
     for (const msg of messages) {
       const role = msg.role === 'user' ? '用户' : character?.name || 'AI';
-      context += `${role}：${msg.content}\n`;
+      context += `${role}：${stripInlinePrompt(msg.content)}\n`;
     }
 
     if (user_hint) {

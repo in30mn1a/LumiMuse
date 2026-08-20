@@ -5,21 +5,43 @@
  */
 
 export const IMAGE_PROMPT_SENSITIVE_TAG_PATTERN =
-  /^(?:loli|shota|child|kindergarten|kindergarten uniform)$/i;
+  /\b(?:loli|shota|underage|child|children|childlike|kindergarten|kindergartener|toddler|infant|baby|grade\s+schooler)\b|\b(?:little|young)\s+girl\b|\b(?:elementary|primary|middle|junior\s+high)\s+school(?:\s+(?:student|uniform|girl|boy))?\b|萝莉|正太|幼女|幼儿|幼态|未成年/i;
 
 /** 人数/主体 tag：仅作「原顺序锚点都找不到」时的兜底位置 */
 const SUBJECT_COUNT_TAG_CORE =
   /^(?:\d+girls?(?:\s+\d+boys?)?|\d+boys?)$/i;
 
-/** NovelAI / SD 权重写法：1.3::tag:: 或 1.3::tag */
-const WEIGHTED_TAG_PATTERN = /^(\d+(?:\.\d+)?)::(.+?)(?:::\s*)?$/i;
-
-/** 取出用于敏感判定/锚点匹配的标签本体（剥掉权重外壳） */
+/** 取出用于敏感判定/锚点匹配的标签本体（递归剥掉各类权重、括号及包装语法） */
 export function imageTagCoreForSensitivity(tag: string): string {
-  const trimmed = tag.trim();
-  const weighted = WEIGHTED_TAG_PATTERN.exec(trimmed);
-  if (weighted) return weighted[2].trim();
-  return trimmed;
+  let current = tag.trim();
+  let prev = '';
+  while (current && current !== prev) {
+    prev = current;
+    // 剥去各种括号外壳：{}, (), [], <>
+    current = current.replace(/^[{(<[]+\s*/, '').replace(/\s*[})>\]]+$/, '').trim();
+
+    // SD WebUI 权重写法：tag:1.3
+    const sdWeighted = /^(.+?):\s*\d+(?:\.\d+)?$/i.exec(current);
+    if (sdWeighted) {
+      current = sdWeighted[1].trim();
+      continue;
+    }
+
+    // NovelAI / SD 权重写法：1.3::tag:: 或 1.3::tag 或 ::tag:: 或 ::tag 或 1.3 :: tag ::
+    const naiWeighted = /^(?:\d+(?:\.\d+)?\s*::\s*|\s*::\s*)(.+?)(?:\s*::\s*)?$/i.exec(current);
+    if (naiWeighted) {
+      current = naiWeighted[1].trim();
+      continue;
+    }
+
+    // LoRA 写法：lora:name:weight
+    const loraMatch = /^lora:([^:]+)(?::.*)?$/i.exec(current);
+    if (loraMatch) {
+      current = loraMatch[1].trim();
+      continue;
+    }
+  }
+  return current;
 }
 
 export function isSensitiveImageTag(tag: string): boolean {
@@ -30,8 +52,13 @@ export function isSubjectCountImageTag(tag: string): boolean {
   return SUBJECT_COUNT_TAG_CORE.test(imageTagCoreForSensitivity(tag));
 }
 
-function splitTags(tags: string): string[] {
-  return tags.split(',').map(t => t.trim()).filter(Boolean);
+export function splitTags(tags: string): string[] {
+  if (!tags) return [];
+  // 支持中英文逗号、分号、换行等常见分隔符
+  return tags
+    .split(/[,，;；\r\n]+/)
+    .map(t => t.trim())
+    .filter(Boolean);
 }
 
 function coreKey(tag: string): string {

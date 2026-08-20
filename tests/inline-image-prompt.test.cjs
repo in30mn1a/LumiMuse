@@ -57,7 +57,7 @@ test('chat-engine wires sensitive tag strip/rejoin for inline prompts on all mod
   assert.match(chatEngine, /prepareImageTagsForLlm\(character\.image_tags\)/);
   assert.match(
     chatEngine,
-    /restoreSensitiveImageTagsToPrompt\(rawInlinePrompt, options\.characterImageTags\)/,
+    /restoreSensitiveImageTagsToPrompt\(rawInlinePrompt, originalTags\)/,
   );
   assert.match(
     chatEngine,

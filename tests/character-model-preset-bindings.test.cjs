@@ -163,9 +163,15 @@ test('GET/PUT character model preset bindings replace-all and keep-on-omit', asy
 
 test('character editor and i18n expose model preset bindings', () => {
   const page = fs.readFileSync(path.join(root, 'src/app/characters/[id]/page.tsx'), 'utf8');
+  const field = fs.readFileSync(path.join(root, 'src/components/ui/ModelPresetBindingsField.tsx'), 'utf8');
   const i18n = fs.readFileSync(path.join(root, 'src/lib/i18n.ts'), 'utf8');
   assert.match(page, /ModelPresetBindingsField/);
   assert.match(page, /preset\.modelBindDuplicate/);
+  assert.match(field, /select-rich/);
+  assert.doesNotMatch(field, /datalist/);
+  assert.doesNotMatch(field, /list=/);
   assert.match(i18n, /'preset\.modelBindTitle': '模型绑定预设'/);
   assert.match(i18n, /'preset\.modelBindTitle': 'Model preset bindings'/);
+  assert.match(i18n, /'preset\.modelBindModelPlaceholder': '请选择模型'/);
+  assert.match(i18n, /'preset\.modelBindModelPlaceholder': 'Select a model'/);
 });

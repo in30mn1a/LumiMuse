@@ -24,6 +24,7 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
   const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,14 +37,20 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
         ]);
         if (!presetRes.ok) throw new Error(`HTTP ${presetRes.status}`);
         const presetData = await presetRes.json() as { presets?: PresetSummary[] };
+        // 模型列表拉取失败不阻塞预设选择：下拉仍可用，只是选项可能只有已保存的绑定。
         let modelList: string[] = [];
-        if (modelRes.ok) {
-          const modelData = await modelRes.json() as { models?: string[] };
+        let modelFailure: string | null = null;
+        try {
+          const modelData = await modelRes.json() as { models?: string[]; error?: string };
           if (Array.isArray(modelData.models)) modelList = modelData.models;
+          if (modelData.error) modelFailure = modelData.error;
+        } catch {
+          modelFailure = `HTTP ${modelRes.status}`;
         }
         if (!cancelled) {
           setPresets(Array.isArray(presetData.presets) ? presetData.presets : []);
           setModels(modelList);
+          setModelError(modelList.length === 0 ? modelFailure : null);
         }
       } catch (err) {
         if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) return;
@@ -57,6 +64,20 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
       controller.abort();
     };
   }, []);
+
+  /**
+   * 下拉选项 = 上游模型列表 ∪ 已保存的绑定值。
+   * 并入已保存值是必须的：换供应商或上游改名后旧模型不在列表里，
+   * 若不补进选项，select 会显示成占位项，用户一保存就静默丢掉原绑定。
+   */
+  const modelOptions = useMemo(() => {
+    const options = new Set(models);
+    for (const row of value) {
+      const trimmed = row.model.trim();
+      if (trimmed) options.add(trimmed);
+    }
+    return [...options];
+  }, [models, value]);
 
   const duplicateModels = useMemo(() => {
     const counts = new Map<string, number>();
@@ -81,12 +102,6 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
         <p className="mb-3 text-xs text-text-muted">{t('preset.modelBindEmpty')}</p>
       )}
 
-      <datalist id="model-preset-binding-models">
-        {models.map(model => (
-          <option key={model} value={model} />
-        ))}
-      </datalist>
-
       <div className="space-y-3">
         {value.map((row, index) => {
           const trimmed = row.model.trim();
@@ -95,20 +110,23 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
             <div key={index} className="flex flex-col gap-2 sm:flex-row sm:items-end">
               <label className="min-w-0 flex-1">
                 <span className="mb-1 block text-xs text-text-muted">{t('preset.modelBindModel')}</span>
-                <input
-                  className="input-rich"
-                  list="model-preset-binding-models"
+                <select
+                  className="select-rich w-full"
+                  disabled={loading}
                   value={row.model}
-                  maxLength={200}
-                  placeholder={t('preset.modelBindModelPlaceholder')}
                   aria-invalid={isDuplicate}
                   onChange={e => updateRow(index, { model: e.target.value })}
-                />
+                >
+                  <option value="">{t('preset.modelBindModelPlaceholder')}</option>
+                  {modelOptions.map(model => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
               </label>
               <label className="min-w-0 flex-1">
                 <span className="mb-1 block text-xs text-text-muted">{t('preset.modelBindPreset')}</span>
                 <select
-                  className="input-rich"
+                  className="select-rich w-full"
                   disabled={loading || !!error}
                   value={row.preset_id || PRESET_ID_NONE}
                   onChange={e => updateRow(index, { preset_id: e.target.value })}
@@ -137,6 +155,9 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
 
       {duplicateModels.size > 0 && (
         <p className="mt-2 text-xs text-red-500">{t('preset.modelBindDuplicate')}</p>
+      )}
+      {!loading && modelError && (
+        <p className="mt-2 text-xs text-red-500">{t('preset.modelBindLoadModelsError')}: {modelError}</p>
       )}
       {loading && (
         <p className="mt-2 text-xs text-text-muted">{t('preset.loading')}</p>

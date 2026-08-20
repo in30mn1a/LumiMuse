@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
-import { PRESET_ID_NONE } from '@/lib/prompt-presets';
+import {
+  findMissingBindingPresetId,
+  PRESET_ID_NONE,
+  replaceCharacterModelPresetBindings,
+} from '@/lib/prompt-presets';
 import { characterCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET() {
@@ -33,6 +37,16 @@ export async function POST(request: NextRequest) {
     ? PRESET_ID_NONE
     : (body.active_preset_id === null || body.active_preset_id === '' ? PRESET_ID_NONE : body.active_preset_id);
 
+  if (body.model_preset_bindings !== undefined) {
+    const missingPresetId = findMissingBindingPresetId(body.model_preset_bindings);
+    if (missingPresetId) {
+      return NextResponse.json(
+        { error: 'Invalid request body', fieldErrors: { model_preset_bindings: `preset not found: ${missingPresetId}` } },
+        { status: 400 },
+      );
+    }
+  }
+
   const db = getDb();
   // 新建角色排到列表最前：取当前最小 sort_order - 1（首条则为 0）
   const minRow = db.prepare('SELECT MIN(sort_order) AS min_sort FROM characters').get() as { min_sort: number | null };
@@ -59,6 +73,10 @@ export async function POST(request: NextRequest) {
     now,
     now,
   );
+
+  if (body.model_preset_bindings && body.model_preset_bindings.length > 0) {
+    replaceCharacterModelPresetBindings(id, body.model_preset_bindings);
+  }
 
   const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(id);
   return NextResponse.json(character, { status: 201 });

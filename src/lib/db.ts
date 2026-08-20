@@ -915,6 +915,23 @@ function migrate(db: Database.Database): void {
     db.exec(`ALTER TABLE characters ADD COLUMN active_preset_id TEXT`);
   }
 
+  // 角色级「模型 → 预设」覆盖。preset_id 可为具体预设 uuid 或 '__none__'，因此不能做真 FK。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS character_model_preset_bindings (
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      model TEXT NOT NULL,
+      preset_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (character_id, model)
+    );
+    CREATE INDEX IF NOT EXISTS idx_character_model_preset_bindings_preset
+      ON character_model_preset_bindings(preset_id);
+    CREATE INDEX IF NOT EXISTS idx_character_model_preset_bindings_character
+      ON character_model_preset_bindings(character_id, sort_order);
+  `);
+
   // settings.prompt_preset 已废弃；每次启动清掉历史行，避免 GET /api/settings 经 loadSettings 再带出该键
   db.prepare("DELETE FROM settings WHERE key = 'prompt_preset'").run();
 

@@ -271,6 +271,12 @@ export async function POST(
     const memoryConfig = db.prepare(
       'SELECT * FROM character_memory_configs WHERE character_id = ?'
     ).get(id) as CharacterMemoryConfigRow | undefined;
+    const modelPresetBindings = db.prepare(
+      `SELECT model, preset_id, sort_order
+       FROM character_model_preset_bindings
+       WHERE character_id = ?
+       ORDER BY sort_order ASC, model ASC`,
+    ).all(id) as Array<{ model: string; preset_id: string; sort_order: number }>;
 
     const preparedConversations = conversations.map(conversation => ({
       originalId: conversation.id,
@@ -504,6 +510,24 @@ export async function POST(
         );
       }
 
+      if (modelPresetBindings.length > 0) {
+        const insertBinding = db.prepare(`
+          INSERT INTO character_model_preset_bindings (
+            character_id, model, preset_id, sort_order, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        for (const binding of modelPresetBindings) {
+          insertBinding.run(
+            newCharacterId,
+            binding.model,
+            binding.preset_id,
+            binding.sort_order,
+            now,
+            now,
+          );
+        }
+      }
+
       if (memoryConfig) {
         db.prepare(`
           INSERT INTO character_memory_configs (
@@ -548,8 +572,17 @@ export async function POST(
       triggerMemoryIndexProcessing();
     }
 
-    const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(newCharacterId);
-    return NextResponse.json(character, { status: 201 });
+    const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(newCharacterId) as Record<string, unknown>;
+    const copiedBindings = db.prepare(
+      `SELECT model, preset_id
+       FROM character_model_preset_bindings
+       WHERE character_id = ?
+       ORDER BY sort_order ASC, model ASC`,
+    ).all(newCharacterId);
+    return NextResponse.json(
+      { ...character, model_preset_bindings: copiedBindings },
+      { status: 201 },
+    );
   } catch (err) {
     if (!committed) {
       await deleteLocalAssetUrls(copiedUrls.values());

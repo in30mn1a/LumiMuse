@@ -8,6 +8,7 @@ import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
 import PresetSelectField from '@/components/ui/PresetSelectField';
+import ModelPresetBindingsField from '@/components/ui/ModelPresetBindingsField';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { clearCharacterContext } from '@/lib/character-context-cache';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
@@ -237,12 +238,28 @@ export default function CharacterEditor({ params }: Props) {
 
   const handleSave = async () => {
     if (!character) return;
+    const bindings = character.model_preset_bindings ?? [];
+    if (bindings.some(row => !row.model.trim())) {
+      showToast(t('preset.modelBindEmptyModel'), 'error');
+      return;
+    }
+    const models = bindings.map(row => row.model.trim());
+    if (new Set(models).size !== models.length) {
+      showToast(t('preset.modelBindDuplicate'), 'error');
+      return;
+    }
     setSaving(true);
     try {
       const response = await fetch(`/api/characters/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(character),
+        body: JSON.stringify({
+          ...character,
+          model_preset_bindings: bindings.map(row => ({
+            model: row.model.trim(),
+            preset_id: row.preset_id || '__none__',
+          })),
+        }),
       });
       // 非 2xx 视为失败
       if (!response.ok) {
@@ -573,6 +590,14 @@ export default function CharacterEditor({ params }: Props) {
                   if (!character) return;
                   setDirty(true);
                   setCharacter({ ...character, active_preset_id: v });
+                }}
+              />
+              <ModelPresetBindingsField
+                value={character.model_preset_bindings ?? []}
+                onChange={(bindings) => {
+                  if (!character) return;
+                  setDirty(true);
+                  setCharacter({ ...character, model_preset_bindings: bindings });
                 }}
               />
             </section>

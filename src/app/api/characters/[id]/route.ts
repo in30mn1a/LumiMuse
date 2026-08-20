@@ -7,6 +7,11 @@ import {
   filterUnreferencedLocalAssetUrls,
 } from '@/lib/character-file-utils';
 import { characterUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
+import {
+  attachCharacterPresetBindings,
+  findMissingBindingPresetId,
+  replaceCharacterModelPresetBindings,
+} from '@/lib/prompt-presets';
 
 export async function GET(
   _request: NextRequest,
@@ -14,9 +19,9 @@ export async function GET(
 ) {
   const { id } = await params;
   const db = getDb();
-  const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(id);
+  const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as { id: string } | undefined;
   if (!character) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  return NextResponse.json(character);
+  return NextResponse.json(attachCharacterPresetBindings(character));
 }
 
 export async function PUT(
@@ -43,35 +48,52 @@ export async function PUT(
   const existing = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as Character | undefined;
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const now = new Date().toISOString();
-  db.prepare(`
-    UPDATE characters SET
-      name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
-      greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?,
-      active_preset_id = ?, updated_at = ?
-    WHERE id = ?
-  `).run(
-    body.name ?? existing.name,
-    body.avatar_url ?? existing.avatar_url,
-    body.basic_info ?? existing.basic_info ?? '',
-    body.personality ?? existing.personality,
-    body.scenario ?? existing.scenario,
-    body.greeting ?? existing.greeting,
-    body.example_dialogue ?? existing.example_dialogue,
-    body.system_prompt ?? existing.system_prompt,
-    body.other_info ?? existing.other_info ?? '',
-    body.image_tags ?? existing.image_tags ?? '',
-    body.user_image_tags ?? existing.user_image_tags ?? '',
-    // 预设绑定：未传 active_preset_id 时保留旧值；显式 null/''/'__none__' 表示不使用预设
-    body.active_preset_id !== undefined
-      ? (body.active_preset_id === null || body.active_preset_id === '' ? null : body.active_preset_id)
-      : ((existing as Character & { active_preset_id?: string | null }).active_preset_id ?? null),
-    now,
-    id,
-  );
+  if (body.model_preset_bindings !== undefined) {
+    const missingPresetId = findMissingBindingPresetId(body.model_preset_bindings);
+    if (missingPresetId) {
+      return NextResponse.json(
+        { error: 'Invalid request body', fieldErrors: { model_preset_bindings: `preset not found: ${missingPresetId}` } },
+        { status: 400 },
+      );
+    }
+  }
 
-  const updated = db.prepare('SELECT * FROM characters WHERE id = ?').get(id);
-  return NextResponse.json(updated);
+  const now = new Date().toISOString();
+  const saveCharacter = db.transaction(() => {
+    db.prepare(`
+      UPDATE characters SET
+        name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
+        greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?,
+        active_preset_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      body.name ?? existing.name,
+      body.avatar_url ?? existing.avatar_url,
+      body.basic_info ?? existing.basic_info ?? '',
+      body.personality ?? existing.personality,
+      body.scenario ?? existing.scenario,
+      body.greeting ?? existing.greeting,
+      body.example_dialogue ?? existing.example_dialogue,
+      body.system_prompt ?? existing.system_prompt,
+      body.other_info ?? existing.other_info ?? '',
+      body.image_tags ?? existing.image_tags ?? '',
+      body.user_image_tags ?? existing.user_image_tags ?? '',
+      // 预设绑定：未传 active_preset_id 时保留旧值；显式 null/''/'__none__' 表示不使用预设
+      body.active_preset_id !== undefined
+        ? (body.active_preset_id === null || body.active_preset_id === '' ? null : body.active_preset_id)
+        : ((existing as Character & { active_preset_id?: string | null }).active_preset_id ?? null),
+      now,
+      id,
+    );
+
+    if (body.model_preset_bindings !== undefined) {
+      replaceCharacterModelPresetBindings(id, body.model_preset_bindings);
+    }
+  });
+  saveCharacter();
+
+  const updated = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as { id: string };
+  return NextResponse.json(attachCharacterPresetBindings(updated));
 }
 
 export async function DELETE(
@@ -100,6 +122,7 @@ export async function DELETE(
     db.prepare('DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE character_id = ?)').run(id);
     db.prepare('DELETE FROM conversations WHERE character_id = ?').run(id);
     db.prepare('DELETE FROM memories WHERE character_id = ?').run(id);
+    db.prepare('DELETE FROM character_model_preset_bindings WHERE character_id = ?').run(id);
     const result = db.prepare('DELETE FROM characters WHERE id = ?').run(id);
     return result.changes;
   });

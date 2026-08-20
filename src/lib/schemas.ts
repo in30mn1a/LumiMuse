@@ -319,6 +319,11 @@ export const chatBodySchema = z.object({
 export type ChatBody = z.infer<typeof chatBodySchema>;
 
 // --------- /api/characters ---------
+const characterModelPresetBindingSchema = z.object({
+  model: z.string().trim().min(1).max(MAX_MODEL_NAME),
+  preset_id: z.string().min(1).max(64),
+});
+
 export const characterCreateSchema = z.object({
   name: z.string().max(MAX_NAME).optional(),
   avatar_url: z.string().max(MAX_URL).nullable().optional(),
@@ -334,6 +339,19 @@ export const characterCreateSchema = z.object({
   // 预设提示词绑定（null/'__none__'=不使用预设 / uuid=具体预设）。
   // 创建时未传则服务端默认 '__none__'（LumiMuse 传统骨架）。
   active_preset_id: z.string().max(64).nullable().optional(),
+  model_preset_bindings: z.array(characterModelPresetBindingSchema).max(64).superRefine((items, ctx) => {
+    const seen = new Set<string>();
+    items.forEach((item, index) => {
+      if (seen.has(item.model)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [index, 'model'],
+          message: 'duplicate model',
+        });
+      }
+      seen.add(item.model);
+    });
+  }).optional(),
 });
 export type CharacterCreate = z.infer<typeof characterCreateSchema>;
 

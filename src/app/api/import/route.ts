@@ -22,12 +22,15 @@ interface ImportPayload {
   memory_embeddings?: Record<string, unknown>[];
   // 单角色导出：角色级记忆引擎覆盖（可选）
   character_memory_config?: Record<string, unknown> | null;
+  // 单角色导出：模型→预设绑定（可选）
+  model_preset_bindings?: Record<string, unknown>[];
   // 全量导出格式
   characters?: Record<string, unknown>[];
   // 全量导出：画像、画像版本、embedding 均为数组
   memory_profiles?: Record<string, unknown>[];
   // memory_profile_versions 和 memory_embeddings 在两种格式下字段名相同
   character_memory_configs?: Record<string, unknown>[];
+  character_model_preset_bindings?: Record<string, unknown>[];
 }
 
 interface ConversationWithMessages {
@@ -289,12 +292,55 @@ function includeParam(value: string | null): boolean {
   return value !== '0';
 }
 
-function getCharacterDraft(payload: ImportPayload): CharacterDraft | null {
-  const draft = normalizeCharacterCard(payload);
-  if (draft) return draft;
+function normalizeImportedBinding(row: Record<string, unknown>): { model: string; preset_id: string } | null {
+  const model = asString(row.model).trim();
+  const presetId = asString(row.preset_id).trim();
+  if (!model || !presetId) return null;
+  return { model, preset_id: presetId };
+}
 
-  const firstCharacter = asArray<Record<string, unknown>>(payload.characters)[0];
-  return firstCharacter ? normalizeCharacterCard({ character: firstCharacter }) : null;
+function collectModelPresetBindingsFromPayload(payload: ImportPayload): Record<string, unknown>[] {
+  const fromAll = asArray<Record<string, unknown>>(payload.character_model_preset_bindings);
+  const fromSingle = asArray<Record<string, unknown>>(payload.model_preset_bindings);
+  if (fromAll.length === 0 && fromSingle.length === 0) return [];
+
+  const impliedCharacterId = asString(asRecord(payload.character)?.id);
+  const singleWithCharacterId = fromSingle.map(row => (
+    impliedCharacterId && !asString(row.character_id)
+      ? { ...row, character_id: impliedCharacterId }
+      : row
+  ));
+  return [...fromAll, ...singleWithCharacterId];
+}
+
+function readOverlayModelPresetBindings(
+  payload: ImportPayload,
+): Array<{ model: string; preset_id: string }> | undefined {
+  const hasSingle = Array.isArray(payload.model_preset_bindings);
+  const hasAll = Array.isArray(payload.character_model_preset_bindings);
+  if (!hasSingle && !hasAll) return undefined;
+
+  const characterId = asString(asRecord(payload.character)?.id)
+    || asString(asArray<Record<string, unknown>>(payload.characters)[0]?.id);
+  const rows = collectModelPresetBindingsFromPayload(payload);
+  const filtered = characterId
+    ? rows.filter(row => !asString(row.character_id) || asString(row.character_id) === characterId)
+    : rows;
+  return filtered
+    .map(normalizeImportedBinding)
+    .filter((row): row is { model: string; preset_id: string } => row !== null);
+}
+
+function getCharacterDraft(payload: ImportPayload): CharacterDraft | null {
+  const draft = normalizeCharacterCard(payload)
+    ?? (() => {
+      const firstCharacter = asArray<Record<string, unknown>>(payload.characters)[0];
+      return firstCharacter ? normalizeCharacterCard({ character: firstCharacter }) : null;
+    })();
+  if (!draft) return null;
+
+  const overlayBindings = readOverlayModelPresetBindings(payload);
+  return overlayBindings ? { ...draft, model_preset_bindings: overlayBindings } : draft;
 }
 
 function getCharactersToImport(payload: ImportPayload, includeCharacter: boolean): Record<string, unknown>[] {
@@ -321,6 +367,7 @@ function createEmptyResults() {
     profileVersionsImported: 0,
     embeddingsImported: 0,
     memoryConfigsImported: 0,
+    modelPresetBindingsImported: 0,
     // 同名冲突重命名后的角色列表，便于前端提示用户「这些角色已重命名导入」。
     warnings: [] as { type: 'character_renamed'; originalName: string; newName: string }[],
   };
@@ -422,6 +469,7 @@ export async function POST(request: NextRequest) {
     ...asArray<Record<string, unknown>>(payload.character_memory_configs),
     ...(payload.character_memory_config ? [payload.character_memory_config] : []),
   ];
+  const modelPresetBindingsToImport = collectModelPresetBindingsFromPayload(payload);
 
   const enumValidationError = findImportEnumValidationError(conversationsToImport, memoriesToImport);
   if (enumValidationError) {
@@ -447,7 +495,8 @@ export async function POST(request: NextRequest) {
     profilesToImport.length === 0 &&
     profileVersionsToImport.length === 0 &&
     embeddingsToImport.length === 0 &&
-    configsToImport.length === 0
+    configsToImport.length === 0 &&
+    modelPresetBindingsToImport.length === 0
   ) {
     return NextResponse.json({ error: '没有可导入的内容' }, { status: 400 });
   }
@@ -471,6 +520,7 @@ export async function POST(request: NextRequest) {
     profileVersionsToImport,
     embeddingsToImport,
     configsToImport,
+    modelPresetBindingsToImport,
     target_character_id,
   });
 
@@ -503,6 +553,7 @@ function importPayload({
   profileVersionsToImport,
   embeddingsToImport,
   configsToImport,
+  modelPresetBindingsToImport,
   target_character_id,
 }: {
   db: ReturnType<typeof getDb>;
@@ -514,6 +565,7 @@ function importPayload({
   profileVersionsToImport: Record<string, unknown>[];
   embeddingsToImport: Record<string, unknown>[];
   configsToImport: Record<string, unknown>[];
+  modelPresetBindingsToImport: Record<string, unknown>[];
   target_character_id?: string;
 }) {
   const now = new Date().toISOString();
@@ -872,6 +924,48 @@ function importPayload({
         asString(config.updated_at) || now,
       );
       results.memoryConfigsImported++;
+    }
+
+    if (modelPresetBindingsToImport.length > 0) {
+      const deleteBindings = db.prepare(
+        'DELETE FROM character_model_preset_bindings WHERE character_id = ?',
+      );
+      const insertBinding = db.prepare(`
+        INSERT INTO character_model_preset_bindings (
+          character_id, model, preset_id, sort_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(character_id, model) DO UPDATE SET
+          preset_id = excluded.preset_id,
+          sort_order = excluded.sort_order,
+          updated_at = excluded.updated_at
+      `);
+      const clearedCharacters = new Set<string>();
+      let fallbackOrder = 0;
+
+      for (const row of modelPresetBindingsToImport) {
+        const originalCharId = asString(row.character_id);
+        const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
+        if (!characterExists(newCharId)) continue;
+
+        const normalized = normalizeImportedBinding(row);
+        if (!normalized) continue;
+
+        if (!clearedCharacters.has(newCharId)) {
+          deleteBindings.run(newCharId);
+          clearedCharacters.add(newCharId);
+        }
+
+        insertBinding.run(
+          newCharId,
+          normalized.model,
+          normalized.preset_id,
+          asNumber(row.sort_order) ?? fallbackOrder,
+          now,
+          now,
+        );
+        fallbackOrder += 1;
+        results.modelPresetBindingsImported++;
+      }
     }
   });
 

@@ -175,3 +175,71 @@ test('resolveActivePreset：角色绑定 / 禁用 / 空值', () => {
   resolved = lib.resolveActivePreset({ active_preset_id: '' });
   assert.equal(resolved, null, '空字符串表示不使用预设');
 });
+
+test('resolveActivePreset：模型绑定覆盖角色默认，未命中则回退', () => {
+  const defaultPreset = lib.createPreset({ name: 'Default Preset' });
+  const modelPreset = lib.createPreset({ name: 'Model Preset' });
+
+  db.prepare(`
+    INSERT INTO characters (id, name, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, active_preset_id, created_at, updated_at)
+    VALUES ('char-bind', 'T', '', '', '', '', '', '', '', '', '', ?, datetime('now'), datetime('now'))
+  `).run(defaultPreset.id);
+
+  lib.replaceCharacterModelPresetBindings('char-bind', [
+    { model: 'claude-sonnet-4', preset_id: modelPreset.id },
+    { model: 'gpt-4o', preset_id: '__none__' },
+  ]);
+
+  const character = { id: 'char-bind', active_preset_id: defaultPreset.id };
+
+  const byModel = lib.resolveActivePreset(character, 'claude-sonnet-4');
+  assert.ok(byModel);
+  assert.equal(byModel.id, modelPreset.id);
+
+  assert.equal(lib.resolveActivePreset(character, 'gpt-4o'), null, '显式 none 不得回退默认');
+
+  const fallback = lib.resolveActivePreset(character, 'other-model');
+  assert.ok(fallback);
+  assert.equal(fallback.id, defaultPreset.id);
+
+  const blankModel = lib.resolveActivePreset(character, '  ');
+  assert.ok(blankModel);
+  assert.equal(blankModel.id, defaultPreset.id);
+
+  const noModel = lib.resolveActivePreset(character);
+  assert.ok(noModel);
+  assert.equal(noModel.id, defaultPreset.id);
+
+  const memoryOverride = lib.resolveActivePreset({
+    id: 'char-bind',
+    active_preset_id: defaultPreset.id,
+    model_preset_bindings: [{ model: 'claude-sonnet-4', preset_id: '__none__' }],
+  }, 'claude-sonnet-4');
+  assert.equal(memoryOverride, null, '内存数组优先于库表');
+
+  const missingPreset = lib.resolveActivePreset({
+    active_preset_id: defaultPreset.id,
+    model_preset_bindings: [{ model: 'x', preset_id: 'does-not-exist' }],
+  }, 'x');
+  assert.equal(missingPreset, null, '绑定预设缺失时走传统骨架');
+});
+
+test('deletePreset 清除指向该预设的模型绑定', () => {
+  const keepPreset = lib.createPreset({ name: 'Keep' });
+  const dropPreset = lib.createPreset({ name: 'Drop' });
+
+  db.prepare(`
+    INSERT INTO characters (id, name, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, active_preset_id, created_at, updated_at)
+    VALUES ('char-unbind', 'T', '', '', '', '', '', '', '', '', '', ?, datetime('now'), datetime('now'))
+  `).run(keepPreset.id);
+
+  lib.replaceCharacterModelPresetBindings('char-unbind', [
+    { model: 'claude-sonnet-4', preset_id: dropPreset.id },
+    { model: 'gpt-4o', preset_id: keepPreset.id },
+  ]);
+
+  lib.deletePreset(dropPreset.id);
+
+  const remaining = lib.loadCharacterModelPresetBindings('char-unbind');
+  assert.deepEqual(remaining, [{ model: 'gpt-4o', preset_id: keepPreset.id }]);
+});

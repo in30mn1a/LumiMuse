@@ -5,6 +5,9 @@
  *   - null / '' / '__none__'：不使用预设（LumiMuse 传统骨架）
  *   - uuid：使用该预设
  *
+ * 模型覆盖：character_model_preset_bindings
+ *   - 当前 settings.model 命中则覆盖默认预设（preset_id 亦可为 '__none__'）
+ *
  * 单层启用（Q2）：prompt_preset_entries.enabled 直接决定启用，无单独 order 表。
  */
 
@@ -13,6 +16,7 @@ import { getDb } from '@/lib/db';
 import { stripTagRulesSchema } from '@/lib/schemas';
 import {
   Character,
+  CharacterModelPresetBinding,
   PresetEntry,
   PresetMarkerKey,
   PromptPreset,
@@ -168,6 +172,7 @@ export function deletePreset(id: string): void {
   db.transaction(() => {
     // SQLite ALTER TABLE 无法真加 FK；这里应用层兜底，删除预设时把所有角色的 active_preset_id 解绑。
     db.prepare('UPDATE characters SET active_preset_id = NULL WHERE active_preset_id = ?').run(id);
+    db.prepare('DELETE FROM character_model_preset_bindings WHERE preset_id = ?').run(id);
     // prompt_preset_entries 由 REFERENCES ... ON DELETE CASCADE 处理；若因 PRAGMA foreign_keys=off 失效，手动兜底：
     db.prepare('DELETE FROM prompt_preset_entries WHERE preset_id = ?').run(id);
     db.prepare('DELETE FROM prompt_presets WHERE id = ?').run(id);
@@ -279,20 +284,91 @@ export function deleteEntry(entryId: string): void {
   db.prepare('DELETE FROM prompt_preset_entries WHERE id = ?').run(entryId);
 }
 
+export function loadCharacterModelPresetBindings(characterId: string): CharacterModelPresetBinding[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT model, preset_id
+     FROM character_model_preset_bindings
+     WHERE character_id = ?
+     ORDER BY sort_order ASC, model ASC`,
+  ).all(characterId) as Array<{ model: string; preset_id: string }>;
+  return rows.map(row => ({ model: row.model, preset_id: row.preset_id }));
+}
+
+export function replaceCharacterModelPresetBindings(
+  characterId: string,
+  bindings: CharacterModelPresetBinding[],
+): void {
+  const db = getDb();
+  const now = nowIso();
+  const insert = db.prepare(`
+    INSERT INTO character_model_preset_bindings (
+      character_id, model, preset_id, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  db.transaction(() => {
+    db.prepare('DELETE FROM character_model_preset_bindings WHERE character_id = ?').run(characterId);
+    bindings.forEach((binding, index) => {
+      insert.run(characterId, binding.model, binding.preset_id, index, now, now);
+    });
+  })();
+}
+
+export function deleteCharacterModelPresetBindings(characterId: string): void {
+  getDb().prepare('DELETE FROM character_model_preset_bindings WHERE character_id = ?').run(characterId);
+}
+
+export function attachCharacterPresetBindings<T extends { id: string }>(
+  character: T,
+): T & { model_preset_bindings: CharacterModelPresetBinding[] } {
+  return {
+    ...character,
+    model_preset_bindings: loadCharacterModelPresetBindings(character.id),
+  };
+}
+
+export function findMissingBindingPresetId(
+  bindings: CharacterModelPresetBinding[],
+): string | null {
+  for (const binding of bindings) {
+    if (binding.preset_id === PRESET_ID_NONE) continue;
+    if (!getPreset(binding.preset_id)) return binding.preset_id;
+  }
+  return null;
+}
+
+function resolvePresetId(presetId: string | null | undefined): PromptPreset | null {
+  if (
+    presetId == null
+    || presetId === ''
+    || presetId === PRESET_ID_NONE
+  ) {
+    return null;
+  }
+  return getPreset(presetId);
+}
+
 /**
- * 解析角色绑定的预设。
+ * 解析本轮应使用的预设。
+ *
+ * 当前聊天模型若命中角色的模型绑定，用该绑定（含 `__none__` = 不使用预设）。
+ * 否则回退 `characters.active_preset_id`。
  *
  *   - null / '' / PRESET_ID_NONE：不使用预设
  *   - 其他非空字符串：使用该预设 id（不存在则返回 null）
  */
-export function resolveActivePreset(character: Character): PromptPreset | null {
-  const activePresetId = character.active_preset_id;
-  if (
-    activePresetId == null
-    || activePresetId === ''
-    || activePresetId === PRESET_ID_NONE
-  ) {
-    return null;
+export function resolveActivePreset(
+  character: Pick<Character, 'active_preset_id'> & Partial<Pick<Character, 'id' | 'model_preset_bindings'>>,
+  model?: string,
+): PromptPreset | null {
+  const trimmedModel = typeof model === 'string' ? model.trim() : '';
+  if (trimmedModel) {
+    const bindings = character.model_preset_bindings
+      ?? (character.id ? loadCharacterModelPresetBindings(character.id) : []);
+    const matched = bindings.find(binding => binding.model === trimmedModel);
+    if (matched) {
+      return resolvePresetId(matched.preset_id);
+    }
   }
-  return getPreset(activePresetId);
+  return resolvePresetId(character.active_preset_id);
 }

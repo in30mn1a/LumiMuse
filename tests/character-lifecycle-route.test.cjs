@@ -166,6 +166,16 @@ function createCharacterDb() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE character_model_preset_bindings (
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      model TEXT NOT NULL,
+      preset_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (character_id, model)
+    );
+
     CREATE TABLE character_memory_configs (
       character_id TEXT PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
       enabled INTEGER,
@@ -423,6 +433,12 @@ function createCharacterDb() {
   `).run(2, JSON.stringify({ ...profileSnapshot, relationship_state: '更加亲密' }), 'manual_edit', 42, sourceUpdatedAt);
 
   db.prepare(`
+    INSERT INTO character_model_preset_bindings (
+      character_id, model, preset_id, sort_order, created_at, updated_at
+    ) VALUES ('char-source', 'claude-sonnet-4', 'preset-model', 0, ?, ?);
+  `).run(sourceCreatedAt, sourceUpdatedAt);
+
+  db.prepare(`
     INSERT INTO character_memory_configs (
       character_id, enabled, memory_package_token_budget, profile_token_budget,
       pinned_token_budget, open_threads_token_budget, retrieval_token_budget,
@@ -615,6 +631,9 @@ test('/api/characters/[id]/duplicate copies committed memory authority and remap
     assert.equal(payload.id, 'id-000000001');
     assert.equal(payload.name, '艾莉丝（副本）');
     assert.equal(payload.active_preset_id, 'preset-source');
+    assert.deepEqual(payload.model_preset_bindings, [
+      { model: 'claude-sonnet-4', preset_id: 'preset-model' },
+    ]);
     assert.equal(payload.basic_info, '角色基本信息');
     assert.equal(payload.user_image_tags, '1boy, black hair');
 
@@ -734,6 +753,13 @@ test('/api/characters/[id]/duplicate copies committed memory authority and remap
     assert.equal(copiedConfig.memory_package_token_budget, 20000);
     assert.equal(copiedConfig.vector_top_k_override, 88);
     assert.equal(copiedConfig.embedding_model_override, 'embed-override');
+
+    const copiedBindings = db.prepare(
+      'SELECT model, preset_id FROM character_model_preset_bindings WHERE character_id = ?',
+    ).all(payload.id);
+    assert.deepEqual(copiedBindings, [
+      { model: 'claude-sonnet-4', preset_id: 'preset-model' },
+    ]);
 
     for (const table of [
       'memory_tasks',

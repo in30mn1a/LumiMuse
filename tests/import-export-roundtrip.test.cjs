@@ -196,6 +196,16 @@ function createImportDb() {
     CREATE UNIQUE INDEX idx_memory_embeddings_unique_model
       ON memory_embeddings(memory_id, provider, model, dimension);
 
+    CREATE TABLE character_model_preset_bindings (
+      character_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      preset_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (character_id, model)
+    );
+
     CREATE TABLE character_memory_configs (
       character_id TEXT PRIMARY KEY,
       enabled INTEGER,
@@ -843,6 +853,53 @@ test('/api/import preserves explicit embedding normalized=0', async () => {
   const mem = db.prepare("SELECT id FROM memories WHERE content = ?").get('未归一化向量的记忆');
   const emb = db.prepare('SELECT normalized FROM memory_embeddings WHERE memory_id = ?').get(mem.id);
   assert.equal(emb.normalized, 0);
+});
+
+test('/api/export and /api/import round-trip model preset bindings with id remapping', async () => {
+  const exportDb = createImportDb();
+  exportDb.prepare(`
+    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
+    VALUES (?, ?, NULL, '', '', '', '', '', '', '', '[]', '[]', ?, ?)
+  `).run('char-bind', '绑定角色', '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z');
+  exportDb.prepare(`
+    INSERT INTO character_model_preset_bindings (
+      character_id, model, preset_id, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run('char-bind', 'claude-sonnet-4', 'preset-claude', 0, '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z');
+  exportDb.prepare(`
+    INSERT INTO character_model_preset_bindings (
+      character_id, model, preset_id, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run('char-bind', 'gpt-4o', '__none__', 1, '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z');
+
+  const exportRoute = loadExportRoute(exportDb);
+  const exportResponse = await exportRoute.GET({
+    nextUrl: new URL('http://test.local/api/export?type=character&id=char-bind'),
+  });
+  assert.equal(exportResponse.status, 200);
+  const exportPayload = JSON.parse(await exportResponse.text());
+  assert.equal(exportPayload.model_preset_bindings.length, 2);
+  assert.equal(exportPayload.model_preset_bindings[0].model, 'claude-sonnet-4');
+  assert.equal(exportPayload.model_preset_bindings[0].preset_id, 'preset-claude');
+  assert.equal(exportPayload.model_preset_bindings[1].preset_id, '__none__');
+
+  const importDb = createImportDb();
+  const importRoute = loadImportRoute(importDb);
+  const importResponse = await importRoute.POST(importRequest(
+    exportPayload,
+    'target_character_id=target-char&include_character=0',
+  ));
+  const importBody = await importResponse.json();
+  assert.equal(importResponse.status, 200, importBody.error);
+  assert.equal(importBody.modelPresetBindingsImported, 2);
+
+  const rows = importDb.prepare(
+    'SELECT model, preset_id FROM character_model_preset_bindings WHERE character_id = ? ORDER BY sort_order ASC, model ASC',
+  ).all('target-char');
+  assert.deepEqual(rows, [
+    { model: 'claude-sonnet-4', preset_id: 'preset-claude' },
+    { model: 'gpt-4o', preset_id: '__none__' },
+  ]);
 });
 
 test('/api/export and /api/import round-trip character_memory_configs with id remapping', async () => {

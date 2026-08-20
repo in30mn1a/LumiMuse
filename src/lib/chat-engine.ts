@@ -638,11 +638,11 @@ export async function runChat(
   }
 
   // 预设提示词分支：惰性导入避免在旧路径触发 db 模块加载（保留测试 mock 边界）。
-  //   - 角色绑定 active_preset_id 为具体预设 id → 走预设组装管线
-  //   - null / '' / '__none__' → 走原 assemblePrompt 骨架
+  //   - 当前模型命中角色的模型绑定，或角色默认 active_preset_id 为具体预设 id → 走预设组装管线
+  //   - 绑定/默认为 null / '' / '__none__' → 走原 assemblePrompt 骨架
   let chatMessages: ChatMessage[];
   const { resolveActivePreset, loadEnabledEntries } = await import('@/lib/prompt-presets');
-  const activePreset = resolveActivePreset(character);
+  const activePreset = resolveActivePreset(character, settings.model);
   if (activePreset) {
     const { assemblePresetPrompt } = await import('@/lib/prompt-preset-assembler');
     const presetEntries = loadEnabledEntries(activePreset.id);

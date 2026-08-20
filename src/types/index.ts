@@ -21,8 +21,18 @@ export interface Character {
    * 新建角色默认 `'__none__'`。
    */
   active_preset_id: string | null;
+  /**
+   * 按聊天模型覆盖默认预设。缺省或空数组表示没有覆盖。
+   * `preset_id` 为具体预设 id 或 `'__none__'`。
+   */
+  model_preset_bindings?: CharacterModelPresetBinding[];
   created_at: string;
   updated_at: string;
+}
+
+export interface CharacterModelPresetBinding {
+  model: string;
+  preset_id: string;
 }
 
 export interface Conversation {

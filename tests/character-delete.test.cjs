@@ -80,6 +80,15 @@ function createDeleteDb() {
     CREATE TABLE character_memory_profile_update_tasks (id INTEGER PRIMARY KEY, character_id TEXT NOT NULL);
     CREATE TABLE character_memory_profile_versions (id INTEGER PRIMARY KEY, character_id TEXT NOT NULL);
     CREATE TABLE character_memory_profiles (character_id TEXT PRIMARY KEY);
+    CREATE TABLE character_model_preset_bindings (
+      character_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      preset_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (character_id, model)
+    );
 
     INSERT INTO characters VALUES ('char-target', 'Target'), ('char-keep', 'Keep');
     INSERT INTO conversations VALUES ('conv-target', 'char-target'), ('conv-keep', 'char-keep');
@@ -92,6 +101,8 @@ function createDeleteDb() {
     INSERT INTO character_memory_profile_update_tasks VALUES (1, 'char-target'), (2, 'char-keep');
     INSERT INTO character_memory_profile_versions VALUES (1, 'char-target'), (2, 'char-keep');
     INSERT INTO character_memory_profiles VALUES ('char-target'), ('char-keep');
+    INSERT INTO character_model_preset_bindings (character_id, model, preset_id)
+      VALUES ('char-target', 'claude', 'preset-a'), ('char-keep', 'gpt', 'preset-b');
   `);
   return db;
 }
@@ -150,6 +161,10 @@ test('character DELETE checks only collected candidates and preserves other char
   assert.deepEqual(
     db.prepare('SELECT character_id FROM character_memory_profiles ORDER BY character_id').all(),
     [{ character_id: 'char-keep' }],
+  );
+  assert.deepEqual(
+    db.prepare('SELECT character_id, model FROM character_model_preset_bindings ORDER BY character_id').all(),
+    [{ character_id: 'char-keep', model: 'gpt' }],
   );
   db.close();
 });

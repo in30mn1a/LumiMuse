@@ -86,6 +86,7 @@ export async function GET(request: NextRequest) {
       : [];
     // 角色级记忆引擎覆盖（token 预算 / 向量 / reranker 等），与角色绑定导出。
     const memoryConfig = loadMemoryConfigForCharacter(db, characterId);
+    const modelPresetBindings = loadModelPresetBindingsForCharacter(db, characterId);
 
     const payload = {
       version: EXPORT_VERSION,
@@ -98,6 +99,7 @@ export async function GET(request: NextRequest) {
       memory_profile_versions: profileVersions,
       memory_embeddings: embeddings,
       character_memory_config: memoryConfig,
+      model_preset_bindings: modelPresetBindings,
     };
 
     return new Response(JSON.stringify(payload), {
@@ -128,6 +130,7 @@ export async function GET(request: NextRequest) {
   const embeddings = includeEmbeddings ? loadAllEmbeddings(db) : [];
   // 角色级记忆配置随角色导出；include_characters=0 时也不带配置行。
   const memoryConfigs = includeCharacters ? loadAllMemoryConfigs(db) : [];
+  const modelPresetBindings = includeCharacters ? loadAllModelPresetBindings(db) : [];
 
   const payload = {
     version: EXPORT_VERSION,
@@ -139,6 +142,7 @@ export async function GET(request: NextRequest) {
     memory_profile_versions: profileVersions,
     memory_embeddings: embeddings,
     character_memory_configs: memoryConfigs,
+    character_model_preset_bindings: modelPresetBindings,
   };
 
   // 根据实际包含内容生成文件名
@@ -274,6 +278,28 @@ function loadAllMemoryConfigs(db: ReturnType<typeof getDb>): Record<string, unkn
   return (db.prepare(
     'SELECT * FROM character_memory_configs ORDER BY character_id',
   ).all() as Record<string, unknown>[]).map(row => ({ ...row }));
+}
+
+function loadModelPresetBindingsForCharacter(
+  db: ReturnType<typeof getDb>,
+  characterId: string,
+): Record<string, unknown>[] {
+  if (!tableExists(db, 'character_model_preset_bindings')) return [];
+  return db.prepare(
+    `SELECT model, preset_id, sort_order
+     FROM character_model_preset_bindings
+     WHERE character_id = ?
+     ORDER BY sort_order ASC, model ASC`,
+  ).all(characterId) as Record<string, unknown>[];
+}
+
+function loadAllModelPresetBindings(db: ReturnType<typeof getDb>): Record<string, unknown>[] {
+  if (!tableExists(db, 'character_model_preset_bindings')) return [];
+  return db.prepare(
+    `SELECT character_id, model, preset_id, sort_order
+     FROM character_model_preset_bindings
+     ORDER BY character_id, sort_order ASC, model ASC`,
+  ).all() as Record<string, unknown>[];
 }
 
 function buildConversationsForCharacter(db: ReturnType<typeof import('@/lib/db').getDb>, characterId: string) {

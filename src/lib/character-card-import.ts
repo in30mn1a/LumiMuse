@@ -11,7 +11,8 @@ export type CharacterDraft = Pick<Character,
   'system_prompt' |
   'other_info' |
   'image_tags' |
-  'user_image_tags'
+  'user_image_tags' |
+  'model_preset_bindings'
 >;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

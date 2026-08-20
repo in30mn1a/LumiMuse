@@ -1660,7 +1660,6 @@ const translations: Record<Lang, Record<string, string>> = {
     'preset.modelBindEmpty': 'No model bindings yet. Unlisted models use the default preset above.',
     'preset.modelBindDuplicate': 'The same model cannot be bound twice',
     'preset.modelBindEmptyModel': 'Select a model, or remove the empty binding row',
-    'preset.modelBindLoadModelsError': 'Failed to load the model list (configure the API base and key in settings first)',
     'preset.modelBindLoadModelsError': 'Failed to load the model list (configure API base and key in Settings first)',
     'preset.optionDisablePreset': '— No preset (LumiMuse legacy skeleton) —',
     'preset.notFound': 'Preset not found',

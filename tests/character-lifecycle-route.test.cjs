@@ -94,7 +94,9 @@ function createCharacterDb() {
       title TEXT NOT NULL DEFAULT '',
       ignore_memory INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
 
     CREATE TABLE messages (
@@ -875,5 +877,199 @@ test('/api/characters/[id]/duplicate does not delete committed files when the fi
     assert.deepEqual(assets.indexTriggerCalls, ['triggered']);
   } finally {
     storage.close();
+  }
+});
+
+test('/api/characters/[id]/duplicate preserves a linked snapshot when its parent later grows', async () => {
+  const db = createCharacterDb();
+  // 在源角色上补一段「仅索引」子对话：自身只有 1 条消息，历史继承自 conv-source
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end)
+    VALUES ('conv-linked', 'char-source', '续篇', 0, '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z', 'conv-source', 2)
+  `).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES ('msg-linked', 'conv-linked', 'user', '续篇第一句', 5, '2026-08-02T00:00:01.000Z', 3, '{}')
+  `).run();
+  // 子对话只继承到 seq=2；之后父对话继续追加的 seq=3 不属于子对话快照。
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES ('msg-root-later', 'conv-source', 'assistant', '父对话后来追加', 6, '2026-08-03T00:00:01.000Z', 3, '{}')
+  `).run();
+
+  const assets = createAssetMocks();
+  const route = loadDuplicateRoute(db, assets);
+
+  try {
+    const response = await route.POST({}, { params: Promise.resolve({ id: 'char-source' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 201);
+
+    const copied = db.prepare(
+      'SELECT * FROM conversations WHERE character_id = ? ORDER BY created_at ASC',
+    ).all(payload.id);
+    assert.equal(copied.length, 2);
+
+    const [copiedRoot, copiedChild] = copied;
+    assert.equal(copiedRoot.parent_id, null);
+    assert.equal(copiedRoot.parent_seq_end, null);
+    // 子对话必须指向复制后的新父对话，而不是原角色的对话
+    assert.equal(copiedChild.parent_id, copiedRoot.id);
+    assert.equal(copiedChild.parent_seq_end, 2);
+
+    // 父对话副本包含后续追加的消息，但子对话仍只继承前两条。
+    assert.deepEqual(
+      db.prepare('SELECT seq FROM messages WHERE conversation_id = ? ORDER BY seq ASC').all(copiedRoot.id).map(r => r.seq),
+      [1, 2, 3],
+    );
+    assert.deepEqual(
+      db.prepare('SELECT seq, content FROM messages WHERE conversation_id = ? ORDER BY seq ASC').all(copiedChild.id),
+      [{ seq: 3, content: '续篇第一句' }],
+    );
+
+    // 副本的子对话沿链能看到完整历史
+    const { resolveConversationChain, buildChainMessageScope } = require('../src/lib/conversation-chain.ts');
+    const scope = buildChainMessageScope(resolveConversationChain(db, copiedChild.id));
+    const visible = db.prepare(
+      `SELECT seq, content FROM messages WHERE ${scope.sql} ORDER BY seq ASC`,
+    ).all(...scope.params);
+    assert.deepEqual(visible.map(r => r.seq), [1, 2, 3]);
+    assert.equal(visible.at(-1).content, '续篇第一句');
+    assert.equal(visible.some(r => r.content === '父对话后来追加'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('/api/characters/[id]/duplicate preserves inserted child messages inside inherited seq order', async () => {
+  const db = createCharacterDb();
+  // 模拟在根消息 seq=1 后通过子分支插入回复：原根 seq=2 被右移到 3，
+  // 子对话边界同步右移到 3，而插入回复物理属于子对话、seq 保持为 2。
+  db.prepare(`UPDATE messages SET seq = 3 WHERE id = 'msg-assistant'`).run();
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end)
+    VALUES ('conv-inserted-child', 'char-source', '插入式续篇', 0, '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z', 'conv-source', 3)
+  `).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES
+      ('msg-child-inserted', 'conv-inserted-child', 'assistant', '插在祖先回复之前', 6, '2026-08-01T00:00:01.500Z', 2, '{}'),
+      ('msg-child-tail', 'conv-inserted-child', 'user', '子对话继续', 5, '2026-08-02T00:00:01.000Z', 4, '{}'),
+      ('msg-root-suffix', 'conv-source', 'assistant', '父对话分支后的追加', 7, '2026-08-03T00:00:01.000Z', 4, '{}')
+  `).run();
+
+  const { resolveConversationChain, buildChainMessageScope } = require('../src/lib/conversation-chain.ts');
+  const visibleContents = conversationId => {
+    const scope = buildChainMessageScope(resolveConversationChain(db, conversationId));
+    return db.prepare(
+      `SELECT content FROM messages WHERE ${scope.sql} ORDER BY seq ASC`,
+    ).all(...scope.params).map(row => row.content);
+  };
+  const sourceVisible = visibleContents('conv-inserted-child');
+  const firstLines = contents => contents.map(content => content.split('\n')[0]);
+  assert.deepEqual(firstLines(sourceVisible), [
+    '主人喜欢雨夜。',
+    '插在祖先回复之前',
+    '艾莉丝会一直记得。',
+    '子对话继续',
+  ]);
+
+  const assets = createAssetMocks();
+  const route = loadDuplicateRoute(db, assets);
+
+  try {
+    const response = await route.POST({}, { params: Promise.resolve({ id: 'char-source' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 201);
+
+    const copied = db.prepare(`
+      SELECT * FROM conversations
+      WHERE character_id = ?
+      ORDER BY created_at ASC
+    `).all(payload.id);
+    const copiedRoot = copied.find(row => row.parent_id === null);
+    const copiedChild = copied.find(row => row.parent_id === copiedRoot?.id);
+    assert.ok(copiedRoot);
+    assert.ok(copiedChild);
+    assert.equal(copiedChild.parent_seq_end, 3);
+    assert.deepEqual(
+      db.prepare('SELECT seq FROM messages WHERE conversation_id = ? ORDER BY seq ASC').all(copiedRoot.id).map(row => row.seq),
+      [1, 3, 4],
+    );
+    assert.deepEqual(
+      db.prepare('SELECT seq FROM messages WHERE conversation_id = ? ORDER BY seq ASC').all(copiedChild.id).map(row => row.seq),
+      [2, 4],
+    );
+
+    const copiedVisible = visibleContents(copiedChild.id);
+    assert.deepEqual(firstLines(copiedVisible), firstLines(sourceVisible));
+    assert.equal(copiedVisible.includes('父对话分支后的追加'), false);
+  } finally {
+    db.close();
+  }
+});
+
+test('/api/characters/[id]/duplicate fails fast instead of silently dropping broken linked history', async () => {
+  for (const scenario of [
+    {
+      name: 'missing parent',
+      setup(db) {
+        db.prepare(`
+          INSERT INTO conversations (
+            id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end
+          ) VALUES (
+            'conv-broken', 'char-source', '坏链', 0,
+            '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z',
+            'conv-missing', 2
+          )
+        `).run();
+      },
+      error: /parent not found/,
+    },
+    {
+      name: 'cycle',
+      setup(db) {
+        db.prepare(`
+          INSERT INTO conversations (
+            id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end
+          ) VALUES (
+            'conv-cycle', 'char-source', '环链', 0,
+            '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z',
+            'conv-source', 2
+          )
+        `).run();
+        db.prepare(`
+          UPDATE conversations
+          SET parent_id = 'conv-cycle', parent_seq_end = 2
+          WHERE id = 'conv-source'
+        `).run();
+      },
+      error: /cycle detected/,
+    },
+  ]) {
+    const db = createCharacterDb();
+    scenario.setup(db);
+    const assets = createAssetMocks();
+    const route = loadDuplicateRoute(db, assets);
+
+    try {
+      const response = await route.POST({}, { params: Promise.resolve({ id: 'char-source' }) });
+      const payload = await response.json();
+      assert.equal(response.status, 500, scenario.name);
+      assert.match(payload.error, scenario.error, scenario.name);
+      assert.equal(
+        db.prepare("SELECT COUNT(*) AS count FROM characters WHERE id <> 'char-source'").get().count,
+        0,
+        scenario.name,
+      );
+      assert.equal(
+        db.prepare("SELECT COUNT(*) AS count FROM conversations WHERE character_id <> 'char-source'").get().count,
+        0,
+        scenario.name,
+      );
+      assert.deepEqual(assets.physicalCopies, [], scenario.name);
+    } finally {
+      db.close();
+    }
   }
 });

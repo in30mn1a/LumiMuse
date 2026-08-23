@@ -527,6 +527,13 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.duplicating': '复制中...',
     'chat.duplicateSuccess': '已复制为副本',
     'chat.duplicateError': '复制失败，请稍后重试',
+    'chat.duplicateModalTitle': '复制这段对话',
+    'chat.duplicateModeLinked': '仅索引（推荐）',
+    'chat.duplicateModeLinkedDesc': '不重复入库，直接引用这段历史。历史消息与原对话共享：编辑、删除或切换版本会同步影响两边；仍可正常翻阅和搜索。',
+    'chat.duplicateModeFull': '全量复制',
+    'chat.duplicateModeFullDesc': '把全部消息完整复制一份，两个对话此后互不影响。适合要拿副本做分支尝试的情况。',
+    'chat.duplicateLinkedNote': '注意：仅索引的副本依赖原对话，原对话将无法被删除。',
+    'chat.deleteBlockedByChildren': '这段对话被 {count} 个索引副本引用，删除会让它们丢失历史。请先删除那些副本。',
 
     // toast 文案：以下用于 ChatView 内部的轻提示，统一走 i18n
     'chat.memoryUpdated': 'TA 更新了关于你的 {count} 条记忆',
@@ -1378,6 +1385,13 @@ const translations: Record<Lang, Record<string, string>> = {
     'chat.duplicating': 'Duplicating...',
     'chat.duplicateSuccess': 'Duplicated as a copy',
     'chat.duplicateError': 'Duplicate failed, please try again',
+    'chat.duplicateModalTitle': 'Duplicate this conversation',
+    'chat.duplicateModeLinked': 'Reference only (recommended)',
+    'chat.duplicateModeLinkedDesc': 'References this history without storing another copy. Historical messages are shared with the original: editing, deleting, or switching versions affects both chats. Scrolling and search still work.',
+    'chat.duplicateModeFull': 'Full copy',
+    'chat.duplicateModeFullDesc': 'Copies every message, after which the two chats are fully independent. Use this when the copy is for branching experiments.',
+    'chat.duplicateLinkedNote': 'Note: a reference-only copy depends on this conversation, which then cannot be deleted.',
+    'chat.deleteBlockedByChildren': 'This conversation is referenced by {count} linked copies; deleting it would strip their history. Delete those copies first.',
 
     // toast strings (i18n for ChatView toasts)
     'chat.memoryUpdated': 'They updated {count} memories about you',

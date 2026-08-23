@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
+const Database = require('better-sqlite3');
 
 const root = path.resolve(__dirname, '..');
 const originalResolveFilename = Module._resolveFilename;
@@ -766,7 +767,7 @@ test('/api/conversations/[id]/reset-extraction POST accepts an empty object as d
   const updates = [];
   const db = {
     prepare(sql) {
-      if (sql.startsWith('SELECT id, metadata, role FROM messages')) {
+      if (sql.includes('SELECT id, metadata, role') && sql.includes('FROM messages')) {
         return { all: (conversationId) => {
           assert.equal(conversationId, 'conv-1');
           return rows;
@@ -784,6 +785,11 @@ test('/api/conversations/[id]/reset-extraction POST accepts an empty object as d
   const route = requireFreshWithMocks('../src/app/api/conversations/[id]/reset-extraction/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    '@/lib/conversation-chain': {
+      resolveConversationChain: (_db, conversationId) => [{ conversationId, seqEnd: null }],
+      buildChainMessageScope: chain => ({ sql: 'conversation_id = ?', params: [chain[0].conversationId] }),
+      ascendingMessageOrderSqlForChain: () => 'created_at ASC, seq ASC',
+    },
   });
 
   const response = await route.POST(jsonRequest({}), { params: Promise.resolve({ id: 'conv-1' }) });
@@ -803,7 +809,7 @@ test('/api/conversations/[id]/reset-extraction POST rolls back all metadata upda
   ];
   const db = {
     prepare(sql) {
-      if (sql.startsWith('SELECT id, metadata, role FROM messages')) {
+      if (sql.includes('SELECT id, metadata, role') && sql.includes('FROM messages')) {
         return { all: () => rows.map(row => ({ ...row })) };
       }
       if (sql.startsWith('UPDATE messages SET metadata = ? WHERE id = ?')) {
@@ -831,6 +837,11 @@ test('/api/conversations/[id]/reset-extraction POST rolls back all metadata upda
   const route = requireFreshWithMocks('../src/app/api/conversations/[id]/reset-extraction/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    '@/lib/conversation-chain': {
+      resolveConversationChain: (_db, conversationId) => [{ conversationId, seqEnd: null }],
+      buildChainMessageScope: chain => ({ sql: 'conversation_id = ?', params: [chain[0].conversationId] }),
+      ascendingMessageOrderSqlForChain: () => 'created_at ASC, seq ASC',
+    },
   });
 
   const response = await route.POST(jsonRequest({}), { params: Promise.resolve({ id: 'conv-1' }) });
@@ -842,4 +853,107 @@ test('/api/conversations/[id]/reset-extraction POST rolls back all metadata upda
     { memory_extracted: true, keep: 'one' },
     { memory_extracted: true, keep: 'two' },
   ]);
+});
+
+test('/api/conversations/[id]/reset-extraction scopes all and explicit IDs to the linked view', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT,
+      parent_seq_end INTEGER
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      seq INTEGER NOT NULL
+    );
+    CREATE TABLE message_update_log (
+      position INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL
+    );
+    CREATE TRIGGER log_message_metadata_update
+    AFTER UPDATE OF metadata ON messages
+    BEGIN
+      INSERT INTO message_update_log (message_id) VALUES (NEW.id);
+    END;
+    INSERT INTO conversations (id, parent_id, parent_seq_end) VALUES
+      ('conv-parent', NULL, NULL),
+      ('conv-child', 'conv-parent', 3),
+      ('conv-outside', NULL, NULL);
+    INSERT INTO messages (id, conversation_id, role, metadata, created_at, seq) VALUES
+      ('parent-visible', 'conv-parent', 'user', '{"memory_extracted":true,"memory_noop_extracted_at":"2026-08-23T00:00:00.000Z"}', '2026-08-23T00:00:00.000Z', 1),
+      ('parent-answer', 'conv-parent', 'assistant', '{}', '2026-08-23T00:00:01.000Z', 3),
+      ('parent-after-snapshot', 'conv-parent', 'user', '{"memory_extracted":true}', '2026-08-23T00:00:02.000Z', 4),
+      ('child-inserted', 'conv-child', 'user', '{"memory_extracted":true}', '2026-08-23T00:00:10.000Z', 2),
+      ('child-local', 'conv-child', 'user', '{"memory_extracted":true}', '2026-08-23T00:00:03.000Z', 4),
+      ('outside-user', 'conv-outside', 'user', '{}', '2026-08-23T00:00:04.000Z', 1);
+  `);
+  const route = requireFreshWithMocks('../src/app/api/conversations/[id]/reset-extraction/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+  });
+
+  const resetResponse = await route.POST(
+    jsonRequest({}),
+    { params: Promise.resolve({ id: 'conv-child' }) },
+  );
+  assert.deepEqual(await resetResponse.json(), { resetCount: 3, action: 'reset' });
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT metadata FROM messages WHERE id = ?').get('parent-visible').metadata),
+    {},
+  );
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT metadata FROM messages WHERE id = ?').get('child-inserted').metadata),
+    {},
+  );
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT metadata FROM messages WHERE id = ?').get('child-local').metadata),
+    {},
+  );
+  assert.deepEqual(
+    db.prepare('SELECT message_id FROM message_update_log ORDER BY position').all().map(row => row.message_id),
+    ['parent-visible', 'child-inserted', 'child-local'],
+  );
+  assert.equal(
+    JSON.parse(db.prepare('SELECT metadata FROM messages WHERE id = ?').get('parent-after-snapshot').metadata).memory_extracted,
+    true,
+  );
+
+  const markResponse = await route.POST(
+    jsonRequest({
+      action: 'mark',
+      messageIds: ['parent-visible', 'parent-after-snapshot', 'outside-user'],
+    }),
+    { params: Promise.resolve({ id: 'conv-child' }) },
+  );
+  assert.deepEqual(await markResponse.json(), { resetCount: 1, action: 'mark' });
+  assert.equal(
+    JSON.parse(db.prepare('SELECT metadata FROM messages WHERE id = ?').get('parent-visible').metadata).memory_extracted,
+    true,
+  );
+  assert.deepEqual(
+    JSON.parse(db.prepare('SELECT metadata FROM messages WHERE id = ?').get('outside-user').metadata),
+    {},
+  );
+
+  const beforeEmptySelection = db.prepare(
+    'SELECT id, metadata FROM messages ORDER BY id'
+  ).all();
+  const emptySelectionResponse = await route.POST(
+    jsonRequest({ action: 'reset', messageIds: [] }),
+    { params: Promise.resolve({ id: 'conv-child' }) },
+  );
+  assert.deepEqual(
+    await emptySelectionResponse.json(),
+    { resetCount: 0, action: 'reset' },
+  );
+  assert.deepEqual(
+    db.prepare('SELECT id, metadata FROM messages ORDER BY id').all(),
+    beforeEmptySelection,
+  );
+  db.close();
 });

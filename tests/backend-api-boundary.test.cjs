@@ -90,7 +90,9 @@ function createConversationDb(options = {}) {
       title TEXT NOT NULL,
       ignore_memory INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
     CREATE TABLE characters (
       id TEXT PRIMARY KEY,
@@ -125,7 +127,9 @@ function createConversationTieBreakerDb() {
       title TEXT NOT NULL,
       ignore_memory INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
   `);
   const insert = db.prepare(`
@@ -148,7 +152,9 @@ function createConversationMessagesDb() {
       title TEXT NOT NULL,
       ignore_memory INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -179,7 +185,9 @@ function createSearchDb() {
     CREATE TABLE conversations (
       id TEXT PRIMARY KEY,
       character_id TEXT NOT NULL,
-      title TEXT NOT NULL
+      title TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -386,7 +394,14 @@ test('/api/conversations/[id] DELETE reports only files no longer referenced aft
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE characters (id TEXT PRIMARY KEY, avatar_url TEXT);
-    CREATE TABLE conversations (id TEXT PRIMARY KEY, character_id TEXT NOT NULL);
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT '2026-07-11T00:00:00.000Z',
+      parent_id TEXT,
+      parent_seq_end INTEGER
+    );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
@@ -395,7 +410,7 @@ test('/api/conversations/[id] DELETE reports only files no longer referenced aft
     );
     CREATE TABLE memory_tasks (id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL);
     INSERT INTO characters VALUES ('char-a', NULL);
-    INSERT INTO conversations VALUES ('conv-delete', 'char-a'), ('conv-keep', 'char-a');
+    INSERT INTO conversations (id, character_id) VALUES ('conv-delete', 'char-a'), ('conv-keep', 'char-a');
     INSERT INTO messages VALUES (
       'msg-delete',
       'conv-delete',
@@ -500,6 +515,54 @@ test('/api/conversations/[id]/messages POST ignores external token provenance an
   assert.equal(payload.metadata.source, 'external');
   assert.equal(payload.metadata.token_count_provenance.source, 'server');
   assert.notEqual(payload.metadata.token_count_provenance.algorithm, 'forged');
+});
+
+test('linked full-message endpoints use seq order for late inserted replies', async () => {
+  const db = createConversationMessagesDb();
+  db.prepare(`
+    INSERT INTO conversations (
+      id, character_id, title, created_at, updated_at, parent_id, parent_seq_end
+    ) VALUES (
+      'conv-child', 'char-a', '插入式分支',
+      '2026-07-11T00:01:00.000Z', '2026-07-11T00:04:00.000Z',
+      'conv-a', 3
+    )
+  `).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES
+      ('root-1', 'conv-a', 'user', '第一句', 1, '2026-07-11T00:01:00.000Z', 1, '{}'),
+      ('child-2', 'conv-child', 'assistant', '插入句', 1, '2026-07-11T00:03:00.000Z', 2, '{}'),
+      ('root-3', 'conv-a', 'assistant', '第三句', 1, '2026-07-11T00:02:00.000Z', 3, '{}'),
+      ('child-4', 'conv-child', 'user', '第四句', 1, '2026-07-11T00:04:00.000Z', 4, '{}')
+  `).run();
+
+  const messagesRoute = loadRoute('../src/app/api/messages/route.ts', db);
+  const allResponse = await messagesRoute.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-child&all=1',
+  ));
+  const allPayload = await allResponse.json();
+  assert.deepEqual(allPayload.map(message => message.id), [
+    'root-1',
+    'child-2',
+    'root-3',
+    'child-4',
+  ]);
+
+  const conversationMessagesRoute = loadRoute(
+    '../src/app/api/conversations/[id]/messages/route.ts',
+    db,
+  );
+  const nestedResponse = await conversationMessagesRoute.GET({}, {
+    params: Promise.resolve({ id: 'conv-child' }),
+  });
+  const nestedPayload = await nestedResponse.json();
+  assert.deepEqual(nestedPayload.map(message => message.id), [
+    'root-1',
+    'child-2',
+    'root-3',
+    'child-4',
+  ]);
 });
 
 test('/api/messages/[id] PUT refreshes token provenance after content and attachment edits', async () => {
@@ -631,6 +694,19 @@ test('/api/summarize uses one ISO timestamp for the summary message and conversa
             assert.equal(conversationId, 'conv-a');
           },
         };
+      }
+      // 链式对话解析：本用例都是无 parent 的普通对话
+      if (sql.includes('parent_seq_end FROM conversations')) {
+        return { get: () => ({ parent_id: null, parent_seq_end: null }) };
+      }
+      if (sql.includes('SELECT parent_seq_end AS m')) {
+        return { get: () => ({ m: null }) };
+      }
+      if (sql.includes('SELECT MAX(parent_seq_end) AS m')) {
+        return { get: () => ({ m: null }) };
+      }
+      if (sql.includes('FROM conversations WHERE parent_id = ?')) {
+        return { all: () => [] };
       }
       throw new Error(`unexpected SQL: ${sql}`);
     },
@@ -840,6 +916,35 @@ test('/api/messages GET floors a fractional page limit before binding it to SQLi
   assert.equal(payload.hasMore, true);
 });
 
+test('/api/messages GET counts unprocessed users across a linked view with extraction semantics', async () => {
+  const db = createConversationMessagesDb();
+  db.prepare(`
+    INSERT INTO conversations (
+      id, character_id, title, created_at, updated_at, parent_id, parent_seq_end
+    ) VALUES (
+      'conv-child', 'char-a', '链式子对话',
+      '2026-07-11T00:01:00.000Z', '2026-07-11T00:01:00.000Z', 'conv-a', 3
+    )
+  `).run();
+  const insert = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, ?, 'user', ?, 1, ?, ?, ?)
+  `);
+  insert.run('parent-noop', 'conv-a', '已完成但没有记忆', '2026-07-11T00:00:01.000Z', 1, '{"memory_noop_extracted_at":"2026-07-11T00:00:01.000Z"}');
+  insert.run('parent-string-flag', 'conv-a', '兼容旧 truthy 标记', '2026-07-11T00:00:02.000Z', 2, '{"memory_extracted":"yes"}');
+  insert.run('parent-pending', 'conv-a', '祖先待提取', '2026-07-11T00:00:03.000Z', 3, '{}');
+  insert.run('child-pending', 'conv-child', '子对话待提取', '2026-07-11T00:01:01.000Z', 4, '{}');
+  const route = loadRoute('../src/app/api/messages/route.ts', db);
+
+  const response = await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-child&limit=10',
+  ));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.unextractedCount, 2);
+});
+
 test('/api/messages older-page GET skips conversation-wide aggregates', async () => {
   const db = createConversationMessagesDb();
   const insert = db.prepare(`
@@ -965,6 +1070,13 @@ test('/api/memory-profile init_from_memories batches sampled messages instead of
             ];
           },
         };
+      }
+      // 链式对话解析：本用例都是无 parent 的普通对话
+      if (sql.includes('parent_seq_end FROM conversations')) {
+        return { get: () => ({ parent_id: null, parent_seq_end: null }) };
+      }
+      if (sql.includes('FROM conversations WHERE parent_id = ?')) {
+        return { all: () => [] };
       }
       throw new Error(`unexpected sql: ${sql}`);
     },

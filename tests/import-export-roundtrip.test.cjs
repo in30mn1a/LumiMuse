@@ -123,7 +123,9 @@ function createImportDb() {
       title TEXT NOT NULL DEFAULT '',
       ignore_memory INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
 
     CREATE TABLE messages (
@@ -1700,4 +1702,55 @@ test('/api/export skips embeddings when include_memories=0', async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(payload.memories, []);
   assert.deepEqual(payload.memory_embeddings, []);
+});
+
+test('/api/export materialises linked conversation chains on both export paths', async () => {
+  const db = createImportDb();
+  db.prepare(`
+    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
+    VALUES ('char-chain', '链式角色', NULL, '', '', '', '', '', '', '', '[]', '[]', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')
+  `).run();
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end)
+    VALUES ('conv-root', 'char-chain', '第一段', 0, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', NULL, NULL)
+  `).run();
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end)
+    VALUES ('conv-next', 'char-chain', '第二段', 0, '2026-08-02T00:00:00.000Z', '2026-08-04T00:00:00.000Z', 'conv-root', 3)
+  `).run();
+  const insertMessage = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, ?, ?, ?, 1, ?, ?, '{}')
+  `);
+  insertMessage.run('m1', 'conv-root', 'user', '第一句', '2026-08-01T00:00:01.000Z', 1);
+  insertMessage.run('m2', 'conv-root', 'assistant', '第二句', '2026-08-01T00:00:02.000Z', 3);
+  // 插入回复生成得更晚，但 seq 位于祖先历史中间；链式可见顺序以 seq 为准。
+  insertMessage.run('m-inserted', 'conv-next', 'assistant', '插入句', '2026-08-03T00:00:01.000Z', 2);
+  insertMessage.run('m3', 'conv-next', 'user', '第三句', '2026-08-04T00:00:01.000Z', 4);
+
+  const route = loadExportRoute(db);
+
+  // 单角色导出
+  const perCharacter = JSON.parse(await (await route.GET({
+    nextUrl: new URL('http://test.local/api/export?type=character&id=char-chain'),
+  })).text());
+  const linkedFromCharacter = perCharacter.conversations.find(c => c.id === 'conv-next');
+  assert.deepEqual(linkedFromCharacter.messages.map(m => m.content), ['第一句', '插入句', '第二句', '第三句']);
+  // 链关系被剥离，导出包对不认识 parent_id 的旧版本也自洽
+  assert.equal('parent_id' in linkedFromCharacter, false);
+  assert.equal('parent_seq_end' in linkedFromCharacter, false);
+
+  // 全量导出走的是另一条批量分桶路径，必须给出同样的结果
+  const all = JSON.parse(await (await route.GET({
+    nextUrl: new URL('http://test.local/api/export?type=all'),
+  })).text());
+  const linkedFromAll = all.conversations.find(c => c.id === 'conv-next');
+  assert.deepEqual(linkedFromAll.messages.map(m => m.content), ['第一句', '插入句', '第二句', '第三句']);
+  assert.equal('parent_id' in linkedFromAll, false);
+
+  // 父对话本身不受影响，仍只导出自己的消息
+  const rootFromAll = all.conversations.find(c => c.id === 'conv-root');
+  assert.deepEqual(rootFromAll.messages.map(m => m.content), ['第一句', '第二句']);
+
+  db.close();
 });

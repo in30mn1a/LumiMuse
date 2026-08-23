@@ -5,6 +5,13 @@ import { Message, MessageAttachment } from '@/types';
 import { serializeTypedMessages } from '@/lib/messages';
 import { messageCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
+import {
+  ascendingMessageOrderSqlForChain,
+  buildChainMessageScope,
+  nextChainSeq,
+  resolveConversationChain,
+} from '@/lib/conversation-chain';
+import { MEMORY_PROCESSED_SQL } from '@/lib/memory-extraction-scope';
 
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
@@ -19,10 +26,13 @@ export async function GET(request: NextRequest) {
   }
 
   const db = getDb();
+  // 链式子对话不物理持有父对话的消息，读取范围要沿 parent 链展开
+  const chain = resolveConversationChain(db, conversationId);
+  const scope = buildChainMessageScope(chain);
   if (all || !wantsPaged) {
     const messages = db.prepare(
-      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC',
-    ).all(conversationId) as Message[];
+      `SELECT * FROM messages WHERE ${scope.sql} ORDER BY ${ascendingMessageOrderSqlForChain(chain)}`,
+    ).all(...scope.params) as Message[];
 
     return NextResponse.json(serializeTypedMessages(messages));
   }
@@ -31,11 +41,11 @@ export async function GET(request: NextRequest) {
   const pageLimit = limit + 1;
   const rawMessages = beforeSeq !== null && Number.isFinite(beforeSeq)
     ? db.prepare(
-        'SELECT * FROM messages WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?',
-      ).all(conversationId, beforeSeq, pageLimit) as Message[]
+        `SELECT * FROM messages WHERE ${scope.sql} AND seq < ? ORDER BY seq DESC LIMIT ?`,
+      ).all(...scope.params, beforeSeq, pageLimit) as Message[]
     : db.prepare(
-        'SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?',
-      ).all(conversationId, pageLimit) as Message[];
+        `SELECT * FROM messages WHERE ${scope.sql} ORDER BY seq DESC LIMIT ?`,
+      ).all(...scope.params, pageLimit) as Message[];
 
   const hasMore = rawMessages.length > limit;
   const messages = rawMessages.slice(0, limit).reverse();
@@ -46,23 +56,23 @@ export async function GET(request: NextRequest) {
   if (beforeSeq === null) {
     const unextractedRow = db.prepare(
       `SELECT COUNT(*) as cnt FROM messages
-       WHERE conversation_id = ? AND role = 'user'
-       AND (metadata IS NULL OR metadata = '{}' OR json_extract(metadata, '$.memory_extracted') IS NULL)`
-    ).get(conversationId) as { cnt: number };
+       WHERE ${scope.sql} AND role = 'user'
+       AND NOT (${MEMORY_PROCESSED_SQL})`
+    ).get(...scope.params) as { cnt: number };
     unextractedCount = unextractedRow.cnt;
 
     // 整对话的 token 总和（基于服务端持久化的 token_count），用于前端在分页未加载完时正确显示。
     // 与前端 messageTokens 的语义一致：若存在 summary 消息，则从最后一条 summary 起累加；否则全量。
     const lastSummaryRow = db.prepare(
       `SELECT seq FROM messages
-       WHERE conversation_id = ? AND json_extract(metadata, '$.isSummary') = 1
+       WHERE ${scope.sql} AND json_extract(metadata, '$.isSummary') = 1
        ORDER BY seq DESC LIMIT 1`
-    ).get(conversationId) as { seq: number } | undefined;
+    ).get(...scope.params) as { seq: number } | undefined;
     const tokenSumRow = (lastSummaryRow
-      ? db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ? AND seq >= ?')
-          .get(conversationId, lastSummaryRow.seq)
-      : db.prepare('SELECT SUM(token_count) as s FROM messages WHERE conversation_id = ?')
-          .get(conversationId)) as { s: number | null };
+      ? db.prepare(`SELECT SUM(token_count) as s FROM messages WHERE ${scope.sql} AND seq >= ?`)
+          .get(...scope.params, lastSummaryRow.seq)
+      : db.prepare(`SELECT SUM(token_count) as s FROM messages WHERE ${scope.sql}`)
+          .get(...scope.params)) as { s: number | null };
     totalTokens = tokenSumRow.s ?? 0;
   }
 
@@ -103,7 +113,7 @@ export async function POST(request: NextRequest) {
 
   // 用事务包裹 SELECT MAX(seq) + INSERT + UPDATE conversations，避免并发写入产生重复 seq
   db.transaction(() => {
-    const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
+    const nextSeq = nextChainSeq(db, conversation_id);
     db.prepare(`
       INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)

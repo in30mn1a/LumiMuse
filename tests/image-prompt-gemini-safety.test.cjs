@@ -86,7 +86,13 @@ async function runSensitiveTagStripRouteTest(model) {
       getDb: () => ({
         prepare: (sql) => {
           if (sql.includes('FROM conversations')) {
-            return { get: () => ({ character_id: 'char-1' }) };
+            return {
+              get: () => ({
+                character_id: 'char-1',
+                parent_id: null,
+                parent_seq_end: null,
+              }),
+            };
           }
           if (sql.includes('FROM characters')) {
             return {
@@ -171,7 +177,13 @@ test('image prompt route isolates sensitive tags in image_tags and user_image_ta
       getDb: () => ({
         prepare: (sql) => {
           if (sql.includes('FROM conversations')) {
-            return { get: () => ({ character_id: 'char-2' }) };
+            return {
+              get: () => ({
+                character_id: 'char-2',
+                parent_id: null,
+                parent_seq_end: null,
+              }),
+            };
           }
           if (sql.includes('FROM characters')) {
             return {

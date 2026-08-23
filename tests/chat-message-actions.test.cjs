@@ -471,11 +471,103 @@ test('edit refreshes the message owner while version switch refreshes only its c
   }));
   await act(async () => {
     await result.current.handleEditMessage('assistant-target', 'updated');
+    options.activeConvIdRef.current = 'conv-a';
     await result.current.handleSwitchVersion('assistant-target', 0);
   });
 
   assert.deepEqual(refreshed, ['conv-a']);
   assert.deepEqual(countRefreshes, ['conv-a']);
+});
+
+test('inherited message mutations stay scoped to the linked conversation view', async () => {
+  const useChatMessageActions = loadHook();
+  const options = createOptions();
+  options.activeConvIdRef.current = 'conv-child';
+  options.messagesRef.current = [{
+    ...message('assistant-target', 'assistant', 'shared answer'),
+    conversation_id: 'conv-child',
+    source_conversation_id: 'conv-parent',
+  }];
+  const updatedConversationIds = [];
+  const refreshed = [];
+  const countRefreshes = [];
+  const committedConversationIds = [];
+  const committedSourceConversationIds = [];
+
+  global.fetch = async (_url, init) => {
+    if (init.method === 'DELETE') {
+      return new Response(JSON.stringify({
+        ok: true,
+        deleted: 'version',
+        conversation_id: 'conv-parent',
+        message: {
+          ...message('assistant-target', 'assistant', 'fallback version'),
+          conversation_id: 'conv-parent',
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = JSON.parse(init.body);
+    const response = {
+      ...message('assistant-target', 'assistant', body.activeVersion === undefined ? 'edited' : 'version 0'),
+      conversation_id: 'conv-parent',
+      metadata: body.activeVersion === undefined ? {} : { activeVersion: 0 },
+    };
+    // 操作完成前即使用户切走，也必须更新操作发起时的 linked view 缓存。
+    options.activeConvIdRef.current = 'conv-other';
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const { result } = renderHook(() => useChatMessageActions({
+    ...options,
+    updateMessagesForConversation: (convId, updater) => {
+      updatedConversationIds.push(convId);
+      const next = updater(options.messagesRef.current);
+      options.messagesRef.current = next;
+      if (next[0]) {
+        committedConversationIds.push(next[0].conversation_id);
+        committedSourceConversationIds.push(next[0].source_conversation_id);
+      }
+    },
+    refreshMessagesForConversation: async convId => { refreshed.push(convId); },
+    refreshMessageCountsForConversation: async convId => { countRefreshes.push(convId); },
+  }));
+
+  await act(async () => {
+    await result.current.handleEditMessage('assistant-target', 'edited');
+  });
+
+  options.activeConvIdRef.current = 'conv-child';
+  options.messagesRef.current = [{
+    ...message('assistant-target', 'assistant', 'shared answer'),
+    conversation_id: 'conv-child',
+    source_conversation_id: 'conv-parent',
+  }];
+  await act(async () => {
+    await result.current.handleDeleteMessage('assistant-target');
+  });
+
+  options.activeConvIdRef.current = 'conv-child';
+  options.messagesRef.current = [{
+    ...message('assistant-target', 'assistant', 'shared answer'),
+    conversation_id: 'conv-child',
+    source_conversation_id: 'conv-parent',
+  }];
+  await act(async () => {
+    await result.current.handleSwitchVersion('assistant-target', 0);
+  });
+
+  assert.deepEqual(updatedConversationIds, ['conv-child', 'conv-child', 'conv-child']);
+  assert.deepEqual(refreshed, ['conv-child', 'conv-child']);
+  assert.deepEqual(countRefreshes, ['conv-child']);
+  assert.deepEqual(committedConversationIds, ['conv-child', 'conv-child', 'conv-child']);
+  assert.deepEqual(committedSourceConversationIds, ['conv-parent', 'conv-parent', 'conv-parent']);
 });
 
 test('version switch keeps a search-loaded message outside the latest 200-message page', async () => {

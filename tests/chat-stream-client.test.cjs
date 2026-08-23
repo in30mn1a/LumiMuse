@@ -115,6 +115,51 @@ test('fetchMessagesPage keeps legacy array responses compatible', async () => {
   }
 });
 
+test('fetchMessagesPage scopes inherited rows to the requested conversation view', async () => {
+  const originalFetch = global.fetch;
+
+  try {
+    global.fetch = async () => new Response(JSON.stringify({
+      messages: [
+        { ...message('parent-1', 1), conversation_id: 'conv-parent' },
+        { ...message('child-2', 2), conversation_id: 'conv-child' },
+      ],
+      hasMore: false,
+      oldestSeq: 1,
+      unextractedCount: 0,
+      totalTokens: 2,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const response = await fetchMessagesPage('conv-child');
+
+    assert.deepEqual(
+      response.messages.map(item => ({
+        id: item.id,
+        conversation_id: item.conversation_id,
+        source_conversation_id: item.source_conversation_id,
+      })),
+      [
+        {
+          id: 'parent-1',
+          conversation_id: 'conv-child',
+          source_conversation_id: 'conv-parent',
+        },
+        {
+          id: 'child-2',
+          conversation_id: 'conv-child',
+          source_conversation_id: 'conv-child',
+        },
+      ],
+    );
+    assert.equal(response.totalTokens, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('parseChatSsePart reads event names and multiline data', () => {
   assert.deepEqual(parseChatSsePart('event: chunk\ndata: {"text":"hello"}'), {
     eventType: 'chunk',

@@ -3,6 +3,11 @@ import { getDb } from '@/lib/db';
 import { normalizeMemoryCategory } from '@/lib/memory-category';
 import { EXPORT_VERSION } from '@/lib/export-version';
 import { requireAuth } from '@/lib/route-auth';
+import {
+  ascendingMessageOrderSqlForChain,
+  buildChainMessageScope,
+  resolveConversationChain,
+} from '@/lib/conversation-chain';
 
 /**
  * GET /api/export?type=character&id=xxx  — 导出单个角色（含记忆和对话）
@@ -307,12 +312,23 @@ function buildConversationsForCharacter(db: ReturnType<typeof import('@/lib/db')
     'SELECT * FROM conversations WHERE character_id = ? ORDER BY updated_at DESC'
   ).all(characterId) as Record<string, unknown>[];
 
-  return convs.map(conv => ({
-    ...conv,
-    messages: db.prepare(
-      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-    ).all(conv.id as string) as Record<string, unknown>[],
-  }));
+  return convs.map(conv => {
+    // 链式子对话的历史消息物理存放在父对话里。导出时沿链展开成全量消息并剥离链关系，
+    // 让导出包自洽——任意实例（含不认识 parent_id 的旧版本）导入后都不会丢历史。
+    // 代价：导入方会回到全量存储，需要时重新做一次「仅索引」复制。
+    const chain = resolveConversationChain(db, conv.id as string);
+    const scope = buildChainMessageScope(chain);
+    const exported = { ...conv };
+    delete exported.parent_id;
+    delete exported.parent_seq_end;
+
+    return {
+      ...exported,
+      messages: db.prepare(
+        `SELECT * FROM messages WHERE ${scope.sql} ORDER BY ${ascendingMessageOrderSqlForChain(chain)}`
+      ).all(...scope.params) as Record<string, unknown>[],
+    };
+  });
 }
 
 /**
@@ -352,8 +368,31 @@ function buildAllConversations(db: ReturnType<typeof import('@/lib/db').getDb>) 
     }
   }
 
-  return convs.map(conv => ({
-    ...conv,
-    messages: messagesByConversation.get(conv.id as string) ?? [],
-  }));
+  return convs.map(conv => {
+    // 与单角色导出一致：链式子对话沿链展开并剥离链关系，保证导出包自洽。
+    // 消息已全部在内存里，这里按链分桶归并即可，不再回查数据库。
+    const chain = resolveConversationChain(db, conv.id as string);
+    const exported = { ...conv };
+    delete exported.parent_id;
+    delete exported.parent_seq_end;
+
+    if (chain.length === 1) {
+      return { ...exported, messages: messagesByConversation.get(conv.id as string) ?? [] };
+    }
+
+    const merged = chain.flatMap(segment => {
+      const bucket = messagesByConversation.get(segment.conversationId) ?? [];
+      return segment.seqEnd === null
+        ? bucket
+        : bucket.filter(row => (row.seq as number) <= segment.seqEnd!);
+    });
+    // 链内 seq 是权威顺序：插入式回复的 created_at 可能晚于它后面的祖先消息。
+    merged.sort((a, b) => {
+      const bySeq = (a.seq as number) - (b.seq as number);
+      if (bySeq !== 0) return bySeq;
+      const byTime = String(a.created_at).localeCompare(String(b.created_at));
+      return byTime !== 0 ? byTime : String(a.id).localeCompare(String(b.id));
+    });
+    return { ...exported, messages: merged };
+  });
 }

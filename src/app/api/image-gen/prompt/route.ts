@@ -11,6 +11,7 @@ import {
   rejoinSensitiveTagsFromOriginalOrder,
 } from '@/lib/image-prompt-sensitive-tags';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
+import { resolveMessageScope } from '@/lib/conversation-chain';
 
 /**
  * AI 生成图片 prompt — 根据对话上下文和角色信息生成适合文生图的英文标签
@@ -155,24 +156,26 @@ export async function POST(request: NextRequest) {
     } | undefined;
 
     // 获取消息上下文：基于触发生图的消息，取该消息及之前共 10 条
+    // 链式子对话的历史消息在父对话里，范围要沿 parent 链展开
+    const scope = resolveMessageScope(db, conversation_id);
     let messages: Pick<Message, 'role' | 'content'>[];
     if (message_id) {
       // 先找到目标消息的 seq
       const targetMsg = db.prepare(
-        'SELECT seq FROM messages WHERE id = ? AND conversation_id = ?'
-      ).get(message_id, conversation_id) as { seq: number } | undefined;
+        `SELECT seq FROM messages WHERE id = ? AND ${scope.sql}`
+      ).get(message_id, ...scope.params) as { seq: number } | undefined;
       if (targetMsg) {
         messages = db.prepare(
-          'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') AND seq <= ? ORDER BY seq DESC LIMIT 10'
-        ).all(conversation_id, targetMsg.seq) as Pick<Message, 'role' | 'content'>[];
+          `SELECT role, content FROM messages WHERE ${scope.sql} AND role IN ('user','assistant') AND seq <= ? ORDER BY seq DESC LIMIT 10`
+        ).all(...scope.params, targetMsg.seq) as Pick<Message, 'role' | 'content'>[];
       } else {
         messages = [];
       }
     } else {
       // 兜底：取最新 10 条
       messages = db.prepare(
-        'SELECT role, content FROM messages WHERE conversation_id = ? AND role IN (\'user\',\'assistant\') ORDER BY seq DESC LIMIT 10'
-      ).all(conversation_id) as Pick<Message, 'role' | 'content'>[];
+        `SELECT role, content FROM messages WHERE ${scope.sql} AND role IN ('user','assistant') ORDER BY seq DESC LIMIT 10`
+      ).all(...scope.params) as Pick<Message, 'role' | 'content'>[];
     }
     messages.reverse();
 

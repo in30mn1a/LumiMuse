@@ -75,7 +75,9 @@ function createDb() {
       title TEXT NOT NULL,
       ignore_memory INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -129,6 +131,10 @@ function withMessageInsertFailure(db, failAt) {
   };
 }
 
+function jsonRequest(body) {
+  return { json: async () => body };
+}
+
 function loadRoute(db) {
   return requireFreshWithMocks('../src/app/api/conversations/[id]/duplicate/route.ts', {
     'next/server': jsonResponseMock(),
@@ -142,7 +148,7 @@ test('/api/conversations/[id]/duplicate rolls back the new conversation when the
   const route = loadRoute(faultingDb);
 
   await assert.rejects(
-    route.POST({}, { params: Promise.resolve({ id: 'conv-original' }) }),
+    route.POST(jsonRequest({ mode: 'full' }), { params: Promise.resolve({ id: 'conv-original' }) }),
     /injected failure at copied message 2/,
   );
 
@@ -158,7 +164,7 @@ test('/api/conversations/[id]/duplicate preserves the successful 201 response an
   const db = createDb();
   const route = loadRoute(db);
 
-  const response = await route.POST({}, { params: Promise.resolve({ id: 'conv-original' }) });
+  const response = await route.POST(jsonRequest({ mode: 'full' }), { params: Promise.resolve({ id: 'conv-original' }) });
   const payload = await response.json();
 
   assert.equal(response.status, 201);
@@ -200,4 +206,167 @@ test('/api/conversations/[id]/duplicate preserves the successful 201 response an
       metadata: '{}',
     },
   ]);
+});
+
+test('/api/conversations/[id]/duplicate preserves legacy full mode when the request body is empty', async () => {
+  const db = createDb();
+  const route = loadRoute(db);
+
+  try {
+    const response = await route.POST(
+      new Request('http://test.local/api/conversations/conv-original/duplicate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      { params: Promise.resolve({ id: 'conv-original' }) },
+    );
+    const payload = await response.json();
+
+    assert.equal(response.status, 201);
+    assert.equal(payload.parent_id, null);
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?').get(payload.id).count,
+      3,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('/api/conversations/[id]/duplicate still rejects a non-empty malformed JSON body', async () => {
+  const db = createDb();
+  const route = loadRoute(db);
+
+  try {
+    const response = await route.POST(
+      new Request('http://test.local/api/conversations/conv-original/duplicate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }),
+      { params: Promise.resolve({ id: 'conv-original' }) },
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'Invalid JSON body' });
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM conversations').get().count, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('/api/conversations/[id]/duplicate linked mode records the chain instead of copying messages', async () => {
+  const db = createDb();
+  const route = loadRoute(db);
+
+  const response = await route.POST(
+    jsonRequest({ mode: 'linked' }),
+    { params: Promise.resolve({ id: 'conv-original' }) },
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(payload.parent_id, 'conv-original');
+  // 继承上界 = 原对话当前最大 seq，新消息必须接在它之后
+  assert.equal(payload.parent_seq_end, 11);
+
+  // 一条消息都没有被复制
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?').get(payload.id).count,
+    0,
+  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM messages').get().count, 3);
+});
+
+test('/api/conversations/[id]/duplicate linked mode chains onto an existing linked conversation', async () => {
+  const db = createDb();
+  const route = loadRoute(db);
+
+  const first = await (await route.POST(
+    jsonRequest({ mode: 'linked' }),
+    { params: Promise.resolve({ id: 'conv-original' }) },
+  )).json();
+
+  // 子对话再写入一条自己的消息（seq 接在继承上界之后）
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES ('msg-4', ?, 'user', '第四条', 2, '2026-07-11T01:00:00.000Z', 12, '{}')
+  `).run(first.id);
+
+  const second = await (await route.POST(
+    jsonRequest({ mode: 'linked' }),
+    { params: Promise.resolve({ id: first.id }) },
+  )).json();
+
+  assert.equal(second.parent_id, first.id);
+  // 上界要覆盖整条链的可见范围（含祖父对话的消息），而不是只看直接父对话
+  assert.equal(second.parent_seq_end, 12);
+});
+
+test('/api/conversations/[id]/duplicate full mode materialises the whole chain', async () => {
+  const db = createDb();
+  const route = loadRoute(db);
+
+  const linked = await (await route.POST(
+    jsonRequest({ mode: 'linked' }),
+    { params: Promise.resolve({ id: 'conv-original' }) },
+  )).json();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES ('msg-4', ?, 'user', '第四条', 2, '2026-07-11T01:00:00.000Z', 12, '{}')
+  `).run(linked.id);
+
+  // 对链式对话做全量复制时，继承来的历史必须一并物化，否则副本会丢历史
+  const full = await (await route.POST(
+    jsonRequest({ mode: 'full' }),
+    { params: Promise.resolve({ id: linked.id }) },
+  )).json();
+
+  const copied = db.prepare(
+    'SELECT content, seq FROM messages WHERE conversation_id = ? ORDER BY seq ASC',
+  ).all(full.id);
+  assert.deepEqual(copied.map(row => row.content), ['第一条', '第二条', '第三条', '第四条']);
+  assert.deepEqual(copied.map(row => row.seq), [1, 2, 3, 4]);
+  assert.equal(full.parent_id, null);
+});
+
+test('/api/conversations/[id]/duplicate full mode preserves linked seq order for late inserted replies', async () => {
+  const db = createDb();
+  db.prepare(`
+    INSERT INTO conversations (
+      id, character_id, title, created_at, updated_at, parent_id, parent_seq_end
+    ) VALUES (
+      'conv-inserted', 'char-a', '插入式分支',
+      '2026-07-12T00:00:00.000Z', '2026-07-12T00:00:02.000Z',
+      'conv-original', 11
+    )
+  `).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES
+      ('msg-inserted', 'conv-inserted', 'assistant', '插在第一条之后', 2, '2026-07-12T00:00:01.000Z', 8, '{}'),
+      ('msg-tail', 'conv-inserted', 'user', '分支继续', 2, '2026-07-12T00:00:02.000Z', 12, '{}')
+  `).run();
+  const route = loadRoute(db);
+
+  const full = await (await route.POST(
+    jsonRequest({ mode: 'full' }),
+    { params: Promise.resolve({ id: 'conv-inserted' }) },
+  )).json();
+  const copied = db.prepare(`
+    SELECT content, seq
+    FROM messages
+    WHERE conversation_id = ?
+    ORDER BY seq ASC
+  `).all(full.id);
+
+  assert.deepEqual(copied.map(row => row.content), [
+    '第一条',
+    '插在第一条之后',
+    '第二条',
+    '第三条',
+    '分支继续',
+  ]);
+  assert.deepEqual(copied.map(row => row.seq), [1, 2, 3, 4, 5]);
+  assert.equal(full.parent_id, null);
 });

@@ -16,6 +16,7 @@ import { loadSettings } from '@/lib/settings';
 import { enqueueMemoryProfilePatchExtraction, triggerMemoryProfileQueue } from '@/lib/memory-profile';
 import { structuredLog } from '@/lib/structured-log';
 import { formatExtractionTimestamp } from '@/lib/chat-time';
+import { isMessageMemoryExtracted, parseMessageMetadata } from '@/lib/messages';
 
 const extractionTaskQueue = createDbTaskQueue({
   table: 'memory_tasks',
@@ -171,7 +172,33 @@ function markTaskStartedAt(db: ReturnType<typeof getDb>, task: ExtractionTaskRow
   `).run(now, now, task.id, task.claim_token);
 }
 
-/** 把任务写入数据库，如果该对话已有 pending/processing 任务则跳过 */
+function groupExtractionMessages(messages: Message[]): Message[][] {
+  const groups: Message[][] = [];
+  let pendingUserGroup: Message[] | null = null;
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      pendingUserGroup = [message];
+      groups.push(pendingUserGroup);
+    } else if (message.role === 'assistant' && pendingUserGroup) {
+      pendingUserGroup.push(message);
+      pendingUserGroup = null;
+    } else {
+      groups.push([message]);
+      pendingUserGroup = null;
+    }
+  }
+
+  return groups;
+}
+
+/**
+ * 把尚未出现在 active task 中的消息写入数据库。
+ *
+ * linked view 会共享祖先消息，不能按 conversation_id 去重；否则同一物理消息可从
+ * 不同 view 重复排队，而同一 view 的后续新消息又会被旧任务误吞。单写实例事务内
+ * 按 message id 取差集，既消除跨 view 重复，也保留真正的新消息。
+ */
 export function enqueueExtraction(
   characterId: string,
   conversationId: string,
@@ -179,24 +206,77 @@ export function enqueueExtraction(
 ): void {
   const db = getDb();
 
-  // 内存层去重：仅作为快速短路，不能替代 DB 层去重
-  // （多进程/多实例场景下内存 Set 不共享，仍需 DB 事务兜底）
-  if (inFlightConversations.has(conversationId)) return;
+  const uniqueMessages: Message[] = [];
+  const inputIds = new Set<string>();
+  for (const message of messages) {
+    if (!message.id || inputIds.has(message.id)) continue;
+    inputIds.add(message.id);
+    uniqueMessages.push(message);
+  }
+  if (uniqueMessages.length === 0) return;
+  const messageGroups = groupExtractionMessages(uniqueMessages);
 
-  const messageIds = JSON.stringify(messages.map(m => m.id));
-  const now = new Date().toISOString();
+  const insertTask = db.transaction(() => {
+    const activeRows = db.prepare(`
+      SELECT message_ids
+      FROM memory_tasks
+      WHERE status IN ('pending', 'processing')
+    `).all() as { message_ids: string }[];
+    const activeMessageIds = new Set<string>();
+    for (const row of activeRows) {
+      try {
+        const ids = JSON.parse(row.message_ids);
+        if (!Array.isArray(ids)) continue;
+        for (const id of ids) {
+          if (typeof id === 'string') activeMessageIds.add(id);
+        }
+      } catch {
+        // 损坏的旧任务会在处理时进入失败诊断；不能让它阻断所有新任务入队。
+      }
+    }
 
-  const enqueued = extractionTaskQueue.enqueue(db, {
-    columns: {
-      character_id: characterId,
-      conversation_id: conversationId,
-      message_ids: messageIds,
-      created_at: now,
-      updated_at: now,
-    },
-    dedupeKey: { column: 'conversation_id', value: conversationId },
+    const inactiveGroups = messageGroups.filter(
+      group => !group.some(message => activeMessageIds.has(message.id)),
+    );
+    const userIds = inactiveGroups
+      .map(group => group.find(message => message.role === 'user')?.id)
+      .filter((id): id is string => Boolean(id));
+    const eligibleUserIds = new Set<string>();
+    if (userIds.length > 0) {
+      const userRows = db.prepare(`
+        SELECT id, metadata
+        FROM messages
+        WHERE id IN (SELECT value FROM json_each(?))
+      `).all(JSON.stringify(userIds)) as { id: string; metadata: string | null }[];
+      for (const row of userRows) {
+        if (!isMessageMemoryExtracted(parseMessageMetadata(row.metadata))) {
+          eligibleUserIds.add(row.id);
+        }
+      }
+    }
+
+    const pendingMessages = inactiveGroups
+      .filter(group => {
+        const user = group.find(message => message.role === 'user');
+        return !user || eligibleUserIds.has(user.id);
+      })
+      .flat();
+    if (pendingMessages.length === 0) return false;
+
+    const now = new Date().toISOString();
+    const result = extractionTaskQueue.enqueue(db, {
+      columns: {
+        character_id: characterId,
+        conversation_id: conversationId,
+        message_ids: JSON.stringify(pendingMessages.map(message => message.id)),
+        created_at: now,
+        updated_at: now,
+      },
+    });
+    return result.inserted;
   });
-  if (!enqueued.inserted) return;
+  const inserted = insertTask.immediate();
+  if (!inserted) return;
 
   extractionDrainGate.trigger();
 }
@@ -251,8 +331,10 @@ async function processOneExtractionTask(): Promise<{ claimed: number }> {
 
     // 从数据库重新读取消息内容（防止内容已被编辑），含 created_at 用于拼时间戳
     const messages = db.prepare(
-      `SELECT * FROM messages WHERE id IN (${messageIds.map(() => '?').join(',')}) ORDER BY seq ASC, created_at ASC`
-    ).all(...messageIds) as Array<{ id: string; role: string; content: string; metadata: string; created_at: string }>;
+      `SELECT * FROM messages
+       WHERE id IN (SELECT value FROM json_each(?))
+       ORDER BY seq ASC, created_at ASC`
+    ).all(JSON.stringify(messageIds)) as Array<{ id: string; role: string; content: string; metadata: string; created_at: string }>;
 
     if (messages.length > 0) {
       // 查询角色名称，用于拼装对话文本

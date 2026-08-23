@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getDb } from '@/lib/db';
 import { readJsonObject } from '@/lib/request-json';
+import {
+  ascendingMessageOrderSqlForChain,
+  buildChainMessageScope,
+  resolveConversationChain,
+} from '@/lib/conversation-chain';
 
 const resetExtractionBodySchema = z.object({
   messageIds: z.array(z.string()).optional(),
@@ -32,18 +37,22 @@ export async function POST(
   const { messageIds, action = 'reset' } = parsedBody.data;
 
   const db = getDb();
-
+  const chain = resolveConversationChain(db, conversationId);
+  const scope = buildChainMessageScope(chain);
   const allMessages = db.prepare(
-    'SELECT id, metadata, role FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-  ).all(conversationId) as { id: string; metadata: string; role: string }[];
+    `SELECT id, metadata, role
+     FROM messages
+     WHERE ${scope.sql}
+     ORDER BY ${ascendingMessageOrderSqlForChain(chain)}`
+  ).all(...scope.params) as { id: string; metadata: string; role: string }[];
 
   if (allMessages.length === 0) {
     return NextResponse.json({ error: '对话不存在或无消息' }, { status: 404 });
   }
 
-  const targetSet = messageIds && messageIds.length > 0
-    ? new Set(messageIds)
-    : null; // null 表示全部操作
+  const targetSet = messageIds === undefined
+    ? null
+    : new Set(messageIds); // 只有未传 messageIds 才表示全部操作；显式空数组表示不操作
 
   const updateStmt = db.prepare('UPDATE messages SET metadata = ? WHERE id = ?');
 
@@ -66,9 +75,13 @@ export async function POST(
             updateStmt.run(JSON.stringify(meta), msg.id);
             updated++;
           }
-        } else if (meta.memory_extracted) {
-          // 重置（清除已提取标记）
+        } else if (
+          meta.memory_extracted
+          || typeof meta.memory_noop_extracted_at === 'string'
+        ) {
+          // 重置（同时清除 noop 标记，否则这条消息仍会被视为已处理）
           delete meta.memory_extracted;
+          delete meta.memory_noop_extracted_at;
           updateStmt.run(JSON.stringify(meta), msg.id);
           updated++;
         }

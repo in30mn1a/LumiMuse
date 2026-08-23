@@ -123,6 +123,21 @@ function createLegacyMemoryTasksDb() {
   return db;
 }
 
+function addTaskPollingScopeTables(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT,
+      parent_seq_end INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      seq INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+}
+
 function addQueueSupportTables(db) {
   db.exec(`
     CREATE TABLE messages (
@@ -156,12 +171,23 @@ function addQueueSupportTables(db) {
 
 async function waitForTask(db, conversationId, predicate) {
   let row;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     row = db.prepare('SELECT * FROM memory_tasks WHERE conversation_id = ?').get(conversationId);
     if (row && predicate(row)) return row;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   return row;
+}
+
+async function waitForNoActiveTasks(db) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const row = db.prepare(
+      "SELECT COUNT(*) AS count FROM memory_tasks WHERE status IN ('pending', 'processing')"
+    ).get();
+    if (row.count === 0) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail('memory tasks did not drain');
 }
 
 function loadRoute(db, options = {}) {
@@ -256,6 +282,7 @@ function legacyChatExtractionBatch(db, conversationId, settings, now = Date.now(
 
 test('/api/memory-tasks GET exposes failed task diagnostics', async () => {
   const db = createMemoryTasksDb();
+  addTaskPollingScopeTables(db);
   db.prepare(`
     INSERT INTO memory_tasks (
       character_id, conversation_id, message_ids, status, merge_count,
@@ -286,6 +313,7 @@ test('/api/memory-tasks GET exposes failed task diagnostics', async () => {
 
 test('/api/memory-tasks GET marks long-running processing task as stuck', async () => {
   const db = createMemoryTasksDb();
+  addTaskPollingScopeTables(db);
   db.prepare(`
     INSERT INTO memory_tasks (
       character_id, conversation_id, message_ids, status, merge_count,
@@ -310,6 +338,7 @@ test('/api/memory-tasks GET marks long-running processing task as stuck', async 
 
 test('/api/memory-tasks GET remains compatible when diagnostic columns are absent', async () => {
   const db = createLegacyMemoryTasksDb();
+  addTaskPollingScopeTables(db);
   db.prepare(`
     INSERT INTO memory_tasks (
       character_id, conversation_id, message_ids, status, merge_count,
@@ -340,6 +369,7 @@ test('/api/memory-tasks GET remains compatible when diagnostic columns are absen
 
 test('/api/memory-tasks GET supports diagnostic stuck threshold override without aborting the task', async () => {
   const db = createMemoryTasksDb();
+  addTaskPollingScopeTables(db);
   db.prepare(`
     INSERT INTO memory_tasks (
       character_id, conversation_id, message_ids, status, merge_count,
@@ -365,6 +395,83 @@ test('/api/memory-tasks GET supports diagnostic stuck threshold override without
   assert.deepEqual(row, { status: 'processing' });
 });
 
+test('/api/memory-tasks GET follows the newest task intersecting the linked view', async () => {
+  const db = createMemoryTasksDb();
+  addTaskPollingScopeTables(db);
+  db.prepare(`
+    INSERT INTO conversations (id, parent_id, parent_seq_end)
+    VALUES
+      ('conv-parent-poll', NULL, NULL),
+      ('conv-child-poll', 'conv-parent-poll', 2)
+  `).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, seq)
+    VALUES
+      ('shared-user-poll', 'conv-parent-poll', 1),
+      ('shared-answer-poll', 'conv-parent-poll', 2),
+      ('hidden-future-user-poll', 'conv-parent-poll', 3),
+      ('child-user-poll', 'conv-child-poll', 3)
+  `).run();
+
+  const insertTask = db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, merge_count,
+      started_at, created_at, updated_at
+    ) VALUES ('char-a', ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const visibleTask = insertTask.run(
+    'conv-parent-poll',
+    JSON.stringify(['shared-user-poll', 'shared-answer-poll']),
+    'processing',
+    7,
+    new Date().toISOString(),
+    '2026-08-23T00:00:02.000Z',
+    '2026-08-23T00:00:03.000Z',
+  );
+  // 让 child 的旧终态任务拥有更大的 id，证明完成后按 updated_at 跟随刚才的 parent 任务，
+  // 而不是退回“当前 conversation_id 最新 id”的旧语义。
+  insertTask.run(
+    'conv-child-poll',
+    JSON.stringify(['child-user-poll']),
+    'done',
+    1,
+    null,
+    '2026-08-23T00:00:00.000Z',
+    '2026-08-23T00:00:01.000Z',
+  );
+  insertTask.run(
+    'conv-parent-poll',
+    JSON.stringify(['hidden-future-user-poll']),
+    'processing',
+    99,
+    new Date().toISOString(),
+    '2026-08-23T00:00:04.000Z',
+    '2026-08-23T00:00:05.000Z',
+  );
+
+  const route = loadRoute(db);
+  const processingResponse = await route.GET(request(
+    'http://test.local/api/memory-tasks?conversation_id=conv-child-poll'
+  ));
+  const processingPayload = await processingResponse.json();
+  assert.equal(processingPayload.status, 'processing');
+  assert.equal(processingPayload.mergeCount, 7);
+
+  db.prepare(`
+    UPDATE memory_tasks
+    SET status = 'done', updated_at = '2026-08-23T00:00:06.000Z'
+    WHERE id = ?
+  `).run(visibleTask.lastInsertRowid);
+
+  const doneResponse = await route.GET(request(
+    'http://test.local/api/memory-tasks?conversation_id=conv-child-poll'
+  ));
+  const donePayload = await doneResponse.json();
+  assert.equal(donePayload.status, 'done');
+  assert.equal(donePayload.mergeCount, 7);
+  assert.equal(donePayload.updatedAt, '2026-08-23T00:00:06.000Z');
+});
+
 test('/api/memory-tasks POST rejects malformed JSON instead of treating it as an empty body', async () => {
   const route = loadRoute(createMemoryTasksDb());
 
@@ -385,14 +492,16 @@ test('/api/memory-tasks POST rejects non-object JSON bodies', async () => {
   assert.deepEqual(payload, { error: 'Invalid request body' });
 });
 
-test('/api/memory-tasks POST treats malformed metadata flags as unprocessed', async () => {
+test('/api/memory-tasks POST matches message-count semantics for non-boolean processed flags', async () => {
   const db = createMemoryTasksDb();
   addQueueSupportTables(db);
   db.exec(`
     CREATE TABLE conversations (
       id TEXT PRIMARY KEY,
       character_id TEXT NOT NULL,
-      ignore_memory INTEGER NOT NULL DEFAULT 0
+      ignore_memory INTEGER NOT NULL DEFAULT 0,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
   `);
   db.prepare("INSERT INTO conversations (id, character_id, ignore_memory) VALUES ('conv-bad-meta', 'char-a', 0)").run();
@@ -417,13 +526,269 @@ test('/api/memory-tasks POST treats malformed metadata flags as unprocessed', as
   }));
   const payload = await response.json();
 
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { error: '没有待提取的消息' });
+  assert.deepEqual(enqueued, []);
+});
+
+test('/api/memory-tasks POST extracts the linked seq timeline and skips already processed inherited users', async () => {
+  const db = createMemoryTasksDb();
+  addQueueSupportTables(db);
+  db.exec(`
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      ignore_memory INTEGER NOT NULL DEFAULT 0,
+      parent_id TEXT,
+      parent_seq_end INTEGER
+    );
+  `);
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, ignore_memory, parent_id, parent_seq_end)
+    VALUES
+      ('conv-parent', 'char-a', 1, NULL, NULL),
+      ('conv-child', 'char-a', 1, 'conv-parent', 4)
+  `).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+    VALUES
+      ('parent-processed', 'conv-parent', 'user', '祖先已处理', '{"memory_noop_extracted_at":"2026-08-23T00:00:00.000Z"}', '2026-08-23T00:00:00.000Z', 1),
+      ('parent-old-answer', 'conv-parent', 'assistant', '祖先旧回复', '{}', '2026-08-23T00:00:01.000Z', 2),
+      ('parent-pending', 'conv-parent', 'user', '祖先待提取', '{}', '2026-08-23T00:00:02.000Z', 3),
+      ('parent-answer', 'conv-parent', 'assistant', '祖先回复', '{}', '2026-08-23T00:00:10.000Z', 4),
+      ('child-pending', 'conv-child', 'user', '子对话待提取', '{}', '2026-08-23T00:00:04.000Z', 5),
+      ('child-answer', 'conv-child', 'assistant', '子对话回复', '{}', '2026-08-23T00:00:05.000Z', 6)
+  `).run();
+
+  const enqueued = [];
+  const route = loadRoute(db, {
+    enqueueExtraction: (characterId, conversationId, messages) => {
+      enqueued.push({ characterId, conversationId, messageIds: messages.map(message => message.id) });
+    },
+  });
+
+  const response = await route.POST(request('http://test.local/api/memory-tasks', {
+    conversation_id: 'conv-child',
+  }));
+
   assert.equal(response.status, 200);
-  assert.deepEqual(payload, { ok: true, messageCount: 1 });
+  assert.deepEqual(await response.json(), { ok: true, messageCount: 4 });
   assert.deepEqual(enqueued, [{
     characterId: 'char-a',
-    conversationId: 'conv-bad-meta',
-    messageIds: ['msg-user-bad-meta'],
+    conversationId: 'conv-child',
+    messageIds: ['parent-pending', 'parent-answer', 'child-pending', 'child-answer'],
   }]);
+});
+
+test('memory-queue removes active-task message IDs across linked views and deduplicates the input batch', async () => {
+  const db = createMemoryTasksDb();
+  addQueueSupportTables(db);
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+    VALUES
+      ('shared-user', 'conv-parent-view', 'user', '共享消息', '{}', '2026-08-23T00:00:00.000Z', 1),
+      ('shared-answer', 'conv-parent-view', 'assistant', '共享回复', '{}', '2026-08-23T00:00:01.000Z', 2),
+      ('child-user', 'conv-child-view', 'user', '子对话消息', '{}', '2026-08-23T00:00:02.000Z', 3),
+      ('child-answer', 'conv-child-view', 'assistant', '子对话回复', '{}', '2026-08-23T00:00:03.000Z', 4)
+  `).run();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, created_at, updated_at
+    ) VALUES ('char-a', 'conv-parent-view', ?, 'pending', ?, ?)
+  `).run(JSON.stringify(['shared-user']), now, now);
+
+  const queue = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': { loadSettings: () => ({}) },
+    '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
+      extractMemories: async () => ({ insertCount: 0, mergeCount: 0 }),
+    },
+    '@/lib/memory-profile': {
+      enqueueMemoryProfilePatchExtraction: () => {},
+      triggerMemoryProfileQueue: () => {},
+    },
+  });
+
+  queue.enqueueExtraction('char-a', 'conv-child-view', [
+    { id: 'shared-user', role: 'user' },
+    { id: 'shared-answer', role: 'assistant' },
+    { id: 'child-user', role: 'user' },
+    { id: 'child-answer', role: 'assistant' },
+    { id: 'child-user', role: 'user' },
+  ]);
+
+  const childTask = db.prepare(
+    'SELECT message_ids FROM memory_tasks WHERE conversation_id = ? ORDER BY id DESC LIMIT 1'
+  ).get('conv-child-view');
+  assert.deepEqual(JSON.parse(childTask.message_ids), ['child-user', 'child-answer']);
+  await waitForNoActiveTasks(db);
+});
+
+test('memory-queue keeps new message IDs when the same conversation already has an active task', async () => {
+  const db = createMemoryTasksDb();
+  addQueueSupportTables(db);
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+    VALUES
+      ('blocker-user', 'conv-blocker', 'user', '阻塞任务', '{}', '2026-08-23T00:00:00.000Z', 1),
+      ('old-user', 'conv-same', 'user', '旧任务消息', '{}', '2026-08-23T00:00:01.000Z', 2),
+      ('old-answer', 'conv-same', 'assistant', '旧任务回复', '{}', '2026-08-23T00:00:02.000Z', 3),
+      ('new-user', 'conv-same', 'user', '新任务消息', '{}', '2026-08-23T00:00:03.000Z', 4),
+      ('new-answer', 'conv-same', 'assistant', '新任务回复', '{}', '2026-08-23T00:00:04.000Z', 5)
+  `).run();
+  const now = new Date().toISOString();
+  const insertTask = db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, created_at, updated_at
+    ) VALUES ('char-a', ?, ?, 'pending', ?, ?)
+  `);
+  insertTask.run('conv-blocker', JSON.stringify(['blocker-user']), now, now);
+  insertTask.run('conv-same', JSON.stringify(['old-user']), now, now);
+
+  let releaseBlocker;
+  const queue = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': { loadSettings: () => ({}) },
+    '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
+      extractMemories: async (_characterId, _text, _settings, options) => {
+        if (options.conversationId === 'conv-blocker') {
+          return new Promise(resolve => {
+            releaseBlocker = () => resolve({ insertCount: 0, mergeCount: 0 });
+          });
+        }
+        return { insertCount: 0, mergeCount: 0 };
+      },
+    },
+    '@/lib/memory-profile': {
+      enqueueMemoryProfilePatchExtraction: () => {},
+      triggerMemoryProfileQueue: () => {},
+    },
+  });
+
+  queue.enqueueExtraction('char-a', 'conv-same', [
+    { id: 'old-user', role: 'user' },
+    { id: 'old-answer', role: 'assistant' },
+    { id: 'new-user', role: 'user' },
+    { id: 'new-answer', role: 'assistant' },
+  ]);
+
+  const sameConversationTasks = db.prepare(
+    'SELECT message_ids FROM memory_tasks WHERE conversation_id = ? ORDER BY id ASC'
+  ).all('conv-same');
+  assert.deepEqual(sameConversationTasks.map(row => JSON.parse(row.message_ids)), [
+    ['old-user'],
+    ['new-user', 'new-answer'],
+  ]);
+
+  releaseBlocker?.();
+  await waitForNoActiveTasks(db);
+});
+
+test('memory-queue rechecks processed user metadata inside enqueue and skips its assistant group', () => {
+  const db = createMemoryTasksDb();
+  addQueueSupportTables(db);
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+    VALUES
+      ('raced-user', 'conv-race', 'user', '路由读取后已被另一任务处理', '{"memory_extracted":true}', '2026-08-23T00:00:00.000Z', 1),
+      ('raced-answer', 'conv-race', 'assistant', '不应形成孤立任务', '{}', '2026-08-23T00:00:01.000Z', 2)
+  `).run();
+
+  const queue = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': { loadSettings: () => ({}) },
+    '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
+      extractMemories: async () => ({ insertCount: 0, mergeCount: 0 }),
+    },
+    '@/lib/memory-profile': {
+      enqueueMemoryProfilePatchExtraction: () => {},
+      triggerMemoryProfileQueue: () => {},
+    },
+  });
+
+  queue.enqueueExtraction('char-a', 'conv-race', [
+    { id: 'raced-user', role: 'user' },
+    { id: 'raced-answer', role: 'assistant' },
+  ]);
+
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS count FROM memory_tasks').get().count,
+    0,
+  );
+});
+
+test('memory-queue preserves and processes more than 1000 user-assistant groups without SQL parameter caps', async () => {
+  const db = createMemoryTasksDb();
+  addQueueSupportTables(db);
+  const inputMessages = [];
+  const insertMessage = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+    VALUES (?, 'conv-large-batch', ?, ?, '{}', ?, ?)
+  `);
+  db.transaction(() => {
+    for (let index = 0; index < 1001; index += 1) {
+      const userId = `large-user-${index}`;
+      const assistantId = `large-answer-${index}`;
+      insertMessage.run(
+        userId,
+        'user',
+        `用户消息 ${index}`,
+        '2026-08-23T00:00:00.000Z',
+        index * 2 + 1,
+      );
+      insertMessage.run(
+        assistantId,
+        'assistant',
+        `角色回复 ${index}`,
+        '2026-08-23T00:00:00.000Z',
+        index * 2 + 2,
+      );
+      inputMessages.push(
+        { id: userId, role: 'user' },
+        { id: assistantId, role: 'assistant' },
+      );
+    }
+  })();
+
+  let capturedMessageIds = [];
+  const queue = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': { loadSettings: () => ({ client_timezone: 'UTC' }) },
+    '@/lib/memory-engine': {
+      getCommittedExtractionResult: () => null,
+      extractMemories: async (_characterId, _text, _settings, options) => {
+        capturedMessageIds = options.messageIds;
+        return { insertCount: 0, mergeCount: 0 };
+      },
+    },
+    '@/lib/memory-profile': {
+      enqueueMemoryProfilePatchExtraction: () => {},
+      triggerMemoryProfileQueue: () => {},
+    },
+  });
+
+  queue.enqueueExtraction('char-a', 'conv-large-batch', inputMessages);
+
+  const doneTask = await waitForTask(
+    db,
+    'conv-large-batch',
+    task => task.status === 'done',
+  );
+  const storedMessageIds = JSON.parse(doneTask.message_ids);
+  assert.equal(storedMessageIds.length, 2002);
+  assert.deepEqual(storedMessageIds.slice(0, 2), ['large-user-0', 'large-answer-0']);
+  assert.deepEqual(storedMessageIds.slice(-2), ['large-user-1000', 'large-answer-1000']);
+  assert.equal(capturedMessageIds.length, 2002);
+  assert.equal(
+    typeof JSON.parse(db.prepare(
+      "SELECT metadata FROM messages WHERE id = 'large-user-1000'"
+    ).get().metadata).memory_noop_extracted_at,
+    'string',
+  );
 });
 
 test('memory-queue stores retry count and error message when extraction fails', async () => {
@@ -467,6 +832,7 @@ test('memory-queue stores retry count and error message when extraction fails', 
 test('memory-queue records started_at while a background extraction is processing without aborting it', async () => {
   const db = createMemoryTasksDb();
   addQueueSupportTables(db);
+  addTaskPollingScopeTables(db);
   db.prepare(`
     INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
     VALUES ('msg-user-slow', 'conv-slow', 'user', '这是一段足够长的内容，用来模拟后台记忆提取请求一直等待上游返回。', '{}', '2026-06-05T00:00:00.000Z', 1)
@@ -657,7 +1023,9 @@ test('chat route skips noop processed old messages when rebuilding extraction ba
     CREATE TABLE conversations (
       id TEXT PRIMARY KEY,
       character_id TEXT NOT NULL,
-      ignore_memory INTEGER NOT NULL DEFAULT 0
+      ignore_memory INTEGER NOT NULL DEFAULT 0,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -699,6 +1067,116 @@ test('chat route skips noop processed old messages when rebuilding extraction ba
     characterId: 'char-a',
     conversationId: 'conv-chat-noop',
     messageIds: ['msg-user-new', 'msg-assistant-new'],
+  }]);
+});
+
+test('chat route evaluates and enqueues the whole linked view when the current conversation allows extraction', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      ignore_memory INTEGER NOT NULL DEFAULT 0,
+      parent_id TEXT,
+      parent_seq_end INTEGER
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      token_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      seq INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, ignore_memory, parent_id, parent_seq_end)
+    VALUES
+      ('conv-parent-auto', 'char-a', 1, NULL, NULL),
+      ('conv-child-auto', 'char-a', 0, 'conv-parent-auto', 2)
+  `).run();
+  db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+    VALUES
+      ('parent-user-auto', 'conv-parent-auto', 'user', '祖先待提取', '{}', '2026-08-23T00:00:00.000Z', 1),
+      ('parent-answer-auto', 'conv-parent-auto', 'assistant', '祖先回复', '{}', '2026-08-23T00:00:01.000Z', 2),
+      ('child-user-auto', 'conv-child-auto', 'user', '子对话待提取', '{}', '2026-08-23T00:00:02.000Z', 3),
+      ('child-answer-auto', 'conv-child-auto', 'assistant', '子对话回复', '{}', '2026-08-23T00:00:03.000Z', 4)
+  `).run();
+
+  const capturedEnqueues = [];
+  const route = loadChatRoute(db, capturedEnqueues);
+  const response = await route.POST({
+    signal: new AbortController().signal,
+    async json() {
+      return { conversation_id: 'conv-child-auto', content: '触发记忆提取' };
+    },
+  });
+  await response.text();
+
+  assert.deepEqual(capturedEnqueues, [{
+    characterId: 'char-a',
+    conversationId: 'conv-child-auto',
+    messageIds: ['parent-user-auto', 'parent-answer-auto', 'child-user-auto', 'child-answer-auto'],
+  }]);
+});
+
+test('chat time trigger chooses the latest processed linked message by seq instead of created_at', async () => {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      ignore_memory INTEGER NOT NULL DEFAULT 0,
+      parent_id TEXT,
+      parent_seq_end INTEGER
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      token_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      seq INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO conversations (id, character_id, ignore_memory, parent_id, parent_seq_end)
+    VALUES
+      ('conv-parent-time', 'char-a', 1, NULL, NULL),
+      ('conv-child-time', 'char-a', 0, 'conv-parent-time', 2);
+    INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq)
+    VALUES
+      ('parent-processed-future', 'conv-parent-time', 'user', '较早序号但未来时间', '{"memory_extracted":true}', '2999-01-01T00:00:00.000Z', 1),
+      ('parent-processed-answer', 'conv-parent-time', 'assistant', '祖先回复', '{}', '2999-01-01T00:00:01.000Z', 2),
+      ('child-processed-old', 'conv-child-time', 'user', '较晚序号但旧时间', '{"memory_extracted":true}', '2000-01-01T00:00:00.000Z', 3),
+      ('child-processed-answer', 'conv-child-time', 'assistant', '子对话旧回复', '{}', '2000-01-01T00:00:01.000Z', 4),
+      ('child-pending-time', 'conv-child-time', 'user', '待提取消息', '{}', '2000-01-01T00:00:02.000Z', 5),
+      ('child-pending-answer', 'conv-child-time', 'assistant', '待提取回复', '{}', '2000-01-01T00:00:03.000Z', 6);
+  `);
+
+  const capturedEnqueues = [];
+  const route = loadChatRoute(db, capturedEnqueues, {
+    memory_trigger_interval_enabled: false,
+    memory_interval: 99,
+    memory_trigger_keyword_enabled: false,
+    memory_trigger_time_enabled: true,
+    memory_trigger_time_hours: 1,
+  });
+  const response = await route.POST({
+    signal: new AbortController().signal,
+    async json() {
+      return { conversation_id: 'conv-child-time', content: '触发按时间提取' };
+    },
+  });
+  await response.text();
+
+  assert.deepEqual(capturedEnqueues, [{
+    characterId: 'char-a',
+    conversationId: 'conv-child-time',
+    messageIds: ['child-pending-time', 'child-pending-answer'],
   }]);
 });
 
@@ -751,7 +1229,9 @@ test('chat route suffix query preserves the legacy memory trigger and extraction
       CREATE TABLE conversations (
         id TEXT PRIMARY KEY,
         character_id TEXT NOT NULL,
-        ignore_memory INTEGER NOT NULL DEFAULT 0
+        ignore_memory INTEGER NOT NULL DEFAULT 0,
+        parent_id TEXT,
+        parent_seq_end INTEGER
       );
       CREATE TABLE messages (
         id TEXT PRIMARY KEY,

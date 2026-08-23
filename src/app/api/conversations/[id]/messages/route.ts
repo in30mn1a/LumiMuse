@@ -5,6 +5,12 @@ import { Message, MessageAttachment } from '@/types';
 import { serializeMessage, serializeTypedMessages } from '@/lib/messages';
 import { conversationMessageCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
+import {
+  ascendingMessageOrderSqlForChain,
+  buildChainMessageScope,
+  nextChainSeq,
+  resolveConversationChain,
+} from '@/lib/conversation-chain';
 
 export async function GET(
   _request: NextRequest,
@@ -12,9 +18,12 @@ export async function GET(
 ) {
   const { id } = await params;
   const db = getDb();
+  // 链式子对话的历史消息存在父对话里，读取范围要沿 parent 链展开
+  const chain = resolveConversationChain(db, id);
+  const scope = buildChainMessageScope(chain);
   const messages = db.prepare(
-    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-  ).all(id) as Message[];
+    `SELECT * FROM messages WHERE ${scope.sql} ORDER BY ${ascendingMessageOrderSqlForChain(chain)}`
+  ).all(...scope.params) as Message[];
 
   return NextResponse.json(serializeTypedMessages(messages));
 }
@@ -55,7 +64,7 @@ export async function POST(
 
   // 用事务包裹 SELECT MAX(seq) + INSERT + UPDATE conversations，避免并发写入产生重复 seq
   db.transaction(() => {
-    const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(id) as { m: number | null }).m ?? 0) + 1;
+    const nextSeq = nextChainSeq(db, id);
     db.prepare(`
       INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)

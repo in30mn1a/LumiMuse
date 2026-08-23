@@ -158,7 +158,7 @@ function ChatHeaderImpl({
                 </button>
                 <button
                   onClick={onDuplicate}
-                  disabled={!activeConversation || duplicating}
+                  disabled={!activeConversation || isStreamingHere || duplicating}
                   className="rounded-xl p-2 text-text-secondary hover:bg-warm-100 disabled:opacity-40"
                   aria-label={t('chat.duplicate')}
                 >
@@ -253,7 +253,7 @@ function ChatHeaderImpl({
             </button>
             <button
               onClick={onDuplicate}
-              disabled={!activeConversation || duplicating}
+              disabled={!activeConversation || isStreamingHere || duplicating}
               className="soft-button soft-button-secondary px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
               title={t('chat.duplicateTitle')}
               aria-label={duplicating ? t('chat.duplicating') : t('chat.duplicate')}

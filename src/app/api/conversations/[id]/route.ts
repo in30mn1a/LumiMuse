@@ -6,6 +6,7 @@ import {
   filterUnreferencedLocalAssetUrls,
 } from '@/lib/character-file-utils';
 import { conversationUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
+import { findChildConversations } from '@/lib/conversation-chain';
 
 export async function GET(
   _request: NextRequest,
@@ -24,6 +25,20 @@ export async function DELETE(
 ) {
   const { id } = await params;
   const db = getDb();
+
+  // 链式子对话不物理持有历史消息：父对话一旦删除，子对话的历史会静默消失。
+  const children = findChildConversations(db, id);
+  if (children.length > 0) {
+    return NextResponse.json(
+      {
+        error: 'Conversation is referenced by linked copies',
+        code: 'HAS_LINKED_CHILDREN',
+        children,
+      },
+      { status: 409 },
+    );
+  }
+
   const fileUrls = collectConversationLocalAssetUrls(db, id);
 
   // 用事务包裹三条 DELETE，避免中途失败留下不一致状态

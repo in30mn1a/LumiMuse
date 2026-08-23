@@ -40,6 +40,8 @@ export interface Conversation {
   character_id: string;
   title: string;
   ignore_memory: number; // 0=正常, 1=忽略记忆提取
+  parent_id?: string | null;
+  parent_seq_end?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -108,6 +110,8 @@ export interface MessageMetadata {
 export interface Message {
   [key: string]: unknown;
   id: string;
+  /** 客户端视图归一化前，消息物理所属的对话；服务端原始行可能尚未填充。 */
+  source_conversation_id?: string;
   conversation_id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;

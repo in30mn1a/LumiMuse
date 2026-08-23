@@ -1,41 +1,16 @@
 import { NextRequest } from 'next/server';
 import { runChat } from '@/lib/chat-engine';
 import { getDb } from '@/lib/db';
-import { Message } from '@/types';
 import { loadSettings, recordClientTimezone } from '@/lib/settings';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
-import { serializeTypedMessages } from '@/lib/messages';
 import { chatBodySchema, formatZodFieldErrors, validateChatAttachmentTotals } from '@/lib/schemas';
+import { loadPendingMemoryExtractionBatch, MEMORY_PROCESSED_SQL } from '@/lib/memory-extraction-scope';
+import { descendingMessageOrderSqlForChain } from '@/lib/conversation-chain';
 
 const EXTRACTING_SIGNAL = JSON.stringify({ status: 'extracting' });
 const STREAM_CLOSE_DELAY_MS = 100;
 const UNKNOWN_ERROR_LABEL = 'Unknown error';
-
-// 与 isMemoryProcessed() 的 JavaScript truthiness 语义保持一致：
-// memory_extracted 的非空字符串、非零数字、true、数组或对象均视为已处理；
-// memory_noop_extracted_at 只有 JSON string 类型才视为已处理。
-const MEMORY_PROCESSED_SQL = `
-  CASE WHEN json_valid(metadata) THEN
-    CASE
-      WHEN json_type(metadata, '$.memory_noop_extracted_at') = 'text' THEN 1
-      WHEN json_type(metadata, '$.memory_extracted') = 'true' THEN 1
-      WHEN json_type(metadata, '$.memory_extracted') IN ('integer', 'real')
-        AND json_extract(metadata, '$.memory_extracted') != 0 THEN 1
-      WHEN json_type(metadata, '$.memory_extracted') = 'text'
-        AND json_extract(metadata, '$.memory_extracted') != '' THEN 1
-      WHEN json_type(metadata, '$.memory_extracted') IN ('array', 'object') THEN 1
-      ELSE 0
-    END
-  ELSE 0 END
-`;
-
-function isMemoryProcessed(message: Message): boolean {
-  return Boolean(
-    message.metadata.memory_extracted ||
-    typeof message.metadata.memory_noop_extracted_at === 'string'
-  );
-}
 
 export async function POST(request: NextRequest) {
   let parsedBody: unknown;
@@ -151,60 +126,13 @@ export async function POST(request: NextRequest) {
             // 尽快下发、流尽快关闭；消息保存仍由 runChat 内部同步完成，不会丢消息。
             queueMicrotask(() => {
               try {
-                const earliestUnprocessed = db.prepare(`
-                  SELECT created_at, seq
-                  FROM messages
-                  WHERE conversation_id = ?
-                    AND role = 'user'
-                    AND NOT (${MEMORY_PROCESSED_SQL})
-                  ORDER BY created_at ASC, seq ASC
-                  LIMIT 1
-                `).get(conversation_id) as { created_at: string; seq: number } | undefined;
-
-                if (!earliestUnprocessed) return;
-
-                // 只读取从最早未处理 user 开始的后缀。该后缀仍包含所有后续 user，
-                // 以及构建提取批次时可能需要的紧邻 assistant，顺序与原全量查询一致。
-                const suffixMessages = serializeTypedMessages(
-                  db.prepare(
-                    `SELECT * FROM messages
-                     WHERE conversation_id = ?
-                       AND (created_at > ? OR (created_at = ? AND seq >= ?))
-                     ORDER BY created_at ASC, seq ASC`
-                  ).all(
-                    conversation_id,
-                    earliestUnprocessed.created_at,
-                    earliestUnprocessed.created_at,
-                    earliestUnprocessed.seq,
-                  ) as Message[]
-                );
-
-                // 未提取的用户消息（排除 summary 类型）
-                const unextracted = suffixMessages.filter(
-                  message => message.role === 'user' && !isMemoryProcessed(message)
-                );
-
+                const {
+                  chain,
+                  scope,
+                  unprocessedUsers: unextracted,
+                  extractionMessages,
+                } = loadPendingMemoryExtractionBatch(db, conversation_id);
                 if (unextracted.length === 0) return;
-
-                // 构建完整对话片段：未提取的用户消息 + 紧随其后的 assistant 回复
-                // 用 Set 记录未提取用户消息的 id，再把它们之间/之后的 assistant 消息也纳入
-                const unextractedIds = new Set(unextracted.map(m => m.id));
-                const extractionMessages: Message[] = [];
-                let includeNext = false;
-                for (const msg of suffixMessages) {
-                  if (msg.metadata.isSummary) continue;
-                  if (unextractedIds.has(msg.id)) {
-                    extractionMessages.push(msg);
-                    includeNext = true; // 下一条 assistant 消息也要带上
-                  } else if (includeNext && msg.role === 'assistant') {
-                    if (!isMemoryProcessed(msg)) {
-                      extractionMessages.push(msg);
-                    }
-                    includeNext = false;
-                  } else {
-                    includeNext = false;
-                  }
-                }
 
                 // 记忆提取触发判断
                 let shouldExtract = false;
@@ -229,12 +157,12 @@ export async function POST(request: NextRequest) {
                   const lastExtractedMsg = db.prepare(`
                     SELECT created_at
                     FROM messages
-                    WHERE conversation_id = ?
+                    WHERE ${scope.sql}
                       AND role = 'user'
                       AND (${MEMORY_PROCESSED_SQL})
-                    ORDER BY created_at DESC, seq DESC
+                    ORDER BY ${descendingMessageOrderSqlForChain(chain)}
                     LIMIT 1
-                  `).get(conversation_id) as { created_at: string } | undefined;
+                  `).get(...scope.params) as { created_at: string } | undefined;
                   const lastExtractedTime = lastExtractedMsg ? new Date(lastExtractedMsg.created_at).getTime() : 0;
                   const now = Date.now();
                   if (now - lastExtractedTime >= hours * 60 * 60 * 1000) {

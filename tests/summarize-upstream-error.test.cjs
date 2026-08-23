@@ -121,17 +121,31 @@ function createSummarizeDb() {
           },
         };
       }
+      // 链式对话解析：本用例都是无 parent 的普通对话
+      if (sql.includes('parent_seq_end FROM conversations')) {
+        return { get: () => ({ parent_id: null, parent_seq_end: null }) };
+      }
+      if (sql.includes('SELECT parent_seq_end AS m')) {
+        return { get: () => ({ m: null }) };
+      }
+      if (sql.includes('SELECT MAX(parent_seq_end) AS m')) {
+        return { get: () => ({ m: null }) };
+      }
+      if (sql.includes('FROM conversations WHERE parent_id = ?')) {
+        return { all: () => [] };
+      }
       throw new Error(`unexpected sql: ${sql}`);
     },
   };
 }
 
-test('summarize route wraps MAX(seq)+INSERT in a transaction', () => {
+test('summarize route wraps high-water seq allocation and INSERT in a transaction', () => {
   const source = fs.readFileSync(path.join(root, 'src/app/api/summarize/route.ts'), 'utf8');
   // 事务内必须同时包含 nextSeq 分配与 INSERT，避免与聊天并发抢 seq
+  // nextChainSeq 会在事务内重新解析链，并兼顾消息 MAX 与 linked 快照高水位。
   assert.match(
     source,
-    /db\.transaction\(\(\)\s*=>\s*\{[\s\S]*MAX\(seq\)[\s\S]*INSERT INTO messages[\s\S]*UPDATE conversations[\s\S]*\}\)\(\)/,
+    /db\.transaction\(\(\)\s*=>\s*\{[\s\S]*nextChainSeq\([\s\S]*INSERT INTO messages[\s\S]*UPDATE conversations[\s\S]*\}\)\(\)/,
   );
 });
 

@@ -37,17 +37,43 @@ export function messagesUrl(conversationId: string, options?: { limit?: number; 
   return `/api/messages?${params}`;
 }
 
+export function scopeMessageToConversationView(
+  message: Message,
+  conversationId: string,
+  previous?: Message,
+): Message {
+  const sourceConversationId = previous?.source_conversation_id
+    ?? message.source_conversation_id
+    ?? message.conversation_id;
+
+  return {
+    ...message,
+    conversation_id: conversationId,
+    source_conversation_id: sourceConversationId,
+  };
+}
+
 export async function fetchMessagesPage(
   conversationId: string,
   options?: { limit?: number; beforeSeq?: number | null; all?: boolean; signal?: AbortSignal },
 ): Promise<MessagesResponse> {
   const response = await fetch(messagesUrl(conversationId, options), { signal: options?.signal });
   const data = await parseJsonResponse<MessagesResponse | Message[]>(response);
+  // 链式对话会返回物理存放在父对话中的消息。客户端缓存和可见列表按“当前视图对话”
+  // 隔离，因此在网络边界把这些消息归一到请求的 conversationId，同时保留物理来源；
+  // 消息 id 仍指向同一数据库行，编辑/删除继续作用于父对话原件。
+  const scopeToConversationView = (messages: Message[]) => messages.map(
+    message => scopeMessageToConversationView(message, conversationId),
+  );
   if (Array.isArray(data)) {
-    const oldestSeq = typeof data[0]?.seq === 'number' ? data[0].seq : null;
-    return { messages: data, hasMore: false, oldestSeq };
+    const messages = scopeToConversationView(data);
+    const oldestSeq = typeof messages[0]?.seq === 'number' ? messages[0].seq : null;
+    return { messages, hasMore: false, oldestSeq };
   }
-  return data as MessagesResponse;
+  return {
+    ...data,
+    messages: scopeToConversationView(data.messages),
+  };
 }
 
 export function parseChatSsePart(part: string): { eventType: string; eventData: string } {

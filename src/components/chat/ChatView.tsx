@@ -16,6 +16,7 @@ import ChatToolbar from './ChatToolbar';
 import ChatMessageList, { type SearchHighlight } from './ChatMessageList';
 import RenameConvModal from './RenameConvModal';
 import DeleteConvModal from './DeleteConvModal';
+import DuplicateConvModal, { type DuplicateMode } from './DuplicateConvModal';
 import type { TokenBreakdownItem, RealUsage, MemoryInjectionInfo } from './TokenBreakdownModal';
 import { ConversationDrawer } from './ConversationListPanels';
 import { useTranslation } from '@/lib/i18n-context';
@@ -33,7 +34,7 @@ import { estimateClientTokens } from '@/lib/token-counter-client';
 import type { TextHighlightRange } from '@/lib/text-highlight';
 import { getVersionInfo } from '@/lib/chat-view-utils';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
-import { expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
+import { expectOkResponse, getErrorMessage, HttpResponseError, parseJsonResponse } from '@/lib/http';
 import { fetchMessagesPage } from '@/lib/chat-stream-client';
 import {
   clearCachedMessages,
@@ -106,6 +107,7 @@ export default function ChatView({
   const [summarizing, setSummarizing] = useState(false);
   // 复制对话
   const [duplicating, setDuplicating] = useState(false);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
   // 重置提取状态弹窗
   const [resetExtractionOpen, setResetExtractionOpen] = useState(false);
   // 对话切换抽屉：全断点渲染（<lg 底部抽屉，lg+ 居中弹窗），跨断点仍可见，无需强制关闭
@@ -174,6 +176,12 @@ export default function ChatView({
     beginStream,
     finishStream,
   } = useChatStreaming({ activeConvId });
+  // 当前对话是否是最新的活跃流（可以显示流式文本）
+  const isActiveStream = isLoading && streamingConvId === activeConvId;
+  // 当前对话是否有后台流在跑（显示 loading 占位但无文本）
+  const isBackgroundStream = !isActiveStream && (activeConvId ? activeStreams.has(activeConvId) : false);
+  // 综合：当前对话是否正在生成中
+  const isStreamingHere = isActiveStream || isBackgroundStream;
   const {
     messages,
     messagesRef,
@@ -519,8 +527,18 @@ export default function ChatView({
     } catch (err) {
       selectUserConversation(previousActiveConvId);
       replaceMessages(previousMessages);
-      setDeleteOpen(true);
-      showToast(err instanceof Error ? err.message : t('chat.deleteError'), 'error');
+      // 被索引副本引用时删除永远不会成功，重开确认弹窗只会让人反复碰壁
+      const linkedChildren = err instanceof HttpResponseError
+        && (err.data as { code?: string } | null)?.code === 'HAS_LINKED_CHILDREN'
+        ? ((err.data as { children?: unknown[] }).children?.length ?? 0)
+        : 0;
+      if (linkedChildren === 0) setDeleteOpen(true);
+      showToast(
+        linkedChildren > 0
+          ? formatTemplate(t('chat.deleteBlockedByChildren'), { count: linkedChildren })
+          : (err instanceof Error ? err.message : t('chat.deleteError')),
+        'error',
+      );
     }
   };
 
@@ -560,14 +578,16 @@ export default function ChatView({
     }
   };
 
-  const handleDuplicateConv = async () => {
-    if (!activeConvId || duplicating) return;
+  const handleDuplicateConv = async (mode: DuplicateMode) => {
+    if (!activeConvId || isStreamingHere || duplicating) return;
+    setDuplicateOpen(false);
     setDuplicating(true);
     try {
       // 注意：proxy.ts 的 CSRF 校验要求写方法带 application/json 头
       const res = await fetch(`/api/conversations/${activeConvId}/duplicate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
       });
       if (!res.ok) {
         const err = await res.json() as { error?: string };
@@ -759,12 +779,6 @@ export default function ChatView({
 
   const activeCharacter = character as Character;
   const memoryTypeLabel = memoryCategoryCounts[0]?.[0] || t('memory.empty');
-  // 当前对话是否是最新的活跃流（可以显示流式文本）
-  const isActiveStream = isLoading && streamingConvId === activeConvId;
-  // 当前对话是否有后台流在跑（显示 loading 占位但无文本）
-  const isBackgroundStream = !isActiveStream && (activeConvId ? activeStreams.has(activeConvId) : false);
-  // 综合：当前对话是否正在生成中
-  const isStreamingHere = isActiveStream || isBackgroundStream;
   const streamingMessage: Message = {
     id: 'streaming',
     conversation_id: '',
@@ -806,7 +820,7 @@ export default function ChatView({
         onNewChat={handleNewChat}
         onRename={() => openRename()}
         onSummarize={() => handleSummarize()}
-        onDuplicate={() => handleDuplicateConv()}
+        onDuplicate={() => setDuplicateOpen(true)}
         onOpenImageManager={() => setImageManagerOpen(true)}
         onRequestDelete={() => setDeleteOpen(true)}
       />
@@ -944,6 +958,14 @@ export default function ChatView({
           open={deleteOpen}
           onClose={() => setDeleteOpen(false)}
           onConfirm={handleDeleteConv}
+        />
+      )}
+
+      {duplicateOpen && (
+        <DuplicateConvModal
+          open={duplicateOpen}
+          onClose={() => setDuplicateOpen(false)}
+          onConfirm={handleDuplicateConv}
         />
       )}
 

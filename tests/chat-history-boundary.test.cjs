@@ -45,7 +45,9 @@ function createDbProbe() {
     CREATE TABLE conversations (
       id TEXT PRIMARY KEY,
       character_id TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      parent_id TEXT,
+      parent_seq_end INTEGER
     );
     CREATE TABLE characters (
       id TEXT PRIMARY KEY,
@@ -120,6 +122,7 @@ function createDbProbe() {
 
 function insertMessage(database, {
   id,
+  conversationId = 'conv-a',
   role,
   content,
   seq,
@@ -129,8 +132,8 @@ function insertMessage(database, {
 }) {
   database.prepare(`
     INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
-    VALUES (?, 'conv-a', ?, ?, ?, ?, ?, ?)
-  `).run(id, role, content, tokenCount, createdAt, seq, metadata);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, conversationId, role, content, tokenCount, createdAt, seq, metadata);
 }
 
 function settings() {
@@ -254,8 +257,9 @@ async function runStreamingStripProbe(rawText, chunkSizes, options = {}) {
   };
 }
 
-async function runWithProbe(rows, options) {
+async function runWithProbe(rows, options, setupDatabase) {
   const probe = createDbProbe();
+  setupDatabase?.(probe.database);
   for (const row of rows) insertMessage(probe.database, row);
   const capture = {};
   const { runChat } = loadChatEngine(probe.db, capture);
@@ -350,6 +354,62 @@ test('runChat preserves created_at-first ordering when imported seq order differ
     'earlier timestamp despite higher seq',
     'later timestamp despite lower seq',
   ]);
+});
+
+test('runChat uses seq-first ordering for a linked view with a late inserted reply', async (t) => {
+  const probe = await runWithProbe([
+    {
+      id: 'root-1',
+      conversationId: 'conv-root',
+      role: 'user',
+      content: 'root first',
+      seq: 1,
+      createdAt: '2026-07-10T01:00:00.000Z',
+    },
+    {
+      id: 'child-inserted',
+      role: 'assistant',
+      content: 'inserted second by seq',
+      seq: 2,
+      createdAt: '2026-07-10T03:00:00.000Z',
+    },
+    {
+      id: 'root-3',
+      conversationId: 'conv-root',
+      role: 'user',
+      content: 'root third by seq',
+      seq: 3,
+      createdAt: '2026-07-10T02:00:00.000Z',
+    },
+    {
+      id: 'child-4',
+      role: 'assistant',
+      content: 'child fourth',
+      seq: 4,
+      createdAt: '2026-07-10T04:00:00.000Z',
+    },
+  ], {}, database => {
+    database.prepare(`
+      INSERT INTO conversations (id, character_id, updated_at)
+      VALUES ('conv-root', 'char-a', '2026-07-10T00:00:00.000Z')
+    `).run();
+    database.prepare(`
+      UPDATE conversations
+      SET parent_id = 'conv-root', parent_seq_end = 3
+      WHERE id = 'conv-a'
+    `).run();
+  });
+  t.after(() => probe.database.close());
+
+  assert.deepEqual(conversationContents(probe.capture.messages), [
+    'root first',
+    'inserted second by seq',
+    'root third by seq',
+    'child fourth',
+  ]);
+  assert.ok(probe.queries.some(query => (
+    query.sql.includes('ORDER BY seq ASC, created_at ASC, id ASC')
+  )));
 });
 
 test('runChat lazily replaces an untrusted persisted token_count with current server provenance', async (t) => {

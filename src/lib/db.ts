@@ -501,6 +501,25 @@ function migrate(db: Database.Database): void {
   });
   migrateMessageSeq();
 
+  // 增量迁移：为 conversations 表添加链式引用列（「仅索引复制」）
+  // parent_id + parent_seq_end：子对话继承父对话中 seq <= parent_seq_end 的消息，
+  // 不物理复制。读取时用 src/lib/conversation-chain.ts 展开成整条链的范围。
+  const migrateConversationChain = db.transaction(() => {
+    const cols = db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'parent_id')) {
+      db.exec(`ALTER TABLE conversations ADD COLUMN parent_id TEXT REFERENCES conversations(id)`);
+    }
+    if (!cols.some(c => c.name === 'parent_seq_end')) {
+      db.exec(`ALTER TABLE conversations ADD COLUMN parent_seq_end INTEGER`);
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_conversations_parent
+        ON conversations(parent_id)
+        WHERE parent_id IS NOT NULL
+    `);
+  });
+  migrateConversationChain();
+
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
       id UNINDEXED,

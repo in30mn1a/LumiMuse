@@ -23,7 +23,59 @@ type ConversationRow = {
   ignore_memory?: number;
   created_at: string;
   updated_at: string;
+  parent_id?: string | null;
+  parent_seq_end?: number | null;
 };
+
+/**
+ * 按 parent 链拓扑排序：父对话必须排在子对话之前。
+ * 复制链式对话时要先建立父对话的新 ID，再写入子对话引用。
+ * 环、缺失父对话或非法边界必须 fail-fast；静默断链会让仅持有增量消息的子对话
+ * 成功复制却丢失全部继承历史。
+ */
+function sortConversationsByChain(rows: ConversationRow[]): ConversationRow[] {
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const sorted: ConversationRow[] = [];
+  const done = new Set<string>();
+
+  for (const row of rows) {
+    if (done.has(row.id)) continue;
+    const path: ConversationRow[] = [];
+    const pathIds = new Set<string>();
+    let cursor = row;
+
+    while (!done.has(cursor.id)) {
+      if (pathIds.has(cursor.id)) {
+        throw new Error(`Conversation chain cycle detected at: ${cursor.id}`);
+      }
+      pathIds.add(cursor.id);
+      path.push(cursor);
+
+      const parentId = cursor.parent_id ?? null;
+      const parentSeqEnd = cursor.parent_seq_end ?? null;
+      if (parentId === null && parentSeqEnd === null) break;
+      if (!parentId
+        || typeof parentSeqEnd !== 'number'
+        || !Number.isInteger(parentSeqEnd)
+        || parentSeqEnd < 0) {
+        throw new Error(`Invalid conversation chain link at: ${cursor.id}`);
+      }
+      const parent = byId.get(parentId);
+      if (!parent) {
+        throw new Error(`Conversation chain parent not found: ${parentId}`);
+      }
+      cursor = parent;
+    }
+
+    for (let index = path.length - 1; index >= 0; index -= 1) {
+      const segment = path[index];
+      if (done.has(segment.id)) continue;
+      done.add(segment.id);
+      sorted.push(segment);
+    }
+  }
+  return sorted;
+}
 
 type MessageRow = {
   id: string;
@@ -278,14 +330,46 @@ export async function POST(
        ORDER BY sort_order ASC, model ASC`,
     ).all(id) as Array<{ model: string; preset_id: string; sort_order: number }>;
 
-    const preparedConversations = conversations.map(conversation => ({
-      originalId: conversation.id,
-      newId: crypto.randomUUID().slice(0, 12),
-      title: conversation.title,
-      ignoreMemory: conversation.ignore_memory ? 1 : 0,
-      createdAt: conversation.created_at,
-      updatedAt: conversation.updated_at,
-    }));
+    // 链内 seq 是跨物理对话共享的时间轴：插入式回复可能物理属于子对话，
+    // 但 seq 位于祖先消息中间。链内必须原样复制 seq 和 parent_seq_end，统一
+    // 重编号会把这类回复移到祖先历史之后。独立对话仍沿用连续重编号行为。
+    const sortedConversations = sortConversationsByChain(conversations);
+    const preparedOriginalIds = new Set<string>();
+    const parentOriginalIdByConversation = new Map<string, string | null>();
+    for (const conversation of sortedConversations) {
+      const hasValidBoundary = typeof conversation.parent_seq_end === 'number'
+        && Number.isInteger(conversation.parent_seq_end)
+        && conversation.parent_seq_end >= 0;
+      const parentOriginalId = conversation.parent_id
+        && hasValidBoundary
+        && preparedOriginalIds.has(conversation.parent_id)
+        ? conversation.parent_id
+        : null;
+      parentOriginalIdByConversation.set(conversation.id, parentOriginalId);
+      preparedOriginalIds.add(conversation.id);
+    }
+    const linkedConversationIds = new Set<string>();
+    for (const [conversationId, parentOriginalId] of parentOriginalIdByConversation) {
+      if (!parentOriginalId) continue;
+      linkedConversationIds.add(conversationId);
+      linkedConversationIds.add(parentOriginalId);
+    }
+
+    const preparedConversations = sortedConversations.map(conversation => {
+      const parentOriginalId = parentOriginalIdByConversation.get(conversation.id) ?? null;
+      return {
+        originalId: conversation.id,
+        newId: crypto.randomUUID().slice(0, 12),
+        title: conversation.title,
+        ignoreMemory: conversation.ignore_memory ? 1 : 0,
+        createdAt: conversation.created_at,
+        updatedAt: conversation.updated_at,
+        // 父对话不在复制范围内或源链信息不完整时退化为独立对话，避免留下悬空引用。
+        parentOriginalId,
+        parentSeqEnd: parentOriginalId ? conversation.parent_seq_end as number : null,
+        preserveSeq: linkedConversationIds.has(conversation.id),
+      };
+    });
 
     const newMessageIdMap = new Map<string, string>();
     for (const conversation of preparedConversations) {
@@ -342,7 +426,7 @@ export async function POST(
           content: duplicatedContent,
           tokenCount: tokenResult.tokenCount,
           createdAt: message.created_at,
-          seq: index + 1,
+          seq: conversation.preserveSeq ? message.seq : index + 1,
           metadata: JSON.stringify(
             metadataWithTokenCountProvenance(remappedMetadata, tokenResult.provenance),
           ),
@@ -393,9 +477,12 @@ export async function POST(
       );
 
       const insertConversation = db.prepare(`
-        INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      const newConversationIdByOriginal = new Map(
+        preparedConversations.map(conversation => [conversation.originalId, conversation.newId]),
+      );
       for (const conversation of preparedConversations) {
         insertConversation.run(
           conversation.newId,
@@ -404,6 +491,10 @@ export async function POST(
           conversation.ignoreMemory,
           conversation.createdAt,
           conversation.updatedAt,
+          conversation.parentOriginalId
+            ? newConversationIdByOriginal.get(conversation.parentOriginalId) ?? null
+            : null,
+          conversation.parentSeqEnd,
         );
       }
 

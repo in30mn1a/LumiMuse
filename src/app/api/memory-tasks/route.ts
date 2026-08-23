@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { enqueueExtraction } from '@/lib/memory-queue';
-import { Message } from '@/types';
-import { isMessageMemoryExtracted, isSummaryMessage, serializeTypedMessages } from '@/lib/messages';
+import { resolveMessageScope } from '@/lib/conversation-chain';
+import { loadPendingMemoryExtractionBatch } from '@/lib/memory-extraction-scope';
 import { readJsonObject } from '@/lib/request-json';
 import { z } from 'zod';
 
@@ -48,19 +48,37 @@ export async function GET(request: NextRequest) {
   const hasRetryCount = columns.some(column => column.name === 'retry_count');
   const hasErrorMessage = columns.some(column => column.name === 'error_message');
   const hasStartedAt = columns.some(column => column.name === 'started_at');
+  const scope = resolveMessageScope(db, conversationId);
   const row = db.prepare(`
+    WITH visible_message_ids AS (
+      SELECT id
+      FROM messages
+      WHERE ${scope.sql}
+    )
     SELECT
-      status,
-      merge_count,
-      ${hasRetryCount ? 'retry_count' : '0 AS retry_count'},
-      ${hasErrorMessage ? 'error_message' : 'NULL AS error_message'},
-      ${hasStartedAt ? 'started_at' : 'NULL AS started_at'},
-      updated_at
-    FROM memory_tasks
-    WHERE conversation_id = ?
-    ORDER BY id DESC
+      task.status,
+      task.merge_count,
+      ${hasRetryCount ? 'task.retry_count' : '0 AS retry_count'},
+      ${hasErrorMessage ? 'task.error_message' : 'NULL AS error_message'},
+      ${hasStartedAt ? 'task.started_at' : 'NULL AS started_at'},
+      task.updated_at
+    FROM memory_tasks AS task
+    WHERE task.conversation_id = ?
+      OR EXISTS (
+        SELECT 1
+        FROM json_each(
+          CASE WHEN json_valid(task.message_ids) THEN task.message_ids ELSE '[]' END
+        ) AS task_message
+        INNER JOIN visible_message_ids AS visible_message
+          ON visible_message.id = task_message.value
+        WHERE task_message.type = 'text'
+      )
+    ORDER BY
+      CASE WHEN task.status IN ('pending', 'processing') THEN 0 ELSE 1 END,
+      task.updated_at DESC,
+      task.id DESC
     LIMIT 1
-  `).get(conversationId) as {
+  `).get(...scope.params, conversationId) as {
     status: string;
     merge_count: number;
     retry_count: number;
@@ -117,44 +135,14 @@ export async function POST(request: NextRequest) {
   const db = getDb();
 
   // 获取对话信息
-  const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation_id) as { id: string; character_id: string; ignore_memory: number } | undefined;
+  const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation_id) as { id: string; character_id: string } | undefined;
   if (!conversation) {
     return NextResponse.json({ error: '对话不存在' }, { status: 404 });
   }
 
-  // 获取所有消息
-  const allMessages = serializeTypedMessages(
-    db.prepare(
-      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-    ).all(conversation_id) as Message[]
-  );
-
-  // 收集未提取的用户消息
-  const unextracted = allMessages.filter(
-    message => message.role === 'user' && !isMessageMemoryExtracted(message.metadata)
-  );
-
-  if (unextracted.length === 0) {
+  const { unprocessedUsers, extractionMessages } = loadPendingMemoryExtractionBatch(db, conversation_id);
+  if (unprocessedUsers.length === 0) {
     return NextResponse.json({ error: '没有待提取的消息' }, { status: 400 });
-  }
-
-  // 构建完整对话片段：未提取的用户消息 + 紧随其后的 assistant 回复
-  const unextractedIds = new Set(unextracted.map(m => m.id));
-  const extractionMessages: Message[] = [];
-  let includeNext = false;
-  for (const msg of allMessages) {
-    if (isSummaryMessage(msg.metadata)) continue;
-    if (unextractedIds.has(msg.id)) {
-      extractionMessages.push(msg);
-      includeNext = true;
-    } else if (includeNext && msg.role === 'assistant') {
-      if (!isMessageMemoryExtracted(msg.metadata)) {
-        extractionMessages.push(msg);
-      }
-      includeNext = false;
-    } else {
-      includeNext = false;
-    }
   }
 
   // 入队提取

@@ -8,6 +8,7 @@ import {
   buildClientTimePayload,
   fetchMessagesPage,
   readChatSseStream,
+  scopeMessageToConversationView,
 } from '@/lib/chat-stream-client';
 
 type UpdateMessagesForConversation = (
@@ -112,6 +113,8 @@ export function useChatMessageActions({
     content: string,
     attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>,
   ) => {
+    const viewConversationId = activeConvIdRef.current;
+    if (!viewConversationId) return;
     try {
       const response = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${id}`, {
         method: 'PUT',
@@ -120,16 +123,20 @@ export function useChatMessageActions({
       }));
       const { deletedUrls = [], ...updated } = response;
       await invalidateDeletedImageBlobs(deletedUrls);
-      updateMessagesForConversation(updated.conversation_id, messages => messages.map(message => (
-        message.id === id ? updated : message
+      updateMessagesForConversation(viewConversationId, messages => messages.map(message => (
+        message.id === id
+          ? scopeMessageToConversationView(updated, viewConversationId, message)
+          : message
       )));
-      await refreshMessagesForConversation(updated.conversation_id);
+      await refreshMessagesForConversation(viewConversationId);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
-  }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
+  }, [activeConvIdRef, refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
   const handleDeleteMessage = useCallback(async (id: string) => {
+    const viewConversationId = activeConvIdRef.current;
+    if (!viewConversationId) return;
     try {
       const res = await fetch(`/api/messages/${id}`, {
         method: 'DELETE',
@@ -144,20 +151,20 @@ export function useChatMessageActions({
       }>(res);
       if (!data.ok) throw new Error(t('message.deleteFailed'));
       await invalidateDeletedImageBlobs(data.deletedUrls ?? []);
-      const convId = data.conversation_id;
-      if (!convId) throw new Error(t('message.deleteFailed'));
       if (data.deleted === 'version' && data.message) {
-        updateMessagesForConversation(convId, messages => messages.map(message => (
-          message.id === id ? data.message! : message
+        updateMessagesForConversation(viewConversationId, messages => messages.map(message => (
+          message.id === id
+            ? scopeMessageToConversationView(data.message!, viewConversationId, message)
+            : message
         )));
       } else {
-        updateMessagesForConversation(convId, messages => messages.filter(message => message.id !== id));
+        updateMessagesForConversation(viewConversationId, messages => messages.filter(message => message.id !== id));
       }
-      await refreshMessagesForConversation(convId);
+      await refreshMessagesForConversation(viewConversationId);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('message.deleteFailed'), 'error');
     }
-  }, [refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
+  }, [activeConvIdRef, refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
   /**
    * 一次聊天流的完整生命周期：begin → fetch/SSE → refresh → 按 mode 显式目标自动生图 → touch → finish。
@@ -359,6 +366,8 @@ export function useChatMessageActions({
   }, [activeConvIdRef, activeStreamsRef, sendChatStream, messagesRef]);
 
   const handleSwitchVersion = useCallback(async (messageId: string, versionIndex: number) => {
+    const viewConversationId = activeConvIdRef.current;
+    if (!viewConversationId) return;
     try {
       const response = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${messageId}`, {
         method: 'PUT',
@@ -367,14 +376,16 @@ export function useChatMessageActions({
       }));
       const { deletedUrls = [], ...updated } = response;
       await invalidateDeletedImageBlobs(deletedUrls);
-      updateMessagesForConversation(updated.conversation_id, messages => messages.map(message => (
-        message.id === messageId ? updated : message
+      updateMessagesForConversation(viewConversationId, messages => messages.map(message => (
+        message.id === messageId
+          ? scopeMessageToConversationView(updated, viewConversationId, message)
+          : message
       )));
-      await refreshMessageCountsForConversation(updated.conversation_id);
+      await refreshMessageCountsForConversation(viewConversationId);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
-  }, [refreshMessageCountsForConversation, showToast, t, updateMessagesForConversation]);
+  }, [activeConvIdRef, refreshMessageCountsForConversation, showToast, t, updateMessagesForConversation]);
 
   return {
     sendChatStream,

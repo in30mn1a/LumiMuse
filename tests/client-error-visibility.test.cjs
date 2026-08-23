@@ -80,15 +80,15 @@ test('ChatView write handlers validate failed responses before local mutation or
   const editValidationIndex = firstResponseValidationIndex(editBlock);
   assert.notEqual(editValidationIndex, -1, 'message edit should validate the write response');
   assert.ok(
-    editValidationIndex < editBlock.indexOf('await refreshMessagesForConversation(updated.conversation_id);'),
+    editValidationIndex < editBlock.indexOf('await refreshMessagesForConversation(viewConversationId);'),
     'message edits should not refresh messages before validating the write response',
   );
   assert.match(editBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);
 
   const switchBlock = sliceBetween(messageActionsHook, 'const handleSwitchVersion = useCallback', '  return {');
   const switchValidationIndex = firstResponseValidationIndex(switchBlock);
-  const switchMutationIndex = switchBlock.indexOf('updateMessagesForConversation(updated.conversation_id');
-  const switchCountRefreshIndex = switchBlock.indexOf('await refreshMessageCountsForConversation(updated.conversation_id);');
+  const switchMutationIndex = switchBlock.indexOf('updateMessagesForConversation(viewConversationId');
+  const switchCountRefreshIndex = switchBlock.indexOf('await refreshMessageCountsForConversation(viewConversationId);');
   assert.notEqual(switchValidationIndex, -1, 'version switch should validate the write response');
   assert.ok(
     switchValidationIndex < switchMutationIndex,
@@ -99,7 +99,7 @@ test('ChatView write handlers validate failed responses before local mutation or
     'version switches should apply the authoritative message before refreshing server counts',
   );
   assert.ok(
-    !switchBlock.includes('await refreshMessagesForConversation(updated.conversation_id);'),
+    !switchBlock.includes('await refreshMessagesForConversation(viewConversationId);'),
     'version switches must not replace a search-loaded full message window with a capped page',
   );
   assert.match(switchBlock, /catch \(err\) \{\s*showToast\(err instanceof Error \? err\.message : t\('common\.operationFailed'\), 'error'\);/);

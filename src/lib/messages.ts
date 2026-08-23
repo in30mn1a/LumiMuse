@@ -23,7 +23,10 @@ export function parseMessageMetadata(value: unknown): MessageMetadata {
 }
 
 export function isMessageMemoryExtracted(metadata: MessageMetadata): boolean {
-  return metadata.memory_extracted === true;
+  return Boolean(
+    metadata.memory_extracted
+    || typeof metadata.memory_noop_extracted_at === 'string'
+  );
 }
 
 export function isSummaryMessage(metadata: MessageMetadata): boolean {

@@ -11,6 +11,12 @@ import { serializeTypedMessages } from '@/lib/messages';
 import { formatZodFieldErrors, summarizeBodySchema } from '@/lib/schemas';
 import { readMemoryProfile, renderMemoryProfile } from '@/lib/memory-profile';
 import {
+  ascendingMessageOrderSqlForChain,
+  buildChainMessageScope,
+  nextChainSeq,
+  resolveConversationChain,
+} from '@/lib/conversation-chain';
+import {
   BackgroundLlmTimeoutError,
   runWithBackgroundLlmDeadline,
 } from '@/lib/background-llm-deadline';
@@ -52,11 +58,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Character not found' }, { status: 404 });
   }
 
-  // 获取所有消息
+  // 获取所有消息（链式子对话要沿 parent 链展开，历史消息物理存在父对话里）
+  const chain = resolveConversationChain(db, conversation_id);
+  const scope = buildChainMessageScope(chain);
   const allMessages = serializeTypedMessages(
     db.prepare(
-      'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, seq ASC'
-    ).all(conversation_id) as Message[]
+      `SELECT * FROM messages WHERE ${scope.sql} ORDER BY ${ascendingMessageOrderSqlForChain(chain)}`
+    ).all(...scope.params) as Message[]
   );
 
   // 找到最后一条 summary 消息（metadata.isSummary），只总结它之后的内容
@@ -179,7 +187,7 @@ ${convText}`;
 
     let nextSeq = 0;
     db.transaction(() => {
-      nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversation_id) as { m: number | null }).m ?? 0) + 1;
+      nextSeq = nextChainSeq(db, conversation_id);
       db.prepare(`
         INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
         VALUES (?, ?, 'system', ?, ?, ?, ?, ?)

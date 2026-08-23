@@ -191,3 +191,46 @@ test('explicit mobile chat icon controls expose 44px touch targets', () => {
     assert.match(button.className, /min-w-11/, `${name} needs a 44px minimum width`);
   }
 });
+
+test('mobile and desktop duplicate controls block linked snapshots while the conversation is streaming', () => {
+  const ChatHeader = loadModule('../src/components/chat/ChatHeader.tsx').default;
+  let duplicateCalls = 0;
+  const props = {
+    character: { id: 'char-a', name: 'Alice', avatar_url: null },
+    activeConversation: { id: 'conv-a', title: 'Conversation' },
+    conversationsCount: 1,
+    memoryCount: 1,
+    isStreamingHere: true,
+    creating: false,
+    summarizing: false,
+    duplicating: false,
+    toolbarExpanded: true,
+    onToggleToolbar() {},
+    onOpenSidebar() {},
+    onOpenSearch() {},
+    onOpenConvDrawer() {},
+    onNewChat() {},
+    onRename() {},
+    onSummarize() {},
+    onDuplicate() { duplicateCalls += 1; },
+    onOpenImageManager() {},
+    onRequestDelete() {},
+  };
+  const view = render(React.createElement(ChatHeader, props));
+
+  const streamingButtons = within(view.container).getAllByRole('button', { name: 'chat.duplicate' });
+  assert.equal(streamingButtons.length, 2, 'mobile and desktop duplicate controls should both render');
+  for (const button of streamingButtons) {
+    assert.equal(button.disabled, true);
+    fireEvent.click(button);
+  }
+  assert.equal(duplicateCalls, 0);
+
+  view.rerender(React.createElement(ChatHeader, { ...props, isStreamingHere: false }));
+  const idleButtons = within(view.container).getAllByRole('button', { name: 'chat.duplicate' });
+  for (const button of idleButtons) {
+    assert.equal(button.disabled, false);
+    fireEvent.click(button);
+  }
+  assert.equal(duplicateCalls, 2);
+});

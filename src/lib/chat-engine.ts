@@ -22,6 +22,12 @@ import {
   MEMORY_USAGE_PRINCIPLES,
 } from '@/lib/memory-prompt-contract';
 import { allocateAssistantInsertAfterUser } from '@/lib/message-seq-insert';
+import {
+  ascendingMessageOrderSqlForChain,
+  buildChainMessageScope,
+  nextChainSeq,
+  resolveConversationChain,
+} from '@/lib/conversation-chain';
 import { structuredLog } from '@/lib/structured-log';
 import {
   prepareImageTagsForLlm,
@@ -485,6 +491,12 @@ export async function runChat(
     return;
   }
 
+  // 链式子对话的历史消息物理存放在父对话里：定位消息、读历史、分配 seq 都要沿链展开。
+  // 无父对话时 scope 退化为 `conversation_id = ?`，与改造前等价。
+  const chain = resolveConversationChain(db, conversationId);
+  const scope = buildChainMessageScope(chain);
+  const ascendingMessageOrder = ascendingMessageOrderSqlForChain(chain);
+
   if (!options?.regenerateAssistantId && !options?.skipUserInsert) {
     const userMsgId = crypto.randomUUID().slice(0, 12);
     const now = new Date().toISOString();
@@ -510,7 +522,7 @@ export async function runChat(
     ));
     // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
     db.transaction(() => {
-      const nextSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
+      const nextSeq = nextChainSeq(db, conversationId);
       db.prepare(`
         INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
         VALUES (?, ?, 'user', ?, ?, ?, ?, ?)
@@ -519,13 +531,13 @@ export async function runChat(
   }
 
   const regenerateTargetMessage = options?.regenerateAssistantId
-    ? db.prepare('SELECT created_at, seq FROM messages WHERE id = ? AND conversation_id = ?')
-        .get(options.regenerateAssistantId, conversationId) as { created_at: string; seq: number } | undefined
+    ? db.prepare(`SELECT created_at, seq FROM messages WHERE id = ? AND ${scope.sql}`)
+        .get(options.regenerateAssistantId, ...scope.params) as { created_at: string; seq: number } | undefined
     : undefined;
 
   const insertAfterUserMessage = options?.insertAssistantAfterUserId
-    ? db.prepare('SELECT created_at, seq FROM messages WHERE id = ? AND conversation_id = ? AND role = ?')
-        .get(options.insertAssistantAfterUserId, conversationId, 'user') as { created_at: string; seq: number } | undefined
+    ? db.prepare(`SELECT created_at, seq FROM messages WHERE id = ? AND ${scope.sql} AND role = ?`)
+        .get(options.insertAssistantAfterUserId, ...scope.params, 'user') as { created_at: string; seq: number } | undefined
     : undefined;
 
   const historyUpperBound = regenerateTargetMessage
@@ -544,7 +556,7 @@ export async function runChat(
   const summarySql = `
     SELECT seq
     FROM messages
-    WHERE conversation_id = ?
+    WHERE ${scope.sql}
       ${summaryUpperSql}
       AND CASE WHEN json_valid(metadata)
                THEN json_extract(metadata, '$.isSummary') = 1
@@ -553,15 +565,15 @@ export async function runChat(
     LIMIT 1
   `;
   const lastSummary = (historyUpperBound
-    ? db.prepare(summarySql).get(conversationId, historyUpperBound.seq)
-    : db.prepare(summarySql).get(conversationId)) as { seq: number } | undefined;
+    ? db.prepare(summarySql).get(...scope.params, historyUpperBound.seq)
+    : db.prepare(summarySql).get(...scope.params)) as { seq: number } | undefined;
   const historySql = [
-    'SELECT * FROM messages WHERE conversation_id = ?',
+    `SELECT * FROM messages WHERE ${scope.sql}`,
     lastSummary ? 'AND seq >= ?' : '',
     historyUpperSql,
-    'ORDER BY created_at ASC, seq ASC',
+    `ORDER BY ${ascendingMessageOrder}`,
   ].filter(Boolean).join(' ');
-  const historyParams: Array<string | number> = [conversationId];
+  const historyParams: Array<string | number> = [...scope.params];
   if (lastSummary) historyParams.push(lastSummary.seq);
   if (historyUpperBound) historyParams.push(historyUpperBound.seq);
   const history = serializeTypedMessages(
@@ -783,7 +795,7 @@ export async function runChat(
       } else {
         // 用事务包裹 SELECT MAX(seq) + INSERT，避免并发写入产生重复 seq
         db.transaction(() => {
-          const asstSeq = ((db.prepare('SELECT MAX(seq) as m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m ?? 0) + 1;
+          const asstSeq = nextChainSeq(db, conversationId);
           db.prepare(`
             INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
             VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)

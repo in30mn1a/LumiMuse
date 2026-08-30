@@ -295,6 +295,13 @@ function conversationContents(messages) {
   return messages.slice(1).map(message => message.content);
 }
 
+/** 尾部块（## Current Time 等）前置在最后一条 user 上，比对对话正文时先剥掉 */
+function stripTailBlock(content) {
+  return typeof content === 'string'
+    ? content.replace(/^## Current Time\n[^\n]*\n\n/u, '')
+    : content;
+}
+
 test('runChat loads only the last summary and later messages with a seq lower bound', async (t) => {
   const probe = await runWithProbe([
     { id: 'old-user', role: 'user', content: 'old history', seq: 1 },
@@ -464,8 +471,10 @@ test('runChat preserves regenerate target time even when the target is before th
   });
   t.after(() => probe.database.close());
 
-  assert.match(probe.capture.messages[0].content, /2025-12-24 03:04/);
-  assert.deepEqual(conversationContents(probe.capture.messages), ['question to regenerate']);
+  // ## Current Time 已移出 system（前缀缓存要求 system 逐字节稳定），改为前置到最后一条 user
+  assert.doesNotMatch(probe.capture.messages[0].content, /Current Time/);
+  assert.match(probe.capture.messages.at(-1).content, /2025-12-24 03:04/);
+  assert.deepEqual(conversationContents(probe.capture.messages).map(stripTailBlock), ['question to regenerate']);
   const targetQuery = probe.queries.find(query => query.sql === 'SELECT created_at, seq FROM messages WHERE id = ? AND conversation_id = ?');
   assert.ok(targetQuery, 'regenerate should fetch the target timestamp independently of bounded history');
   assert.deepEqual(targetQuery.calls, [['target-assistant', 'conv-a']]);

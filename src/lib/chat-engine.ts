@@ -7,7 +7,7 @@ import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion, 
 import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
-import { buildCurrentTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
+import { buildCurrentTimeInstruction, buildTimestampAnchoredTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
 import { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } from '@/lib/inline-image-prompt';
 import {
@@ -228,7 +228,12 @@ function renderLegacyMemoryContext(memories: string[], settings: Settings): stri
   return `### 本轮相关回忆\n${selected.map(item => `- ${item}`).join('\n')}`;
 }
 
-function buildSystemPrompt(character: Character, memoryText: string, timeContext?: ChatTimeContext): string {
+function buildSystemPrompt(
+  character: Character,
+  memoryText: string,
+  timeInstruction: string,
+  inlinePromptInstruction: string,
+): string {
   let prompt = '';
 
   if (character.name) {
@@ -261,8 +266,13 @@ function buildSystemPrompt(character: Character, memoryText: string, timeContext
 
   prompt += `## 行为要求\n${BEHAVIOR_INSTRUCTION}`;
 
-  if (timeContext) {
-    prompt += `\n\n## Current Time\n${buildCurrentTimeInstruction(timeContext)}`;
+  // 时间说明与生图指令都是逐轮不变的静态文本，放进 system 才能进稳定前缀。
+  // 生图指令排在最后（最贴近对话），是它离开「最后一条 user」后仅存的约束力补偿。
+  if (timeInstruction) {
+    prompt += `\n\n## Current Time\n${timeInstruction}`;
+  }
+  if (inlinePromptInstruction) {
+    prompt += `\n\n${inlinePromptInstruction}`;
   }
 
   return prompt;
@@ -393,28 +403,89 @@ export async function buildHistoryMessages(
   return { history, usedTokens };
 }
 
+/**
+ * 把「每轮都会变的尾部块」前置到最后一条 user 消息。
+ *
+ * 找不到 user 消息时追加成独立 user 消息，保证 ## Current Time 不会被静默丢掉——
+ * 模型拿不到当前时间就会自己编日期。
+ */
+function prependToLastUserMessage(messages: ChatMessage[], text: string): void {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== 'user') continue;
+    if (typeof msg.content === 'string') {
+      msg.content = `${text}\n\n${msg.content}`;
+    } else if (Array.isArray(msg.content)) {
+      // 多模态：前置到第一个 text part；若无 text part 则插入一个
+      const textIdx = msg.content.findIndex(p => p.type === 'text');
+      if (textIdx >= 0) {
+        const part = msg.content[textIdx] as { type: 'text'; text: string };
+        msg.content[textIdx] = { type: 'text', text: `${text}\n\n${part.text}` };
+      } else {
+        msg.content.unshift({ type: 'text', text });
+      }
+    }
+    return;
+  }
+  messages.push({ role: 'user', content: text });
+}
+
 export async function assemblePrompt(
   character: Character,
   messages: Message[],
   settings: Settings,
   memories: string[] | string,
   timeContext?: ChatTimeContext,
+  memoryIsStable = true,
 ): Promise<ChatMessage[]> {
   const memoryText = settings.memory_inject
     ? (typeof memories === 'string' ? memories.trim() : renderLegacyMemoryContext(memories, settings))
     : '';
 
-  const systemPrompt = buildSystemPrompt(character, memoryText, timeContext);
+  // 上游按顺序匹配前缀缓存，且网关只有 4 个断点名额（全被计费块/agent 块/搬家后的调用方
+  // system/最后一条消息占满），历史末尾拿不到断点。所以「第 N 轮的整个请求体必须是第 N+1 轮的
+  // 字节前缀」是命中的唯一条件——历史之后不能有任何逐轮变化的内容，否则整段退回到 system 断点。
+  // 据此分配：
+  //   - 生图指令、时间说明：都是静态文本 → 进 system
+  //   - 时间说明的具体时刻改由每条消息的 [时间戳] 前缀承载；show_timestamps 关闭时没有前缀，
+  //     只能回退到写死时刻的旧版本，此时放尾部（牺牲缓存保住「模型知道现在几点」）
+  //   - 记忆包稳定（全量注入：不看 queryText，纯 SQL 取全部 active）→ 留在 system
+  //   - 记忆包逐轮变（检索模式）→ 进尾部块，否则它一变会把整段历史一起挤出缓存
+  const inlinePromptInstruction = settings.image_gen?.enabled && settings.image_gen?.inline_prompt
+    ? buildInlinePromptInstruction(
+        prepareImageTagsForLlm(character.image_tags).tagsForLlm,
+        prepareImageTagsForLlm(character.user_image_tags).tagsForLlm,
+      )
+    : '';
+  const useStableTimeInstruction = Boolean(timeContext) && settings.show_timestamps;
+
+  const systemPrompt = buildSystemPrompt(
+    character,
+    memoryIsStable ? memoryText : '',
+    useStableTimeInstruction ? buildTimestampAnchoredTimeInstruction(timeContext) : '',
+    inlinePromptInstruction,
+  );
   const result: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
 
   if (settings.example_dialogue && character.example_dialogue) {
     result.push(...parseExampleDialogue(character.example_dialogue));
   }
 
+  const tailBlock = [
+    memoryIsStable ? '' : memoryText,
+    timeContext && !useStableTimeInstruction
+      ? `## Current Time\n${buildCurrentTimeInstruction(timeContext)}`
+      : '',
+  ].filter(Boolean).join('\n\n');
+
   const systemTokens = estimateTokens(systemPrompt);
   let baseTokens = systemTokens;
   if (settings.example_dialogue) {
     baseTokens += estimateTokens(character.example_dialogue);
+  }
+  // 尾部块不在 systemPrompt 里，但同样占请求预算，必须计入，否则历史会按偏小的基数多留消息而超预算。
+  if (tailBlock) {
+    baseTokens += estimateTokens(tailBlock);
   }
 
   const { history } = await buildHistoryMessages(messages, settings, timeContext, baseTokens);
@@ -423,32 +494,9 @@ export async function assemblePrompt(
   // 合并连续同角色消息（Gemini 等 API 要求严格交替 user/assistant）
   // 多模态 content 是数组结构，不能用 JSON.stringify 直接拼接，否则下游 LLM 会收到字符串而非结构化 parts
   const merged = mergeConsecutiveRoles(result);
-  // 内联生图提示词：把指令追加到最后一条 user 消息尾部（约束力最强，实测稳定触发）。
-  // 仅作用于发给模型的请求副本，不落库 —— 避免污染对话记录 / 记忆 / 前端显示。
-  // 指令里的固定外貌标签先剥敏感词，落库时再拼回（与 /api/image-gen/prompt 一致）。
-  if (settings.image_gen?.enabled && settings.image_gen?.inline_prompt) {
-    const { tagsForLlm } = prepareImageTagsForLlm(character.image_tags);
-    const { tagsForLlm: userTagsForLlm } = prepareImageTagsForLlm(character.user_image_tags);
-    const instruction = buildInlinePromptInstruction(tagsForLlm, userTagsForLlm);
-    for (let i = merged.length - 1; i >= 0; i -= 1) {
-      const msg = merged[i];
-      if (msg.role !== 'user') continue;
-      if (typeof msg.content === 'string') {
-        msg.content = `${msg.content}\n\n${instruction}`;
-      } else if (Array.isArray(msg.content)) {
-        // 多模态：追加到第一个 text part；若无 text part 则插入一个
-        const textIdx = msg.content.findIndex(p => p.type === 'text');
-        if (textIdx >= 0) {
-          const part = msg.content[textIdx] as { type: 'text'; text: string };
-          msg.content[textIdx] = { type: 'text', text: `${part.text}\n\n${instruction}` };
-        } else {
-          msg.content.unshift({ type: 'text', text: instruction });
-        }
-      }
-      break;
-    }
+  if (tailBlock) {
+    prependToLastUserMessage(merged, tailBlock);
   }
-
   return merged;
 }
 
@@ -649,6 +697,11 @@ export async function runChat(
     }
   }
 
+  // 全量注入（mode 'full'）不看 queryText、逐轮字节稳定，可以留在 system 的稳定前缀里；
+  // 其余模式（local/hybrid/vector/legacy-fallback）都是按当轮消息检索出来的，逐轮会变，必须移到历史之后。
+  // memory_inject 关闭时没有 lastMemoryInjection，此时记忆包本身为空，走哪条都一样。
+  const memoryIsStable = !lastMemoryInjection || lastMemoryInjection.mode === 'full';
+
   // 预设提示词分支：惰性导入避免在旧路径触发 db 模块加载（保留测试 mock 边界）。
   //   - 当前模型命中角色的模型绑定，或角色默认 active_preset_id 为具体预设 id → 走预设组装管线
   //   - 绑定/默认为 null / '' / '__none__' → 走原 assemblePrompt 骨架
@@ -671,7 +724,7 @@ export async function runChat(
       presetEntries,
     );
   } else {
-    chatMessages = await assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext);
+    chatMessages = await assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext, memoryIsStable);
   }
 
   // 捕获上游返回的真实 usage（流式在最后一个 chunk，非流式在响应 body）。

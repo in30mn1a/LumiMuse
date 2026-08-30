@@ -251,6 +251,26 @@ export function currentYearInZone(timeZone?: string): number {
   return now.getFullYear();
 }
 
+/**
+ * 稳定版当前时间说明：只声明时区与「以最后一条用户消息的时间戳为现在」的规则，
+ * **不写入具体时刻**——具体时间由每条消息的 `[YYYY-MM-DD Day HH:MM]` 前缀承载。
+ *
+ * 逐字节稳定是前缀缓存的前提：写入具体时刻会让 system 每轮变化，而上游按顺序前缀匹配，
+ * 整段 system 及其后的历史会一起作废（实测命中率 3%）。
+ *
+ * 依赖 `show_timestamps` 打开——关闭时消息没有时间戳前缀，模型将无从得知当前时间，
+ * 调用方必须回退到 buildCurrentTimeInstruction。
+ */
+export function buildTimestampAnchoredTimeInstruction(context?: ChatTimeContext): string {
+  const sourceLabel = context?.timeZone
+    ? `用户时区是 ${context.timeZone}。`
+    : typeof context?.utcOffsetMinutes === 'number' && Number.isFinite(context.utcOffsetMinutes)
+      ? `用户 UTC 偏移是 ${context.utcOffsetMinutes} 分钟。`
+      : '';
+
+  return `${sourceLabel}对话中每条消息前缀的 [YYYY-MM-DD Day HH:MM] 是这条消息发生时的用户本地时间；其中最后一条用户消息的时间戳就是当前时间。如果用户询问现在几点、今天几号、星期几等现实时间问题，必须严格依据它回答，不要猜测，也不要引用其他日期。`;
+}
+
 export function buildCurrentTimeInstruction(context?: ChatTimeContext): string {
   const date = context?.clientNowIso ? new Date(context.clientNowIso) : new Date();
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;

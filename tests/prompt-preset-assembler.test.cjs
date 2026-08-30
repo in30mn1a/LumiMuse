@@ -143,10 +143,10 @@ test('relative 条目按 sort_order 升序；空 content 跳过；marker 渲染'
   assert.equal(roles[1], 'user');
   assert.match(contents[1], /第二条 user/);
   assert.match(contents[1], /你是露米，一位两百岁的吸血鬼。\n\n一位年长的吸血鬼/, 'CharDesc marker 渲染 system_prompt+basic_info');
-  assert.match(contents[1], /沉稳又话多/, 'charPersonality marker 渲染');
+  assert.match(contents[1], /## 角色性格\n沉稳又话多/, 'charPersonality marker 渲染并标明性格');
 
   assert.equal(roles[2], 'system');
-  assert.equal(contents[2], '夜晚的书房');
+  assert.equal(contents[2], '## 场景设定\n夜晚的书房');
 
   assert.equal(roles[3], 'system');
   assert.match(contents[3], /^## 行为要求\n请始终保持角色扮演/, '末尾隐藏 system 包含行为要求');
@@ -711,4 +711,164 @@ test('in-chat 与隐藏行为指令也计入 context budget', async () => {
   assert.match(flattened, /当前问题仍保留/);
   assert.match(flattened, /注入设定/);
   assert.match(flattened, /## 行为要求/);
+});
+
+test('可待形态：记忆是独立 system，示例对话整段一条且不与人设粘连，当前输入只出现一次', async () => {
+  const preset = lib.createPreset({ name: 'ketai-like' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Styles', role: 'user', content: '<literary-styles>文风规则</literary-styles>', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Desc', role: 'user', sort_order: 20, is_marker: true, marker_key: 'charDescription' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Pers', role: 'user', sort_order: 30, is_marker: true, marker_key: 'charPersonality' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Scen', role: 'user', sort_order: 40, is_marker: true, marker_key: 'scenario' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Examples', role: 'system', sort_order: 50, is_marker: true, marker_key: 'dialogueExamples' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 60, is_marker: true, marker_key: 'chatHistory' });
+  lib.upsertEntry({
+    preset_id: preset.id,
+    name: 'Current',
+    role: 'user',
+    content: '<now-player-input>\n{{lastUserMessage}}\n</now-player-input>',
+    sort_order: 70,
+  });
+
+  const character = makeCharacter({
+    example_dialogue: '{{user}}:宝宝，这道题好难，我好像都没学过这个知识点。\n{{char}}:（伸出手，微凉的指尖轻轻揉了揉你的后颈）\n\n“明明是完全没学过的知识点。”',
+    scenario: '现实世界。',
+  });
+  const result = await assembler.assemblePresetPrompt(
+    character,
+    [
+      makeMessage(1, 'user', '旧问题'),
+      makeMessage(2, 'assistant', '旧回答'),
+      makeMessage(3, 'user', '当前现场提问'),
+    ],
+    { ...DEFAULT_SETTINGS, show_timestamps: false, context_window: 131072, max_tokens: 4096 },
+    '### 本轮相关回忆\n- 用户喜欢咖啡',
+    undefined,
+    preset,
+    lib.loadEnabledEntries(preset.id),
+  );
+
+  const userBlobs = result.filter(m => m.role === 'user' && typeof m.content === 'string').map(m => m.content);
+  const glued = userBlobs.find(text => text.includes('<literary-styles>'));
+  assert.ok(glued, '文风应仍在 user 条目里');
+  assert.doesNotMatch(glued, /宝宝，这道题好难/, '示例对话不得粘进文风/人设 user');
+  assert.doesNotMatch(glued, /用户喜欢咖啡/, '记忆不得粘进文风/人设 user');
+  assert.match(glued, /## 角色性格/);
+  assert.match(glued, /## 场景设定\n现实世界。/);
+
+  const example = result.find(m => m.role === 'system' && typeof m.content === 'string' && m.content.includes('## 示例对话'));
+  assert.ok(example, '示例对话应是一条独立消息');
+  assert.match(example.content, /宝宝，这道题好难/);
+  assert.match(example.content, /明明是完全没学过的知识点/, '多行 {{char}} 不得截断');
+  assert.equal(result.filter(m => m.role === 'assistant').length, 1, '示例对话不得变成真实 assistant 轮次');
+  assert.equal(result.find(m => m.role === 'assistant').content, '旧回答');
+
+  const memory = result.find(m => m.role === 'system' && typeof m.content === 'string' && m.content.includes('用户喜欢咖啡'));
+  assert.ok(memory);
+
+  const currentHits = result.filter(m => typeof m.content === 'string' && m.content.includes('当前现场提问'));
+  assert.equal(currentHits.length, 1, '当前输入只出现一次');
+  assert.match(currentHits[0].content, /<now-player-input>[\s\S]*当前现场提问/);
+});
+
+test('RONG 形态：story_setting 开闭标签仍包住人设，场景有标题，示例对话不拆轮次', async () => {
+  const preset = lib.createPreset({ name: 'rong-like' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'OpenSetting', role: 'user', content: '<story_setting>', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Desc', role: 'user', sort_order: 20, is_marker: true, marker_key: 'charDescription' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Scen', role: 'user', sort_order: 30, is_marker: true, marker_key: 'scenario' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'CloseSetting', role: 'user', content: '</story_setting>', sort_order: 40 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'HistOpen', role: 'user', content: '<story_history>', sort_order: 50 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Examples', role: 'system', sort_order: 60, is_marker: true, marker_key: 'dialogueExamples' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 70, is_marker: true, marker_key: 'chatHistory' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'HistClose', role: 'user', content: '</story_history>', sort_order: 80 });
+  lib.upsertEntry({
+    preset_id: preset.id,
+    name: 'Current',
+    role: 'user',
+    content: '<user_input>{{lastUserMessage}}</user_input>',
+    sort_order: 90,
+  });
+
+  const result = await assembler.assemblePresetPrompt(
+    makeCharacter({
+      scenario: '现实世界。',
+      example_dialogue: '{{user}}:宝宝，这道题好难，我好像都没学过这个知识点。\n{{char}}:（伸出手）\n\n“你呀。”',
+    }),
+    [
+      makeMessage(1, 'user', '旧问题'),
+      makeMessage(2, 'assistant', '旧回答'),
+      makeMessage(3, 'user', '当前现场提问'),
+    ],
+    { ...DEFAULT_SETTINGS, show_timestamps: false, context_window: 131072, max_tokens: 4096 },
+    '',
+    undefined,
+    preset,
+    lib.loadEnabledEntries(preset.id),
+  );
+
+  const setting = result.find(m => m.role === 'user' && typeof m.content === 'string' && m.content.includes('<story_setting>'));
+  assert.ok(setting, '世界设定开始应还在');
+  assert.match(setting.content, /<story_setting>[\s\S]*## 场景设定\n现实世界。[\s\S]*<\/story_setting>/);
+  assert.doesNotMatch(setting.content, /宝宝，这道题好难/);
+  assert.match(setting.content, /你是露米/);
+
+  const example = result.find(m => m.role === 'system' && typeof m.content === 'string' && m.content.includes('## 示例对话'));
+  assert.ok(example);
+  assert.match(example.content, /宝宝，这道题好难/);
+  assert.match(example.content, /你呀。/);
+  const historyBlock = result.find(m => m.role === 'system' && typeof m.content === 'string' && m.content.includes('<story_history>'));
+  assert.ok(historyBlock);
+  assert.match(historyBlock.content, /旧回答/);
+  assert.doesNotMatch(historyBlock.content, /当前现场提问/);
+  assert.equal(result.filter(m => m.role === 'assistant').length, 0, 'RONG 单块历史不应再拆出真实 assistant 轮次');
+});
+
+test('预设 lastUserMessage 形态下，相同记忆的续聊前缀保持稳定', async () => {
+  const preset = lib.createPreset({ name: 'preset-prefix' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Desc', role: 'user', sort_order: 10, is_marker: true, marker_key: 'charDescription' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 20, is_marker: true, marker_key: 'chatHistory' });
+  lib.upsertEntry({
+    preset_id: preset.id,
+    name: 'Current',
+    role: 'user',
+    content: '<now-player-input>{{lastUserMessage}}</now-player-input>',
+    sort_order: 30,
+  });
+  const character = makeCharacter({ example_dialogue: '' });
+  const settings = { ...DEFAULT_SETTINGS, show_timestamps: true, context_window: 131072, max_tokens: 4096 };
+  const timeA = { clientNowIso: '2026-08-30T01:57:00.000Z', timeZone: 'Asia/Tokyo' };
+  const timeB = { clientNowIso: '2026-08-30T01:58:00.000Z', timeZone: 'Asia/Tokyo' };
+  const settled = [
+    makeMessage(1, 'user', '第一轮提问'),
+    makeMessage(2, 'assistant', '第一轮回答'),
+    makeMessage(3, 'user', '第二轮提问'),
+  ];
+  settled[0].created_at = '2026-08-30T01:40:00.000Z';
+  settled[1].created_at = '2026-08-30T01:41:00.000Z';
+  settled[2].created_at = '2026-08-30T01:50:00.000Z';
+
+  const turnA = await assembler.assemblePresetPrompt(
+    character, settled, settings, '### 本轮相关回忆\n- 用户不爱吃甜的', timeA, preset, lib.loadEnabledEntries(preset.id),
+  );
+  const turnB = await assembler.assemblePresetPrompt(
+    character,
+    [
+      ...settled,
+      { ...makeMessage(4, 'assistant', '第二轮回答'), created_at: '2026-08-30T01:51:00.000Z' },
+      { ...makeMessage(5, 'user', '第三轮提问'), created_at: '2026-08-30T01:58:00.000Z' },
+    ],
+    settings,
+    '### 本轮相关回忆\n- 用户不爱吃甜的',
+    timeB,
+    preset,
+    lib.loadEnabledEntries(preset.id),
+  );
+
+  const lastUserA = [...turnA].reverse().find(m => m.role === 'user');
+  const prefixA = turnA.slice(0, turnA.lastIndexOf(lastUserA));
+  assert.ok(turnB.length > prefixA.length);
+  for (let i = 0; i < prefixA.length; i += 1) {
+    assert.deepEqual(turnA[i], turnB[i], `预设续聊前缀 messages[${i}] 被改写`);
+  }
+  assert.match(String(lastUserA.content), /第二轮提问/);
+  assert.match(String([...turnB].reverse().find(m => m.role === 'user').content), /第三轮提问/);
 });

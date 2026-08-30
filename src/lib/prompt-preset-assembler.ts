@@ -44,6 +44,28 @@ import {
 const MACRO_USER_RE = /\{\{user\}\}/gi;
 const MACRO_CHAR_RE = /\{\{char\}\}/gi;
 
+/** Gemini 不允许连续同 role；用零宽 system 隔开不同语义段，避免文风/记忆/示例/当前输入粘成一条 user。 */
+export const PRESET_SEGMENT_SEAM = '\u200b';
+
+function appendSegment(target: ChatMessage[], next: ChatMessage[]): void {
+  if (next.length === 0) return;
+  const last = target[target.length - 1];
+  const first = next[0];
+  if (last && first && last.role === first.role && last.role !== 'system') {
+    target.push({ role: 'system', content: PRESET_SEGMENT_SEAM });
+  }
+  target.push(...next);
+}
+
+function stripLatestPlainTextUser(history: ChatMessage[]): ChatMessage[] {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].role !== 'user') continue;
+    if (typeof history[i].content !== 'string') return history;
+    return history.filter((_, index) => index !== i);
+  }
+  return history;
+}
+
 export interface MacroContext {
   userName: string;
   charName: string;
@@ -125,10 +147,8 @@ function renderEntry(
     character: Character;
     memoryText: string;
     macro: MacroContext;
-    exampleDialogueMessages: ChatMessage[];
     stMacroState: StMacroState;
     lastUserMessageText: string;
-    injectMemoryAfterCharDesc: boolean;
   },
 ): ChatMessage[] {
   const c = ctx.character;
@@ -144,27 +164,24 @@ function renderEntry(
     case 'charDescription': {
       // 等价于酒馆 charDescription：角色 system_prompt + basic_info 合并
       // （不相同名酒馆，它指的"描述"是 character.description；LumiMuse 用 basic_info 充当 description。）
+      // 记忆包不再追加到这条：可待的 charDescription 是 user，追加后再 merge 会把记忆、文风和示例对粘成一条。
       const parts = [c.system_prompt, c.basic_info].filter(s => s && s.trim());
-      // 🅰️ 决策：预设启用时若 memoryPackage marker 未启用或为空，强制把记忆包拼到 charDescription 之后——
-      // 与工作记忆"无限存储，有限激活"原则对齐：RONG 预设本身没有 memoryPackage marker，但记忆必须注入。
-      const memoryText = normalizeMemoryContextText(ctx.memoryText);
-      const finalParts = [...parts];
-      if (ctx.injectMemoryAfterCharDesc && memoryText) {
-        finalParts.push(memoryText);
-      }
-      if (finalParts.length === 0) return [];
-      return [{ role: entry.role, content: finalParts.join('\n\n') }];
+      if (parts.length === 0) return [];
+      return [{ role: entry.role, content: parts.join('\n\n') }];
     }
     case 'charPersonality': {
       const text = c.personality?.trim();
-      return text ? [{ role: entry.role, content: text }] : [];
+      return text ? [{ role: entry.role, content: `## 角色性格\n${text}` }] : [];
     }
     case 'scenario': {
       const text = c.scenario?.trim();
-      return text ? [{ role: entry.role, content: text }] : [];
+      return text ? [{ role: entry.role, content: `## 场景设定\n${text}` }] : [];
     }
     case 'dialogueExamples': {
-      return ctx.exampleDialogueMessages;
+      const raw = c.example_dialogue?.trim();
+      if (!raw) return [];
+      const body = substitutePresetMacros(raw, ctx.macro);
+      return [{ role: entry.role, content: `## 示例对话\n\n${body}` }];
     }
     case 'memoryPackage': {
       const text = normalizeMemoryContextText(ctx.memoryText);
@@ -276,7 +293,7 @@ function estimateMessageContentTokens(message: ChatMessage): number {
 }
 
 type RelativeSegment =
-  | { kind: 'messages'; messages: ChatMessage[]; isStoryHistoryBoundary: boolean }
+  | { kind: 'messages'; messages: ChatMessage[]; isStoryHistoryBoundary: boolean; isolate: boolean }
   | { kind: 'history'; role: PresetRole };
 
 /**
@@ -305,31 +322,15 @@ export async function assemblePresetPrompt(
   const userName = options?.userName ?? '用户';
   const macro: MacroContext = { userName, charName: character.name };
 
-  // 示例对话：从 character.example_dialogue 解析，供 dialogueExamples marker 复用。
-  // 与原 assemblePrompt 不同：预设模式下不再受 settings.example_dialogue 全局开关控制，
-  // 因为预设作者已经决定要不要插入 dialogueExamples marker（marker disabled 即不注入）。
-  const exampleDialogueMessages: ChatMessage[] = [];
-  if (character.example_dialogue) {
-    for (const line of character.example_dialogue.split('\n')) {
-      const userMatch = line.match(/^\{\{user\}\}[:：]\s*(.+)/);
-      const charMatch = line.match(/^\{\{char\}\}[:：]\s*(.+)/);
-      if (userMatch) {
-        exampleDialogueMessages.push({ role: 'user', content: userMatch[1] });
-      } else if (charMatch) {
-        exampleDialogueMessages.push({ role: 'assistant', content: charMatch[1] });
-      }
-    }
-  }
-
   const relativeEntries = entries
     .filter(e => e.enabled && e.injection_position === 0)
     .sort((a, b) => a.sort_order - b.sort_order);
   const inChatEntries = entries.filter(e => e.enabled && e.injection_position === 1);
   const normalizedMemoryText = normalizeMemoryContextText(memoryText);
   const hasMemoryPackageMarker = relativeEntries.some(e => e.marker_key === 'memoryPackage');
-  const hasCharDescriptionMarker = relativeEntries.some(e => e.marker_key === 'charDescription');
-  const injectMemoryAfterCharDesc = !hasMemoryPackageMarker && hasCharDescriptionMarker;
-  const needsStandaloneMemoryFallback = !hasMemoryPackageMarker && !hasCharDescriptionMarker && Boolean(normalizedMemoryText);
+  const memoryMessages: ChatMessage[] = !hasMemoryPackageMarker && normalizedMemoryText
+    ? [{ role: 'system', content: normalizedMemoryText }]
+    : [];
 
   // 取最新 user 消息原文供 {{lastUserMessage}} 替换。数据库正文不含展示层时间戳。
   const lastUserRaw = (() => {
@@ -348,10 +349,8 @@ export async function assemblePresetPrompt(
     character,
     memoryText,
     macro,
-    exampleDialogueMessages,
     stMacroState,
     lastUserMessageText: lastUserRaw,
-    injectMemoryAfterCharDesc,
   };
   for (const entry of relativeEntries) {
     if (entry.marker_key === 'chatHistory') {
@@ -366,6 +365,7 @@ export async function assemblePresetPrompt(
         messages: rendered,
         isStoryHistoryBoundary: entry.marker_key == null
           && (trimmedContent === '<story_history>' || trimmedContent === '</story_history>'),
+        isolate: entry.marker_key === 'dialogueExamples',
       });
     }
   }
@@ -398,7 +398,7 @@ export async function assemblePresetPrompt(
       0,
     );
   }
-  if (needsStandaloneMemoryFallback) baseTokens += estimateTokens(normalizedMemoryText);
+  if (memoryMessages.length > 0) baseTokens += estimateTokens(normalizedMemoryText);
   if (inlinePromptInstruction) baseTokens += estimateTokens(inlinePromptInstruction);
 
   const { history } = await buildHistoryMessages(messages, settings, timeContext, baseTokens);
@@ -424,35 +424,36 @@ export async function assemblePresetPrompt(
 
   // in-chat 只能相对真实聊天历史注入，不能把 relative prompt 条目计入 depth。
   const historyWithInjections = populateInjectionPrompts(history, injectionGroups);
+  const historyForPrompt = usesLastUserMessageMacro
+    ? stripLatestPlainTextUser(historyWithInjections)
+    : historyWithInjections;
 
   const result: ChatMessage[] = [];
   let chatHistoryInserted = false;
   for (const segment of segments) {
     if (segment.kind === 'messages') {
       if (useRongSingleBlockHistory && segment.isStoryHistoryBoundary) continue;
-      result.push(...segment.messages);
+      if (segment.isolate) appendSegment(result, segment.messages);
+      else result.push(...segment.messages);
       continue;
     }
     if (chatHistoryInserted) continue;
     chatHistoryInserted = true;
+    appendSegment(result, memoryMessages);
     if (useRongSingleBlockHistory) {
       const block = renderHistoryForChatHistoryMarker(history);
-      result.push({
+      appendSegment(result, [{
         role: segment.role,
         content: block ? `<story_history>\n${block}\n</story_history>` : '<story_history>\n</story_history>',
-      });
+      }]);
     } else {
-      result.push(...historyWithInjections);
+      appendSegment(result, historyForPrompt);
     }
   }
 
   if (!chatHistoryInserted) {
-    result.push(...historyWithInjections);
-  }
-
-  // 没有 memoryPackage / charDescription marker 时仍必须注入工作记忆，避免预设配置抹掉核心上下文。
-  if (needsStandaloneMemoryFallback) {
-    result.unshift({ role: 'system', content: normalizedMemoryText });
+    appendSegment(result, memoryMessages);
+    appendSegment(result, historyForPrompt);
   }
 
   // 末尾强制追加隐藏 system：行为要求 + Current Time（Q5 决定）

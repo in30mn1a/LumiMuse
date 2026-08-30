@@ -45,13 +45,17 @@ export interface ChatMessage {
  * 流式响应需要请求体带 `stream_options: { include_usage: true }`，
  * 上游会在最后一个 chunk（choices 为空数组）里附带 usage。
  *
- * 不同上游可能额外返回 prompt_cache_hit_tokens 等字段，
- * 这里只保留跨上游通用的三个核心字段。
+ * 不同上游可能额外返回 prompt_cache_hit_tokens 等字段；
+ * 这里保留 OpenRouter 诊断所需的 generation_id 和 cached_tokens，其他字段继续忽略。
  */
 export interface LlmUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  generation_id?: string;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
 }
 
 export interface StreamCallbacks {
@@ -72,17 +76,40 @@ export interface StreamCallbacks {
  */
 function extractUsageFromChunk(raw: unknown): LlmUsage | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
-  const usage = (raw as { usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown } }).usage;
+  const response = raw as {
+    id?: unknown;
+    usage?: {
+      prompt_tokens?: unknown;
+      completion_tokens?: unknown;
+      total_tokens?: unknown;
+      prompt_tokens_details?: { cached_tokens?: unknown };
+    };
+  };
+  const usage = response.usage;
   if (!usage) return undefined;
   const promptTokens = Number(usage.prompt_tokens);
   const completionTokens = Number(usage.completion_tokens);
   const totalTokens = Number(usage.total_tokens);
   if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens)) return undefined;
-  return {
+  const result: LlmUsage = {
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
     total_tokens: Number.isFinite(totalTokens) ? totalTokens : promptTokens + completionTokens,
   };
+  if (typeof response.id === 'string' && response.id.trim()) {
+    result.generation_id = response.id;
+  }
+  const cachedTokens = usage.prompt_tokens_details?.cached_tokens;
+  if (typeof cachedTokens === 'number' && Number.isFinite(cachedTokens) && cachedTokens >= 0) {
+    result.prompt_tokens_details = { cached_tokens: cachedTokens };
+  }
+  return result;
+}
+
+function extractGenerationId(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const id = (raw as { id?: unknown }).id;
+  return typeof id === 'string' && id.trim() ? id : undefined;
 }
 
 /**
@@ -150,6 +177,7 @@ export async function chatCompletionStream(
   // 捕获最后一个 chunk 的 usage；流正常结束时通过 onUsage 回调上报。
   // abort 场景下 usage 通常尚未到达，不上报（调用方 fallback 到估算值）。
   let capturedUsage: LlmUsage | undefined;
+  let capturedGenerationId: string | undefined;
 
   try {
     await parseSseStream(reader, ({ text, raw }) => {
@@ -157,10 +185,20 @@ export async function chatCompletionStream(
         fullText += text;
         callbacks.onChunk(text);
       }
+      const generationId = extractGenerationId(raw);
+      if (generationId) capturedGenerationId = generationId;
       // usage 只在最后一个 chunk 出现，每次都尝试提取，后到的覆盖先到的
       const usage = extractUsageFromChunk(raw);
       if (usage) {
-        capturedUsage = usage;
+        capturedUsage = {
+          ...usage,
+          ...(usage.generation_id || capturedGenerationId || capturedUsage?.generation_id
+            ? { generation_id: usage.generation_id ?? capturedGenerationId ?? capturedUsage?.generation_id }
+            : {}),
+          ...(usage.prompt_tokens_details || capturedUsage?.prompt_tokens_details
+            ? { prompt_tokens_details: usage.prompt_tokens_details ?? capturedUsage?.prompt_tokens_details }
+            : {}),
+        };
       }
     }, { signal: callbacks.signal });
   } catch (err) {

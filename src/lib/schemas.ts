@@ -82,6 +82,8 @@ const imageGenSettingsSchema = z.looseObject({
 
 const memoryEngineSettingsSchema = z.looseObject({
   enabled: z.boolean().optional(),
+  index_enabled: z.boolean().optional(),
+  chat_injection_mode: z.enum(['full', 'local', 'hybrid', 'vector']).optional(),
   allow_memory_context_in_chat: z.boolean().optional(),
   allow_external_memory_payloads: z.boolean().optional(),
   retrieval_mode: z.enum(['local', 'hybrid', 'vector']).optional(),

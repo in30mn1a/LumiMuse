@@ -219,7 +219,9 @@ async function runApiSmoke(baseUrl) {
   const settingsPayload = {
     memory_engine: {
       ...initialSettings.json.memory_engine,
-      enabled: true,
+      enabled: false,
+      index_enabled: true,
+      chat_injection_mode: 'full',
       retrieval_mode: 'local',
       embedding_enabled: false,
       embedding_api_base: 'https://embedding.invalid/v1',
@@ -285,7 +287,15 @@ async function runApiSmoke(baseUrl) {
   assert.equal(indexAfterMemory.status, 200);
   assert.equal(indexAfterMemory.json.ok, true);
   assert.equal(indexAfterMemory.json.total, 1);
-  assert.equal(indexAfterMemory.json.queued, 1);
+  // index_enabled=true 会立刻尝试 drain。无效 embedding URL 下任务可能已从
+  // queued 变成 failed/processing，不能把瞬时 queued=1 当作唯一成功信号。
+  const indexWork = (indexAfterMemory.json.queued || 0)
+    + (indexAfterMemory.json.processing || 0)
+    + (indexAfterMemory.json.failed || 0);
+  assert.ok(
+    indexWork >= 1,
+    `creating a memory should leave an index task when index_enabled=true, got ${JSON.stringify(indexAfterMemory.json)}`,
+  );
 
   const rebuildAll = await requestJson(baseUrl, '/api/memory-index', {
     method: 'POST',
@@ -294,7 +304,11 @@ async function runApiSmoke(baseUrl) {
   assert.equal(rebuildAll.status, 200);
   assert.equal(rebuildAll.json.ok, true);
   assert.equal(rebuildAll.json.character_id, null);
-  assert.equal(rebuildAll.json.processing_started, false);
+  assert.equal(
+    rebuildAll.json.processing_started,
+    true,
+    'index_enabled plus embedding base/model should allow drain to start',
+  );
 
   const invalidCharacterId = await requestJson(baseUrl, '/api/memory-index', {
     method: 'POST',

@@ -264,6 +264,8 @@ test('memory model labels keep one target id for input and select variants', () 
       memory_engine: {
         ...DEFAULT_MEMORY_ENGINE_SETTINGS,
         enabled: true,
+        index_enabled: true,
+        chat_injection_mode: 'hybrid',
         reranker_enabled: true,
       },
       memory_trigger_interval_enabled: true,
@@ -284,10 +286,8 @@ test('memory model labels keep one target id for input and select variants', () 
       rerankerModelList: models,
       rerankerModelLoading: false,
       rerankerModelError: null,
-      memoryModePreset: 'balanced',
       update: noop,
       updateMemoryEngine: noop,
-      onMemoryModeChange: noop,
       onFetchBgModels: noop,
       onFetchEmbeddingModels: noop,
       onFetchRerankerModels: noop,
@@ -316,6 +316,8 @@ test('memory package token budget stays blank while editing and resets on blur',
     const [memoryEngine, setMemoryEngine] = React.useState({
       ...DEFAULT_MEMORY_ENGINE_SETTINGS,
       enabled: true,
+      index_enabled: true,
+      chat_injection_mode: 'full',
       memory_package_token_budget: 51200,
     });
 
@@ -334,12 +336,10 @@ test('memory package token budget stays blank while editing and resets on blur',
       rerankerModelList: [],
       rerankerModelLoading: false,
       rerankerModelError: null,
-      memoryModePreset: 'balanced',
       update: noop,
       updateMemoryEngine: (key, value) => {
         setMemoryEngine(previous => ({ ...previous, [key]: value }));
       },
-      onMemoryModeChange: noop,
       onFetchBgModels: noop,
       onFetchEmbeddingModels: noop,
       onFetchRerankerModels: noop,
@@ -366,6 +366,57 @@ test('memory package token budget stays blank while editing and resets on blur',
   assert.equal(input.value, '64000');
   fireEvent.blur(input);
   assert.equal(input.value, '64000');
+});
+
+test('memory index, chat mode, and reranker controls update independently', () => {
+  const { DEFAULT_MEMORY_ENGINE_SETTINGS, DEFAULT_SETTINGS } = require('../src/types/index.ts');
+  const { MemoryEngineSection } = loadSettingsComponents();
+  const changes = [];
+  const memoryEngine = {
+    ...DEFAULT_MEMORY_ENGINE_SETTINGS,
+    index_enabled: true,
+    chat_injection_mode: 'full',
+    reranker_enabled: true,
+    memory_package_token_budget: 51200,
+    vector_top_k: 120,
+  };
+  const view = render(React.createElement(MemoryEngineSection, {
+    settings: { ...DEFAULT_SETTINGS, memory_engine: memoryEngine },
+    providers: [],
+    bgModelList: [],
+    bgModelLoading: false,
+    bgModelError: null,
+    embeddingModelList: [],
+    embeddingModelLoading: false,
+    embeddingModelError: null,
+    rerankerModelList: [],
+    rerankerModelLoading: false,
+    rerankerModelError: null,
+    update: noop,
+    updateMemoryEngine: (key, value) => changes.push([key, value]),
+    onFetchBgModels: noop,
+    onFetchEmbeddingModels: noop,
+    onFetchRerankerModels: noop,
+    onClearBgModelList: noop,
+    onClearEmbeddingModelList: noop,
+    onClearRerankerModelList: noop,
+    parseNumber,
+    t,
+    children: null,
+  }));
+
+  const index = view.getByRole('checkbox', { name: /^settings\.memoryIndexEnabled/ });
+  const mode = view.getByLabelText('settings.memoryChatInjectionMode');
+  assert.equal(index.checked, true);
+  assert.equal(mode.value, 'full');
+  assert.equal(view.getByLabelText('settings.memoryRerankerEnabled').checked, true);
+  assert.equal(view.getByLabelText('settings.memoryPackageTokenBudget').value, '51200');
+
+  fireEvent.change(mode, { target: { value: 'hybrid' } });
+  assert.deepEqual(changes, [['chat_injection_mode', 'hybrid']]);
+  assert.equal(view.getByLabelText('settings.memoryPackageTokenBudget').value, '51200');
+  assert.equal(view.getByLabelText('settings.memoryRerankerEnabled').checked, true);
+  view.unmount();
 });
 
 test('settings source has no unassociated label elements', () => {

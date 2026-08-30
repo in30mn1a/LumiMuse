@@ -1,8 +1,6 @@
 import type { ReactNode } from 'react';
 import type { ApiProvider, MemoryEngineSettings, Settings } from '@/types';
 
-type MemoryModePreset = 'local' | 'balanced' | 'continuity';
-
 type SettingsWithMemoryEngine = Settings & {
   memory_engine: MemoryEngineSettings;
 };
@@ -19,10 +17,8 @@ interface MemoryEngineSectionProps {
   rerankerModelList: string[];
   rerankerModelLoading: boolean;
   rerankerModelError: string | null;
-  memoryModePreset: MemoryModePreset;
   update: <K extends keyof SettingsWithMemoryEngine>(key: K, value: SettingsWithMemoryEngine[K]) => void;
   updateMemoryEngine: <K extends keyof MemoryEngineSettings>(key: K, value: MemoryEngineSettings[K]) => void;
-  onMemoryModeChange: (mode: MemoryModePreset) => void;
   onFetchBgModels: () => void;
   onFetchEmbeddingModels: () => void;
   onFetchRerankerModels: () => void;
@@ -46,10 +42,8 @@ export function MemoryEngineSection({
   rerankerModelList,
   rerankerModelLoading,
   rerankerModelError,
-  memoryModePreset,
   update,
   updateMemoryEngine,
-  onMemoryModeChange,
   onFetchBgModels,
   onFetchEmbeddingModels,
   onFetchRerankerModels,
@@ -60,7 +54,8 @@ export function MemoryEngineSection({
   t,
   children,
 }: MemoryEngineSectionProps) {
-  const memoryEngineEnabled = settings.memory_engine.enabled;
+  const advancedMemoryEnabled = settings.memory_engine.index_enabled
+    || settings.memory_engine.chat_injection_mode !== 'full';
 
   return (
     <section className="surface-panel p-5">
@@ -69,36 +64,39 @@ export function MemoryEngineSection({
       </div>
 
       <div className="space-y-3">
-        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
           <input
+            id="settings-memory-index-enabled"
             type="checkbox"
-            checked={settings.memory_engine.enabled}
-            onChange={e => updateMemoryEngine('enabled', e.target.checked)}
+            checked={settings.memory_engine.index_enabled}
+            onChange={e => updateMemoryEngine('index_enabled', e.target.checked)}
+            className="mt-1"
           />
-          {t('settings.memoryEngineEnabled')}
+          <span>
+            <span className="block font-medium text-text-primary">{t('settings.memoryIndexEnabled')}</span>
+            <span className="mt-1 block text-xs leading-relaxed text-text-muted">{t('settings.memoryIndexEnabledHint')}</span>
+          </span>
         </label>
 
-        {!memoryEngineEnabled && (
-          <p className="rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-xs leading-relaxed text-text-muted">
-            {t('settings.memoryEngineDisabledHint')}
+        <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+          <label htmlFor="settings-memory-chat-injection-mode" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.memoryChatInjectionMode')}</label>
+          <select
+            id="settings-memory-chat-injection-mode"
+            value={settings.memory_engine.chat_injection_mode}
+            onChange={e => updateMemoryEngine('chat_injection_mode', e.target.value as MemoryEngineSettings['chat_injection_mode'])}
+            className="select-rich"
+          >
+            <option value="full">{t('settings.memoryChatInjectionModeFull')}</option>
+            <option value="local">{t('settings.memoryChatInjectionModeLocal')}</option>
+            <option value="hybrid">{t('settings.memoryChatInjectionModeHybrid')}</option>
+            <option value="vector">{t('settings.memoryChatInjectionModeVector')}</option>
+          </select>
+          <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
+            {settings.memory_engine.chat_injection_mode === 'full'
+              ? t('settings.memoryChatInjectionModeFullHint')
+              : t('settings.memoryChatInjectionModeHint')}
           </p>
-        )}
-
-        {memoryEngineEnabled && (
-          <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-            <label htmlFor="settings-memory-retrieval-mode" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.memoryRetrievalMode')}</label>
-            <select
-              id="settings-memory-retrieval-mode"
-              value={memoryModePreset}
-              onChange={e => onMemoryModeChange(e.target.value as MemoryModePreset)}
-              className="select-rich"
-            >
-              <option value="local">{t('settings.memoryRetrievalModeLocal')}</option>
-              <option value="balanced">{t('settings.memoryRetrievalModeBalanced')}</option>
-              <option value="continuity">{t('settings.memoryRetrievalModeContinuity')}</option>
-            </select>
-          </div>
-        )}
+        </div>
 
         <div className="space-y-4 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
           <div>
@@ -229,7 +227,11 @@ export function MemoryEngineSection({
               }}
               className="input-rich"
             />
-            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryPackageTokenBudgetHint')}</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
+              {settings.memory_engine.chat_injection_mode === 'full'
+                ? t('settings.memoryPackageTokenBudgetFullHint')
+                : t('settings.memoryPackageTokenBudgetHint')}
+            </p>
           </div>
         </div>
 
@@ -309,6 +311,9 @@ export function MemoryEngineSection({
 
         <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryReranker')}</h3>
+          {settings.memory_engine.chat_injection_mode === 'full' && (
+            <p className="text-xs leading-relaxed text-text-muted">{t('settings.memoryRerankerFullHint')}</p>
+          )}
           <label className="flex items-center gap-3 text-sm text-text-secondary">
             <input
               type="checkbox"
@@ -378,7 +383,7 @@ export function MemoryEngineSection({
           )}
         </div>
 
-        {memoryEngineEnabled && (
+        {advancedMemoryEnabled && (
           <>
             <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
               <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryPrivacy')}</h3>
@@ -494,6 +499,10 @@ export function MemoryEngineSection({
           />
           {t('settings.limitInject')}
         </label>
+
+        {settings.memory_engine.chat_injection_mode === 'full' && (
+          <p className="-mt-2 text-xs leading-relaxed text-text-muted">{t('settings.limitInjectFullHint')}</p>
+        )}
 
         {settings.limit_inject && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">

@@ -38,74 +38,16 @@ import { useSettingsAuth } from '@/hooks/settings/useSettingsAuth';
 import { useSettingsProviders } from '@/hooks/settings/useSettingsProviders';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
 
-type MemoryModePreset = 'local' | 'balanced' | 'continuity';
 type ModelCredentialSource = 'chat' | 'embedding' | 'reranker';
 
 type SettingsWithMemoryEngine = Settings & {
   memory_engine: MemoryEngineSettings;
 };
 
-const CHAT_RETRIEVAL_TIMEOUT_MS = 2500;
-const CONTINUITY_CHAT_RETRIEVAL_TIMEOUT_MS = 5000;
-
 const DEFAULT_SETTINGS_WITH_MEMORY_ENGINE: SettingsWithMemoryEngine = {
   ...DEFAULT_SETTINGS,
   memory_engine: DEFAULT_MEMORY_ENGINE_SETTINGS,
 };
-
-const MEMORY_MODE_PRESETS: Record<MemoryModePreset, Partial<MemoryEngineSettings>> = {
-  local: {
-    retrieval_mode: 'local',
-    embedding_enabled: false,
-    reranker_enabled: false,
-    fallback_local_enabled: true,
-    memory_package_token_budget: 12000,
-    retrieval_token_budget: 8000,
-    vector_top_k: 80,
-    keyword_top_k: 20,
-    reranker_top_k: 40,
-    final_top_k: 30,
-    embedding_timeout_ms: 1500,
-    reranker_timeout_ms: 2000,
-    total_retrieval_timeout_ms: CHAT_RETRIEVAL_TIMEOUT_MS,
-  },
-  balanced: {
-    retrieval_mode: 'hybrid',
-    embedding_enabled: true,
-    reranker_enabled: false,
-    fallback_local_enabled: true,
-    memory_package_token_budget: 12000,
-    retrieval_token_budget: 8000,
-    vector_top_k: 80,
-    keyword_top_k: 20,
-    reranker_top_k: 40,
-    final_top_k: 30,
-    embedding_timeout_ms: 1500,
-    reranker_timeout_ms: 2000,
-    total_retrieval_timeout_ms: CHAT_RETRIEVAL_TIMEOUT_MS,
-  },
-  continuity: {
-    retrieval_mode: 'hybrid',
-    embedding_enabled: true,
-    reranker_enabled: true,
-    fallback_local_enabled: true,
-    memory_package_token_budget: 20000,
-    retrieval_token_budget: 14000,
-    vector_top_k: 120,
-    keyword_top_k: 30,
-    reranker_top_k: 80,
-    final_top_k: 50,
-    embedding_timeout_ms: 2500,
-    reranker_timeout_ms: 3500,
-    total_retrieval_timeout_ms: CONTINUITY_CHAT_RETRIEVAL_TIMEOUT_MS,
-  },
-};
-
-function resolveMemoryModePreset(engine: MemoryEngineSettings): MemoryModePreset {
-  if (!engine.embedding_enabled) return 'local';
-  if (engine.reranker_enabled && engine.memory_package_token_budget >= 20000) return 'continuity';
-  return 'balanced';
-}
 
 function mergeSettingsWithMemoryEngine(settings: Partial<SettingsWithMemoryEngine>): SettingsWithMemoryEngine {
   return {
@@ -220,16 +162,6 @@ export default function SettingsPage() {
     setSettings(prev => ({
       ...prev,
       memory_engine: { ...prev.memory_engine, [key]: value },
-    }));
-  };
-
-  const handleMemoryModeChange = (mode: MemoryModePreset) => {
-    setSettings(prev => ({
-      ...prev,
-      memory_engine: {
-        ...prev.memory_engine,
-        ...MEMORY_MODE_PRESETS[mode],
-      },
     }));
   };
 
@@ -729,10 +661,8 @@ export default function SettingsPage() {
               rerankerModelList={rerankerModelList}
               rerankerModelLoading={rerankerModelLoading}
               rerankerModelError={rerankerModelError}
-              memoryModePreset={resolveMemoryModePreset(settings.memory_engine)}
               update={update}
               updateMemoryEngine={updateMemoryEngine}
-              onMemoryModeChange={handleMemoryModeChange}
               onFetchBgModels={fetchBgModels}
               onFetchEmbeddingModels={fetchEmbeddingModels}
               onFetchRerankerModels={fetchRerankerModels}

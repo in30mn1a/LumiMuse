@@ -1,4 +1,5 @@
 import { getDb } from '@/lib/db';
+import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
 import { sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
 import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, Settings } from '@/types';
 
@@ -113,9 +114,15 @@ export function loadSettings(): Settings {
     normalizeBooleanSettings(merged.image_gen as unknown as Record<string, unknown>, IMAGE_GEN_BOOLEAN_KEYS);
   }
   if (map.memory_engine && typeof map.memory_engine === 'object') {
-    merged.memory_engine = { ...DEFAULT_SETTINGS.memory_engine, ...map.memory_engine as Partial<MemoryEngineSettings> };
+    const legacyLimitInject = normalizeLegacyBoolean(map.limit_inject) ?? DEFAULT_SETTINGS.limit_inject;
+    merged.memory_engine = normalizeMemoryEngineSettings(map.memory_engine, legacyLimitInject);
     normalizeBooleanSettings(merged.memory_engine as unknown as Record<string, unknown>, MEMORY_ENGINE_BOOLEAN_KEYS);
     normalizeMemoryRetrievalMode(merged.memory_engine);
+  } else {
+    merged.memory_engine = normalizeMemoryEngineSettings(
+      {},
+      merged.limit_inject,
+    );
   }
 
   merged.reasoning_effort_by_model = sanitizeReasoningEffortByModel(map.reasoning_effort_by_model);

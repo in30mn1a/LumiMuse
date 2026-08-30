@@ -149,17 +149,21 @@ function settings() {
   };
 }
 
-function loadChatEngine(db, capture) {
+function loadChatEngine(db, capture, usage) {
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (request === '@/lib/db') return { getDb: () => db };
     if (request === '@/lib/api-client') {
       return {
-        async chatCompletion(_settings, messages) {
+        async chatCompletion(_settings, messages, _signal, _extraBody, onUsage) {
           capture.messages = messages;
+          if (usage && onUsage) onUsage(usage);
           return 'generated response';
         },
-        async chatCompletionStream() {
-          throw new Error('streaming path should not run');
+        async chatCompletionStream(_settings, messages, callbacks) {
+          if (!usage) throw new Error('streaming path should not run');
+          capture.messages = messages;
+          if (usage && callbacks.onUsage) callbacks.onUsage(usage);
+          await callbacks.onDone('generated response');
         },
       };
     }
@@ -256,6 +260,60 @@ async function runStreamingStripProbe(rawText, chunkSizes, options = {}) {
     database: probe.database,
   };
 }
+
+function readLatestAssistant(database) {
+  return database.prepare(
+    "SELECT content, metadata FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
+  ).get('conv-a');
+}
+
+test('runChat persists optional usage metadata from the non-streaming path', async () => {
+  const probe = createDbProbe();
+  const usage = {
+    prompt_tokens: 100,
+    completion_tokens: 10,
+    total_tokens: 110,
+    generation_id: 'gen-local-run-chat-non-stream',
+    prompt_tokens_details: { cached_tokens: 80 },
+  };
+  const errors = [];
+  const { runChat } = loadChatEngine(probe.db, {}, usage);
+
+  await runChat('conv-a', '', settings(), {
+    onChunk() {},
+    onDone() {},
+    onError(error) { errors.push(error); },
+  }, { skipUserInsert: true });
+
+  assert.deepEqual(errors, []);
+  const stored = readLatestAssistant(probe.database);
+  assert.equal(stored.content, 'generated response');
+  assert.deepEqual(JSON.parse(stored.metadata).last_usage, usage);
+});
+
+test('runChat persists optional usage metadata from the streaming path', async () => {
+  const probe = createDbProbe();
+  const usage = {
+    prompt_tokens: 200,
+    completion_tokens: 20,
+    total_tokens: 220,
+    generation_id: 'gen-local-run-chat-stream',
+    prompt_tokens_details: { cached_tokens: 160 },
+  };
+  const errors = [];
+  const { runChat } = loadChatEngine(probe.db, {}, usage);
+
+  await runChat('conv-a', '', { ...settings(), streaming: true }, {
+    onChunk() {},
+    onDone() {},
+    onError(error) { errors.push(error); },
+  }, { skipUserInsert: true });
+
+  assert.deepEqual(errors, []);
+  const stored = readLatestAssistant(probe.database);
+  assert.equal(stored.content, 'generated response');
+  assert.deepEqual(JSON.parse(stored.metadata).last_usage, usage);
+});
 
 async function runWithProbe(rows, options, setupDatabase) {
   const probe = createDbProbe();

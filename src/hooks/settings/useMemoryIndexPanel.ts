@@ -5,6 +5,7 @@ import type { ToastType } from '@/components/ui/Toast';
 
 export type MemoryIndexProcessingBlockedReason =
   | 'memory_engine_disabled'
+  | 'memory_index_disabled'
   | 'external_memory_payloads_disabled'
   | 'embedding_disabled'
   | 'embedding_api_base_missing'

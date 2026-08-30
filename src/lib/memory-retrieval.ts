@@ -21,6 +21,10 @@ import {
   MEMORY_CONTEXT_TITLE,
   MEMORY_USAGE_PRINCIPLES,
 } from '@/lib/memory-prompt-contract';
+import {
+  normalizeMemoryEngineSettings,
+  resolveMemoryRuntimePolicy,
+} from '@/lib/memory-runtime-policy';
 
 const MEMORY_LAYERS = [
   { id: 'fixed', title: '重要固定记忆', sortByCreatedAt: true },
@@ -34,6 +38,8 @@ type MemoryLayerId = (typeof MEMORY_LAYERS)[number]['id'];
 
 export interface MemoryEngineConfig {
   enabled: boolean;
+  index_enabled: boolean;
+  chat_injection_mode: 'full' | 'local' | 'hybrid' | 'vector';
   allow_memory_context_in_chat: boolean;
   allow_external_memory_payloads: boolean;
   retrieval_mode: 'local' | 'hybrid' | 'vector';
@@ -75,7 +81,7 @@ export interface WorkingMemoryPackage {
    * - local: 增强记忆本地检索（无 embedding）或 legacy 限制注入（limit_inject=true）
    * - hybrid: 增强记忆混合检索（向量 + 本地）
    * - vector: 增强记忆纯向量检索
-   * - full: 关闭增强记忆 + 全量注入（limit_inject=false），不检索、不设任何上限，注入全部 active 记忆
+   * - full: 显式全量注入：不看 query、不检索、不设任何上限，注入全部 active 记忆。active 集合仍可能跨轮变化。
    */
   mode: 'local' | 'hybrid' | 'vector' | 'full';
   usedFallback: boolean;
@@ -109,6 +115,8 @@ export interface RetrieveWorkingMemoryOptions {
 
 const DEFAULT_MEMORY_ENGINE_CONFIG: MemoryEngineConfig = {
   enabled: true,
+  index_enabled: false,
+  chat_injection_mode: 'full',
   allow_memory_context_in_chat: true,
   allow_external_memory_payloads: true,
   retrieval_mode: 'local',
@@ -142,25 +150,41 @@ function finiteNumber(value: unknown, fallback: number): number {
 
 export function resolveMemoryEngineConfig(settings: Settings): MemoryEngineConfig {
   const raw = (settings as unknown as { memory_engine?: Partial<MemoryEngineConfig> }).memory_engine || {};
-  const merged = { ...DEFAULT_MEMORY_ENGINE_CONFIG, ...raw };
+  // 测试/内部调用常传入仅包含增强检索字段的 partial settings；保留其历史“增强路径”语义。
+  // 真实持久化设置由 loadSettings() 补齐 enabled=false，并继续映射为新的 full 默认。
+  const rawForNormalization = !Object.prototype.hasOwnProperty.call(raw, 'enabled') && Object.keys(raw).length > 0
+    ? { ...raw, enabled: true }
+    : raw;
+  const normalized = normalizeMemoryEngineSettings(rawForNormalization, settings.limit_inject);
+  const policy = resolveMemoryRuntimePolicy({
+    memory_engine: normalized,
+    limit_inject: settings.limit_inject,
+  });
+  const merged = { ...DEFAULT_MEMORY_ENGINE_CONFIG, ...normalized };
   const legacyLimit = finiteNumber(settings.memory_max_inject, DEFAULT_MEMORY_ENGINE_CONFIG.final_top_k);
   const engineEnabled = merged.enabled !== false;
-  const isFullInjectionMode = !engineEnabled && !settings.limit_inject;
+  // 兼容旧配置的 MAX_SAFE_INTEGER 预算；显式 full 也绕过 trimByTokenBudget，
+  // 但不需要把用户填写的预算值改写成哨兵值。
+  const isLegacyFullInjectionMode = !Object.prototype.hasOwnProperty.call(raw, 'chat_injection_mode')
+    && !engineEnabled
+    && !settings.limit_inject;
   const allowExternalMemoryPayloads = merged.allow_external_memory_payloads !== false;
 
   return {
     ...merged,
+    index_enabled: policy.indexEnabled,
+    chat_injection_mode: policy.chatInjectionMode,
     allow_memory_context_in_chat: merged.allow_memory_context_in_chat !== false,
     allow_external_memory_payloads: allowExternalMemoryPayloads,
     retrieval_mode: merged.retrieval_mode === 'vector' || merged.retrieval_mode === 'hybrid'
       ? merged.retrieval_mode
       : 'local',
-    embedding_enabled: engineEnabled && allowExternalMemoryPayloads && merged.embedding_enabled,
-    reranker_enabled: engineEnabled && allowExternalMemoryPayloads && merged.reranker_enabled,
+    embedding_enabled: allowExternalMemoryPayloads && merged.embedding_enabled,
+    reranker_enabled: allowExternalMemoryPayloads && merged.reranker_enabled,
     // 不设上界:预算大小由用户自行决定。下界由 finiteNumber 的 >0 判断兜底回默认值。
     // 例外:全量注入模式（引擎关闭 + limit_inject=false）不允许任何 token 上限,
     // 用 Number.MAX_SAFE_INTEGER 防止下游调用方/测试直接复用该预算做钳制。
-    memory_package_token_budget: isFullInjectionMode
+    memory_package_token_budget: isLegacyFullInjectionMode
       ? Number.MAX_SAFE_INTEGER
       : finiteNumber(merged.memory_package_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.memory_package_token_budget),
     retrieval_token_budget: finiteNumber(merged.retrieval_token_budget, DEFAULT_MEMORY_ENGINE_CONFIG.retrieval_token_budget),
@@ -580,7 +604,7 @@ function trimByTokenBudget(
   const packer = new PackagePacker(effectiveProfile, countTokens);
 
   // ── 阶段一：最长高分前缀（行级累加，零整包 encode）────────────────────
-  // 关闭增强记忆 full-inject 时这里是主热路径：旧实现 O(log n) 次整包 tiktoken。
+  // 仅 local/hybrid/vector 走这里。显式 full 在 retrieveWorkingMemoryPackage 已提前返回，不经过装箱。
   let lo = 0;
   while (lo < limit && packer.costIfAdd(ranked[lo].memory) <= budget) {
     packer.add(ranked[lo].memory);
@@ -659,7 +683,7 @@ async function applyReranker(
   diagnostics: WorkingMemoryPackage['diagnostics'],
   signal?: AbortSignal,
 ): Promise<void> {
-  if (!config.reranker_enabled || candidates.size === 0) return;
+  if (config.chat_injection_mode === 'full' || !config.reranker_enabled || candidates.size === 0) return;
 
   const rerank = deps.rerank || rerankDocuments;
   const docs = rankCandidatesByRelevance(candidates.values()).slice(0, config.reranker_top_k).map(candidate => ({
@@ -810,47 +834,21 @@ function buildLegacyFullMemoryPackage(
   deps: RetrievalDeps,
 ): WorkingMemoryPackage {
   const tokenCounter = deps.tokenCounter || estimateTokens;
-  const legacyMemories = options.settings.limit_inject
-    ? (deps.localRetrieve || retrieveRelevantMemories)(
-        options.queryText,
-        options.characterId,
-        localMemoryLimit(options.settings, config),
-      )
-    : (deps.loadLegacyMemories || loadDefaultLegacyMemories)(options.characterId);
+  const legacyMemories = (deps.loadLegacyMemories || loadDefaultLegacyMemories)(options.characterId);
   const ranked = legacyMemories.map((memory, index) => ({
     memory,
     relevance: 1,
     finalScore: 1 - index / 100_000,
     source: 'local' as const,
   }));
-  if (!options.settings.limit_inject) {
-    // 真·全量注入：不做任何 token 预算裁剪、条数限制或单条截断，
-    // 全部 active 记忆整包注入（产品决策 2026-08-03：full 模式不允许任何上限）。
-    const text = renderPackage(legacyMemories, '', true);
-    return {
-      text,
-      selectedMemories: legacyMemories,
-      tokenCount: text ? tokenCounter(text) : 0,
-      mode: 'full',
-      usedFallback: false,
-      diagnostics: { candidateCount: ranked.length },
-    };
-  }
-
-  const trimmed = trimByTokenBudget(
-    ranked,
-    config,
-    tokenCounter,
-    '',
-    maxSelectedMemoryCount(options.settings, config),
-  );
-
+  // 真·全量注入：显式 full 优先于 legacy limit_inject，不做任何 token 预算裁剪、
+  // 条数限制或单条截断，全部 active 记忆整包注入。
+  const text = renderPackage(legacyMemories, '', true);
   return {
-    text: trimmed.text,
-    selectedMemories: trimmed.selected,
-    tokenCount: trimmed.tokenCount,
-    // limit_inject=true 是 legacy 本地关键词检索（仍受 token 预算与条数限制）
-    mode: 'local',
+    text,
+    selectedMemories: legacyMemories,
+    tokenCount: text ? tokenCounter(text) : 0,
+    mode: 'full',
     usedFallback: false,
     diagnostics: { candidateCount: ranked.length },
   };
@@ -931,6 +929,10 @@ async function buildWorkingMemoryPackage(
   }
 
   const deps = options.deps || {};
+  const policy = resolveMemoryRuntimePolicy({
+    memory_engine: config,
+    limit_inject: options.settings.limit_inject,
+  });
   const localRetrieve = deps.localRetrieve || retrieveRelevantMemories;
   const priorityMemories = (deps.loadPriorityMemories || loadDefaultPriorityMemories)(options.characterId);
   const tokenCounter = deps.tokenCounter || estimateTokens;
@@ -944,10 +946,12 @@ async function buildWorkingMemoryPackage(
     addCandidate(candidates, memory, 0.75, 'priority');
   }
 
-  if (config.embedding_enabled) {
+  if (policy.useEmbedding) {
     try {
       await addVectorCandidates(options.queryText, options.characterId, config, deps, candidates, signal);
-      mode = candidates.size > priorityMemories.length ? 'vector' : 'hybrid';
+      mode = policy.chatInjectionMode === 'vector'
+        ? 'vector'
+        : candidates.size > priorityMemories.length ? 'vector' : 'hybrid';
     } catch (error) {
       diagnostics.embeddingFailed = error instanceof Error ? error.message : String(error);
       usedFallback = true;
@@ -956,7 +960,7 @@ async function buildWorkingMemoryPackage(
     }
   }
 
-  if (!config.embedding_enabled || config.fallback_local_enabled || usedFallback) {
+  if (!policy.useEmbedding || policy.useLocalRecall || usedFallback) {
     const localLimit = localMemoryLimit(options.settings, config);
     const localMemories = localRetrieve(options.queryText, options.characterId, localLimit);
     const baseRelevance = usedFallback ? 0.7 : 0.55;
@@ -964,7 +968,7 @@ async function buildWorkingMemoryPackage(
       const relevance = Math.max(0.1, baseRelevance - index * 0.01);
       addCandidate(candidates, memory, relevance, 'local');
     });
-    if (config.embedding_enabled && !usedFallback) mode = 'hybrid';
+    if (policy.useEmbedding && !usedFallback) mode = policy.chatInjectionMode === 'vector' ? 'vector' : 'hybrid';
   }
 
   await applyReranker(options.queryText, candidates, config, deps, diagnostics, signal);
@@ -992,12 +996,16 @@ async function buildWorkingMemoryPackage(
 export async function retrieveWorkingMemoryPackage(options: RetrieveWorkingMemoryOptions): Promise<WorkingMemoryPackage> {
   const config = resolveMemoryEngineConfig(options.settings);
   const deps = options.deps || {};
+  const policy = resolveMemoryRuntimePolicy({
+    memory_engine: config,
+    limit_inject: options.settings.limit_inject,
+  });
   if (!config.allow_memory_context_in_chat) {
     return buildEmptyPackage();
   }
 
   let result: WorkingMemoryPackage;
-  if (!config.enabled) {
+  if (policy.chatInjectionMode === 'full') {
     result = buildLegacyFullMemoryPackage(options, config, deps);
     markSelectedMemoriesUsed(result.selectedMemories, deps);
     return result;

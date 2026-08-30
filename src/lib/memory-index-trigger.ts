@@ -1,5 +1,6 @@
 import { getDb } from '@/lib/db';
 import { loadSettings } from '@/lib/settings';
+import { resolveMemoryRuntimePolicy } from '@/lib/memory-runtime-policy';
 import { structuredLog } from '@/lib/structured-log';
 import {
   ensureMemoryEmbeddingTables,
@@ -22,6 +23,7 @@ let memoryIndexDrainGeneration = 0;
 
 export type MemoryIndexProcessingBlockedReason =
   | 'memory_engine_disabled'
+  | 'memory_index_disabled'
   | 'external_memory_payloads_disabled'
   | 'embedding_disabled'
   | 'embedding_api_base_missing'
@@ -33,12 +35,22 @@ function resolveEmbeddingProcessingConfigState(): {
 } {
   const settings = loadSettings();
   const engine = settings.memory_engine;
-  if (!engine.enabled) return { config: null, blockedReason: 'memory_engine_disabled' };
+  const policy = resolveMemoryRuntimePolicy({
+    memory_engine: engine,
+    limit_inject: settings.limit_inject,
+  });
+  if (!policy.indexEnabled) {
+    const hasExplicitIndexSetting = Object.prototype.hasOwnProperty.call(engine, 'index_enabled');
+    return {
+      config: null,
+      blockedReason: !hasExplicitIndexSetting && engine.enabled && !engine.embedding_enabled
+        ? 'embedding_disabled'
+        : hasExplicitIndexSetting ? 'memory_index_disabled' : 'memory_engine_disabled',
+    };
+  }
   if (engine.allow_external_memory_payloads === false) {
     return { config: null, blockedReason: 'external_memory_payloads_disabled' };
   }
-  if (!engine.embedding_enabled) return { config: null, blockedReason: 'embedding_disabled' };
-
   const apiBase = engine.embedding_api_base.trim();
   const model = engine.embedding_model.trim();
   if (!apiBase) return { config: null, blockedReason: 'embedding_api_base_missing' };
@@ -90,6 +102,18 @@ async function drainMemoryIndexTasks(initialConfig: EmbeddingAdapterConfig): Pro
     Date.now() - startedAt < MEMORY_INDEX_DRAIN_MAX_DURATION_MS &&
     stopVersion === memoryIndexDrainStopVersion
   ) {
+    // 每批开始前重读设置：关闭索引或隐私闸门后，不得继续用旧 config 发送下一批载荷。
+    // 同时覆盖 schedule 与真正执行之间发生的配置变化。
+    try {
+      const nextConfig = resolveEmbeddingProcessingConfig();
+      if (!nextConfig) break;
+      config = nextConfig;
+    } catch (error) {
+      structuredLog('error', 'memory.index.config_refresh_failed', {
+        operation: 'refresh_config', status: 'failed',
+      }, error);
+      break;
+    }
     memoryIndexDrainRequested = false;
     let result: Awaited<ReturnType<typeof processMemoryEmbeddingTasks>>;
 
@@ -108,19 +132,6 @@ async function drainMemoryIndexTasks(initialConfig: EmbeddingAdapterConfig): Pro
     if (stopVersion !== memoryIndexDrainStopVersion || handled === 0) break;
     if (handled < MEMORY_INDEX_PROCESS_BATCH_LIMIT && !memoryIndexDrainRequested) break;
 
-    if (memoryIndexDrainRequested) {
-      let nextConfig: EmbeddingAdapterConfig | null;
-      try {
-        nextConfig = resolveEmbeddingProcessingConfig();
-      } catch (error) {
-        structuredLog('error', 'memory.index.config_refresh_failed', {
-          operation: 'refresh_config', status: 'failed',
-        }, error);
-        break;
-      }
-      if (!nextConfig) break;
-      config = nextConfig;
-    }
   }
 
   return { handled: totalHandled };

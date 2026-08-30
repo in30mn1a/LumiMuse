@@ -292,9 +292,12 @@ export interface ApiProvider {
 }
 
 export type MemoryRetrievalMode = 'local' | 'hybrid' | 'vector';
+export type MemoryChatInjectionMode = 'full' | 'local' | 'hybrid' | 'vector';
 
 export interface MemoryEngineSettings {
   enabled: boolean;
+  index_enabled: boolean;
+  chat_injection_mode: MemoryChatInjectionMode;
   allow_memory_context_in_chat: boolean;
   allow_external_memory_payloads: boolean;
   retrieval_mode: MemoryRetrievalMode;
@@ -321,6 +324,8 @@ export interface MemoryEngineSettings {
 
 export const DEFAULT_MEMORY_ENGINE_SETTINGS: MemoryEngineSettings = {
   enabled: false,
+  index_enabled: false,
+  chat_injection_mode: 'full',
   allow_memory_context_in_chat: true,
   allow_external_memory_payloads: true,
   retrieval_mode: 'local',

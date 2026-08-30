@@ -154,6 +154,78 @@ function baseSettings(overrides = {}) {
   };
 }
 
+test('memory runtime policy preserves new defaults and maps legacy engine fields', () => {
+  const {
+    normalizeMemoryEngineSettings,
+    resolveMemoryRuntimePolicy,
+  } = require('../src/lib/memory-runtime-policy.ts');
+
+  const fresh = normalizeMemoryEngineSettings({}, false);
+  assert.equal(fresh.index_enabled, false);
+  assert.equal(fresh.chat_injection_mode, 'full');
+  assert.deepEqual(resolveMemoryRuntimePolicy({ memory_engine: fresh, limit_inject: false }), {
+    indexEnabled: false,
+    chatInjectionMode: 'full',
+    useEmbedding: false,
+    useLocalRecall: false,
+    useReranker: false,
+  });
+
+  const legacyCases = [
+    [{ enabled: false, embedding_enabled: true }, false, 'full', false],
+    [{ enabled: false, embedding_enabled: true }, true, 'local', false],
+    [{ enabled: true, embedding_enabled: false }, false, 'local', false],
+    [{ enabled: true, embedding_enabled: true, fallback_local_enabled: true }, false, 'hybrid', true],
+    [{ enabled: true, embedding_enabled: true, fallback_local_enabled: false }, false, 'vector', true],
+  ];
+  for (const [raw, limitInject, expectedMode, expectedIndexEnabled] of legacyCases) {
+    const normalized = normalizeMemoryEngineSettings(raw, limitInject);
+    assert.equal(normalized.chat_injection_mode, expectedMode);
+    assert.equal(normalized.index_enabled, expectedIndexEnabled);
+  }
+});
+
+test('memory runtime policy lets index and chat mode vary independently', () => {
+  const { resolveMemoryRuntimePolicy } = require('../src/lib/memory-runtime-policy.ts');
+
+  const fullWithIndex = resolveMemoryRuntimePolicy({
+    limit_inject: false,
+    memory_engine: {
+      enabled: true,
+      index_enabled: true,
+      chat_injection_mode: 'full',
+      embedding_enabled: false,
+      reranker_enabled: true,
+    },
+  });
+  assert.deepEqual(fullWithIndex, {
+    indexEnabled: true,
+    chatInjectionMode: 'full',
+    useEmbedding: false,
+    useLocalRecall: false,
+    useReranker: false,
+  });
+
+  const hybridWithoutIndex = resolveMemoryRuntimePolicy({
+    limit_inject: true,
+    memory_engine: {
+      enabled: false,
+      index_enabled: false,
+      chat_injection_mode: 'hybrid',
+      embedding_enabled: false,
+      fallback_local_enabled: true,
+      reranker_enabled: true,
+    },
+  });
+  assert.deepEqual(hybridWithoutIndex, {
+    indexEnabled: false,
+    chatInjectionMode: 'hybrid',
+    useEmbedding: true,
+    useLocalRecall: true,
+    useReranker: true,
+  });
+});
+
 function memory(overrides) {
   return {
     id: overrides.id || crypto.randomUUID().slice(0, 8),
@@ -753,6 +825,18 @@ test('triggerMemoryIndexProcessing 返回 false 时可读取配置阻塞原因',
       reason: 'external_memory_payloads_disabled',
     },
     {
+      name: 'index disabled independently',
+      memory_engine: {
+        enabled: true,
+        index_enabled: false,
+        allow_external_memory_payloads: true,
+        embedding_enabled: true,
+        embedding_api_base: 'https://embedding.example/v1',
+        embedding_model: 'embedding-model',
+      },
+      reason: 'memory_index_disabled',
+    },
+    {
       name: 'embedding disabled',
       memory_engine: {
         enabled: true,
@@ -807,6 +891,38 @@ test('triggerMemoryIndexProcessing 返回 false 时可读取配置阻塞原因',
     );
     assert.equal(trigger.getMemoryIndexProcessingBlockedReason(), item.reason, item.name);
   }
+});
+
+test('index_enabled=true 时即使旧 enhanced toggle 关闭也可启动索引 drain', () => {
+  let processCalls = 0;
+  const trigger = requireFreshWithMocks('../src/lib/memory-index-trigger.ts', {
+    '@/lib/settings': {
+      loadSettings: () => ({
+        limit_inject: false,
+        memory_engine: {
+          enabled: false,
+          index_enabled: true,
+          allow_external_memory_payloads: true,
+          embedding_enabled: false,
+          embedding_api_base: 'https://embedding.example/v1',
+          embedding_model: 'embedding-model',
+        },
+      }),
+    },
+    '@/lib/memory-embeddings': {
+      ensureMemoryEmbeddingTables: () => {},
+      getMemoryIndexStatus: () => ({ total: 0, ready: 0, pending: 0, processing: 0, failed: 0 }),
+      processMemoryEmbeddingTasks: async () => {
+        processCalls += 1;
+        return { processed: 0, failed: 0 };
+      },
+    },
+  });
+
+  assert.equal(trigger.triggerMemoryIndexProcessing(), true);
+  assert.equal(trigger.getMemoryIndexProcessingBlockedReason(), null);
+  trigger.stopMemoryIndexProcessing();
+  assert.equal(processCalls, 0);
 });
 
 test('/api/memory-index 入队但配置阻塞时返回 processing_blocked_reason', async () => {
@@ -1042,6 +1158,66 @@ test('/api/memory-index 重复触发不会启动重叠 drain loop', async () => 
     releaseFirstBatch();
     await drainComplete;
     await Promise.resolve();
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
+test('memory index drain 每批前重读索引与外部载荷隐私开关', async () => {
+  const originalSetTimeout = global.setTimeout;
+  let scheduled;
+  let processCalls = 0;
+  let externalPayloadsAllowed = true;
+  let resolveDrainDone;
+  const drainDone = new Promise(resolve => {
+    resolveDrainDone = resolve;
+  });
+
+  global.setTimeout = (fn, delay) => {
+    scheduled = { fn, delay };
+    return 0;
+  };
+
+  try {
+    const trigger = requireFreshWithMocks('../src/lib/memory-index-trigger.ts', {
+      '@/lib/db': { getDb: () => ({}) },
+      '@/lib/settings': {
+        loadSettings: () => ({
+          limit_inject: false,
+          memory_engine: {
+            enabled: false,
+            index_enabled: true,
+            chat_injection_mode: 'full',
+            allow_external_memory_payloads: externalPayloadsAllowed,
+            embedding_enabled: false,
+            embedding_api_base: 'https://embedding.example/v1',
+            embedding_api_key: 'embedding-secret',
+            embedding_model: 'embedding-model',
+            embedding_dimension: 1024,
+            embedding_timeout_ms: 1500,
+          },
+        }),
+      },
+      '@/lib/memory-embeddings': {
+        ensureMemoryEmbeddingTables: () => {},
+        getMemoryIndexStatus: () => {
+          resolveDrainDone();
+          return { pending: 0 };
+        },
+        processMemoryEmbeddingTasks: async () => {
+          processCalls += 1;
+          externalPayloadsAllowed = false;
+          return { processed: 8, failed: 0 };
+        },
+      },
+    });
+
+    assert.equal(trigger.triggerMemoryIndexProcessing(), true);
+    assert.equal(scheduled.delay, 0);
+    scheduled.fn();
+    await drainDone;
+
+    assert.equal(processCalls, 1, '隐私关闭后不得继续下一批外部 embedding 请求');
   } finally {
     global.setTimeout = originalSetTimeout;
   }
@@ -3128,6 +3304,89 @@ test('memory_engine.enabled=false 且 limit_inject=false 时全量注入 active 
   assert.match(result.text, /第二条旧版全量记忆/);
   assert.match(result.text, /第三条旧版全量记忆/);
   assert.doesNotMatch(result.text, /增强关闭且不限量时不应走本地检索/);
+});
+
+test('index_enabled=true + chat_injection_mode=full 保持全量注入且不调用外部检索', async () => {
+  let embeddingCalls = 0;
+  let rerankerCalls = 0;
+  const result = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: 'full mode must not become query dependent',
+    settings: baseSettings({
+      limit_inject: true,
+      memory_engine: {
+        enabled: true,
+        index_enabled: true,
+        chat_injection_mode: 'full',
+        embedding_enabled: true,
+        embedding_api_base: 'https://example.com/v1',
+        embedding_model: 'fake-embedding',
+        reranker_enabled: true,
+        memory_package_token_budget: 1,
+        final_top_k: 1,
+      },
+    }),
+    deps: {
+      embedText: async () => {
+        embeddingCalls += 1;
+        return [1, 0];
+      },
+      rerank: async () => {
+        rerankerCalls += 1;
+        return [];
+      },
+      loadLegacyMemories: () => [
+        memory({ id: 'full-a', content: '第一条全量记忆。' }),
+        memory({ id: 'full-b', content: '第二条全量记忆。' }),
+      ],
+      localRetrieve: () => [memory({ id: 'local-not-used', content: '不应走本地。' })],
+      tokenCounter: text => Math.ceil(text.length / 4),
+    },
+  });
+
+  assert.equal(result.mode, 'full');
+  assert.equal(embeddingCalls, 0);
+  assert.equal(rerankerCalls, 0);
+  assert.deepEqual(result.selectedMemories.map(item => item.id), ['full-a', 'full-b']);
+});
+
+test('index_enabled=false + chat_injection_mode=hybrid 仍执行聊天向量与本地召回', async () => {
+  let embeddingCalls = 0;
+  let localCalls = 0;
+  const result = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: 'hybrid remains available while background index is off',
+    settings: baseSettings({
+      limit_inject: true,
+      memory_engine: {
+        enabled: false,
+        index_enabled: false,
+        chat_injection_mode: 'hybrid',
+        embedding_enabled: false,
+        embedding_api_base: 'https://example.com/v1',
+        embedding_model: 'fake-embedding',
+        fallback_local_enabled: true,
+        final_top_k: 8,
+      },
+    }),
+    deps: {
+      embedText: async () => {
+        embeddingCalls += 1;
+        return [1, 0];
+      },
+      loadEmbeddingRows: () => [],
+      localRetrieve: () => {
+        localCalls += 1;
+        return [memory({ id: 'local-a', content: '本地召回仍应工作。' })];
+      },
+      tokenCounter: text => Math.ceil(text.length / 4),
+    },
+  });
+
+  assert.equal(result.mode, 'hybrid');
+  assert.equal(embeddingCalls, 1);
+  assert.equal(localCalls, 1);
+  assert.deepEqual(result.selectedMemories.map(item => item.id), ['local-a']);
 });
 
 test('legacy full injection 无任何预算裁剪，超长普通记忆也整包注入', async () => {

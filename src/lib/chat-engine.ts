@@ -442,15 +442,15 @@ export async function assemblePrompt(
     ? (typeof memories === 'string' ? memories.trim() : renderLegacyMemoryContext(memories, settings))
     : '';
 
-  // 上游按顺序匹配前缀缓存，且网关只有 4 个断点名额（全被计费块/agent 块/搬家后的调用方
-  // system/最后一条消息占满），历史末尾拿不到断点。所以「第 N 轮的整个请求体必须是第 N+1 轮的
-  // 字节前缀」是命中的唯一条件——历史之后不能有任何逐轮变化的内容，否则整段退回到 system 断点。
+  // 上游按顺序匹配前缀缓存。续聊要命中，第 N 轮请求必须是第 N+1 轮的严格前缀。
   // 据此分配：
-  //   - 生图指令、时间说明：都是静态文本 → 进 system
+  //   - 生图指令、时间说明：静态文本 → 进 system
   //   - 时间说明的具体时刻改由每条消息的 [时间戳] 前缀承载；show_timestamps 关闭时没有前缀，
-  //     只能回退到写死时刻的旧版本，此时放尾部（牺牲缓存保住「模型知道现在几点」）
-  //   - 记忆包稳定（全量注入：不看 queryText，纯 SQL 取全部 active）→ 留在 system
-  //   - 记忆包逐轮变（检索模式）→ 进尾部块，否则它一变会把整段历史一起挤出缓存
+  //     只能回退到写死时刻的旧版本，此时放尾部
+  //   - full 记忆包：不看 query，本轮字节稳定，必须留在 system。挂到最后一条 user
+  //     时，续聊会改写上一轮 last user，记忆块无法进入前缀；实测重新生成 ~95%，
+  //     续聊 ~36%（约等于不含记忆的 system 大小）
+  //   - 检索模式记忆包逐轮变 → 进尾部块，否则它一变会把整段历史一起挤出缓存
   const inlinePromptInstruction = settings.image_gen?.enabled && settings.image_gen?.inline_prompt
     ? buildInlinePromptInstruction(
         prepareImageTagsForLlm(character.image_tags).tagsForLlm,
@@ -472,7 +472,7 @@ export async function assemblePrompt(
   }
 
   const tailBlock = [
-    memoryIsStable ? '' : memoryText,
+    memoryIsStable ? '' : (memoryText ? normalizeMemoryContextText(memoryText) : ''),
     timeContext && !useStableTimeInstruction
       ? `## Current Time\n${buildCurrentTimeInstruction(timeContext)}`
       : '',
@@ -697,9 +697,8 @@ export async function runChat(
     }
   }
 
-  // 全量注入（mode 'full'）不看 queryText、逐轮字节稳定，可以留在 system 的稳定前缀里；
-  // 其余模式（local/hybrid/vector/legacy-fallback）都是按当轮消息检索出来的，逐轮会变，必须移到历史之后。
-  // memory_inject 关闭时没有 lastMemoryInjection，此时记忆包本身为空，走哪条都一样。
+  // full 不看 queryText，本轮可留在 system 前缀里；检索/legacy-fallback 逐轮会变，必须挂最后一条 user。
+  // memory_inject 关闭时没有 lastMemoryInjection，记忆包为空，走哪条都一样。
   const memoryIsStable = !lastMemoryInjection || lastMemoryInjection.mode === 'full';
 
   // 预设提示词分支：惰性导入避免在旧路径触发 db 模块加载（保留测试 mock 边界）。

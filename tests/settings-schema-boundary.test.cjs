@@ -195,6 +195,66 @@ test('loadSettings normalizes legacy memory preset retrieval modes into a saveab
   );
 });
 
+test('loadSettings derives orthogonal memory policy fields from legacy memory_engine JSON', () => {
+  const settings = loadSettingsFromRows([
+    {
+      key: 'memory_engine',
+      value: JSON.stringify({
+        enabled: true,
+        embedding_enabled: true,
+        fallback_local_enabled: false,
+        reranker_enabled: true,
+      }),
+    },
+  ]);
+
+  assert.equal(settings.memory_engine.index_enabled, true);
+  assert.equal(settings.memory_engine.chat_injection_mode, 'vector');
+
+  const legacyLocalSettings = loadSettingsFromRows([
+    {
+      key: 'memory_engine',
+      value: JSON.stringify({
+        enabled: true,
+        embedding_enabled: false,
+        fallback_local_enabled: true,
+      }),
+    },
+  ]);
+  assert.equal(legacyLocalSettings.memory_engine.index_enabled, false);
+  assert.equal(legacyLocalSettings.memory_engine.chat_injection_mode, 'local');
+
+  const { settingsUpdateSchema } = require('../src/lib/schemas.ts');
+  const parsed = settingsUpdateSchema.safeParse({
+    memory_engine: {
+      index_enabled: false,
+      chat_injection_mode: 'hybrid',
+      reranker_enabled: true,
+    },
+  });
+  assert.equal(parsed.success, true);
+});
+
+test('loadSettings maps legacy limit_inject when no memory_engine row exists', () => {
+  const legacyLimited = loadSettingsFromRows([
+    { key: 'limit_inject', value: JSON.stringify(true) },
+  ]);
+  assert.equal(legacyLimited.memory_engine.index_enabled, false);
+  assert.equal(legacyLimited.memory_engine.chat_injection_mode, 'local');
+
+  const fresh = loadSettingsFromRows([]);
+  assert.equal(fresh.memory_engine.index_enabled, false);
+  assert.equal(fresh.memory_engine.chat_injection_mode, 'full');
+});
+
+test('settings schema rejects unknown chat injection mode', () => {
+  const { settingsUpdateSchema } = require('../src/lib/schemas.ts');
+  const parsed = settingsUpdateSchema.safeParse({
+    memory_engine: { chat_injection_mode: 'invalid' },
+  });
+  assert.equal(parsed.success, false);
+});
+
 test('/api/settings PUT rejects string max_tokens without writing settings', async () => {
   await assertInvalidSettingsPut({ max_tokens: 'x' });
 });

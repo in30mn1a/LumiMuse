@@ -6,6 +6,7 @@ import {
 } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { loadSettings } from '@/lib/settings';
+import { resolveMemoryRuntimePolicy } from '@/lib/memory-runtime-policy';
 import { DEFAULT_SETTINGS, Settings, type MemoryEngineSettings } from '@/types';
 import { API_KEY_MASK } from '@/lib/constants';
 import { formatZodFieldErrors, settingsUpdateSchema } from '@/lib/schemas';
@@ -160,7 +161,11 @@ export async function PUT(request: NextRequest) {
 }
 
 function isEmbeddingIndexRunnable(engine: MemoryEngineSettings | undefined): boolean {
-  if (!engine?.enabled || !engine.embedding_enabled) return false;
+  if (
+    !engine
+    || !resolveMemoryRuntimePolicy({ memory_engine: engine, limit_inject: false }).indexEnabled
+    || engine.allow_external_memory_payloads === false
+  ) return false;
   return Boolean(engine.embedding_api_base?.trim() && engine.embedding_model?.trim());
 }
 
@@ -200,7 +205,7 @@ function maybeBackfillMemoryIndexAfterSettingsChange(
     return {
       queued,
       processing_started,
-      reason: becameRunnable ? 'embedding_enabled' : 'target_changed',
+      reason: becameRunnable ? 'index_enabled' : 'target_changed',
     };
   } catch (error) {
     structuredLog('error', 'memory.index.auto_backfill_failed', {

@@ -1,8 +1,10 @@
 // 上游前缀缓存按顺序匹配请求体：稳定前缀里任何一个字节变了，它之后的内容全部作废。
 // 这里锁住 assemblePrompt 的分层不变量——
-//   system（角色详情 + 稳定记忆包）逐字节不变 → 历史只增不改 → 每轮会变的内容压在最后一条 user。
-// 回归背景：`## Current Time` 曾拼在 system 末尾，64k 的 system 每轮只差一个分钟数字，
-// 却让整段前缀作废（实测命中率 3%）。改坏了本文件的「两轮 system 逐字节相同」会立刻变红。
+//   system（角色详情 + full 记忆包 + 时间说明 + 生图指令）逐字节不变
+//   → 历史只增不改
+//   → 检索模式等逐轮会变的内容才压在最后一条 user。
+// 2026-08-30 真实 Gemini：记忆挂 last user 时重新生成 ~95%，续聊 ~36%
+// （约等于不含记忆的 system）。续聊会改写上一轮 last user，记忆块进不了前缀。
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -84,6 +86,7 @@ function message(overrides = {}) {
 }
 
 const MEMORY_TEXT = '## 记忆上下文\n\n### 本轮相关回忆\n- 用户不爱吃甜的\n- 用户住在东京';
+const MEMORY_TEXT_AFTER_EXTRACT = `${MEMORY_TEXT}\n- 用户开始学做甜点`;
 
 function timeAt(minute) {
   return { clientNowIso: `2026-08-30T01:${String(minute).padStart(2, '0')}:00.000Z`, timeZone: 'Asia/Tokyo' };
@@ -143,7 +146,7 @@ test('[show_timestamps=false 回退] 时间变化不改动 system——两轮 sy
   );
 
   assert.equal(turnA[0].content, turnB[0].content, 'system 必须逐字节相同（含记忆包）');
-  assert.match(turnA[0].content, /用户不爱吃甜的/, '稳定记忆包应留在 system');
+  assert.match(turnA[0].content, /用户不爱吃甜的/, 'full 记忆包应留在 system');
 
   // 上一轮的最后一条 user 之前的历史必须逐字节不变
   for (let i = 1; i < turnA.length - 1; i += 1) {
@@ -160,7 +163,7 @@ test('[show_timestamps=false 回退] 时间变化不改动 system——两轮 sy
   );
 });
 
-test('[show_timestamps=false 回退] 记忆包逐轮变时移出 system，排在 Current Time 之前', async () => {
+test('[show_timestamps=false 回退] 检索记忆包移出 system，排在 Current Time 之前', async () => {
   const prompt = await assemblePrompt(
     baseCharacter(),
     [message({ id: 'u1', content: '今天过得怎么样' })],
@@ -297,7 +300,7 @@ test('生图指令进 system，不再挂在最后一条 user 上', async () => {
   assert.ok(lastUserContent(prompt).endsWith('陪我聊聊天'), '用户原话必须是消息的结尾');
 });
 
-test('核心：第 N 轮的完整请求体是第 N+1 轮的严格前缀（续聊命中的唯一条件）', async () => {
+test('核心：相同 full 记忆时第 N 轮是第 N+1 轮的严格前缀（续聊命中的条件）', async () => {
   const character = baseCharacter({ image_tags: 'shinosawa hiro' });
   const settings = stampedSettings({ image_gen: IMAGE_ON });
   const settled = [
@@ -323,12 +326,41 @@ test('核心：第 N 轮的完整请求体是第 N+1 轮的严格前缀（续聊
   for (let i = 0; i < turnA.length; i += 1) {
     assert.deepEqual(
       turnA[i], turnB[i],
-      `messages[${i}] 在下一轮被改写了——网关会退回到 system 断点，续聊命中率掉回 62%`,
+      `messages[${i}] 在下一轮被改写了——续聊前缀被打断`,
     );
   }
+  assert.match(turnA[0].content, /用户不爱吃甜的/, 'full 记忆必须在 system 前缀里');
 });
 
-test('检索模式的记忆包仍会打破前缀（prod 配置的已知上限）', async () => {
+test('full 记忆包变化时首差落在 system（把记忆放进前缀的固有代价）', async () => {
+  const character = baseCharacter();
+  const settings = stampedSettings();
+  const settled = [
+    message({ id: 'u1', content: '第一轮提问', created_at: '2026-08-30T01:40:00.000Z' }),
+    message({ id: 'a1', role: 'assistant', content: '第一轮回答', created_at: '2026-08-30T01:41:00.000Z' }),
+    message({ id: 'u2', content: '第二轮提问', created_at: '2026-08-30T01:50:00.000Z' }),
+  ];
+
+  const turnA = await assemblePrompt(character, settled, settings, MEMORY_TEXT, timeAt(57));
+  const turnB = await assemblePrompt(
+    character,
+    [
+      ...settled,
+      message({ id: 'a2', role: 'assistant', content: '第二轮回答', created_at: '2026-08-30T01:51:00.000Z' }),
+      message({ id: 'u3', content: '第三轮提问', created_at: '2026-08-30T01:58:00.000Z' }),
+    ],
+    settings,
+    MEMORY_TEXT_AFTER_EXTRACT,
+    timeAt(58),
+  );
+
+  assert.notEqual(turnA[0].content, turnB[0].content);
+  assert.match(turnA[0].content, /用户不爱吃甜的/);
+  assert.doesNotMatch(turnA[0].content, /用户开始学做甜点/);
+  assert.match(turnB[0].content, /用户开始学做甜点/);
+});
+
+test('检索模式的记忆包仍会打破前缀（该配置的已知上限）', async () => {
   const character = baseCharacter();
   const settings = stampedSettings();
   const settled = [
@@ -351,7 +383,6 @@ test('检索模式的记忆包仍会打破前缀（prod 配置的已知上限）
     false,
   );
 
-  // 记忆包逐轮变，只能挂在尾部；这条不是缺陷而是该配置下的固有代价，写成断言以免被误当成 bug 修掉
   assert.notDeepEqual(turnA.at(-1), turnB[turnA.length - 1]);
   assert.equal(turnA[0].content, turnB[0].content, 'system 仍必须逐字节稳定');
 });

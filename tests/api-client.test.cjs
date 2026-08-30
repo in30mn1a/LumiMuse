@@ -85,6 +85,115 @@ test('chatCompletion merges extra request body into non-streaming completion req
   assert.deepEqual(capturedBody.thinking, { type: 'disabled' });
 });
 
+test('chatCompletion preserves generation metadata from a non-streaming response', async () => {
+  let usageFromCallback = null;
+
+  const { chatCompletion } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': {
+      safeFetch: async () => ({
+        ok: true,
+        async json() {
+          return {
+            id: 'gen-local-non-stream',
+            choices: [{ message: { content: 'ok' } }],
+            usage: {
+              prompt_tokens: 100,
+              completion_tokens: 10,
+              total_tokens: 110,
+              prompt_tokens_details: { cached_tokens: 80 },
+            },
+          };
+        },
+      }),
+    },
+  });
+
+  await chatCompletion(
+    {
+      api_base: 'https://llm.example/v1',
+      api_key: 'secret',
+      model: 'gemini-3.7-flash',
+      max_tokens: 1024,
+      temperature: 0.7,
+      json_mode: false,
+    },
+    [{ role: 'user', content: 'hello' }],
+    undefined,
+    undefined,
+    usage => { usageFromCallback = usage; },
+  );
+
+  assert.deepEqual(usageFromCallback, {
+    prompt_tokens: 100,
+    completion_tokens: 10,
+    total_tokens: 110,
+    generation_id: 'gen-local-non-stream',
+    prompt_tokens_details: { cached_tokens: 80 },
+  });
+});
+
+test('chatCompletionStream preserves generation metadata from a streaming response', async () => {
+  let usageFromCallback = null;
+  let streamedText = '';
+  const streamPayload = [
+    `data: ${JSON.stringify({
+      id: 'gen-local-stream',
+      choices: [{ delta: { content: 'ok' } }],
+    })}`,
+    `data: ${JSON.stringify({
+      choices: [],
+      usage: {
+        prompt_tokens: 200,
+        completion_tokens: 20,
+        total_tokens: 220,
+        prompt_tokens_details: { cached_tokens: 160 },
+      },
+    })}`,
+    'data: [DONE]',
+    '',
+  ].join('\n\n');
+
+  const { chatCompletionStream } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': {
+      safeFetch: async () => ({
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(streamPayload));
+            controller.close();
+          },
+        }),
+      }),
+    },
+  });
+
+  await chatCompletionStream(
+    {
+      api_base: 'https://llm.example/v1',
+      api_key: 'secret',
+      model: 'gemini-3.7-flash',
+      max_tokens: 1024,
+      temperature: 0.7,
+    },
+    [{ role: 'user', content: 'hello' }],
+    {
+      onChunk: text => { streamedText += text; },
+      onDone: () => {},
+      onError: error => { throw error; },
+      onUsage: usage => { usageFromCallback = usage; },
+    },
+  );
+
+  assert.equal(streamedText, 'ok');
+  assert.deepEqual(usageFromCallback, {
+    prompt_tokens: 200,
+    completion_tokens: 20,
+    total_tokens: 220,
+    generation_id: 'gen-local-stream',
+    prompt_tokens_details: { cached_tokens: 160 },
+  });
+});
+
 test('chatCompletion omits null/undefined sampling params and includes set ones', async () => {
   let capturedBody = null;
 

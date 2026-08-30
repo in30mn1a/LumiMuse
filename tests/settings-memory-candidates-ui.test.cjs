@@ -152,19 +152,15 @@ test('settings memory profile panel hides manual read/create/process controls', 
   );
 });
 
-test('settings memory mode presets keep chat retrieval timeouts short', () => {
+test('settings memory controls do not use a composite mode preset', () => {
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
+  const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
 
-  assert.ok(settingsPage.includes('const CHAT_RETRIEVAL_TIMEOUT_MS = 2500;'));
-  assert.ok(settingsPage.includes('const CONTINUITY_CHAT_RETRIEVAL_TIMEOUT_MS = 5000;'));
-  assert.ok(settingsPage.includes('embedding_timeout_ms: 1500'));
-  assert.ok(settingsPage.includes('reranker_timeout_ms: 2000'));
-  assert.ok(settingsPage.includes('total_retrieval_timeout_ms: CHAT_RETRIEVAL_TIMEOUT_MS'));
-  assert.ok(settingsPage.includes('embedding_timeout_ms: 2500'));
-  assert.ok(settingsPage.includes('reranker_timeout_ms: 3500'));
-  assert.ok(settingsPage.includes('total_retrieval_timeout_ms: CONTINUITY_CHAT_RETRIEVAL_TIMEOUT_MS'));
-  assert.doesNotMatch(settingsPage, /total_retrieval_timeout_ms:\s*BACKGROUND_EMBEDDING_TIMEOUT_MS\s*\+\s*1000/);
-  assert.doesNotMatch(settingsPage, /total_retrieval_timeout_ms:\s*16000/);
+  assert.doesNotMatch(settingsPage, /MEMORY_MODE_PRESETS|handleMemoryModeChange|resolveMemoryModePreset/);
+  assert.doesNotMatch(memoryEngineSection, /MemoryModePreset|onMemoryModeChange|memoryModePreset/);
+  assert.match(memoryEngineSection, /settings\.memory_engine\.index_enabled/);
+  assert.match(memoryEngineSection, /settings\.memory_engine\.chat_injection_mode/);
+  assert.match(memoryEngineSection, /memoryChatInjectionModeFullHint/);
 });
 
 test('settings memory diagnostics requests include selected management character id', () => {
@@ -191,6 +187,7 @@ test('settings memory tab surfaces blocked memory index processing reasons', () 
 
   assert.ok(memoryIndexHook.includes('processing_blocked_reason?: MemoryIndexProcessingBlockedReason'));
   assert.ok(memoryIndexHook.includes('formatMemoryIndexBlockedReason'));
+  assert.ok(memoryIndexHook.includes("| 'memory_index_disabled'"));
   assert.ok(memoryIndexHook.includes('result.processing_blocked_reason'));
   assert.ok(memoryIndexHook.includes('status?.processing_blocked_reason'));
   assert.ok(memoryIndexPanel.includes("t('settings.memoryIndexProcessingBlocked')"));
@@ -198,6 +195,7 @@ test('settings memory tab surfaces blocked memory index processing reasons', () 
   for (const key of [
     'settings.memoryIndexProcessingBlocked',
     'settings.memoryIndexBlocked.memory_engine_disabled',
+    'settings.memoryIndexBlocked.memory_index_disabled',
     'settings.memoryIndexBlocked.external_memory_payloads_disabled',
     'settings.memoryIndexBlocked.embedding_disabled',
     'settings.memoryIndexBlocked.embedding_api_base_missing',
@@ -367,7 +365,7 @@ test('settings memory tab polls index status while rebuild or queue is active', 
   assert.ok(memoryIndexHook.includes('(status?.processing ?? 0) > 0'));
 });
 
-test('settings memory tab hides advanced memory controls until enhanced memory is enabled', () => {
+test('settings memory tab gates advanced controls by index or non-full chat mode', () => {
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
   const memoryIndexPanel = readProjectFile('src/components/settings/memory/MemoryIndexPanel.tsx');
@@ -382,18 +380,14 @@ test('settings memory tab hides advanced memory controls until enhanced memory i
 
   assert.notEqual(memoryEngineSectionStart, -1, 'settings page should render extracted memory engine section');
   assert.notEqual(memoryEngineSectionEnd, -1, 'settings page should close extracted memory engine section');
-  assert.ok(memoryEngineSection.includes('const memoryEngineEnabled = settings.memory_engine.enabled;'));
-  assert.ok(memoryEngineSection.includes('{memoryEngineEnabled && ('));
-  assert.ok(memoryEngineSection.includes('{!memoryEngineEnabled && ('));
-  assert.ok(memoryEngineSection.includes("t('settings.memoryEngineDisabledHint')"));
-  assert.match(i18n, /'settings\.memoryEngineDisabledHint'/);
+  assert.ok(memoryEngineSection.includes('const advancedMemoryEnabled = settings.memory_engine.index_enabled'));
+  assert.ok(memoryEngineSection.includes("settings.memory_engine.chat_injection_mode !== 'full'"));
 
   const advancedKeys = [
     "t('settings.memoryPrivacy')",
-    "t('settings.memoryRetrievalMode')",
   ];
-  const gatedBlockStart = memoryEngineSection.indexOf('{memoryEngineEnabled && (');
-  assert.notEqual(gatedBlockStart, -1, 'missing memoryEngineEnabled gate');
+  const gatedBlockStart = memoryEngineSection.indexOf('{advancedMemoryEnabled && (');
+  assert.notEqual(gatedBlockStart, -1, 'missing advancedMemoryEnabled gate');
   for (const key of advancedKeys) {
     const keyIndex = memoryEngineSection.indexOf(key, gatedBlockStart);
     assert.notEqual(keyIndex, -1, `advanced memory UI is not gated: ${key}`);
@@ -418,15 +412,15 @@ test('settings memory tab hides advanced memory controls until enhanced memory i
   assert.ok(candidatesPanel.includes("t('settings.memoryCandidatesTitle')"));
 });
 
-test('settings memory mode appears directly below enhanced memory toggle', () => {
+test('settings memory controls place chat mode near the independent index toggle', () => {
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
 
-  const toggleIndex = memoryEngineSection.indexOf("t('settings.memoryEngineEnabled')");
-  const modeIndex = memoryEngineSection.indexOf("t('settings.memoryRetrievalMode')", toggleIndex);
+  const toggleIndex = memoryEngineSection.indexOf("t('settings.memoryIndexEnabled')");
+  const modeIndex = memoryEngineSection.indexOf("t('settings.memoryChatInjectionMode')", toggleIndex);
   const privacyIndex = memoryEngineSection.indexOf("t('settings.memoryPrivacy')", toggleIndex);
 
-  assert.notEqual(toggleIndex, -1, 'missing enhanced memory toggle');
-  assert.notEqual(modeIndex, -1, 'missing memory mode selector after enhanced memory toggle');
+  assert.notEqual(toggleIndex, -1, 'missing independent index toggle');
+  assert.notEqual(modeIndex, -1, 'missing direct chat mode selector after index toggle');
   assert.notEqual(privacyIndex, -1, 'missing memory privacy block after enhanced memory toggle');
   assert.ok(modeIndex < privacyIndex, 'memory mode selector should appear before memory privacy controls');
 });

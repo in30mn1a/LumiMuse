@@ -98,15 +98,25 @@ async function runSensitiveTagStripRouteTest(model) {
             return {
               get: () => ({
                 name: 'Mira',
-                personality: '',
-                scenario: '',
-                image_tags: 'blue eyes, 1.3::loli::, kindergarten uniform, red hair',
+                // 气泡按钮会把这些角色字段也拼进 /api/image-gen/prompt 的 LLM 上下文；
+                // 即使敏感 tag 在别处重复出现，出站请求也不得泄漏。
+                personality: 'quiet, childhood memories, 1.3::loli::',
+                scenario: 'school scene, lolita fashion, 1.2 :: kindergarten uniform ::',
+                image_tags: 'blue eyes, 1.3::loli::, child, kindergarten uniform, 1.1::little girl::, red hair',
                 user_image_tags: '',
               }),
             };
           }
+          if (sql.includes('SELECT seq FROM messages')) {
+            return { get: () => ({ seq: 7 }) };
+          }
           if (sql.includes('FROM messages')) {
-            return { all: () => [{ role: 'assistant', content: 'smiles softly' }] };
+            return {
+              all: () => [{
+                role: 'assistant',
+                content: 'smiles softly, (loli:1.3), loli_style, loli角色, <lora:loli:0.8>, kindergarten playground, little_girl',
+              }],
+            };
           }
           throw new Error(`unexpected SQL: ${sql}`);
         },
@@ -141,18 +151,30 @@ async function runSensitiveTagStripRouteTest(model) {
     },
   });
 
-  const response = await route.POST(jsonRequest({ conversation_id: 'conv-1' }));
+  const response = await route.POST(jsonRequest({
+    conversation_id: 'conv-1',
+    message_id: 'message-7',
+    user_hint: 'keep the ::LOLI:: design',
+  }));
   const body = await response.json();
 
   assert.equal(response.status, 200);
   assert.match(capturedPrompt, /blue eyes/);
   assert.match(capturedPrompt, /red hair/);
-  assert.doesNotMatch(capturedPrompt, /loli/i);
-  assert.doesNotMatch(capturedPrompt, /kindergarten uniform/i);
-  // 按 image_tags 原顺序：blue eyes, 1.3::loli::, kindergarten uniform, red hair
+  assert.doesNotMatch(capturedPrompt, /loli(?!ta)/i);
+  assert.doesNotMatch(capturedPrompt, /child(?!hood)/i);
+  assert.doesNotMatch(capturedPrompt, /kindergarten/i);
+  assert.doesNotMatch(capturedPrompt, /little[\s_]+girl/i);
+  assert.match(capturedPrompt, /quiet/);
+  assert.match(capturedPrompt, /childhood memories/);
+  assert.match(capturedPrompt, /school scene/);
+  assert.match(capturedPrompt, /lolita fashion/);
+  assert.match(capturedPrompt, /smiles softly/);
+  assert.match(capturedPrompt, /keep the\s+design/);
+  // 按 image_tags 原顺序恢复所有敏感 tag。
   assert.equal(
     body.prompt,
-    'best quality, 1girl, blue eyes, 1.3::loli::, kindergarten uniform, red hair',
+    'best quality, 1girl, blue eyes, 1.3::loli::, child, kindergarten uniform, 1.1::little girl::, red hair',
   );
 }
 

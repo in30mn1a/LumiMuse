@@ -76,8 +76,14 @@ test('isSensitiveImageTag matches weighted sensitive cores and variations', () =
   assert.equal(isSensitiveImageTag('kindergartener'), true);
   assert.equal(isSensitiveImageTag('elementary school student'), true);
   assert.equal(isSensitiveImageTag('little girl'), true);
+  assert.equal(isSensitiveImageTag('little_girl'), true);
+  assert.equal(isSensitiveImageTag('loli_style'), true);
+  assert.equal(isSensitiveImageTag('kindergarten_uniform'), true);
+  assert.equal(isSensitiveImageTag('loli角色'), true);
   assert.equal(isSensitiveImageTag('萝莉'), true);
   assert.equal(isSensitiveImageTag('best quality'), false);
+  assert.equal(isSensitiveImageTag('childhood memories'), false);
+  assert.equal(isSensitiveImageTag('lolita fashion'), false);
   assert.equal(isSensitiveImageTag('high school student'), false);
 });
 
@@ -91,6 +97,10 @@ test('partitionSensitiveImageTags preserves original weighted spelling for rejoi
   const braced = partitionSensitiveImageTags('blue eyes, {1.3::loli::}，(loli:1.3), red hair');
   assert.equal(braced.safeForLlm, 'blue eyes, red hair');
   assert.equal(braced.strippedForRejoin, '{1.3::loli::}, (loli:1.3)');
+
+  const underscored = partitionSensitiveImageTags('blue eyes, 1.3::little_girl::, red hair');
+  assert.equal(underscored.safeForLlm, 'blue eyes, red hair');
+  assert.equal(underscored.strippedForRejoin, '1.3::little_girl::');
 });
 
 test('rejoinSensitiveTagsFromOriginalOrder inserts after left neighbor from image_tags', () => {

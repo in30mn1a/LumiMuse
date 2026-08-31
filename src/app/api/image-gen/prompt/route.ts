@@ -7,8 +7,11 @@ import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
 import {
+  IMAGE_PROMPT_SENSITIVE_TAG_PATTERN,
+  imageTagCoreForSensitivity,
   partitionSensitiveImageTags,
   rejoinSensitiveTagsFromOriginalOrder,
+  splitTags,
 } from '@/lib/image-prompt-sensitive-tags';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
 import { resolveMessageScope } from '@/lib/conversation-chain';
@@ -103,6 +106,40 @@ const PROMPT_GENERATION_SYSTEM = `# 核心功能
 
 # 输出格式（严格遵守，不输出任何解释文字）
 POSITIVE: <所有正面 Tag，逗号分隔，35 - 70个>`;
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripKnownSensitiveImageTags(text: string, originalImageTags: string): string {
+  const sensitiveMatcher = new RegExp(IMAGE_PROMPT_SENSITIVE_TAG_PATTERN.source, 'giu');
+  const sensitiveTerms = [...new Set(
+    splitTags(originalImageTags)
+      .map(imageTagCoreForSensitivity)
+      .flatMap(core => [...core.matchAll(sensitiveMatcher)].map(match => match[0].toLowerCase())),
+  )].sort((left, right) => right.length - left.length);
+
+  return sensitiveTerms.reduce((sanitized, term) => {
+    const termPattern = term.split(/[\s_]+/).map(escapeRegex).join('[\\s_]+');
+    const latinBoundaryStart = /^[\x00-\x7F]+$/.test(term)
+      ? '(?<![A-Za-z0-9])'
+      : '';
+    const latinBoundaryEnd = /^[\x00-\x7F]+$/.test(term)
+      ? '(?![A-Za-z0-9])'
+      : '';
+    const variants = [
+      `(?:\\d+(?:\\.\\d+)?\\s*::\\s*|::\\s*)${termPattern}\\s*(?:::)?`,
+      `${termPattern}\\s*:\\s*\\d+(?:\\.\\d+)?`,
+      `(?:<\\s*)?lora\\s*:\\s*${termPattern}(?:\\s*:[^\\s,，;；>]+)?[ \\t]*>?`,
+      termPattern,
+    ];
+    const pattern = new RegExp(
+      `${latinBoundaryStart}(?:${variants.join('|')})${latinBoundaryEnd}`,
+      'giu',
+    );
+    return sanitized.replace(pattern, '');
+  }, text);
+}
 
 export async function POST(request: NextRequest) {
   let rawBody: unknown;
@@ -216,11 +253,16 @@ export async function POST(request: NextRequest) {
 
     context += `\n请根据以上信息生成一张插图的 Tag。必须优先以最新一条消息为准来决定画面主体、动作、表情和场景；更早的对话只作为角色设定和上下文补充，不要让旧消息覆盖最新消息。`;
 
+    // 气泡生图会把角色描述、场景与最近消息一并发给提示词生成 LLM。
+    // 即使 image_tags 中的敏感项在这些自由文本字段里重复出现，出站前也必须统一剥离；
+    // LLM 返回后仍会按 originalImageTags 恢复到最终 NAI/SD prompt。
+    const contextForLlm = stripKnownSensitiveImageTags(context, originalImageTags);
+
     const result = await runWithBackgroundLlmDeadline(
       loadedSettings.memory_background_timeout_ms,
       signal => chatCompletion(settings, [
         { role: 'system', content: PROMPT_GENERATION_SYSTEM },
-        { role: 'user', content: context },
+        { role: 'user', content: contextForLlm },
       ], signal, backgroundExtraBody),
     );
 

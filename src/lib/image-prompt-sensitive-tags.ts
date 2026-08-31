@@ -5,7 +5,7 @@
  */
 
 export const IMAGE_PROMPT_SENSITIVE_TAG_PATTERN =
-  /\b(?:loli|shota|underage|child|children|childlike|kindergarten|kindergartener|toddler|infant|baby|grade\s+schooler)\b|\b(?:little|young)\s+girl\b|\b(?:elementary|primary|middle|junior\s+high)\s+school(?:\s+(?:student|uniform|girl|boy))?\b|萝莉|正太|幼女|幼儿|幼态|未成年/i;
+  /(?<![A-Za-z0-9])(?:loli|shota|underage|child|children|childlike|kindergarten|kindergartener|toddler|infant|baby|grade[\s_]+schooler|(?:little|young)[\s_]+girl|(?:elementary|primary|middle|junior[\s_]+high)[\s_]+school(?:[\s_]+(?:student|uniform|girl|boy))?)(?![A-Za-z0-9])|萝莉|正太|幼女|幼儿|幼态|未成年/i;
 
 /** 人数/主体 tag：仅作「原顺序锚点都找不到」时的兜底位置 */
 const SUBJECT_COUNT_TAG_CORE =

@@ -8,7 +8,7 @@ registerTsLoader();
 const modulePath = path.resolve(__dirname, '../src/lib/inline-image-prompt.ts');
 const { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } = require(modulePath);
 
-test('inline image prompt keeps non-intimate scenes character-only and excludes user tags', () => {
+test('inline image prompt keeps non-intimate scenes user-free without forcing a solo scene', () => {
   const instruction = buildInlinePromptInstruction(
     '1girl, silver hair, blue eyes',
     '1boy, black hair, glasses',
@@ -16,7 +16,8 @@ test('inline image prompt keeps non-intimate scenes character-only and excludes 
 
   assert.match(instruction, /不是角色与用户的亲密互动/);
   assert.match(instruction, /不得包含任何用户外貌标签/);
-  assert.match(instruction, /只包含角色的单人场景/);
+  assert.match(instruction, /只包含角色的单人\/多人场景/);
+  assert.doesNotMatch(instruction, /只包含角色的单人场景/);
   assert.match(instruction, /亲密互动.*用户外貌标签：1boy, black hair, glasses/);
   assert.match(instruction, /固定外貌标签：1girl, silver hair, blue eyes/);
 });

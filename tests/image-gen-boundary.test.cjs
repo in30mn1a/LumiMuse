@@ -572,6 +572,53 @@ test('/api/image-gen sends the exact SD WebUI txt2img payload with a composed si
   assert.equal(harness.writes.length, 1);
 });
 
+test('/api/image-gen sends NovelAI V5 v4_prompt with character captions', async () => {
+  let capturedBody;
+  const harness = createImageGenHarness({
+    imageGenSettings: naiSettings({
+      nai_model: 'nai-diffusion-5-full',
+      nai_artist_tags: 'artist:foo',
+      quality_tags: 'very aesthetic',
+      nai_negative_prompt: 'saved-neg',
+      nai_width: 832,
+      nai_height: 1216,
+      nai_scale: 7,
+      nai_cfg_rescale: 0,
+      nai_sampler: 'k_euler_ancestral',
+      nai_noise_schedule: 'karras',
+      nai_steps: 23,
+    }),
+    safeFetchImpl: async (url, init) => {
+      assert.equal(url, 'https://image.novelai.net/ai/generate-image');
+      capturedBody = JSON.parse(init.body);
+      return new Response(pngBytes(), {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    },
+  });
+
+  const response = await harness.route.POST(jsonRequest({
+    prompt: 'Prompt:\n1girl, from side\n\nCharacter 1:\ngirl, silver hair',
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.url, '/api/files/generated/11111111-1111-4111-8111-111111111111.png');
+  assert.equal(capturedBody.model, 'nai-diffusion-5-full');
+  assert.equal(capturedBody.parameters.params_version, 4);
+  assert.equal(capturedBody.parameters.autoSmea, false);
+  assert.equal(
+    capturedBody.parameters.v4_prompt.caption.base_caption,
+    'artist:foo, very aesthetic, 1girl, from side',
+  );
+  assert.equal(
+    capturedBody.parameters.v4_prompt.caption.char_captions[0].char_caption,
+    'girl, silver hair',
+  );
+  assert.equal(harness.writes.length, 1);
+});
+
 test('/api/image-gen aborts a stalled SD WebUI request at generate_timeout_ms', async () => {
   let upstreamSignal;
   const harness = createImageGenHarness({

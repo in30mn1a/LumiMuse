@@ -473,6 +473,7 @@ Enable image generation in Settings, then choose an engine.
 
 - Requires a NovelAI API Key
 - Configurable: model, sampler, noise schedule, steps, scale, dimensions, negative prompt, artist tags
+- Supports NovelAI Diffusion V5 Full / Curated. Switching to V5 also switches chat inline prompts and `/api/image-gen/prompt` to natural-language + character-caption prompting instead of Danbooru tag dumps.
 
 ### ComfyUI
 

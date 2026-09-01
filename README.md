@@ -473,6 +473,7 @@ CI 镜像会把完整 commit SHA 写入健康响应的 `build` 字段；本地 C
 
 - 需要 NovelAI API Key
 - 可配置模型、采样器、噪声调度、步数、scale、尺寸、负面提示词与 artist tags
+- 支持 NovelAI Diffusion V5 Full / Curated；切到 V5 后，聊天内联提示词与 `/api/image-gen/prompt` 会改用自然语言 + 角色栏写法，不再只生成 Danbooru tag 串
 
 ### ComfyUI
 

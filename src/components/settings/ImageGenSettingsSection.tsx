@@ -175,6 +175,8 @@ export function ImageGenSettingsSection({
                   <div>
                     <label htmlFor="settings-image-nai-model" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIModel')}</label>
                     <select id="settings-image-nai-model" value={imgGen.nai_model} onChange={e => updateImg('nai_model', e.target.value)} className="select-rich">
+                      <option value="nai-diffusion-5-full">NAI Diffusion V5 Full</option>
+                      <option value="nai-diffusion-5-curated">NAI Diffusion V5 Curated</option>
                       <option value="nai-diffusion-4-5-full">NAI Diffusion 4.5 Full</option>
                       <option value="nai-diffusion-4-5-curated">NAI Diffusion 4.5 Curated</option>
                       <option value="nai-diffusion-4-full">NAI Diffusion 4 Full</option>

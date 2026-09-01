@@ -14,6 +14,8 @@ test('inline image prompt keeps non-intimate scenes user-free without forcing a 
     '1boy, black hair, glasses',
   );
 
+  assert.match(instruction, /\[IMG\]/);
+  assert.match(instruction, /不算跳出角色/);
   assert.match(instruction, /不是角色与用户的亲密互动/);
   assert.match(instruction, /不得包含任何用户外貌标签/);
   assert.match(instruction, /只包含角色的单人\/多人场景/);
@@ -56,9 +58,10 @@ test('chat-engine wires sensitive tag strip/rejoin for inline prompts on all mod
     'utf8',
   );
   assert.match(chatEngine, /prepareImageTagsForLlm\(character\.image_tags\)/);
+  // 角色与用户的敏感 tag 必须分开传，V5 结构化提示词才不会把用户外貌塞进 Character 1
   assert.match(
     chatEngine,
-    /restoreSensitiveImageTagsToPrompt\(rawInlinePrompt, originalTags\)/,
+    /restoreSensitiveImageTagsToPrompt\(\s*rawInlinePrompt,\s*options\.characterImageTags,\s*options\.userImageTags,\s*\)/,
   );
   assert.match(
     chatEngine,

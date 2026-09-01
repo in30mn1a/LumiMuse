@@ -152,15 +152,18 @@ test('settings memory profile panel hides manual read/create/process controls', 
   );
 });
 
-test('settings memory controls do not use a composite mode preset', () => {
+test('settings memory controls keep shared configuration but no longer own chat injection mode', () => {
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
+  const characterEditor = readProjectFile('src/app/characters/[id]/page.tsx');
 
   assert.doesNotMatch(settingsPage, /MEMORY_MODE_PRESETS|handleMemoryModeChange|resolveMemoryModePreset/);
   assert.doesNotMatch(memoryEngineSection, /MemoryModePreset|onMemoryModeChange|memoryModePreset/);
   assert.match(memoryEngineSection, /settings\.memory_engine\.index_enabled/);
-  assert.match(memoryEngineSection, /settings\.memory_engine\.chat_injection_mode/);
-  assert.match(memoryEngineSection, /memoryChatInjectionModeFullHint/);
+  assert.doesNotMatch(memoryEngineSection, /settings\.memory_engine\.chat_injection_mode/);
+  assert.doesNotMatch(memoryEngineSection, /settings-memory-chat-injection-mode/);
+  assert.match(characterEditor, /character\.memory_chat_injection_mode \?\? 'full'/);
+  assert.match(characterEditor, /character-memory-chat-injection-mode/);
 });
 
 test('settings memory diagnostics requests include selected management character id', () => {
@@ -365,7 +368,7 @@ test('settings memory tab polls index status while rebuild or queue is active', 
   assert.ok(memoryIndexHook.includes('(status?.processing ?? 0) > 0'));
 });
 
-test('settings memory tab gates advanced controls by index or non-full chat mode', () => {
+test('settings memory tab keeps shared privacy and management panels always accessible', () => {
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
   const memoryIndexPanel = readProjectFile('src/components/settings/memory/MemoryIndexPanel.tsx');
@@ -380,18 +383,15 @@ test('settings memory tab gates advanced controls by index or non-full chat mode
 
   assert.notEqual(memoryEngineSectionStart, -1, 'settings page should render extracted memory engine section');
   assert.notEqual(memoryEngineSectionEnd, -1, 'settings page should close extracted memory engine section');
-  assert.ok(memoryEngineSection.includes('const advancedMemoryEnabled = settings.memory_engine.index_enabled'));
-  assert.ok(memoryEngineSection.includes("settings.memory_engine.chat_injection_mode !== 'full'"));
+  assert.doesNotMatch(memoryEngineSection, /advancedMemoryEnabled|chat_injection_mode/);
 
-  const advancedKeys = [
+  const sharedKeys = [
     "t('settings.memoryPrivacy')",
   ];
-  const gatedBlockStart = memoryEngineSection.indexOf('{advancedMemoryEnabled && (');
-  assert.notEqual(gatedBlockStart, -1, 'missing advancedMemoryEnabled gate');
-  for (const key of advancedKeys) {
-    const keyIndex = memoryEngineSection.indexOf(key, gatedBlockStart);
-    assert.notEqual(keyIndex, -1, `advanced memory UI is not gated: ${key}`);
+  for (const key of sharedKeys) {
+    assert.ok(memoryEngineSection.includes(key), `missing shared memory UI: ${key}`);
   }
+  assert.ok(memoryEngineSection.includes('{children}'), 'memory management panels should render unconditionally');
 
   const memoryEngineSectionUsage = settingsPage.slice(memoryEngineSectionStart, memoryEngineSectionEnd);
   for (const component of [
@@ -412,17 +412,19 @@ test('settings memory tab gates advanced controls by index or non-full chat mode
   assert.ok(candidatesPanel.includes("t('settings.memoryCandidatesTitle')"));
 });
 
-test('settings memory controls place chat mode near the independent index toggle', () => {
+test('character editor places memory mode beside its preset while settings has no global selector', () => {
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
+  const characterEditor = readProjectFile('src/app/characters/[id]/page.tsx');
 
-  const toggleIndex = memoryEngineSection.indexOf("t('settings.memoryIndexEnabled')");
-  const modeIndex = memoryEngineSection.indexOf("t('settings.memoryChatInjectionMode')", toggleIndex);
-  const privacyIndex = memoryEngineSection.indexOf("t('settings.memoryPrivacy')", toggleIndex);
+  const presetIndex = characterEditor.indexOf('<PresetSelectField');
+  const modeIndex = characterEditor.indexOf('id="character-memory-chat-injection-mode"', presetIndex);
+  const modelBindingsIndex = characterEditor.indexOf('<ModelPresetBindingsField', modeIndex);
 
-  assert.notEqual(toggleIndex, -1, 'missing independent index toggle');
-  assert.notEqual(modeIndex, -1, 'missing direct chat mode selector after index toggle');
-  assert.notEqual(privacyIndex, -1, 'missing memory privacy block after enhanced memory toggle');
-  assert.ok(modeIndex < privacyIndex, 'memory mode selector should appear before memory privacy controls');
+  assert.notEqual(presetIndex, -1, 'missing character prompt preset selector');
+  assert.notEqual(modeIndex, -1, 'missing per-character memory mode selector');
+  assert.notEqual(modelBindingsIndex, -1, 'missing model preset bindings after the character defaults');
+  assert.ok(presetIndex < modeIndex && modeIndex < modelBindingsIndex);
+  assert.doesNotMatch(memoryEngineSection, /settings-memory-chat-injection-mode|settings\.memoryChatInjectionMode/);
 });
 
 test('settings memory management uses selectable characters, memories, and archive batches instead of raw ids', () => {

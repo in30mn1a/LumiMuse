@@ -26,6 +26,11 @@ export interface Character {
    * `preset_id` 为具体预设 id 或 `'__none__'`。
    */
   model_preset_bindings?: CharacterModelPresetBinding[];
+  /**
+   * 该角色聊天时使用的记忆注入模式。角色值是运行时权威来源；
+   * 新建角色默认 `full`，不继承全局聊天模式。
+   */
+  memory_chat_injection_mode: MemoryChatInjectionMode;
   created_at: string;
   updated_at: string;
 }
@@ -292,7 +297,8 @@ export interface ApiProvider {
 }
 
 export type MemoryRetrievalMode = 'local' | 'hybrid' | 'vector';
-export type MemoryChatInjectionMode = 'full' | 'local' | 'hybrid' | 'vector';
+export const MEMORY_CHAT_INJECTION_MODES = ['full', 'local', 'hybrid', 'vector'] as const;
+export type MemoryChatInjectionMode = (typeof MEMORY_CHAT_INJECTION_MODES)[number];
 
 export interface MemoryEngineSettings {
   enabled: boolean;

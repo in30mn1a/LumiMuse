@@ -7,6 +7,7 @@ import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion, 
 import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
+import { normalizeCharacterMemoryChatInjectionMode } from '@/lib/memory-runtime-policy';
 import { buildCurrentTimeInstruction, buildTimestampAnchoredTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
 import { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } from '@/lib/inline-image-prompt';
@@ -539,6 +540,16 @@ export async function runChat(
     return;
   }
 
+  // 聊天模式已迁到角色。这里只构造本轮不可变副本，不改调用方的全局 settings；
+  // 旧库/损坏导入缺字段时按产品默认 full 兜底。
+  const chatSettings: Settings = {
+    ...settings,
+    memory_engine: {
+      ...settings.memory_engine,
+      chat_injection_mode: normalizeCharacterMemoryChatInjectionMode(character.memory_chat_injection_mode),
+    },
+  };
+
   // 链式子对话的历史消息物理存放在父对话里：定位消息、读历史、分配 seq 都要沿链展开。
   // 无父对话时 scope 退化为 `conversation_id = ?`，与改造前等价。
   const chain = resolveConversationChain(db, conversationId);
@@ -647,7 +658,7 @@ export async function runChat(
   // 上一轮记忆注入统计：注入条数 + 实际 token 数（来自 workingMemoryPackage 或 fallback）
   // 存入 assistant 消息 metadata.last_memory_injection，供前端 TokenBreakdownModal 展示
   let lastMemoryInjection: { count: number; tokens: number; mode?: string } | undefined;
-  if (settings.memory_inject) {
+  if (chatSettings.memory_inject) {
     // 重新生成时 userContent 为空，改用最近几条消息内容作为相关性查询
     const queryText = userContent || contextMessages.slice(-4).map(m => m.content).join(' ');
     try {
@@ -655,11 +666,11 @@ export async function runChat(
       // 为系统提示、对话历史和当前用户消息留出空间,避免记忆包撑爆上下文、挤掉当前对话。
       // 正常大窗口配置(默认 context_window=131072)下该上限远大于记忆预算,不产生影响;仅在窗口调得很小时收紧。
       // 例外:limit_inject=false（全量注入）不允许任何上限（产品决策 2026-08-03），跳过钳制、超限时仅打预警日志。
-      const availableBudget = Math.max(0, settings.context_window - settings.max_tokens);
+      const availableBudget = Math.max(0, chatSettings.context_window - chatSettings.max_tokens);
       const memoryBudgetCap = Math.floor(availableBudget / 2);
-      const retrievalSettings = settings.limit_inject && memoryBudgetCap > 0 && memoryBudgetCap < settings.memory_engine.memory_package_token_budget
-        ? { ...settings, memory_engine: { ...settings.memory_engine, memory_package_token_budget: memoryBudgetCap } }
-        : settings;
+      const retrievalSettings = chatSettings.limit_inject && memoryBudgetCap > 0 && memoryBudgetCap < chatSettings.memory_engine.memory_package_token_budget
+        ? { ...chatSettings, memory_engine: { ...chatSettings.memory_engine, memory_package_token_budget: memoryBudgetCap } }
+        : chatSettings;
       const workingMemoryPackage = await retrieveWorkingMemoryPackage({
         characterId: conversation.character_id,
         queryText,
@@ -684,7 +695,7 @@ export async function runChat(
         const relevantMemories = retrieveRelevantMemories(
           queryText,
           conversation.character_id,
-          settings.memory_max_inject || 30,
+          chatSettings.memory_max_inject || 30,
         );
         memoryContents = relevantMemories.map(memory => memory.content);
         // fallback 路径没有精确 tokenCount，用 0 表示未知（前端不展示 token 数，只展示条数）
@@ -710,20 +721,20 @@ export async function runChat(
   if (activePreset) {
     const { assemblePresetPrompt } = await import('@/lib/prompt-preset-assembler');
     const presetEntries = loadEnabledEntries(activePreset.id);
-    const presetMemoryText = settings.memory_inject
-      ? (typeof memoryContents === 'string' ? memoryContents.trim() : renderLegacyMemoryContext(memoryContents, settings))
+    const presetMemoryText = chatSettings.memory_inject
+      ? (typeof memoryContents === 'string' ? memoryContents.trim() : renderLegacyMemoryContext(memoryContents, chatSettings))
       : '';
     chatMessages = await assemblePresetPrompt(
       character,
       contextMessages,
-      settings,
+      chatSettings,
       presetMemoryText,
       effectiveTimeContext,
       activePreset,
       presetEntries,
     );
   } else {
-    chatMessages = await assemblePrompt(character, contextMessages, settings, memoryContents, effectiveTimeContext, memoryIsStable);
+    chatMessages = await assemblePrompt(character, contextMessages, chatSettings, memoryContents, effectiveTimeContext, memoryIsStable);
   }
 
   // 捕获上游返回的真实 usage（流式在最后一个 chunk，非流式在响应 body）。

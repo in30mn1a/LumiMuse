@@ -62,6 +62,7 @@ function createDbProbe() {
       other_info TEXT NOT NULL,
       image_tags TEXT NOT NULL,
       user_image_tags TEXT NOT NULL,
+      memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -85,10 +86,10 @@ function createDbProbe() {
     INSERT INTO characters (
       id, name, avatar_url, basic_info, personality, scenario, greeting,
       example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
-      created_at, updated_at
+      memory_chat_injection_mode, created_at, updated_at
     ) VALUES (
       'char-a', 'Alice', NULL, '', '', '', '', '', '', '', '', '',
-      '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'
+      'full', '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'
     )
   `).run();
 
@@ -145,7 +146,7 @@ function settings() {
     memory_inject: false,
     show_timestamps: false,
     image_gen: { enabled: false, inline_prompt: false },
-    memory_engine: { memory_package_token_budget: 12000 },
+    memory_engine: { memory_package_token_budget: 12000, chat_injection_mode: 'full' },
   };
 }
 
@@ -169,7 +170,12 @@ function loadChatEngine(db, capture, usage) {
     }
     if (request === '@/lib/memory-engine') return { retrieveRelevantMemories: () => [] };
     if (request === '@/lib/memory-retrieval') {
-      return { retrieveWorkingMemoryPackage: async () => ({ text: '', selectedMemories: [], tokenCount: 0, mode: 'test' }) };
+      return {
+        retrieveWorkingMemoryPackage: async (options) => {
+          capture.retrievalSettings = options.settings;
+          return { text: '', selectedMemories: [], tokenCount: 0, mode: options.settings.memory_engine.chat_injection_mode };
+        },
+      };
     }
     return originalLoad.call(this, request, parent, isMain);
   };
@@ -313,6 +319,41 @@ test('runChat persists optional usage metadata from the streaming path', async (
   const stored = readLatestAssistant(probe.database);
   assert.equal(stored.content, 'generated response');
   assert.deepEqual(JSON.parse(stored.metadata).last_usage, usage);
+});
+
+test('runChat uses the character memory mode instead of the legacy global mode', async (t) => {
+  const vectorProbe = createDbProbe();
+  t.after(() => vectorProbe.database.close());
+  vectorProbe.database.prepare(
+    "UPDATE characters SET memory_chat_injection_mode = 'vector' WHERE id = 'char-a'",
+  ).run();
+  const vectorCapture = {};
+  const { runChat: runVectorChat } = loadChatEngine(vectorProbe.db, vectorCapture);
+  await runVectorChat('conv-a', '', {
+    ...settings(),
+    memory_inject: true,
+    memory_engine: { ...settings().memory_engine, chat_injection_mode: 'full' },
+  }, {
+    onChunk() {},
+    onDone() {},
+    onError(error) { throw error; },
+  }, { skipUserInsert: true });
+  assert.equal(vectorCapture.retrievalSettings.memory_engine.chat_injection_mode, 'vector');
+
+  const fullProbe = createDbProbe();
+  t.after(() => fullProbe.database.close());
+  const fullCapture = {};
+  const { runChat: runFullChat } = loadChatEngine(fullProbe.db, fullCapture);
+  await runFullChat('conv-a', '', {
+    ...settings(),
+    memory_inject: true,
+    memory_engine: { ...settings().memory_engine, chat_injection_mode: 'vector' },
+  }, {
+    onChunk() {},
+    onDone() {},
+    onError(error) { throw error; },
+  }, { skipUserInsert: true });
+  assert.equal(fullCapture.retrievalSettings.memory_engine.chat_injection_mode, 'full');
 });
 
 async function runWithProbe(rows, options, setupDatabase) {

@@ -678,6 +678,47 @@ test('database migration records the current schema version and rejects future v
   assert.equal(prepareCalls, 0);
 });
 
+test('character memory mode migration copies the legacy global mode once and defaults new characters to full', () => {
+  const db = createLegacyMigrationDb();
+  db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(
+    'memory_engine',
+    JSON.stringify({
+      enabled: true,
+      embedding_enabled: true,
+      fallback_local_enabled: false,
+      chat_injection_mode: 'vector',
+    }),
+  );
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('limit_inject', 'false');
+
+  const { __migrateForTests } = requireFreshWithMocks('../src/lib/db.ts');
+  __migrateForTests(db);
+
+  assert.deepEqual(
+    db.prepare('SELECT id, memory_chat_injection_mode FROM characters ORDER BY id').all(),
+    [
+      { id: 'char-a', memory_chat_injection_mode: 'vector' },
+      { id: 'char-b', memory_chat_injection_mode: 'vector' },
+    ],
+  );
+
+  db.prepare("UPDATE settings SET value = ? WHERE key = 'memory_engine'").run(
+    JSON.stringify({ chat_injection_mode: 'local' }),
+  );
+  __migrateForTests(db);
+  assert.equal(
+    db.prepare("SELECT memory_chat_injection_mode FROM characters WHERE id = 'char-a'").get().memory_chat_injection_mode,
+    'vector',
+  );
+
+  db.prepare("INSERT INTO characters (id, name) VALUES ('char-new', '新角色')").run();
+  assert.equal(
+    db.prepare("SELECT memory_chat_injection_mode FROM characters WHERE id = 'char-new'").get().memory_chat_injection_mode,
+    'full',
+  );
+});
+
 test('message search migration keeps a trigram index synchronized and adds an indexed date path', () => {
   const db = createLegacyMigrationDb();
   const { __migrateForTests } = requireFreshWithMocks('../src/lib/db.ts');

@@ -113,6 +113,8 @@ function createImportDb() {
       other_info TEXT NOT NULL DEFAULT '',
       image_tags TEXT NOT NULL DEFAULT '',
       user_image_tags TEXT NOT NULL DEFAULT '',
+      memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full'
+        CHECK (memory_chat_injection_mode IN ('full', 'local', 'hybrid', 'vector')),
       created_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT ''
     );
@@ -297,9 +299,60 @@ test('/api/import accepts a real SillyTavern v2 character card fixture', async (
   assert.equal(imported.personality, '安静、敏锐');
   assert.equal(imported.greeting, '你终于来了。');
   assert.equal(imported.image_tags, 'librarian, moonlight');
+  assert.equal(imported.memory_chat_injection_mode, 'full');
   assert.match(imported.basic_info, /【角色描述】\n来自月光图书馆的记录员。/);
   assert.match(imported.basic_info, /【创作者】\nfixture-author/);
   assert.match(imported.other_info, /【历史后置指令】\n不要跳出角色。/);
+});
+
+test('/api/import preserves valid character memory modes and defaults missing or invalid values', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  const response = await route.POST(importRequest({
+    characters: [
+      { id: 'old-vector', name: '向量角色', memory_chat_injection_mode: 'vector' },
+      { id: 'old-missing', name: '旧版角色' },
+      { id: 'old-invalid', name: '损坏角色', memory_chat_injection_mode: 'semantic' },
+    ],
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 200, body.error);
+  assert.equal(body.imported, 3);
+  const rows = db.prepare(`
+    SELECT name, memory_chat_injection_mode
+    FROM characters
+    WHERE name IN ('向量角色', '旧版角色', '损坏角色')
+    ORDER BY name ASC
+  `).all();
+  assert.deepEqual(Object.fromEntries(rows.map(row => [row.name, row.memory_chat_injection_mode])), {
+    向量角色: 'vector',
+    旧版角色: 'full',
+    损坏角色: 'full',
+  });
+});
+
+test('/api/import exposes the normalized character memory mode in target overlay drafts', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db, true);
+  const response = await route.POST(importRequest(
+    {
+      character: {
+        name: '覆盖草稿',
+        memory_chat_injection_mode: 'hybrid',
+      },
+    },
+    'target_character_id=target-char',
+  ));
+  const body = await response.json();
+
+  assert.equal(response.status, 200, body.error);
+  assert.equal(body.characterDraft.memory_chat_injection_mode, 'hybrid');
+  assert.equal(
+    db.prepare('SELECT memory_chat_injection_mode FROM characters WHERE id = ?').get('target-char')
+      .memory_chat_injection_mode,
+    'full',
+  );
 });
 
 test('/api/import round-trips memory v2 fields, source message ids, ignore_memory, and rebuilds continuous seq', async () => {
@@ -1267,8 +1320,8 @@ test('/api/export response imports unchanged into a second database with stable 
     INSERT INTO characters (
       id, name, avatar_url, basic_info, personality, scenario, greeting,
       example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
-      created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      memory_chat_injection_mode, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     sourceCharacterId,
     '串联测试角色',
@@ -1282,6 +1335,7 @@ test('/api/export response imports unchanged into a second database with stable 
     '稳定语义字段',
     'cat_ears, blue_hair',
     'black_hair',
+    'vector',
     '2026-07-01T00:00:00.000Z',
     '2026-07-02T00:00:00.000Z',
   );
@@ -1417,6 +1471,7 @@ test('/api/export response imports unchanged into a second database with stable 
     new RegExp(`filename="lumimuse-character-${sourceCharacterId}\\.json"`),
   );
   assert.equal(exportedPayload.character.name, '串联测试角色');
+  assert.equal(exportedPayload.character.memory_chat_injection_mode, 'vector');
 
   const importRoute = loadImportRoute(targetDb);
   const importResponse = await importRoute.POST(rawImportRequest(
@@ -1440,6 +1495,7 @@ test('/api/export response imports unchanged into a second database with stable 
   assert.equal(importedCharacter.personality, '温柔而坚定');
   assert.equal(importedCharacter.system_prompt, '始终保持角色表现');
   assert.equal(importedCharacter.image_tags, 'cat_ears, blue_hair');
+  assert.equal(importedCharacter.memory_chat_injection_mode, 'vector');
   assert.equal(importedCharacter.created_at, '2026-07-01T00:00:00.000Z');
 
   const importedConversation = targetDb.prepare(

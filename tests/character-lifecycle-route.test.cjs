@@ -83,6 +83,8 @@ function createCharacterDb() {
       image_tags TEXT NOT NULL DEFAULT '',
       user_image_tags TEXT NOT NULL DEFAULT '',
       active_preset_id TEXT,
+      memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full'
+        CHECK (memory_chat_injection_mode IN ('full', 'local', 'hybrid', 'vector')),
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -246,8 +248,8 @@ function createCharacterDb() {
     INSERT INTO characters (
       id, name, avatar_url, basic_info, personality, scenario, greeting,
       example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
-      active_preset_id, sort_order, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      active_preset_id, memory_chat_injection_mode, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     'char-source',
     '艾莉丝',
@@ -262,6 +264,7 @@ function createCharacterDb() {
     '1girl, blue eyes',
     '1boy, black hair',
     'preset-source',
+    'vector',
     7,
     sourceCreatedAt,
     sourceUpdatedAt,
@@ -633,6 +636,7 @@ test('/api/characters/[id]/duplicate copies committed memory authority and remap
     assert.equal(payload.id, 'id-000000001');
     assert.equal(payload.name, '艾莉丝（副本）');
     assert.equal(payload.active_preset_id, 'preset-source');
+    assert.equal(payload.memory_chat_injection_mode, 'vector');
     assert.deepEqual(payload.model_preset_bindings, [
       { model: 'claude-sonnet-4', preset_id: 'preset-model' },
     ]);

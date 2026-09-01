@@ -11,7 +11,12 @@
  *  - message content ≤ 100KB
  */
 import { z } from 'zod';
-import { MEMORY_CATEGORIES, MEMORY_KINDS, MEMORY_STATUSES } from '@/types';
+import {
+  MEMORY_CATEGORIES,
+  MEMORY_CHAT_INJECTION_MODES,
+  MEMORY_KINDS,
+  MEMORY_STATUSES,
+} from '@/types';
 
 // --------- 通用尺寸常量 ---------
 const MAX_NAME = 100;
@@ -341,6 +346,8 @@ export const characterCreateSchema = z.object({
   // 预设提示词绑定（null/'__none__'=不使用预设 / uuid=具体预设）。
   // 创建时未传则服务端默认 '__none__'（LumiMuse 传统骨架）。
   active_preset_id: z.string().max(64).nullable().optional(),
+  // 角色级聊天记忆注入模式；创建未传时服务端默认 full。
+  memory_chat_injection_mode: z.enum(MEMORY_CHAT_INJECTION_MODES).optional(),
   model_preset_bindings: z.array(characterModelPresetBindingSchema).max(64).superRefine((items, ctx) => {
     const seen = new Set<string>();
     items.forEach((item, index) => {

@@ -32,8 +32,29 @@ test('normalizeCharacterCard maps a real v2 card and normalizes optional fields'
   assert.equal(draft.greeting, '你终于来了。');
   assert.equal(draft.image_tags, ' librarian , moonlight');
   assert.equal(draft.user_image_tags, '');
+  assert.equal(draft.memory_chat_injection_mode, 'full');
   assert.match(draft.basic_info, /【版本】\n1.2/);
   assert.match(draft.other_info, /【作者备注】\n边界 fixture/);
+});
+
+test('normalizeCharacterCard preserves valid LumiMuse memory mode and defaults invalid values', () => {
+  const vectorDraft = normalizeCharacterCard({
+    character: {
+      name: '向量角色',
+      memory_chat_injection_mode: 'vector',
+    },
+  });
+  const invalidDraft = normalizeCharacterCard({
+    character: {
+      name: '旧角色',
+      memory_chat_injection_mode: 'unsupported-mode',
+    },
+  });
+
+  assert.ok(vectorDraft);
+  assert.ok(invalidDraft);
+  assert.equal(vectorDraft.memory_chat_injection_mode, 'vector');
+  assert.equal(invalidDraft.memory_chat_injection_mode, 'full');
 });
 
 test('normalizeCharacterCard rejects arrays and nameless cards', () => {

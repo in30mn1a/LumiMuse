@@ -13,7 +13,7 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 1 });
 Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 1 });
 
-const { cleanup, render, waitFor, within } = require('@testing-library/react');
+const { act, cleanup, render, waitFor, within } = require('@testing-library/react');
 const userEvent = require('@testing-library/user-event').default;
 
 const root = path.resolve(__dirname, '..');
@@ -209,7 +209,10 @@ test('gallery preview keeps a visible loading viewport while cache warming is pe
   assert.match(loadingStatus.className, /h-\[70dvh\]/);
   assert.match(loadingStatus.className, /w-\[90vw\]/);
 
-  resolveWarm(null);
+  await act(async () => {
+    resolveWarm(null);
+    await warmPromise;
+  });
   await waitFor(() => assert.ok(within(previewDialog).getByRole('img', { name: 'chat.imagePreviewAlt' })));
   assert.equal(view.container.isConnected, true);
 });

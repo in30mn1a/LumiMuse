@@ -1,5 +1,6 @@
 import {
   DEFAULT_MEMORY_ENGINE_SETTINGS,
+  MEMORY_CHAT_INJECTION_MODES,
   MemoryChatInjectionMode,
   MemoryEngineSettings,
   Settings,
@@ -14,6 +15,13 @@ export interface MemoryRuntimePolicy {
 }
 
 type RawMemoryEngineSettings = Partial<MemoryEngineSettings> & Record<string, unknown>;
+
+/** 角色字段来自 SQLite/导入数据；任何缺失或损坏值都安全回退为产品默认 full。 */
+export function normalizeCharacterMemoryChatInjectionMode(value: unknown): MemoryChatInjectionMode {
+  return MEMORY_CHAT_INJECTION_MODES.includes(value as MemoryChatInjectionMode)
+    ? value as MemoryChatInjectionMode
+    : 'full';
+}
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
   if (typeof value === 'boolean') return value;
@@ -68,8 +76,7 @@ export function normalizeMemoryEngineSettings(
     : enabled && embeddingEnabled;
 
   const explicitMode = raw.chat_injection_mode;
-  const validModes: MemoryChatInjectionMode[] = ['full', 'local', 'hybrid', 'vector'];
-  merged.chat_injection_mode = validModes.includes(explicitMode as MemoryChatInjectionMode)
+  merged.chat_injection_mode = MEMORY_CHAT_INJECTION_MODES.includes(explicitMode as MemoryChatInjectionMode)
     ? explicitMode as MemoryChatInjectionMode
     : legacyChatInjectionMode(enabled, embeddingEnabled, fallbackLocalEnabled, limitInject);
 

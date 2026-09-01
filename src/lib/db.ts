@@ -13,13 +13,39 @@ import {
   enableGeneratedImageFolderMigrationTracking,
   installGeneratedImageFolderMigrationTracking,
 } from '@/lib/generated-image-folder-migration';
+import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
+import type { MemoryChatInjectionMode } from '@/types';
 
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'lumimuse.db');
 const GENERATED_IMAGE_FOLDER_MIGRATION_KEY = 'migration_generated_images_by_character_v1';
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 let _db: Database.Database | null = null;
+
+function parsePersistedSetting(value: string | undefined): unknown {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+/** 首次加角色字段时，把升级前唯一的全局选择复制到每个已有角色。 */
+function legacyGlobalMemoryChatMode(db: Database.Database): MemoryChatInjectionMode {
+  try {
+    const rows = db.prepare(
+      "SELECT key, value FROM settings WHERE key IN ('memory_engine', 'limit_inject')",
+    ).all() as Array<{ key: string; value: string }>;
+    const values = new Map(rows.map(row => [row.key, parsePersistedSetting(row.value)]));
+    const rawLimitInject = values.get('limit_inject');
+    const limitInject = rawLimitInject === true || rawLimitInject === 1;
+    return normalizeMemoryEngineSettings(values.get('memory_engine'), limitInject).chat_injection_mode;
+  } catch {
+    return 'full';
+  }
+}
 
 function backfillMemoryDefaults(
   db: Database.Database,
@@ -737,6 +763,28 @@ function migrate(db: Database.Database): void {
   }
   if (!charCols.some(c => c.name === 'user_image_tags')) {
     db.exec(`ALTER TABLE characters ADD COLUMN user_image_tags TEXT NOT NULL DEFAULT ''`);
+  }
+
+  // 聊天记忆注入模式从全局设置迁到角色：旧角色只在首次加列时复制一次旧全局有效值；
+  // 此后全局字段即使变化也不得再覆盖角色。新建角色由列默认值使用 full。
+  const addedCharacterMemoryChatMode = !charCols.some(c => c.name === 'memory_chat_injection_mode');
+  if (addedCharacterMemoryChatMode) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE characters ADD COLUMN memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full'
+        CHECK(memory_chat_injection_mode IN ('full', 'local', 'hybrid', 'vector'))
+      `);
+      db.prepare('UPDATE characters SET memory_chat_injection_mode = ?')
+        .run(legacyGlobalMemoryChatMode(db));
+    })();
+  } else {
+    // 兼容早期 partial schema 或人工导入产生的可空/无 CHECK 列。
+    db.exec(`
+      UPDATE characters
+      SET memory_chat_injection_mode = 'full'
+      WHERE memory_chat_injection_mode IS NULL
+         OR memory_chat_injection_mode NOT IN ('full', 'local', 'hybrid', 'vector')
+    `);
   }
 
   // 增量迁移：characters 表补 sort_order 列（侧边栏拖拽排序，越小越靠前）

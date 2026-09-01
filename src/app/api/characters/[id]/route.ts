@@ -64,7 +64,7 @@ export async function PUT(
       UPDATE characters SET
         name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
         greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?,
-        active_preset_id = ?, updated_at = ?
+        active_preset_id = ?, memory_chat_injection_mode = ?, updated_at = ?
       WHERE id = ?
     `).run(
       body.name ?? existing.name,
@@ -82,6 +82,7 @@ export async function PUT(
       body.active_preset_id !== undefined
         ? (body.active_preset_id === null || body.active_preset_id === '' ? null : body.active_preset_id)
         : ((existing as Character & { active_preset_id?: string | null }).active_preset_id ?? null),
+      body.memory_chat_injection_mode ?? existing.memory_chat_injection_mode ?? 'full',
       now,
       id,
     );

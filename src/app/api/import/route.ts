@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { inferMemoryDefaults, normalizeMemoryCategory } from '@/lib/memory-category';
 import { normalizeCharacterCard, type CharacterDraft } from '@/lib/character-card-import';
+import { normalizeCharacterMemoryChatInjectionMode } from '@/lib/memory-runtime-policy';
 import { requireAuth } from '@/lib/route-auth';
 import { remapJsonStringIds } from '@/lib/character-file-utils';
 import { EXPORT_VERSION } from '@/lib/export-version';
@@ -577,8 +578,12 @@ function importPayload({
   const findCharacterByName = db.prepare('SELECT id FROM characters WHERE name = ?');
   const characterExistsByName = (name: string) => Boolean(findCharacterByName.get(name));
   const insertCharacter = db.prepare(`
-    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO characters (
+      id, name, avatar_url, basic_info, personality, scenario, greeting,
+      example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
+      memory_chat_injection_mode, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertConversation = db.prepare(`
     INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
@@ -704,6 +709,7 @@ function importPayload({
         asString(char.other_info),
         asString(char.image_tags),
         asString(char.user_image_tags),
+        normalizeCharacterMemoryChatInjectionMode(char.memory_chat_injection_mode),
         asString(char.created_at) || now,
         now,
       );

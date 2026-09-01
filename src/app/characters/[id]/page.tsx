@@ -445,6 +445,14 @@ export default function CharacterEditor({ params }: Props) {
     return <div className="px-6 py-10 text-text-muted">{t('editor.loading')}</div>;
   }
 
+  const memoryChatInjectionMode = character.memory_chat_injection_mode ?? 'full';
+  const memoryChatInjectionModeHint = {
+    full: t('editor.memoryChatInjectionModeFullHint'),
+    local: t('editor.memoryChatInjectionModeLocalHint'),
+    hybrid: t('editor.memoryChatInjectionModeHybridHint'),
+    vector: t('editor.memoryChatInjectionModeVectorHint'),
+  }[memoryChatInjectionMode];
+
   return (
     <div className="app-shell min-h-screen px-4 py-4">
       {exportOpen && <ExportDialog characterId={id} onClose={() => setExportOpen(false)} />}
@@ -584,14 +592,44 @@ export default function CharacterEditor({ params }: Props) {
             </section>
 
             <section className="surface-panel p-5">
-              <PresetSelectField
-                value={character.active_preset_id ?? null}
-                onChange={(v) => {
-                  if (!character) return;
-                  setDirty(true);
-                  setCharacter({ ...character, active_preset_id: v });
-                }}
-              />
+              <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
+                <PresetSelectField
+                  value={character.active_preset_id ?? null}
+                  onChange={(v) => {
+                    if (!character) return;
+                    setDirty(true);
+                    setCharacter({ ...character, active_preset_id: v });
+                  }}
+                />
+                <div>
+                  <label htmlFor="character-memory-chat-injection-mode" className="mb-2 block text-sm font-medium text-text-secondary">
+                    {t('editor.memoryChatInjectionMode')}
+                  </label>
+                  <p className="mb-2 text-xs leading-relaxed text-text-muted">
+                    {t('editor.memoryChatInjectionModeHint')}
+                  </p>
+                  <select
+                    id="character-memory-chat-injection-mode"
+                    className="select-rich w-full"
+                    value={memoryChatInjectionMode}
+                    onChange={(event) => {
+                      setDirty(true);
+                      setCharacter({
+                        ...character,
+                        memory_chat_injection_mode: event.target.value as Character['memory_chat_injection_mode'],
+                      });
+                    }}
+                  >
+                    <option value="full">{t('editor.memoryChatInjectionModeFull')}</option>
+                    <option value="local">{t('editor.memoryChatInjectionModeLocal')}</option>
+                    <option value="hybrid">{t('editor.memoryChatInjectionModeHybrid')}</option>
+                    <option value="vector">{t('editor.memoryChatInjectionModeVector')}</option>
+                  </select>
+                  <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
+                    {memoryChatInjectionModeHint}
+                  </p>
+                </div>
+              </div>
               <ModelPresetBindingsField
                 value={character.model_preset_bindings ?? []}
                 onChange={(bindings) => {

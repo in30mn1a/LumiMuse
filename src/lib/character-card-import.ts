@@ -1,4 +1,4 @@
-import type { Character } from '@/types';
+import type { Character, MemoryChatInjectionMode } from '@/types';
 
 export type CharacterDraft = Pick<Character,
   'name' |
@@ -12,8 +12,20 @@ export type CharacterDraft = Pick<Character,
   'other_info' |
   'image_tags' |
   'user_image_tags' |
-  'model_preset_bindings'
+  'model_preset_bindings' |
+  'memory_chat_injection_mode'
 >;
+
+function normalizeMemoryChatInjectionMode(value: unknown): MemoryChatInjectionMode {
+  switch (value) {
+    case 'local':
+    case 'hybrid':
+    case 'vector':
+      return value;
+    default:
+      return 'full';
+  }
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -60,6 +72,9 @@ export function normalizeCharacterCard(payload: unknown): CharacterDraft | null 
       other_info: text(lumimuseCharacter.other_info),
       image_tags: text(lumimuseCharacter.image_tags),
       user_image_tags: text(lumimuseCharacter.user_image_tags),
+      memory_chat_injection_mode: normalizeMemoryChatInjectionMode(
+        lumimuseCharacter.memory_chat_injection_mode,
+      ),
     };
   }
 
@@ -85,5 +100,6 @@ export function normalizeCharacterCard(payload: unknown): CharacterDraft | null 
     ]),
     image_tags: tagsToText(data.tags),
     user_image_tags: '',
+    memory_chat_injection_mode: 'full',
   };
 }

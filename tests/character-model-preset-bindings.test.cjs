@@ -161,12 +161,19 @@ test('GET/PUT character model preset bindings replace-all and keep-on-omit', asy
   db.close();
 });
 
-test('character editor and i18n expose model preset bindings', () => {
+test('character editor exposes model preset bindings and per-character memory injection mode', () => {
   const page = fs.readFileSync(path.join(root, 'src/app/characters/[id]/page.tsx'), 'utf8');
   const field = fs.readFileSync(path.join(root, 'src/components/ui/ModelPresetBindingsField.tsx'), 'utf8');
   const i18n = fs.readFileSync(path.join(root, 'src/lib/i18n.ts'), 'utf8');
   assert.match(page, /ModelPresetBindingsField/);
   assert.match(page, /preset\.modelBindDuplicate/);
+  assert.match(page, /character-memory-chat-injection-mode/);
+  assert.match(page, /character\.memory_chat_injection_mode \?\? 'full'/);
+  assert.match(page, /memory_chat_injection_mode: event\.target\.value/);
+  for (const mode of ['full', 'local', 'hybrid', 'vector']) {
+    assert.match(page, new RegExp(`<option value="${mode}">`));
+  }
+  assert.doesNotMatch(page, /inherit.{0,40}memory|memory.{0,40}inherit/i);
   assert.match(field, /select-rich/);
   assert.doesNotMatch(field, /datalist/);
   assert.doesNotMatch(field, /list=/);
@@ -174,4 +181,8 @@ test('character editor and i18n expose model preset bindings', () => {
   assert.match(i18n, /'preset\.modelBindTitle': 'Model preset bindings'/);
   assert.match(i18n, /'preset\.modelBindModelPlaceholder': '请选择模型'/);
   assert.match(i18n, /'preset\.modelBindModelPlaceholder': 'Select a model'/);
+  assert.match(i18n, /'editor\.memoryChatInjectionMode': '记忆注入模式'/);
+  assert.match(i18n, /'editor\.memoryChatInjectionMode': 'Memory injection mode'/);
+  assert.match(i18n, /'editor\.memoryChatInjectionModeVector': '向量优先（Vector）'/);
+  assert.match(i18n, /'editor\.memoryChatInjectionModeVector': 'Vector first \(Vector\)'/);
 });

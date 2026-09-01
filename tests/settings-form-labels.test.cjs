@@ -368,7 +368,7 @@ test('memory package token budget stays blank while editing and resets on blur',
   assert.equal(input.value, '64000');
 });
 
-test('memory index, chat mode, and reranker controls update independently', () => {
+test('memory index and reranker remain independently configurable without a global chat mode selector', () => {
   const { DEFAULT_MEMORY_ENGINE_SETTINGS, DEFAULT_SETTINGS } = require('../src/types/index.ts');
   const { MemoryEngineSection } = loadSettingsComponents();
   const changes = [];
@@ -406,16 +406,19 @@ test('memory index, chat mode, and reranker controls update independently', () =
   }));
 
   const index = view.getByRole('checkbox', { name: /^settings\.memoryIndexEnabled/ });
-  const mode = view.getByLabelText('settings.memoryChatInjectionMode');
   assert.equal(index.checked, true);
-  assert.equal(mode.value, 'full');
-  assert.equal(view.getByLabelText('settings.memoryRerankerEnabled').checked, true);
+  const reranker = view.getByLabelText('settings.memoryRerankerEnabled');
+  assert.equal(reranker.checked, true);
   assert.equal(view.getByLabelText('settings.memoryPackageTokenBudget').value, '51200');
+  assert.equal(view.queryByLabelText('settings.memoryChatInjectionMode'), null);
 
-  fireEvent.change(mode, { target: { value: 'hybrid' } });
-  assert.deepEqual(changes, [['chat_injection_mode', 'hybrid']]);
+  fireEvent.click(index);
+  fireEvent.click(reranker);
+  assert.deepEqual(changes, [
+    ['index_enabled', false],
+    ['reranker_enabled', false],
+  ]);
   assert.equal(view.getByLabelText('settings.memoryPackageTokenBudget').value, '51200');
-  assert.equal(view.getByLabelText('settings.memoryRerankerEnabled').checked, true);
   view.unmount();
 });
 

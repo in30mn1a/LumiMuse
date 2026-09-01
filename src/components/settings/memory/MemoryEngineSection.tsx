@@ -54,9 +54,6 @@ export function MemoryEngineSection({
   t,
   children,
 }: MemoryEngineSectionProps) {
-  const advancedMemoryEnabled = settings.memory_engine.index_enabled
-    || settings.memory_engine.chat_injection_mode !== 'full';
-
   return (
     <section className="surface-panel p-5">
       <div className="mb-4">
@@ -77,26 +74,6 @@ export function MemoryEngineSection({
             <span className="mt-1 block text-xs leading-relaxed text-text-muted">{t('settings.memoryIndexEnabledHint')}</span>
           </span>
         </label>
-
-        <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-          <label htmlFor="settings-memory-chat-injection-mode" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.memoryChatInjectionMode')}</label>
-          <select
-            id="settings-memory-chat-injection-mode"
-            value={settings.memory_engine.chat_injection_mode}
-            onChange={e => updateMemoryEngine('chat_injection_mode', e.target.value as MemoryEngineSettings['chat_injection_mode'])}
-            className="select-rich"
-          >
-            <option value="full">{t('settings.memoryChatInjectionModeFull')}</option>
-            <option value="local">{t('settings.memoryChatInjectionModeLocal')}</option>
-            <option value="hybrid">{t('settings.memoryChatInjectionModeHybrid')}</option>
-            <option value="vector">{t('settings.memoryChatInjectionModeVector')}</option>
-          </select>
-          <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
-            {settings.memory_engine.chat_injection_mode === 'full'
-              ? t('settings.memoryChatInjectionModeFullHint')
-              : t('settings.memoryChatInjectionModeHint')}
-          </p>
-        </div>
 
         <div className="space-y-4 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
           <div>
@@ -227,11 +204,7 @@ export function MemoryEngineSection({
               }}
               className="input-rich"
             />
-            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
-              {settings.memory_engine.chat_injection_mode === 'full'
-                ? t('settings.memoryPackageTokenBudgetFullHint')
-                : t('settings.memoryPackageTokenBudgetHint')}
-            </p>
+            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryPackageTokenBudgetHint')}</p>
           </div>
         </div>
 
@@ -311,9 +284,7 @@ export function MemoryEngineSection({
 
         <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryReranker')}</h3>
-          {settings.memory_engine.chat_injection_mode === 'full' && (
-            <p className="text-xs leading-relaxed text-text-muted">{t('settings.memoryRerankerFullHint')}</p>
-          )}
+          <p className="text-xs leading-relaxed text-text-muted">{t('settings.memoryRerankerHint')}</p>
           <label className="flex items-center gap-3 text-sm text-text-secondary">
             <input
               type="checkbox"
@@ -383,30 +354,26 @@ export function MemoryEngineSection({
           )}
         </div>
 
-        {advancedMemoryEnabled && (
-          <>
-            <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-              <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryPrivacy')}</h3>
-              <label className="flex items-center gap-3 text-sm text-text-secondary">
-                <input
-                  type="checkbox"
-                  checked={settings.memory_engine.allow_memory_context_in_chat}
-                  onChange={e => updateMemoryEngine('allow_memory_context_in_chat', e.target.checked)}
-                />
-                {t('settings.memoryAllowChatContext')}
-              </label>
-              <label className="flex items-center gap-3 text-sm text-text-secondary">
-                <input
-                  type="checkbox"
-                  checked={settings.memory_engine.allow_external_memory_payloads}
-                  onChange={e => updateMemoryEngine('allow_external_memory_payloads', e.target.checked)}
-                />
-                {t('settings.memoryAllowExternalPayloads')}
-              </label>
-            </div>
-            {children}
-          </>
-        )}
+        <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+          <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryPrivacy')}</h3>
+          <label className="flex items-center gap-3 text-sm text-text-secondary">
+            <input
+              type="checkbox"
+              checked={settings.memory_engine.allow_memory_context_in_chat}
+              onChange={e => updateMemoryEngine('allow_memory_context_in_chat', e.target.checked)}
+            />
+            {t('settings.memoryAllowChatContext')}
+          </label>
+          <label className="flex items-center gap-3 text-sm text-text-secondary">
+            <input
+              type="checkbox"
+              checked={settings.memory_engine.allow_external_memory_payloads}
+              onChange={e => updateMemoryEngine('allow_external_memory_payloads', e.target.checked)}
+            />
+            {t('settings.memoryAllowExternalPayloads')}
+          </label>
+        </div>
+        {children}
 
         <div className="border-t border-border-light pt-3" />
 
@@ -499,10 +466,6 @@ export function MemoryEngineSection({
           />
           {t('settings.limitInject')}
         </label>
-
-        {settings.memory_engine.chat_injection_mode === 'full' && (
-          <p className="-mt-2 text-xs leading-relaxed text-text-muted">{t('settings.limitInjectFullHint')}</p>
-        )}
 
         {settings.limit_inject && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">

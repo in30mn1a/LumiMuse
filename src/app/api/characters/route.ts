@@ -36,6 +36,7 @@ export async function POST(request: NextRequest) {
   const activePresetId = body.active_preset_id === undefined
     ? PRESET_ID_NONE
     : (body.active_preset_id === null || body.active_preset_id === '' ? PRESET_ID_NONE : body.active_preset_id);
+  const memoryChatInjectionMode = body.memory_chat_injection_mode ?? 'full';
 
   if (body.model_preset_bindings !== undefined) {
     const missingPresetId = findMissingBindingPresetId(body.model_preset_bindings);
@@ -53,8 +54,8 @@ export async function POST(request: NextRequest) {
   const nextSort = minRow.min_sort === null ? 0 : minRow.min_sort - 1;
 
   db.prepare(`
-    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, active_preset_id, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, active_preset_id, memory_chat_injection_mode, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     body.name || 'New Character',
@@ -69,6 +70,7 @@ export async function POST(request: NextRequest) {
     body.image_tags || '',
     body.user_image_tags || '',
     activePresetId,
+    memoryChatInjectionMode,
     nextSort,
     now,
     now,

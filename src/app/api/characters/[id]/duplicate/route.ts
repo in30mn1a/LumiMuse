@@ -456,8 +456,8 @@ export async function POST(
         INSERT INTO characters (
           id, name, avatar_url, basic_info, personality, scenario, greeting,
           example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
-          active_preset_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          active_preset_id, memory_chat_injection_mode, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         newCharacterId,
         newName,
@@ -472,6 +472,7 @@ export async function POST(
         original.image_tags || '',
         original.user_image_tags || '',
         original.active_preset_id ?? null,
+        original.memory_chat_injection_mode,
         now,
         now,
       );

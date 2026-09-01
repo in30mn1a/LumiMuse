@@ -23,6 +23,7 @@ import { buildCurrentTimeInstruction, ChatTimeContext } from '@/lib/chat-time';
 import { estimateTokens } from '@/lib/token-counter';
 import { mergeConsecutiveRoles } from '@/lib/merge-messages';
 import { buildInlinePromptInstruction } from '@/lib/inline-image-prompt';
+import { resolveImagePromptStyle } from '@/lib/nai-image';
 import {
   prepareImageTagsForLlm,
 } from '@/lib/image-prompt-sensitive-tags';
@@ -380,7 +381,11 @@ export async function assemblePresetPrompt(
   if (settings.image_gen?.enabled && settings.image_gen?.inline_prompt) {
     const { tagsForLlm } = prepareImageTagsForLlm(character.image_tags);
     const { tagsForLlm: userTagsForLlm } = prepareImageTagsForLlm(character.user_image_tags);
-    inlinePromptInstruction = buildInlinePromptInstruction(tagsForLlm, userTagsForLlm);
+    inlinePromptInstruction = buildInlinePromptInstruction(
+      tagsForLlm,
+      userTagsForLlm,
+      resolveImagePromptStyle(settings.image_gen),
+    );
   }
 
   let baseTokens = estimateTokens(behaviorAndTimeContent);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { loadSettings } from '@/lib/settings';
 import { ImageGenSettings, DEFAULT_IMAGE_GEN_SETTINGS } from '@/types';
+import { buildNaiGenerateRequest } from '@/lib/nai-image';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { formatZodFieldErrors, imageGenBodySchema } from '@/lib/schemas';
 import { writeFile, mkdir } from 'fs/promises';
@@ -338,72 +339,7 @@ async function generateNAI(
   characterId?: string,
   clientSignal?: AbortSignal,
 ): Promise<string> {
-  // 画师串放在最前面
-  let fullPrompt = '';
-  if (cfg.nai_artist_tags) {
-    fullPrompt += cfg.nai_artist_tags + ', ';
-  }
-  if (cfg.quality_tags) {
-    fullPrompt += cfg.quality_tags + ', ';
-  }
-  fullPrompt += prompt;
-
-  const fullNeg = negativePrompt || cfg.nai_negative_prompt;
-  const model = cfg.nai_model;
-  const isV4 = model.includes('4');
-
-  // 构建请求体
-  const parameters: Record<string, unknown> = {
-    width: cfg.nai_width,
-    height: cfg.nai_height,
-    scale: cfg.nai_scale,
-    cfg_rescale: cfg.nai_cfg_rescale,
-    sampler: cfg.nai_sampler,
-    noise_schedule: cfg.nai_noise_schedule,
-    steps: cfg.nai_steps,
-    n_samples: 1,
-    ucPreset: 0,
-    negative_prompt: fullNeg,
-    seed: Math.floor(Math.random() * 2 ** 32),
-    extra_noise_seed: Math.floor(Math.random() * 2 ** 32),
-  };
-
-  // V4/V4.5 模型需要额外参数
-  if (isV4) {
-    parameters.params_version = 3;
-    parameters.legacy = false;
-    parameters.prefer_brownian = true;
-    parameters.quality_toggle = true;
-    parameters.autoSmea = true;
-    parameters.dynamic_thresholding = false;
-    parameters.v4_prompt = {
-      caption: {
-        base_caption: fullPrompt,
-        char_captions: [],
-      },
-      use_coords: false,
-      use_order: true,
-    };
-    parameters.v4_negative_prompt = {
-      caption: {
-        base_caption: fullNeg,
-        char_captions: [],
-      },
-      use_coords: false,
-      use_order: false,
-    };
-    // V4.5 特有参数
-    if (model.includes('4-5')) {
-      parameters.skip_cfg_above_sigma = null;
-    }
-  }
-
-  const body = {
-    input: fullPrompt,
-    model: model,
-    action: 'generate',
-    parameters,
-  };
+  const body = buildNaiGenerateRequest(prompt, negativePrompt, cfg);
 
   const { signal, clear } = withTimeoutSignal(resolveGenerateTimeout(cfg), clientSignal);
   try {

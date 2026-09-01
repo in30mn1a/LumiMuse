@@ -11,6 +11,7 @@ import { normalizeCharacterMemoryChatInjectionMode } from '@/lib/memory-runtime-
 import { buildCurrentTimeInstruction, buildTimestampAnchoredTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
 import { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } from '@/lib/inline-image-prompt';
+import { resolveImagePromptStyle } from '@/lib/nai-image';
 import {
   buildMessageTokenCountContent,
   createMessageTokenCount,
@@ -173,9 +174,12 @@ export function finalizeAssistantResponse(
 ): { fullText: string; inlinePrompt: string } {
   const withoutTimestamp = stripTimestampPrefix(rawText);
   const rawInlinePrompt = extractInlinePrompt(withoutTimestamp);
-  const originalTags = [options.characterImageTags, options.userImageTags].filter(Boolean).join(', ');
   const inlinePrompt = rawInlinePrompt
-    ? restoreSensitiveImageTagsToPrompt(rawInlinePrompt, originalTags)
+    ? restoreSensitiveImageTagsToPrompt(
+        rawInlinePrompt,
+        options.characterImageTags,
+        options.userImageTags,
+      )
     : '';
   const withoutInlinePrompt = rawInlinePrompt
     ? stripInlinePrompt(withoutTimestamp)
@@ -456,6 +460,7 @@ export async function assemblePrompt(
     ? buildInlinePromptInstruction(
         prepareImageTagsForLlm(character.image_tags).tagsForLlm,
         prepareImageTagsForLlm(character.user_image_tags).tagsForLlm,
+        resolveImagePromptStyle(settings.image_gen),
       )
     : '';
   const useStableTimeInstruction = Boolean(timeContext) && settings.show_timestamps;

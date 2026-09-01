@@ -1,3 +1,5 @@
+import { formatNaiPromptFields, parseNaiPromptFields } from '@/lib/nai-image';
+
 /**
  * LLM 对 image_tags 里的幼态/敏感 danbooru 词会误拦或 403。
  * 生图 prompt 请求前先剥离，生成后再按 image_tags 原顺序拼回，保证 NAI/SD 侧外貌完整。
@@ -171,13 +173,40 @@ export function prepareImageTagsForLlm(
 
 /**
  * 模型产出的生图 prompt（内联或专用）落库/出图前：按 image_tags 原顺序拼回敏感 tag。
+ *
+ * V5 结构化字段把外貌写在 Character 栏，敏感 tag 必须插回**各自归属**的栏：
+ * 角色的进 Character 1，用户的进 Character 2。两者不能合成一个串，否则用户的
+ * 发色/瞳色/体型会长到角色身上。用户未出场（没有 Character 2）时，其敏感 tag
+ * 直接丢弃——与「用户不在画面里就不写用户外貌」的指令一致。
+ *
+ * 非结构化（danbooru 单行 tag 串）沿用旧行为：两者合并后按原顺序拼回。
  */
 export function restoreSensitiveImageTagsToPrompt(
   prompt: string,
-  imageTags?: string,
+  characterImageTags?: string,
+  userImageTags?: string,
 ): string {
-  if (!prompt.trim() || !imageTags?.trim()) {
+  const characterTags = characterImageTags?.trim() ?? '';
+  const userTags = userImageTags?.trim() ?? '';
+  if (!prompt.trim() || (!characterTags && !userTags)) {
     return prompt;
   }
-  return rejoinSensitiveTagsFromOriginalOrder(prompt, imageTags);
+
+  const fields = parseNaiPromptFields(prompt);
+  if (fields.structured) {
+    if (characterTags) {
+      if (fields.characters[0] != null) {
+        fields.characters[0] = rejoinSensitiveTagsFromOriginalOrder(fields.characters[0], characterTags);
+      } else {
+        fields.prompt = rejoinSensitiveTagsFromOriginalOrder(fields.prompt, characterTags);
+      }
+    }
+    if (userTags && fields.characters[1] != null) {
+      fields.characters[1] = rejoinSensitiveTagsFromOriginalOrder(fields.characters[1], userTags);
+    }
+    return formatNaiPromptFields(fields);
+  }
+
+  const originalOrder = [characterTags, userTags].filter(Boolean).join(', ');
+  return rejoinSensitiveTagsFromOriginalOrder(prompt, originalOrder);
 }

@@ -274,3 +274,83 @@ test('image prompt route isolates sensitive tags in image_tags and user_image_ta
   assert.match(body.prompt, /\{1\.3::loli::\}/);
   assert.match(body.prompt, /\(shota:1\.3\)/);
 });
+
+test('NAI V5 prompt generation uses the V5 system prompt and structured Character fields', async () => {
+  let capturedSystem = '';
+  let capturedUser = '';
+  const route = requireFreshWithMocks('../src/app/api/image-gen/prompt/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': {
+      getDb: () => ({
+        prepare: (sql) => {
+          if (sql.includes('FROM conversations')) {
+            return { get: () => ({ character_id: 'char-v5', parent_id: null, parent_seq_end: null }) };
+          }
+          if (sql.includes('FROM characters')) {
+            return {
+              get: () => ({
+                name: 'Mira',
+                personality: 'quiet',
+                scenario: 'rainy cafe',
+                image_tags: 'blue eyes, 1.3::loli::, red hair',
+                user_image_tags: '',
+              }),
+            };
+          }
+          if (sql.includes('FROM messages')) {
+            return { all: () => [{ role: 'assistant', content: '看着窗外的雨。' }] };
+          }
+          throw new Error(`unexpected SQL: ${sql}`);
+        },
+      }),
+    },
+    '@/lib/settings': {
+      loadSettings: () => ({
+        api_base: 'https://llm.example/v1',
+        api_key: 'secret',
+        model: 'gpt-4o',
+        image_gen: {
+          enabled: true,
+          engine: 'nai',
+          nai_model: 'nai-diffusion-5-full',
+        },
+      }),
+      resolveBackgroundConfig: (s) => ({
+        api_base: s.api_base,
+        api_key: s.api_key,
+        model: s.model,
+      }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      chatCompletion: async (_settings, messages) => {
+        capturedSystem = messages[0].content;
+        capturedUser = messages[1].content;
+        return `Prompt:\n1girl, from side, rainy window\n\nCharacter 1:\ngirl, blue eyes, red hair`;
+      },
+    },
+  });
+
+  const response = await route.POST(jsonRequest({ conversation_id: 'conv-v5' }));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.match(capturedSystem, /NovelAI Diffusion V5/);
+  assert.match(capturedSystem, /Character N/);
+  assert.doesNotMatch(capturedSystem, /POSITIVE:/);
+  assert.match(capturedUser, /Character 1/);
+  assert.doesNotMatch(capturedUser, /POSITIVE/);
+  assert.doesNotMatch(capturedUser, /loli/i);
+  assert.match(body.prompt, /^Prompt:/);
+  assert.match(body.prompt, /Character 1:/);
+  assert.match(body.prompt, /1\.3::loli::/);
+  assert.doesNotMatch(body.prompt.split('Character 1:')[0], /loli/);
+});

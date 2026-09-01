@@ -1,13 +1,17 @@
+import type { ImagePromptStyle } from '@/lib/nai-image';
+import { buildInlinePromptInstructionForStyle } from '@/lib/image-prompt-instructions';
+
 /**
  * 内联生图提示词（inline image prompt）
  *
- * 思路：让聊天模型在正常回复的末尾，用 [IMG]...[/IMG] 包裹一段 danbooru 风格的生图提示词。
+ * 思路：让聊天模型在正常回复的末尾，用 [IMG]...[/IMG] 包裹一段生图提示词。
  * 聊天本身是流式且很快的，相当于「顺风车」捎带把提示词生成了，出图时直接复用，
  * 免去单独调用慢速的 /api/image-gen/prompt（推理模型生成数千 token 要等数十秒）。
  *
  * 约定：
  * - 标记用 [IMG] / [/IMG]，大小写不敏感
- * - 提示词为英文 danbooru tag，逗号分隔
+ * - V3/V4/SD：英文 danbooru tag，逗号分隔
+ * - NAI V5：Prompt / Character N 字段，tag 与自然语言混写
  * - 提取后会从正文中剥离，保证上下文 / 记忆 / token 统计干净，前端也不展示该块
  */
 
@@ -25,22 +29,20 @@ const INLINE_IMG_OPEN_TAIL = /\[IMG\b[\s\S]*$/i;
  *
  * 该指令只在发给模型的请求里临时追加，绝不落库 —— 否则会污染对话记录、记忆提取与前端显示。
  *
- * 措辞经实测调校：保持单段紧凑（指令过长模型会整段忽略），但明确「35 - 70 个标签」+ 六个
- * 覆盖维度，以保证 tag 数量适中。开头「系统附加要求…不算跳出角色」用于压过角色人设里
- * 「回复必须是纯粹角色对话内容」之类的强约束。
+ * V5 内联指令复用气泡生图的完整写法规范，外面包一层 [IMG] 包装，避免两套口径漂移。
+ * Danbooru 路径仍用较短的六维度 tag 指令。开头「系统附加要求…不算跳出角色」用于压过
+ * 角色人设里「回复必须是纯粹角色对话内容」之类的强约束。
  *
  * @param imageTags 角色固定外貌标签，要求模型务必包含，保证人物外观一致
  * @param userImageTags 用户本人外貌标签，仅当用户出现在画面中时才包含（单人/独白场景忽略）
+ * @param style 生图提示词风格；NAI V5 时改为 Prompt / Character 字段
  */
-export function buildInlinePromptInstruction(imageTags?: string, userImageTags?: string): string {
-  const tagPart = imageTags && imageTags.trim()
-    ? `，且必须含固定外貌标签：${imageTags.trim()}`
-    : '';
-  const userPart = userImageTags && userImageTags.trim()
-    ? `；仅当本条画面是角色与用户的亲密互动且用户本人出场时，需包含用户外貌标签：${userImageTags.trim()}`
-    : '';
-  const soloPart = '；如果不是角色与用户的亲密互动，不得包含任何用户外貌标签，必须生成只包含角色的单人/多人场景';
-  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行追加一段英文 danbooru 文生图标签串，用 [IMG] 和 [/IMG] 包裹，描述本条回复对应的画面。要求：35 - 70 个标签，英文逗号分隔；依次覆盖【画面构成】(分级 sfw/nsfw、人数如 1girl、画幅、视角、镜头)、【外貌】(发型发色瞳色体型${tagPart}${userPart}${soloPart})、【服饰】(逐件列出)、【动作】(贴合本条剧情)、【表情】(视线情绪面部细节)、【场景】(地点环境时间光影)；默认第三人称，可以在亲密互动时适当使用POV视角；[IMG] 块只出现一次放最后；正文不要提及标签；无论对话长短都不要省略。`;
+export function buildInlinePromptInstruction(
+  imageTags?: string,
+  userImageTags?: string,
+  style: ImagePromptStyle = 'danbooru',
+): string {
+  return buildInlinePromptInstructionForStyle(style, imageTags, userImageTags);
 }
 
 /**

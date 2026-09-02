@@ -1,5 +1,10 @@
 import type { ImagePromptStyle } from '@/lib/nai-image';
-import { buildInlinePromptInstructionForStyle } from '@/lib/image-prompt-instructions';
+import {
+  buildInlinePromptInstructionForStyle,
+  INLINE_PROMPT_SYSTEM_REMINDER,
+} from '@/lib/image-prompt-instructions';
+
+export { INLINE_PROMPT_SYSTEM_REMINDER };
 
 /**
  * 内联生图提示词（inline image prompt）
@@ -29,9 +34,9 @@ const INLINE_IMG_OPEN_TAIL = /\[IMG\b[\s\S]*$/i;
  *
  * 该指令只在发给模型的请求里临时追加，绝不落库 —— 否则会污染对话记录、记忆提取与前端显示。
  *
- * V5 内联指令复用气泡生图的完整写法规范，外面包一层 [IMG] 包装，避免两套口径漂移。
- * Danbooru 路径仍用较短的六维度 tag 指令。开头「系统附加要求…不算跳出角色」用于压过
- * 角色人设里「回复必须是纯粹角色对话内容」之类的强约束。
+ * 措辞经实测调校：保持单段紧凑（指令过长模型会整段忽略）。V5 内联是气泡完整规范的压缩版，
+ * 口径一致但更短。开头「系统附加要求…不算跳出角色」用于压过角色人设里
+ * 「回复必须是纯粹角色对话内容」之类的强约束。
  *
  * @param imageTags 角色固定外貌标签，要求模型务必包含，保证人物外观一致
  * @param userImageTags 用户本人外貌标签，仅当用户出现在画面中时才包含（单人/独白场景忽略）

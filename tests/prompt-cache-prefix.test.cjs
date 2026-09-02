@@ -284,7 +284,7 @@ test('show_timestamps 打开时，时间说明进 system 且不含具体时刻',
   assert.match(lastUserContent(prompt), /\[2026-08-30 Sun \d\d:\d\d\]/);
 });
 
-test('生图指令进 system，不再挂在最后一条 user 上', async () => {
+test('完整生图指令挂最后一条 user，system 只留短提醒', async () => {
   const character = baseCharacter({ image_tags: 'shinosawa hiro, silver hair' });
   const prompt = await assemblePrompt(
     character,
@@ -294,15 +294,32 @@ test('生图指令进 system，不再挂在最后一条 user 上', async () => {
     timeAt(57),
   );
 
-  assert.match(prompt[0].content, /系统附加要求/, '生图指令必须在 system 里');
-  assert.match(prompt[0].content, /shinosawa hiro/, '固定外貌标签应随指令一起进 system');
-  assert.doesNotMatch(lastUserContent(prompt), /系统附加要求/, '最后一条 user 不得再被追加指令');
-  assert.ok(lastUserContent(prompt).endsWith('陪我聊聊天'), '用户原话必须是消息的结尾');
+  assert.match(prompt[0].content, /\[IMG\]\.\.\.\[\/IMG\]/, 'system 只留短提醒，字节稳定');
+  assert.doesNotMatch(prompt[0].content, /（系统附加要求，务必执行/, '完整写法不得进 system，否则被角色长人设压掉');
+  assert.match(lastUserContent(prompt), /系统附加要求/, '完整生图指令必须挂在最后一条 user 上');
+  assert.match(lastUserContent(prompt), /shinosawa hiro/, '固定外貌标签应随完整指令一起挂在 user 上');
+  assert.match(lastUserContent(prompt), /陪我聊聊天/);
+});
+
+test('inline_prompt_position=system 时完整指令进 system，user 不再被追加', async () => {
+  const character = baseCharacter({ image_tags: 'shinosawa hiro, silver hair' });
+  const prompt = await assemblePrompt(
+    character,
+    [message({ id: 'u1', content: '陪我聊聊天' })],
+    stampedSettings({ image_gen: { enabled: true, inline_prompt: true, inline_prompt_position: 'system' } }),
+    MEMORY_TEXT,
+    timeAt(57),
+  );
+
+  assert.match(prompt[0].content, /系统附加要求，务必执行/, '完整写法应进 system');
+  assert.match(prompt[0].content, /shinosawa hiro/, '固定外貌标签随完整指令一起进 system');
+  assert.doesNotMatch(lastUserContent(prompt), /系统附加要求/, 'system 模式下 last user 不再被追加指令');
+  assert.match(lastUserContent(prompt), /陪我聊聊天/, '用户原话保持干净');
 });
 
 test('核心：相同 full 记忆时第 N 轮是第 N+1 轮的严格前缀（续聊命中的条件）', async () => {
   const character = baseCharacter({ image_tags: 'shinosawa hiro' });
-  const settings = stampedSettings({ image_gen: IMAGE_ON });
+  const settings = stampedSettings();
   const settled = [
     message({ id: 'u1', content: '第一轮提问', created_at: '2026-08-30T01:40:00.000Z' }),
     message({ id: 'a1', role: 'assistant', content: '第一轮回答', created_at: '2026-08-30T01:41:00.000Z' }),
@@ -330,6 +347,38 @@ test('核心：相同 full 记忆时第 N 轮是第 N+1 轮的严格前缀（续
     );
   }
   assert.match(turnA[0].content, /用户不爱吃甜的/, 'full 记忆必须在 system 前缀里');
+});
+
+test('开启内联生图时，续聊会改写上一轮最后一条 user（完整指令挂在那里）', async () => {
+  const character = baseCharacter({ image_tags: 'shinosawa hiro' });
+  const settings = stampedSettings({ image_gen: IMAGE_ON });
+  const settled = [
+    message({ id: 'u1', content: '第一轮提问', created_at: '2026-08-30T01:40:00.000Z' }),
+    message({ id: 'a1', role: 'assistant', content: '第一轮回答', created_at: '2026-08-30T01:41:00.000Z' }),
+    message({ id: 'u2', content: '第二轮提问', created_at: '2026-08-30T01:50:00.000Z' }),
+  ];
+
+  const turnA = await assemblePrompt(character, settled, settings, MEMORY_TEXT, timeAt(57));
+  const turnB = await assemblePrompt(
+    character,
+    [
+      ...settled,
+      message({ id: 'a2', role: 'assistant', content: '第二轮回答', created_at: '2026-08-30T01:51:00.000Z' }),
+      message({ id: 'u3', content: '第三轮提问', created_at: '2026-08-30T01:58:00.000Z' }),
+    ],
+    settings,
+    MEMORY_TEXT,
+    timeAt(58),
+  );
+
+  assert.equal(turnA[0].content, turnB[0].content, 'system 短提醒必须逐字节稳定');
+  assert.match(turnA[0].content, /\[IMG\]\.\.\.\[\/IMG\]/);
+  assert.notEqual(
+    turnA[turnA.length - 1].content,
+    turnB[turnA.length - 1].content,
+    '上一轮 last user 卸下完整指令，这是内联生图压过角色人设的已知缓存代价',
+  );
+  assert.match(turnB[turnB.length - 1].content, /系统附加要求/);
 });
 
 test('full 记忆包变化时首差落在 system（把记忆放进前缀的固有代价）', async () => {

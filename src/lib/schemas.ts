@@ -82,6 +82,7 @@ const imageGenSettingsSchema = z.looseObject({
   auto_generate: z.boolean().optional(),
   auto_generate_keywords: settingMediumTextSchema.optional(),
   inline_prompt: z.boolean().optional(),
+  inline_prompt_position: z.enum(['last_user', 'system']).optional(),
   generate_timeout_ms: settingNonNegativeIntegerSchema.optional(),
 });
 

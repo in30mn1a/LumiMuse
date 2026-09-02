@@ -175,9 +175,10 @@ export function prepareImageTagsForLlm(
  * 模型产出的生图 prompt（内联或专用）落库/出图前：按 image_tags 原顺序拼回敏感 tag。
  *
  * V5 结构化字段把外貌写在 Character 栏，敏感 tag 必须插回**各自归属**的栏：
- * 角色的进 Character 1，用户的进 Character 2。两者不能合成一个串，否则用户的
- * 发色/瞳色/体型会长到角色身上。用户未出场（没有 Character 2）时，其敏感 tag
- * 直接丢弃——与「用户不在画面里就不写用户外貌」的指令一致。
+ * 角色的进 Character 1。用户的进「看起来像用户外貌」的那一栏（通常是最后一栏，
+ * 因为其他生物/配角会占 Character 2，用户顺延到 Character 3）。两者不能合成一个串，
+ * 否则用户的发色/瞳色/体型会长到角色或狗身上。找不到匹配栏时用户敏感 tag 直接丢弃
+ * ——与「用户不在画面里就不写用户外貌」的指令一致。
  *
  * 非结构化（danbooru 单行 tag 串）沿用旧行为：两者合并后按原顺序拼回。
  */
@@ -201,12 +202,49 @@ export function restoreSensitiveImageTagsToPrompt(
         fields.prompt = rejoinSensitiveTagsFromOriginalOrder(fields.prompt, characterTags);
       }
     }
-    if (userTags && fields.characters[1] != null) {
-      fields.characters[1] = rejoinSensitiveTagsFromOriginalOrder(fields.characters[1], userTags);
+    if (userTags) {
+      const userSlotIndex = findUserCharacterSlot(fields.characters, userTags);
+      if (userSlotIndex >= 0) {
+        fields.characters[userSlotIndex] = rejoinSensitiveTagsFromOriginalOrder(
+          fields.characters[userSlotIndex],
+          userTags,
+        );
+      }
     }
     return formatNaiPromptFields(fields);
   }
 
   const originalOrder = [characterTags, userTags].filter(Boolean).join(', ');
   return rejoinSensitiveTagsFromOriginalOrder(prompt, originalOrder);
+}
+
+function appearanceCoreKeys(tags: string): string[] {
+  return [...new Set(
+    splitTags(tags)
+      .map(coreKey)
+      .filter(core => core && !isSensitiveImageTag(core) && !isSubjectCountImageTag(core)),
+  )];
+}
+
+/**
+ * 用户栏不一定是 Character 2：画面有狗/兽等配角时用户会顺延到 Character 3。
+ * 用用户外貌的非敏感锚点（发色、瞳色等）从后往前找最像的一栏；Character 1 留给主角色。
+ */
+function findUserCharacterSlot(characters: string[], userTags: string): number {
+  if (characters.length < 2) return -1;
+  const anchors = appearanceCoreKeys(userTags);
+  if (anchors.length === 0) return -1;
+
+  let bestIndex = -1;
+  let bestHits = 0;
+  for (let index = characters.length - 1; index >= 1; index -= 1) {
+    const caption = characters[index];
+    if (!caption?.trim()) continue;
+    const hits = anchors.filter(anchor => findTagIndexByCore(splitTags(caption), anchor) >= 0).length;
+    if (hits > bestHits) {
+      bestHits = hits;
+      bestIndex = index;
+    }
+  }
+  return bestHits > 0 ? bestIndex : -1;
 }

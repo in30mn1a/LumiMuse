@@ -372,6 +372,22 @@ export function ImageGenSettingsSection({
             </label>
             <p className="px-4 text-xs leading-relaxed text-text-muted">{t('settings.imageGenInlinePromptHint')}</p>
 
+            {imgGen.inline_prompt && (
+              <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+                <label htmlFor="settings-image-inline-prompt-position" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenInlinePromptPosition')}</label>
+                <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenInlinePromptPositionHint')}</p>
+                <select
+                  id="settings-image-inline-prompt-position"
+                  value={imgGen.inline_prompt_position}
+                  onChange={e => updateImg('inline_prompt_position', e.target.value as ImageGenSettings['inline_prompt_position'])}
+                  className="select-rich"
+                >
+                  <option value="last_user">{t('settings.imageGenInlinePromptPositionLastUser')}</option>
+                  <option value="system">{t('settings.imageGenInlinePromptPositionSystem')}</option>
+                </select>
+              </div>
+            )}
+
             {/* 自动生图 */}
             <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
               <input

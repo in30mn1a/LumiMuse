@@ -232,6 +232,12 @@ export interface ImageGenSettings {
   // 内联提示词：让 AI 在聊天回复末尾用 [IMG]...[/IMG] 附带生图提示词，
   // 出图时直接复用该提示词，跳过单独的（慢速）提示词生成请求
   inline_prompt: boolean;
+  /**
+   * 内联生图指令的注入位置：
+   * - 'last_user'：挂在最后一条 user 消息尾部（约束力最强，模型最难忽略；代价是续聊会改写上一轮 last user，前缀缓存命中率下降）
+   * - 'system'：放进 system prompt（字节稳定、利于前缀缓存；约束力较弱，部分模型会被角色人设压制而不输出）
+   */
+  inline_prompt_position: 'last_user' | 'system';
 }
 
 export const DEFAULT_IMAGE_GEN_SETTINGS: ImageGenSettings = {
@@ -267,6 +273,7 @@ export const DEFAULT_IMAGE_GEN_SETTINGS: ImageGenSettings = {
   auto_generate: false,
   auto_generate_keywords: '画,生图,来一张,看看',
   inline_prompt: false,
+  inline_prompt_position: 'last_user',
 };
 
 export interface ArtistString {

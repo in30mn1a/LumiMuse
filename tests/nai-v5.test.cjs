@@ -128,20 +128,25 @@ test('buildNaiGenerateRequest keeps V4.5 on params_version 3 and autoSmea true',
   assert.deepEqual(body.parameters.v4_prompt.caption.char_captions, []);
 });
 
-test('V5 inline instruction reuses the bubble prompt system instead of a short tag dump', () => {
+test('V5 inline instruction stays compact and still requires creature Character slots', () => {
   const { NAI_V5_PROMPT_GENERATION_SYSTEM } = require(path.resolve(__dirname, '../src/lib/image-prompt-instructions.ts'));
   const danbooru = buildInlinePromptInstruction('silver hair, blue eyes', '1boy, black hair');
   assert.match(danbooru, /danbooru/);
   assert.match(danbooru, /35 - 70 个标签/);
 
   const v5 = buildInlinePromptInstruction('silver hair, blue eyes', '1boy, black hair', 'nai-v5');
-  assert.match(v5, /\[IMG\]/);
-  assert.match(v5, /不算跳出角色/);
-  assert.ok(v5.includes(NAI_V5_PROMPT_GENERATION_SYSTEM));
-  assert.match(v5, /必须完整写入 Character 1/);
-  assert.match(v5, /silver hair, blue eyes/);
-  assert.match(v5, /1boy, black hair/);
+  assert.match(v5, /NovelAI Diffusion V5/);
+  assert.match(v5, /Prompt:/);
+  assert.match(v5, /Character 1:/);
+  assert.match(v5, /每个出场主体都必须另开 Character N/);
+  assert.match(v5, /不能只写女角色把其他生物塞进 Prompt/);
+  assert.match(v5, /tag 和自然语言必须混用/);
+  assert.match(v5, /禁止纯 tag 串或纯散文/);
   assert.doesNotMatch(v5, /35 - 70 个标签/);
+  assert.equal(v5.includes(NAI_V5_PROMPT_GENERATION_SYSTEM), false);
+  assert.match(v5, /不是角色与用户的亲密互动/);
+  assert.match(v5, /不得包含任何用户外貌标签/);
+  assert.match(v5, /固定外貌标签：silver hair, blue eyes/);
 });
 
 test('restoreSensitiveImageTagsToPrompt rejoins into Character 1 for V5 structured prompts', () => {
@@ -174,6 +179,30 @@ boy, short hair, brown eyes`,
   assert.doesNotMatch(char1, /shota/);
   assert.match(char2, /shota/);
   assert.doesNotMatch(char2, /loli/);
+});
+
+test('V5 structured prompts rejoin user sensitive tags into Character 3 when a creature occupies Character 2', () => {
+  const restored = restoreSensitiveImageTagsToPrompt(
+    `Prompt:
+1girl, 1other, 1boy
+
+Character 1:
+girl, blue eyes, red hair
+
+Character 2:
+other, golden retriever, large body, golden fur
+
+Character 3:
+boy, short hair, brown eyes`,
+    'blue eyes, 1.3::loli::, red hair',
+    'short hair, shota, brown eyes',
+  );
+  const [, char1, char2, char3] = restored.split(/Character [123]:/);
+  assert.match(char1, /1\.3::loli::/);
+  assert.doesNotMatch(char2, /shota/);
+  assert.doesNotMatch(char2, /loli/);
+  assert.match(char3, /shota/);
+  assert.doesNotMatch(char3, /loli/);
 });
 
 test('V5 structured prompts drop user sensitive tags when the user is not on stage', () => {
@@ -267,4 +296,13 @@ bad hands, blurry`,
 test('V5 system prompt forbids colon-prefixed Character lines inside Prompt', () => {
   const { NAI_V5_PROMPT_GENERATION_SYSTEM } = require(path.resolve(__dirname, '../src/lib/image-prompt-instructions.ts'));
   assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /禁止出现「Character 1:」这种带冒号的行首写法/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /tag 和自然语言可以、也应该混用/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /tag 与自然语言混用/);
+});
+
+test('V5 system prompt requires a Character slot for every visible creature', () => {
+  const { NAI_V5_PROMPT_GENERATION_SYSTEM } = require(path.resolve(__dirname, '../src/lib/image-prompt-instructions.ts'));
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /每一个可辨认的主体各占一栏/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /不能只写女角色而把狗\/兽\/其他生物塞进 Prompt 一句带过/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /other, 物种 体型 毛色/);
 });

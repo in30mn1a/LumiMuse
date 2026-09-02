@@ -10,7 +10,12 @@ import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
 import { normalizeCharacterMemoryChatInjectionMode } from '@/lib/memory-runtime-policy';
 import { buildCurrentTimeInstruction, buildTimestampAnchoredTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
-import { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } from '@/lib/inline-image-prompt';
+import {
+  buildInlinePromptInstruction,
+  extractInlinePrompt,
+  INLINE_PROMPT_SYSTEM_REMINDER,
+  stripInlinePrompt,
+} from '@/lib/inline-image-prompt';
 import { resolveImagePromptStyle } from '@/lib/nai-image';
 import {
   buildMessageTokenCountContent,
@@ -238,6 +243,7 @@ function buildSystemPrompt(
   memoryText: string,
   timeInstruction: string,
   inlinePromptInstruction: string,
+  inlinePromptInSystem: boolean,
 ): string {
   let prompt = '';
 
@@ -271,13 +277,16 @@ function buildSystemPrompt(
 
   prompt += `## 行为要求\n${BEHAVIOR_INSTRUCTION}`;
 
-  // 时间说明与生图指令都是逐轮不变的静态文本，放进 system 才能进稳定前缀。
-  // 生图指令排在最后（最贴近对话），是它离开「最后一条 user」后仅存的约束力补偿。
+  // 时间说明是逐轮不变的静态文本，放进 system 才能进稳定前缀。
+  // 生图指令按 inline_prompt_position 落位：'system' 时放完整写法；
+  // 'last_user' 时只留短提醒，压过角色人设的完整指令挂在最后一条 user 上。
   if (timeInstruction) {
     prompt += `\n\n## Current Time\n${timeInstruction}`;
   }
-  if (inlinePromptInstruction) {
+  if (inlinePromptInstruction && inlinePromptInSystem) {
     prompt += `\n\n${inlinePromptInstruction}`;
+  } else if (inlinePromptInstruction) {
+    prompt += `\n\n${INLINE_PROMPT_SYSTEM_REMINDER}`;
   }
 
   return prompt;
@@ -414,6 +423,26 @@ export async function buildHistoryMessages(
  * 找不到 user 消息时追加成独立 user 消息，保证 ## Current Time 不会被静默丢掉——
  * 模型拿不到当前时间就会自己编日期。
  */
+function appendToLastUserMessage(messages: ChatMessage[], text: string): void {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== 'user') continue;
+    if (typeof msg.content === 'string') {
+      msg.content = `${msg.content}\n\n${text}`;
+    } else if (Array.isArray(msg.content)) {
+      const textIdx = msg.content.findIndex(p => p.type === 'text');
+      if (textIdx >= 0) {
+        const part = msg.content[textIdx] as { type: 'text'; text: string };
+        msg.content[textIdx] = { type: 'text', text: `${part.text}\n\n${text}` };
+      } else {
+        msg.content.push({ type: 'text', text });
+      }
+    }
+    return;
+  }
+  messages.push({ role: 'user', content: text });
+}
+
 function prependToLastUserMessage(messages: ChatMessage[], text: string): void {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const msg = messages[i];
@@ -449,13 +478,12 @@ export async function assemblePrompt(
 
   // 上游按顺序匹配前缀缓存。续聊要命中，第 N 轮请求必须是第 N+1 轮的严格前缀。
   // 据此分配：
-  //   - 生图指令、时间说明：静态文本 → 进 system
-  //   - 时间说明的具体时刻改由每条消息的 [时间戳] 前缀承载；show_timestamps 关闭时没有前缀，
-  //     只能回退到写死时刻的旧版本，此时放尾部
-  //   - full 记忆包：不看 query，本轮字节稳定，必须留在 system。挂到最后一条 user
-  //     时，续聊会改写上一轮 last user，记忆块无法进入前缀；实测重新生成 ~95%，
-  //     续聊 ~36%（约等于不含记忆的 system 大小）
-  //   - 检索模式记忆包逐轮变 → 进尾部块，否则它一变会把整段历史一起挤出缓存
+  //   - 时间说明：静态文本 → 进 system；具体时刻由消息 [时间戳] 前缀承载
+  //   - 完整生图指令：按 inline_prompt_position 决定——'last_user'（默认）挂最后一条
+  //     user（约束力最强，模型最难忽略；代价是续聊会改写上一轮 last user，缓存命中下降）；
+  //     'system' 进 system（字节稳定、利于前缀缓存；约束力较弱，部分模型会被角色人设压掉）
+  //   - full 记忆包：不看 query，本轮字节稳定，必须留在 system
+  //   - 检索模式记忆包逐轮变 → 进尾部块
   const inlinePromptInstruction = settings.image_gen?.enabled && settings.image_gen?.inline_prompt
     ? buildInlinePromptInstruction(
         prepareImageTagsForLlm(character.image_tags).tagsForLlm,
@@ -463,6 +491,7 @@ export async function assemblePrompt(
         resolveImagePromptStyle(settings.image_gen),
       )
     : '';
+  const inlinePromptInSystem = settings.image_gen?.inline_prompt_position === 'system';
   const useStableTimeInstruction = Boolean(timeContext) && settings.show_timestamps;
 
   const systemPrompt = buildSystemPrompt(
@@ -470,6 +499,7 @@ export async function assemblePrompt(
     memoryIsStable ? memoryText : '',
     useStableTimeInstruction ? buildTimestampAnchoredTimeInstruction(timeContext) : '',
     inlinePromptInstruction,
+    inlinePromptInSystem,
   );
   const result: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
 
@@ -493,6 +523,9 @@ export async function assemblePrompt(
   if (tailBlock) {
     baseTokens += estimateTokens(tailBlock);
   }
+  if (inlinePromptInstruction) {
+    baseTokens += estimateTokens(inlinePromptInstruction);
+  }
 
   const { history } = await buildHistoryMessages(messages, settings, timeContext, baseTokens);
   result.push(...history);
@@ -502,6 +535,9 @@ export async function assemblePrompt(
   const merged = mergeConsecutiveRoles(result);
   if (tailBlock) {
     prependToLastUserMessage(merged, tailBlock);
+  }
+  if (inlinePromptInstruction && !inlinePromptInSystem) {
+    appendToLastUserMessage(merged, inlinePromptInstruction);
   }
   return merged;
 }

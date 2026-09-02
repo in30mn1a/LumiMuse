@@ -90,20 +90,21 @@ export const DANBOORU_PROMPT_GENERATION_SYSTEM = `# 核心功能
 POSITIVE: <所有正面 Tag，逗号分隔，35 - 70个>`;
 
 export const NAI_V5_PROMPT_GENERATION_SYSTEM = `# 核心功能
-将对话文本写成 NovelAI Diffusion V5 提示词。V5 同时吃 Danbooru tag 和自然语言句子；外貌进角色栏，动作/场景进主提示词。
+将对话文本写成 NovelAI Diffusion V5 提示词。**最重要：tag 和自然语言可以、也应该混用**，不要写成纯 tag 串，也不要写成纯散文。外貌进角色栏，动作/场景进主提示词。
 
 # 导演思考（内部步骤，不输出）
 在哪、怎么拍、谁、穿什么、做什么、什么表情。想清楚再写。只输出成品字段，不要解说过程。
 
 # 字段分工（必须拆开，不要合成一坨）
 - Prompt：人数 · 镜头 · 动作 · 表情 · 场景 · 背景 · 光影 · 氛围。这里禁止出现发型/发色/瞳色/服装/配饰/角色名。
-- Character N：只放该角色外貌。原创角色把用户给的样貌锚点原样写全，不许精简、替换、优化。衣服可按画面换。
+- Character N：画面里每一个可辨认的主体各占一栏，只放该主体外貌。人、兽、魔物、机器、非人生物都算，不能只写女角色而把狗/兽/其他生物塞进 Prompt 一句带过。原创角色把用户给的样貌锚点原样写全，不许精简、替换、优化。衣服可按画面换。
 - UC：只写这张图明确不要的东西；没有就整段省略。不要抄质量词或默认负面预设。
 
 # 写法
-- 人数 tag 只在 Prompt 最前面出现一次（1girl / 1boy / 1girl 1boy 等）。solo 只配单人。
-- 角色栏用 girl / boy / other 打头，不带数字。禁止再写 1girl。
-- 外貌、服装用词组 tag；空间关系、正在发生的动作、光影叙事用句子。句子直接写，不要加引号（引号=要画进图里的字）。
+- **tag 与自然语言混用**：人数、构图、物种、外貌用 Danbooru tag；空间关系、正在发生的动作、谁对谁做什么、光影叙事用句子。Prompt 里两套必须同时出现，禁止只堆 tag 或只写一段话。
+- 人数 tag 只在 Prompt 最前面出现一次（1girl / 1boy / 1girl 1boy / 1girl 1other 等）。solo 只配单人。兽、魔物、非人主体用 1other / 1animal 等，不要用 1boy 凑数。
+- 角色栏用 girl / boy / other 打头，不带数字。禁止再写 1girl。非人主体用 other 打头，写清物种、体型、毛色、耳尾爪牙等外形。
+- 外貌、服装用词组 tag；句子直接写，不要加引号（引号=要画进图里的字）。
 - 英文为主；很长、结构复杂或英文容易歧义的句子可以直接写中文。
 - 默认不加权。只在某层效果确实需要时用 1.2::tag:: / 0.7::tag::。数字权重必须写闭合 ::。
 - 不要写质量词：very aesthetic、masterpiece、best quality、amazing quality、no text、absurdres。前端会自动附加。
@@ -116,8 +117,9 @@ export const NAI_V5_PROMPT_GENERATION_SYSTEM = `# 核心功能
 
 # 视觉一致性
 - 角色固定外貌标签（image_tags）必须完整写入 Character 1，不得省略或改写。
-- 用户外貌标签（user_image_tags）只在用户出场时写入 Character 2；用户未出场则不要 Character 2，也不要把用户外貌写进 Prompt / Character 1。
-- 多角色时在 Prompt 的句子里用 Character 1 / Character 2 写死动作归属，编号与角色栏一致。
+- 画面里每个出场主体都必须有自己的 Character N 栏，按出场重要性编号：Character 1 永远是主角色；随后是其他生物/配角（狗、兽、魔物等）；用户出场时占用再下一个编号。用户未出场就不要给用户开栏，也不要把用户外貌写进 Prompt 或其他栏。
+- 用户外貌标签（user_image_tags）只在用户出场时写入用户那一栏，必须完整包含。
+- 多主体时在 Prompt 的句子里用 Character 1 / Character 2 / Character 3 写死动作归属，编号与角色栏一致。
 - 但 Prompt 正文里禁止出现「Character 1:」这种带冒号的行首写法（那是字段头，会截断 Prompt）；要指代就写「Character 1 正在…」不带冒号。
 
 # 输出格式（严格遵守，字段名用英文半角冒号，不输出解释）
@@ -129,7 +131,10 @@ Character 1:
 girl/boy, <发色 发型 瞳色 体型 种族特征 服装 配饰>
 
 Character 2:
-<仅当用户出场：girl/boy, 用户外貌标签>
+<其他出场生物/配角：other, 物种 体型 毛色 耳尾爪牙等外形；没有就省略这一栏>
+
+Character 3:
+<仅当用户出场：girl/boy, 用户外貌标签；编号紧跟已有主体，前面没有 Character 2 时用户就是 Character 2>
 
 UC:
 <仅当有排除项；否则省略这个字段>`;
@@ -149,7 +154,7 @@ export function appearanceTagsContextLabel(style: ImagePromptStyle, kind: 'chara
   if (style === 'nai-v5') {
     return kind === 'character'
       ? '【角色固定外貌标签（必须完整写入 Character 1，不得省略）】'
-      : '【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时写入 Character 2；用户未出场则忽略这些标签，不要写 Character 2）】';
+      : '【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时写入用户自己的 Character 栏——通常是 Character 2，若画面已有其他生物/配角则顺延为 Character 3。用户未出场则忽略这些标签，不要给用户开栏）】';
   }
   return kind === 'character'
     ? '【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】'
@@ -167,32 +172,14 @@ function appearanceClause(imageTags?: string, userImageTags?: string): { tagPart
   return { tagPart, userPart, soloPart };
 }
 
-function wrapInlinePromptInstruction(body: string): string {
-  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行用 [IMG] 和 [/IMG] 包裹本条回复对应的生图提示词。正文不要提及提示词或标签；[IMG] 块只出现一次放最后；无论对话长短都不要省略。\n\n${body}`;
-}
-
-function appearanceContextForInline(style: ImagePromptStyle, imageTags?: string, userImageTags?: string): string {
-  const blocks: string[] = [];
-  if (imageTags?.trim()) {
-    blocks.push(`${appearanceTagsContextLabel(style, 'character')}\n${imageTags.trim()}`);
-  }
-  if (userImageTags?.trim()) {
-    blocks.push(`${appearanceTagsContextLabel(style, 'user')}\n${userImageTags.trim()}`);
-  }
-  return blocks.length > 0 ? `\n\n${blocks.join('\n\n')}` : '';
-}
-
 export function buildDanbooruInlinePromptInstruction(imageTags?: string, userImageTags?: string): string {
   const { tagPart, userPart, soloPart } = appearanceClause(imageTags, userImageTags);
-  return wrapInlinePromptInstruction(
-    `追加一段英文 danbooru 文生图标签串，描述本条回复对应的画面。要求：35 - 70 个标签，英文逗号分隔；依次覆盖【画面构成】(分级 sfw/nsfw、人数如 1girl、画幅、视角、镜头)、【外貌】(发型发色瞳色体型${tagPart}${userPart}${soloPart})、【服饰】(逐件列出)、【动作】(贴合本条剧情)、【表情】(视线情绪面部细节)、【场景】(地点环境时间光影)；默认第三人称，可以在亲密互动时适当使用POV视角。`,
-  );
+  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行追加一段英文 danbooru 文生图标签串，用 [IMG] 和 [/IMG] 包裹，描述本条回复对应的画面。要求：35 - 70 个标签，英文逗号分隔；依次覆盖【画面构成】(分级 sfw/nsfw、人数如 1girl、画幅、视角、镜头)、【外貌】(发型发色瞳色体型${tagPart}${userPart}${soloPart})、【服饰】(逐件列出)、【动作】(贴合本条剧情)、【表情】(视线情绪面部细节)、【场景】(地点环境时间光影)；默认第三人称，可以在亲密互动时适当使用POV视角；[IMG] 块只出现一次放最后；正文不要提及标签；无论对话长短都不要省略。`;
 }
 
 export function buildNaiV5InlinePromptInstruction(imageTags?: string, userImageTags?: string): string {
-  return wrapInlinePromptInstruction(
-    `${NAI_V5_PROMPT_GENERATION_SYSTEM}${appearanceContextForInline('nai-v5', imageTags, userImageTags)}`,
-  );
+  const { tagPart, userPart, soloPart } = appearanceClause(imageTags, userImageTags);
+  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行用 [IMG] 和 [/IMG] 包裹一段 NovelAI Diffusion V5 提示词，描述本条回复对应的画面。最重要：tag 和自然语言必须混用，禁止纯 tag 串或纯散文。格式：Prompt: 人数tag只写一次（人用 1girl/1boy，兽/非人用 1other），构图外貌用 tag，动作/空间关系/谁对谁做什么用句子，句子不要加引号，正文里用 Character 1 指代但不要写带冒号的 Character 1:；Character 1: 以 girl/boy 打头（不带数字），只写外貌服装${tagPart}；画面里每个出场主体都必须另开 Character N 栏（狗/兽/魔物用 other 打头写清物种体型毛色），不能只写女角色把其他生物塞进 Prompt；用户出场时占用再下一个编号写用户外貌${userPart}${soloPart}。禁止把发型瞳色服装写进 Prompt；禁止写 masterpiece/very aesthetic/no text/best quality 等质量词；禁止编画师串。[IMG] 块只出现一次放最后；正文不要提及提示词；无论对话长短都不要省略。`;
 }
 
 export function buildInlinePromptInstructionForStyle(
@@ -204,3 +191,7 @@ export function buildInlinePromptInstructionForStyle(
     ? buildNaiV5InlinePromptInstruction(imageTags, userImageTags)
     : buildDanbooruInlinePromptInstruction(imageTags, userImageTags);
 }
+
+/** system 里只留一句短提醒；完整写法必须挂在最后一条 user 上才压得过角色人设。 */
+export const INLINE_PROMPT_SYSTEM_REMINDER =
+  '本条回复末尾必须按用户消息里的系统附加要求输出一次 [IMG]...[/IMG] 生图提示词，不算跳出角色。';

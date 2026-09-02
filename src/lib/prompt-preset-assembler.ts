@@ -22,7 +22,7 @@ import {
 import { buildCurrentTimeInstruction, ChatTimeContext } from '@/lib/chat-time';
 import { estimateTokens } from '@/lib/token-counter';
 import { mergeConsecutiveRoles } from '@/lib/merge-messages';
-import { buildInlinePromptInstruction } from '@/lib/inline-image-prompt';
+import { buildInlinePromptInstruction, INLINE_PROMPT_SYSTEM_REMINDER } from '@/lib/inline-image-prompt';
 import { resolveImagePromptStyle } from '@/lib/nai-image';
 import {
   prepareImageTagsForLlm,
@@ -95,10 +95,19 @@ export function renderContentWithStMacros(
   return substitutePresetMacros(expanded, ctx);
 }
 
-function formatBehaviorAndTimeSystemContent(timeContext?: ChatTimeContext): string {
+function formatBehaviorAndTimeSystemContent(
+  timeContext?: ChatTimeContext,
+  includeInlinePromptReminder = false,
+  inlinePromptFullInstruction = '',
+): string {
   let content = `## 行为要求\n${BEHAVIOR_INSTRUCTION}`;
   if (timeContext) {
     content += `\n\n## Current Time\n${buildCurrentTimeInstruction(timeContext)}`;
+  }
+  if (inlinePromptFullInstruction) {
+    content += `\n\n${inlinePromptFullInstruction}`;
+  } else if (includeInlinePromptReminder) {
+    content += `\n\n${INLINE_PROMPT_SYSTEM_REMINDER}`;
   }
   return content;
 }
@@ -376,7 +385,6 @@ export async function assemblePresetPrompt(
     stMacroState,
     lastUserRaw,
   );
-  const behaviorAndTimeContent = formatBehaviorAndTimeSystemContent(timeContext);
   let inlinePromptInstruction = '';
   if (settings.image_gen?.enabled && settings.image_gen?.inline_prompt) {
     const { tagsForLlm } = prepareImageTagsForLlm(character.image_tags);
@@ -387,6 +395,14 @@ export async function assemblePresetPrompt(
       resolveImagePromptStyle(settings.image_gen),
     );
   }
+  // 'system' 时完整指令进行为/时间隐藏 system；'last_user'（默认）时 system 只留短提醒，
+  // 完整指令挂最后一条 user。
+  const inlinePromptInSystem = settings.image_gen?.inline_prompt_position === 'system';
+  const behaviorAndTimeContent = formatBehaviorAndTimeSystemContent(
+    timeContext,
+    Boolean(inlinePromptInstruction),
+    inlinePromptInSystem ? inlinePromptInstruction : '',
+  );
 
   let baseTokens = estimateTokens(behaviorAndTimeContent);
   for (const segment of segments) {
@@ -470,10 +486,11 @@ export async function assemblePresetPrompt(
   // 合并连续同 role（与 assemblePrompt 一致）
   const merged = mergeConsecutiveRoles(result);
 
-  // 内联生图提示词：与 assemblePrompt 同等对待，仅在 image_gen.enabled && image_gen.inline_prompt 时
-  // 追加到 **最后一条 user** 消息尾部（约束力最强）。
+  // 内联生图提示词：与 assemblePrompt 同等对待，仅在 image_gen.enabled && image_gen.inline_prompt
+  // 且 inline_prompt_position 为默认 'last_user' 时，追加到 **最后一条 user** 消息尾部（约束力最强）。
+  // 'system' 时完整指令已经进行为/时间隐藏 system，不再挂 user。
   // 注意：仅作用于发给模型的请求副本，不落库——避免污染对话记录 / 记忆 / 前端显示。
-  if (inlinePromptInstruction) {
+  if (inlinePromptInstruction && !inlinePromptInSystem) {
     for (let i = merged.length - 1; i >= 0; i -= 1) {
       const msg = merged[i];
       if (msg.role !== 'user') continue;

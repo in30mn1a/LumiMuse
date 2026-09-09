@@ -88,9 +88,12 @@ export async function proxy(request: NextRequest) {
   }
 
   // 静态资源直接放行（只放行明确的固定路径前缀，不再按扩展名通配，
-  // 否则未认证用户可通过 `/avatars/xxx.png` 等路径绕过鉴权读 public 目录）
+  // 否则未认证用户可通过 `/avatars/xxx.png` 等路径绕过鉴权读 public 目录）。
+  // 注意：这里只放行 `/_next/static/`，不能放宽到整个 `/_next/` 前缀——
+  // `/_next/image`（图片优化端点）可通过 `?url=` 参数读取 public 下的用户文件
+  // （如 /generated/xxx.png），必须经过下方鉴权才能访问。
   if (
-    pathname.startsWith('/_next/') ||
+    pathname.startsWith('/_next/static/') ||
     pathname === '/favicon.ico' ||
     pathname.startsWith('/favicon') ||
     pathname.startsWith('/icons/') ||
@@ -142,9 +145,10 @@ export const config = {
     /*
      * 匹配所有路径，除了：
      * - _next/static（静态文件）
-     * - _next/image（图片优化）
      * - favicon.ico
+     * 注意：_next/image（图片优化端点）必须留在 matcher 内——
+     * 它可经 `?url=` 读取 public 下的用户文件，若排除在 matcher 外会绕过鉴权。
      */
-    '/((?!_next/static|_next/image|favicon.ico).*)',
+    '/((?!_next/static|favicon.ico).*)',
   ],
 };

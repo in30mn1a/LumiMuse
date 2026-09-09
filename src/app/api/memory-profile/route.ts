@@ -16,9 +16,12 @@ import {
 import { getDb } from '@/lib/db';
 import { loadSettings } from '@/lib/settings';
 import { formatExtractionTimestamp } from '@/lib/chat-time';
+import { publicErrorMessage } from '@/lib/public-error';
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  // DB / 系统级异常收口为固定文案（SqliteError message 含 SQL 与库路径），
+  // 业务校验与上游已脱敏错误透传
+  return publicErrorMessage(error, 'internal error');
 }
 
 function parseCharacterId(value: string | null): string | null {

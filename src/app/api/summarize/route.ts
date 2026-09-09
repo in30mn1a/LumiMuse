@@ -9,6 +9,7 @@ import { safeFetch } from '@/lib/ssrf-guard';
 import { parseSseStream } from '@/lib/sse-parser';
 import { serializeTypedMessages } from '@/lib/messages';
 import { formatZodFieldErrors, summarizeBodySchema } from '@/lib/schemas';
+import { publicErrorMessage } from '@/lib/public-error';
 import { readMemoryProfile, renderMemoryProfile } from '@/lib/memory-profile';
 import {
   ascendingMessageOrderSqlForChain,
@@ -216,6 +217,8 @@ ${convText}`;
     if (request.signal.aborted) {
       return NextResponse.json({ error: '请求已取消' }, { status: 499 });
     }
-    return NextResponse.json({ error: err instanceof Error ? err.message : '总结失败' }, { status: 500 });
+    // 上游 LLM 错误（throw 前已 sanitizeUpstreamError 脱敏）透传；
+    // DB / 意外异常收口为固定文案，避免 SQL 与本地路径泄漏。
+    return NextResponse.json({ error: publicErrorMessage(err, '总结失败') }, { status: 500 });
   }
 }

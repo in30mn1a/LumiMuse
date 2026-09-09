@@ -14,6 +14,7 @@ import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { AI_ARCHIVE_PROMPT } from '@/lib/prompt-templates';
 import type { MemoryCategory, MemoryKind, MemoryStatus } from '@/types';
 import { findFirstBalancedJson } from '@/lib/balanced-json';
+import { publicErrorMessage } from '@/lib/public-error';
 
 const MAX_SUMMARY_CONTENT_LENGTH = 8 * 1024;
 
@@ -135,7 +136,8 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     return NextResponse.json(
-      { error: 'Failed to list memory archive batches', detail: error instanceof Error ? error.message : String(error) },
+      // DB / 意外异常收口：SqliteError message 含 SQL 与库文件路径
+      { error: 'Failed to list memory archive batches', detail: publicErrorMessage(error, 'internal error') },
       { status: 500 },
     );
   }
@@ -276,7 +278,8 @@ export async function POST(request: NextRequest) {
       response = await chatCompletion(llmSettings, [{ role: 'user', content: prompt }], request.signal, backgroundExtraBody);
     } catch (err) {
       return NextResponse.json(
-        { ok: false, error: `LLM call failed: ${err instanceof Error ? err.message : String(err)}` },
+        // 上游 LLM 错误（chatCompletion 抛出前已脱敏）透传；DB / 意外异常收口
+        { ok: false, error: `LLM call failed: ${publicErrorMessage(err, '上游调用失败')}` },
         { status: 500 },
       );
     }
@@ -359,7 +362,8 @@ export async function POST(request: NextRequest) {
       });
     } catch (err) {
       return NextResponse.json(
-        { ok: false, error: `Archive execution failed: ${err instanceof Error ? err.message : String(err)}` },
+        // executeMemorySummaryArchive 的错误多为业务校验文案，透传；DB 异常收口
+        { ok: false, error: `Archive execution failed: ${publicErrorMessage(err, 'internal error')}` },
         { status: 500 },
       );
     }

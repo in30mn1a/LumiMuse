@@ -11,6 +11,7 @@ import {
   runWithBackgroundLlmDeadline,
 } from '@/lib/background-llm-deadline';
 import { findFirstBalancedJson } from '@/lib/balanced-json';
+import { publicErrorMessage } from '@/lib/public-error';
 import {
   createMemoryReviewPlan,
   getMemoryReviewPlan,
@@ -519,9 +520,11 @@ export async function POST(request: NextRequest) {
     throw err;
   }
 
+  // 批次失败原因直接展示给前端：上游 LLM 错误（chatCompletion 抛出前已过
+  // sanitizeUpstreamError 脱敏）与解析失败文案透传，DB / 意外异常收口。
   const failedMessages = batchOutcomes
     .filter((outcome): outcome is { ok: false; error: unknown } => !outcome.ok)
-    .map(outcome => (outcome.error instanceof Error ? outcome.error.message : String(outcome.error)));
+    .map(outcome => publicErrorMessage(outcome.error, 'AI 批次调用失败（内部错误）'));
   const failedBatches = failedMessages.length;
 
   if (reviewBatches.length > 0 && failedBatches === reviewBatches.length) {

@@ -5,6 +5,7 @@ import { loadSettings, recordClientTimezone } from '@/lib/settings';
 import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
 import { chatBodySchema, formatZodFieldErrors, validateChatAttachmentTotals } from '@/lib/schemas';
+import { publicErrorMessage } from '@/lib/public-error';
 import { loadPendingMemoryExtractionBatch, MEMORY_PROCESSED_SQL } from '@/lib/memory-extraction-scope';
 import { descendingMessageOrderSqlForChain } from '@/lib/conversation-chain';
 
@@ -182,14 +183,18 @@ export async function POST(request: NextRequest) {
             });
           },
           onError: (error) => {
-            send('error', JSON.stringify({ message: error.message }));
+            // 上游 LLM 错误在 api-client 抛出前已过 sanitizeUpstreamError 脱敏，
+            // 用户需要看到（如 401 invalid key）才能修配置，普通 Error 透传；
+            // DB / 系统级异常收口为固定文案，避免 SQL 与本地路径直通客户端。
+            send('error', JSON.stringify({ message: publicErrorMessage(error, UNKNOWN_ERROR_LABEL) }));
             safeClose();
           },
         }, { ...options, timeContext });
 
         setTimeout(() => safeClose(), STREAM_CLOSE_DELAY_MS);
       } catch (err) {
-        send('error', JSON.stringify({ message: err instanceof Error ? err.message : UNKNOWN_ERROR_LABEL }));
+        // 同 onError：已脱敏上游错误透传（用户修配置需要），系统级异常收口
+        send('error', JSON.stringify({ message: publicErrorMessage(err, UNKNOWN_ERROR_LABEL) }));
         safeClose();
       } finally {
         request.signal.removeEventListener('abort', onAbort);

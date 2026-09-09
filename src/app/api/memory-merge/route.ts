@@ -8,6 +8,7 @@ import {
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { MAX_MEMORY_CONTENT } from '@/lib/schemas';
+import { publicErrorMessage } from '@/lib/public-error';
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -59,7 +60,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, ...result, batch_id: batchId });
     } catch (error) {
       return NextResponse.json(
-        { ok: false, error: error instanceof Error ? error.message : String(error) },
+        // undo 的错误均为业务校验文案（批次不存在 / 非法状态），透传；DB 异常收口
+        { ok: false, error: publicErrorMessage(error, '撤销合并失败') },
         { status: 400 },
       );
     }
@@ -139,7 +141,8 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : String(error) },
+      // execute 的错误均为业务校验文案（源记忆状态 / 长度上限），透传；DB 异常收口
+      { ok: false, error: publicErrorMessage(error, '合并记忆失败') },
       { status: 400 },
     );
   }

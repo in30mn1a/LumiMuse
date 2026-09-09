@@ -8,6 +8,7 @@ import { formatZodFieldErrors, imageGenBodySchema } from '@/lib/schemas';
 import { writeFile, mkdir } from 'fs/promises';
 import JSZip from 'jszip';
 import { structuredLog } from '@/lib/structured-log';
+import { publicErrorMessage } from '@/lib/public-error';
 import { scheduleLongTimeout } from '@/lib/long-timeout';
 import path from 'path';
 
@@ -649,7 +650,9 @@ export async function POST(request: NextRequest) {
       status: 'failed',
     }, err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : '生图失败' },
+      // 生图链路的业务错误均为固定文案（引擎 HTTP 状态、大小上限、格式校验），透传；
+      // fs / DB 等系统级异常（含本地路径）收口为固定文案。
+      { error: publicErrorMessage(err, '生图失败') },
       { status: 500 }
     );
   }

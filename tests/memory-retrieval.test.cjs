@@ -2693,6 +2693,55 @@ test('/api/memories/[id] PUT 仅在索引相关字段变更后入队 updated emb
   assert.equal(triggerCalls, 1);
 });
 
+test('/api/memories/[id] PUT 拒绝通过 body 迁移记忆归属（character_id 不可更新）', async () => {
+  // 回归防护：memoryUpdateSchema 曾包含 character_id 但 PUT 实现从不写入，
+  // 调用方传它会得到 200 假成功而归属不变（契约欺骗）。
+  // schema 为 z.object 默认 strip 模式，character_id 会被静默剥离而非 400，
+  // 因此断言「请求成功但 DB 归属保持原值」——若有人把 character_id
+  // 重新加进 SET 白名单或改 schema 为 strict（此请求变 400），本用例都会失败报警。
+  const db = createMemoryDb();
+  db.prepare(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at, usage_count, metadata,
+      created_at, updated_at
+    )
+    VALUES (
+      'mem-owner', 'char-a', '话题历史', '归属不可迁移', 0.9, '[]', '[]',
+      'general', 0.5, 0, 'active', 0, NULL, 0, '{}',
+      '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+    )
+  `).run();
+
+  const route = requireFreshWithMocks('../src/app/api/memories/[id]/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => true,
+    },
+  });
+
+  const response = await route.PUT(
+    jsonRequest({ character_id: 'char-b', content: '内容更新但归属不变' }, 'http://test.local/api/memories/mem-owner'),
+    { params: Promise.resolve({ id: 'mem-owner' }) },
+  );
+
+  assert.equal(response.status, 200);
+  const row = db.prepare('SELECT character_id, content FROM memories WHERE id = ?').get('mem-owner');
+  assert.equal(row.character_id, 'char-a');
+  assert.equal(row.content, '内容更新但归属不变');
+
+  // 只传 character_id（无任何可更新字段）时，应命中 No fields to update 的 400，
+  // 而不是被误认为是一次成功的「迁移」。
+  const onlyCharacterId = await route.PUT(
+    jsonRequest({ character_id: 'char-b' }, 'http://test.local/api/memories/mem-owner'),
+    { params: Promise.resolve({ id: 'mem-owner' }) },
+  );
+  assert.equal(onlyCharacterId.status, 400);
+  const afterRow = db.prepare('SELECT character_id FROM memories WHERE id = ?').get('mem-owner');
+  assert.equal(afterRow.character_id, 'char-a');
+});
+
 test('processMemoryEmbeddingTasks 并发 worker 不会重复处理同一批任务', async () => {
   const db = createMemoryDb();
   db.exec(`

@@ -6,6 +6,7 @@ import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
+import { publicErrorMessage } from '@/lib/public-error';
 import {
   IMAGE_PROMPT_SENSITIVE_TAG_PATTERN,
   imageTagCoreForSensitivity,
@@ -257,7 +258,8 @@ export async function POST(request: NextRequest) {
       status: 'failed',
     }, err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : '生成 prompt 失败' },
+      // 上游 LLM 错误（chatCompletion 抛出前已脱敏）透传；DB / 意外异常收口
+      { error: publicErrorMessage(err, '生成 prompt 失败') },
       { status: 500 }
     );
   }

@@ -444,6 +444,8 @@ docker compose up -d --build
 
 更新前建议先导出备份，或手动备份 `data/` 与 `public/{generated,avatars,attachments}/`。
 
+注意 SQLite 开启了 WAL 模式：应用运行中直接 `cp` 主 `.db` 文件可能得到撕裂副本（缺少 `-wal` 文件中未 checkpoint 的写入，恢复时丢最近数据）。运行中备份请使用 `sqlite3 data/lumimuse.db "VACUUM INTO 'backup.db'"`（SQLite 在线备份），或者先停容器再拷贝整个 `data/` 目录（含 `-wal` / `-shm` 文件）。
+
 **健康检查**
 
 | 端点 | 含义 |
@@ -556,6 +558,8 @@ public/generated/
 public/avatars/
 public/attachments/
 ```
+
+若应用仍在运行，不要只 `cp` 主数据库文件：SQLite 处于 WAL 模式，最近写入可能还在 `data/lumimuse.db-wal` 里尚未合并进主文件，只拷 `.db` 会丢这部分数据。运行中备份请改用 `sqlite3 data/lumimuse.db "VACUUM INTO 'backup.db'"`（SQLite 在线备份），或先停容器再拷贝整个 `data/` 目录（连同 `-wal` / `-shm` 文件）。
 
 数据库迁移会写入 SQLite `user_version`。降级到旧版前必须先停止应用并完整备份上述目录。不要靠手工降低 `user_version` 回滚；应恢复与旧版匹配的整份数据库和文件备份。
 

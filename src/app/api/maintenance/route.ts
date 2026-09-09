@@ -201,6 +201,13 @@ function getReferencedFiles(dirName: string): Set<string> {
         for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
           addReferencedFromUrl(url, dirName, referenced);
         }
+        // metadata 原文整体再扫一遍：metadata.versions[i].content / versions[i].attachments
+        // 等历史版本内嵌的 URL 不在顶层 generatedImages/attachments 里，漏掉会把
+        // 「仅被旧版本引用」的文件误判成孤儿删掉（用户切回旧版本时图片 404）。
+        // 与 filterUnreferencedLocalAssetUrls 的既有做法保持一致。
+        for (const url of collectLocalAssetUrlsFromContent(row.metadata)) {
+          addReferencedFromUrl(url, dirName, referenced);
+        }
         for (const url of collectLocalAssetUrlsFromContent(row.content)) {
           addReferencedFromUrl(url, dirName, referenced);
         }

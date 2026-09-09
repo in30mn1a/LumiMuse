@@ -517,8 +517,10 @@ export const memoryCreateSchema = z.object({
 export type MemoryCreate = z.infer<typeof memoryCreateSchema>;
 
 // --------- /api/memories/[id] PUT ---------
+// 注意：character_id 不在可更新字段中。它曾留在 schema 里但 PUT 实现从不写入，
+// 调用方传它会得到 200 假成功而归属不变（契约欺骗），已移除。
+// 如需声明归属做防误操作校验，请通过 query param `?character_id=` 传递。
 export const memoryUpdateSchema = z.object({
-  character_id: z.string().min(1).max(64).optional(),
   ...memoryWritableFields,
 });
 export type MemoryUpdate = z.infer<typeof memoryUpdateSchema>;

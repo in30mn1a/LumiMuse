@@ -10,6 +10,7 @@ import {
 } from '@/lib/character-file-utils';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
+import { publicErrorMessage } from '@/lib/public-error';
 import { parseMessageMetadata } from '@/lib/messages';
 import {
   createMessageTokenCount,
@@ -680,7 +681,9 @@ export async function POST(
       await deleteLocalAssetUrls(copiedUrls.values());
     }
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : '复制角色失败' },
+      // 链式对话校验错误（环 / 断链）是固定文案，透传；DB / 文件系统异常
+      // （SqliteError 含 SQL 与库路径，fs 错误含本地路径）收口
+      { error: publicErrorMessage(err, '复制角色失败') },
       { status: 500 },
     );
   }

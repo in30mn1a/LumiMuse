@@ -12,8 +12,10 @@ const isDev = process.env.NODE_ENV !== "production";
  *   未来若全面切换到 nonce，可在此移除
  * - img-src：允许 data:/blob:（消息附件 base64、客户端预览）以及 https:
  *   （远程头像 / AI 生图回链 / 用户填入的图片 URL）
- * - connect-src：用户可配置任意 LLM / SD WebUI 供应商，允许 https:；
- *   仅开发模式允许 ws: 供 Next.js HMR 使用，生产不允许明文 websocket
+ * - connect-src：浏览器端不出站——所有 LLM / SD WebUI 上游调用都在服务端
+ *   API route 完成（前端 fetch 全部指向同源 /api/*），生产环境仅允许 'self'，
+ *   移除裸 https: / wss:（防止页面被注入脚本后把本地数据外传到任意域）；
+ *   仅开发模式允许 ws: 供 Next.js HMR 使用
  * - font-src：允许同源（自托管霞鹜文楷 /fonts/lxgw）+ data: + Google Fonts（Quicksand）
  * - style-src：除同源外允许 Google Fonts（Quicksand，layout.tsx 通过 <link> 引入）
  * - frame-ancestors 'none'：禁止被 iframe 嵌入
@@ -29,7 +31,9 @@ const cspDirectives: Array<[string, string]> = [
   ["style-src", "'self' 'unsafe-inline' https://fonts.googleapis.com"],
   ["img-src", "'self' data: blob: https:"],
   ["font-src", "'self' data: https://fonts.gstatic.com"],
-  ["connect-src", isDev ? "'self' https: wss: ws:" : "'self' https: wss:"],
+  // connect-src 收窄为数据外传防护：上游调用全在服务端，浏览器端只需同源。
+  // 开发模式额外放开 ws:（Next.js HMR websocket，端口运行时分配无法穷举）。
+  ["connect-src", isDev ? "'self' ws:" : "'self'"],
   ["frame-ancestors", "'none'"],
   ["base-uri", "'self'"],
   ["form-action", "'self'"],

@@ -1,5 +1,9 @@
 import type { ReactNode } from 'react';
 import type { ApiProvider, MemoryEngineSettings, Settings } from '@/types';
+import {
+  planBackgroundModelSwitch,
+  rememberBackgroundSystemPromptForModel,
+} from '@/lib/background-system-prompt';
 
 type SettingsWithMemoryEngine = Settings & {
   memory_engine: MemoryEngineSettings;
@@ -54,6 +58,32 @@ export function MemoryEngineSection({
   t,
   children,
 }: MemoryEngineSectionProps) {
+  const handleBgModelChange = (nextModel: string) => {
+    const planned = planBackgroundModelSwitch({
+      previousModel: settings.memory_background_model,
+      previousPrompt: settings.memory_background_system_prompt || '',
+      nextModel,
+      fallbackModel: settings.model,
+      byModel: settings.memory_background_system_prompt_by_model || {},
+    });
+
+    update('memory_background_model', nextModel);
+    update('memory_background_system_prompt', planned.prompt);
+    update('memory_background_system_prompt_by_model', planned.byModel);
+  };
+
+  const handleBgPromptChange = (newPrompt: string) => {
+    update('memory_background_system_prompt', newPrompt);
+    const activeModel = (settings.memory_background_model || settings.model || '').trim();
+    if (activeModel) {
+      const currentByModel = settings.memory_background_system_prompt_by_model || {};
+      const nextByModel = rememberBackgroundSystemPromptForModel(currentByModel, activeModel, newPrompt);
+      update('memory_background_system_prompt_by_model', nextByModel);
+    }
+  };
+
+  const currentActiveModel = (settings.memory_background_model || settings.model || '').trim();
+
   return (
     <section className="surface-panel p-5">
       <div className="mb-4">
@@ -85,11 +115,7 @@ export function MemoryEngineSection({
                 update('memory_background_provider_id', e.target.value);
                 onClearBgModelList();
                 const provider = providers.find(p => p.id === e.target.value);
-                if (provider) {
-                  update('memory_background_model', provider.model);
-                } else {
-                  update('memory_background_model', '');
-                }
+                handleBgModelChange(provider ? provider.model : '');
               }}
               className="select-rich"
             >
@@ -107,7 +133,7 @@ export function MemoryEngineSection({
                 <select
                   id="settings-memory-background-model"
                   value={settings.memory_background_model}
-                  onChange={e => update('memory_background_model', e.target.value)}
+                  onChange={e => handleBgModelChange(e.target.value)}
                   className="select-rich flex-1"
                 >
                   <option value="">{t('settings.modelSelectPlaceholder')}</option>
@@ -119,7 +145,7 @@ export function MemoryEngineSection({
                 <input
                   id="settings-memory-background-model"
                   value={settings.memory_background_model}
-                  onChange={e => update('memory_background_model', e.target.value)}
+                  onChange={e => handleBgModelChange(e.target.value)}
                   className="input-rich flex-1"
                   placeholder={t('settings.modelPlaceholder')}
                 />
@@ -135,6 +161,23 @@ export function MemoryEngineSection({
             </div>
             {bgModelError && <p className="mt-2 text-xs text-red-500">{bgModelError}</p>}
             <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundModelHint')}</p>
+          </div>
+          <div>
+            <label htmlFor="settings-memory-background-system-prompt" className="mb-1.5 block text-sm font-medium text-text-secondary">
+              {t('settings.memoryBackgroundSystemPrompt')}
+              {currentActiveModel ? (
+                <span className="ml-1.5 font-normal text-text-muted">({currentActiveModel})</span>
+              ) : null}
+            </label>
+            <textarea
+              id="settings-memory-background-system-prompt"
+              rows={3}
+              value={settings.memory_background_system_prompt || ''}
+              onChange={e => handleBgPromptChange(e.target.value)}
+              className="textarea-rich w-full resize-y rounded-xl border border-border-light bg-white/70 px-3 py-2 font-mono text-sm"
+              placeholder={t('settings.memoryBackgroundSystemPromptPlaceholder')}
+            />
+            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundSystemPromptHint')}</p>
           </div>
           <div>
             <label htmlFor="settings-memory-background-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundTimeout')}</label>

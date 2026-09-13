@@ -459,6 +459,10 @@ export interface Settings {
   // 为后台 LLM 请求单独发送 reasoning_effort（默认关闭，不继承聊天框选择）。
   memory_background_reasoning_effort_enabled: boolean;
   memory_background_reasoning_effort: ReasoningEffort;
+  // 后台任务专用系统提示词；置于所有后台请求顶部，留空则不额外注入。
+  memory_background_system_prompt: string;
+  // 按后台模型记住的系统提示词；切后台模型时同步切换对应条目。
+  memory_background_system_prompt_by_model: Record<string, string>;
   theme: 'light' | 'dark';
   show_timestamps: boolean;
   /**
@@ -515,6 +519,8 @@ export const DEFAULT_SETTINGS: Settings = {
   disable_deepseek_thinking_for_background: false,
   memory_background_reasoning_effort_enabled: false,
   memory_background_reasoning_effort: 'medium',
+  memory_background_system_prompt: '',
+  memory_background_system_prompt_by_model: {},
   theme: 'light',
   show_timestamps: true,
   client_timezone: '',

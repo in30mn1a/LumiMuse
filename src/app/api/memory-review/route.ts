@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { blobToEmbedding, enqueueMemoryEmbeddingTask, loadReadyMemoryEmbeddings } from '@/lib/memory-embeddings';
@@ -487,9 +488,14 @@ export async function POST(request: NextRequest) {
           );
           let llmResult: string;
           try {
+            const messages = applyBackgroundSystemPrompt(
+              [{ role: 'user', content: prompt }],
+              settings,
+              llmSettings.model,
+            );
             llmResult = await chatCompletion(
               llmSettings,
-              [{ role: 'user', content: prompt }],
+              messages,
               signal,
               backgroundExtraBody,
             );

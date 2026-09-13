@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { Message, Character } from '@/types';
+import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
 import { REASONING_SAFE_MAX_TOKENS, sanitizeUpstreamError } from '@/lib/api-client';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
@@ -124,6 +125,11 @@ ${convText}`;
     // 客户端断开连接时同步取消上游请求，避免 reader 泄漏
     const bgConfig = resolveBackgroundConfig(settings);
     const backgroundExtraBody = buildBackgroundChatExtraBody(settings, bgConfig.model);
+    const summaryMessages = applyBackgroundSystemPrompt(
+      [{ role: 'user', content: summaryPrompt }],
+      settings,
+      bgConfig.model,
+    );
     const summaryContent = await runWithBackgroundLlmDeadline(
       settings.memory_background_timeout_ms,
       async signal => {
@@ -135,7 +141,7 @@ ${convText}`;
           },
           body: JSON.stringify({
             model: bgConfig.model,
-            messages: [{ role: 'user', content: summaryPrompt }],
+            messages: summaryMessages,
             max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
             temperature: settings.temperature,
             stream: true,

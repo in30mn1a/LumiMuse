@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { ensureMemoryProfileTables, getDb } from '@/lib/db';
 import { createDbTaskQueue } from '@/lib/db-task-queue';
+import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
@@ -395,9 +396,14 @@ async function generateMemoryProfilePatchWithLlm(
 
   const prompt = buildMemoryProfilePatchPrompt(task, currentProfile, rawSourceText, characterInfo);
   const backgroundExtraBody = buildBackgroundChatExtraBody(loaded, settings.model);
+  const messages = applyBackgroundSystemPrompt(
+    [{ role: 'user', content: prompt }],
+    loaded,
+    settings.model,
+  );
   const response = await runWithBackgroundLlmDeadline(
     loaded.memory_background_timeout_ms,
-    signal => chatCompletion(settings, [{ role: 'user', content: prompt }], signal, backgroundExtraBody),
+    signal => chatCompletion(settings, messages, signal, backgroundExtraBody),
   );
   return parseMemoryProfilePatchResponse(response);
 }

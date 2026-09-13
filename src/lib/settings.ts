@@ -126,6 +126,7 @@ export function loadSettings(): Settings {
   }
 
   merged.reasoning_effort_by_model = sanitizeReasoningEffortByModel(map.reasoning_effort_by_model);
+  merged.memory_background_system_prompt_by_model = sanitizeBackgroundSystemPromptByModel(map.memory_background_system_prompt_by_model);
 
   return merged;
 }
@@ -206,6 +207,31 @@ export function mergeSettingsForBackgroundLlm(
     reasoning_effort: 'default',
   };
 }
+
+/** 丢弃非法 key/超长提示词，保护后台系统提示词字典 */
+export function sanitizeBackgroundSystemPromptByModel(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const result: Record<string, string> = {};
+  for (const [rawModel, prompt] of Object.entries(value as Record<string, unknown>)) {
+    if (Object.keys(result).length >= 256) break;
+    const model = rawModel.trim();
+    if (!model || model.length > 200) continue;
+    if (model === '__proto__' || model === 'constructor' || model === 'prototype') continue;
+    if (typeof prompt === 'string') {
+      result[model] = prompt.slice(0, 32 * 1024);
+    }
+  }
+  return result;
+}
+
+export {
+  applyBackgroundSystemPrompt,
+  resolveBackgroundSystemPrompt,
+  rememberBackgroundSystemPromptForModel,
+  resolveBackgroundSystemPromptForModel,
+  planBackgroundModelSwitch,
+} from './background-system-prompt';
 
 // ─── 认证 token 撤销机制（M2） ─────────────────────────────────
 //

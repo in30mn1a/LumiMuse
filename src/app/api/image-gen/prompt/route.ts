@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
+import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
@@ -234,12 +235,14 @@ export async function POST(request: NextRequest) {
     // LLM 返回后仍会按 originalImageTags 恢复到最终 NAI/SD prompt。
     const contextForLlm = stripKnownSensitiveImageTags(context, originalImageTags);
 
+    const promptMessages = applyBackgroundSystemPrompt([
+      { role: 'system', content: promptGenerationSystemForStyle(promptStyle) },
+      { role: 'user', content: contextForLlm },
+    ], loadedSettings, settings.model);
+
     const result = await runWithBackgroundLlmDeadline(
       loadedSettings.memory_background_timeout_ms,
-      signal => chatCompletion(settings, [
-        { role: 'system', content: promptGenerationSystemForStyle(promptStyle) },
-        { role: 'user', content: contextForLlm },
-      ], signal, backgroundExtraBody),
+      signal => chatCompletion(settings, promptMessages, signal, backgroundExtraBody),
     );
 
     const parsedOutput = parseGeneratedImagePrompt(result, promptStyle, {

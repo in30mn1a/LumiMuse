@@ -8,6 +8,7 @@ import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { structuredLog } from '@/lib/structured-log';
 import { extractBalancedJsonAt } from '@/lib/balanced-json';
+import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
@@ -683,9 +684,14 @@ async function applyLifecycleDecisions(
       .replace('{existing_memories}', () => recall.text)
       .replace('{candidates}', () => candidateList);
 
+    const messages = applyBackgroundSystemPrompt(
+      [{ role: 'user', content: prompt }],
+      context.llmSettings,
+      context.llmSettings.model,
+    );
     const response = await runWithBackgroundLlmDeadline(
       context.timeoutMs,
-      signal => chatCompletion(context.llmSettings, [{ role: 'user', content: prompt }], signal, context.extraBody),
+      signal => chatCompletion(context.llmSettings, messages, signal, context.extraBody),
     );
 
     const decisions = parseLifecycleDecisions(response, rawData.length);
@@ -772,9 +778,14 @@ export async function extractMemories(
     max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
   });
   const backgroundExtraBody = buildBackgroundChatExtraBody(settings, extractionSettings.model);
+  const extractionMessages = applyBackgroundSystemPrompt(
+    [{ role: 'user', content: prompt }],
+    settings,
+    extractionSettings.model,
+  );
   const response = await runWithBackgroundLlmDeadline(
     settings.memory_background_timeout_ms,
-    signal => chatCompletion(extractionSettings, [{ role: 'user', content: prompt }], signal, backgroundExtraBody),
+    signal => chatCompletion(extractionSettings, extractionMessages, signal, backgroundExtraBody),
   );
   const rawData = parseExtractionResponse(response);
   if (rawData.length === 0) {

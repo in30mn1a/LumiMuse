@@ -40,6 +40,7 @@ const MAX_SHORT_SETTING = 512;
 const unknownRecordSchema = z.record(z.string(), z.unknown());
 
 // --------- /api/settings PUT ---------
+const settingLargeTextSchema = z.string().max(MAX_LARGE_TEXT);
 const settingMediumTextSchema = z.string().max(MAX_MEDIUM_TEXT);
 const settingUrlSchema = z.string().max(MAX_URL);
 const settingApiBaseSchema = z.string().max(MAX_API_BASE);
@@ -158,6 +159,11 @@ export const settingsUpdateSchema = z.looseObject({
   disable_deepseek_thinking_for_background: z.boolean().optional(),
   memory_background_reasoning_effort_enabled: z.boolean().optional(),
   memory_background_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  memory_background_system_prompt: settingLargeTextSchema.optional(),
+  memory_background_system_prompt_by_model: z.record(
+    settingModelSchema.min(1),
+    settingLargeTextSchema,
+  ).refine((value) => Object.keys(value).length <= 256).optional(),
   theme: z.enum(['light', 'dark']).optional(),
   show_timestamps: z.boolean().optional(),
   limit_inject: z.boolean().optional(),

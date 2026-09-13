@@ -7,6 +7,7 @@ import {
   undoMemorySummaryArchiveBatch,
   type MemoryArchiveSourceMemory,
 } from '@/lib/memory-archive';
+import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
@@ -275,7 +276,12 @@ export async function POST(request: NextRequest) {
 
     let response: string;
     try {
-      response = await chatCompletion(llmSettings, [{ role: 'user', content: prompt }], request.signal, backgroundExtraBody);
+      const messages = applyBackgroundSystemPrompt(
+        [{ role: 'user', content: prompt }],
+        settings,
+        llmSettings.model,
+      );
+      response = await chatCompletion(llmSettings, messages, request.signal, backgroundExtraBody);
     } catch (err) {
       return NextResponse.json(
         // 上游 LLM 错误（chatCompletion 抛出前已脱敏）透传；DB / 意外异常收口

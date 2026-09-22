@@ -154,25 +154,21 @@ export default function Home() {
   // Modal 的焦点陷阱/Escape 只看 open，不看 CSS 断点。
   // 移动/平板竖屏打开侧栏后扩到 lg+ 时必须关掉，否则会「看不见 dialog 却困住 Tab」。
   // 断点用 1024（lg）：iPad 竖屏 ~768–834 走抽屉；横屏 ≥1024 走常驻侧栏。
-  useEffect(() => {
-    const html = document.documentElement;
-    const body = document.body;
-    const previous = { htmlOverflow: html.style.overflow, bodyOverflow: body.style.overflow };
-    html.style.overflow = 'hidden';
-    body.style.overflow = 'hidden';
-    return () => {
-      html.style.overflow = previous.htmlOverflow;
-      body.style.overflow = previous.bodyOverflow;
-    };
-  }, []);
-
-  // 只在移动端抽屉打开时禁掉文档的 overscroll：桌面常驻侧栏不走这里，
-  // 保留触控板左右滑动返回等浏览器手势。
+  // 文档级滚动锁只在移动端抽屉打开期间生效。抽屉关着时不能锁：iOS Safari 上
+  // 页面会比可视区略高，用户要靠拖动整页把顶栏拉回来；常驻 overflow:hidden 会把顶栏钉死在状态栏后面。
+  // 桌面常驻侧栏也不走这里，保留触控板左右滑动返回等浏览器手势。
   useEffect(() => {
     if (!sidebarOpen) return;
     const html = document.documentElement;
     const body = document.body;
-    const previous = { html: html.style.overscrollBehavior, body: body.style.overscrollBehavior };
+    const previous = {
+      htmlOverflow: html.style.overflow,
+      bodyOverflow: body.style.overflow,
+      htmlOverscroll: html.style.overscrollBehavior,
+      bodyOverscroll: body.style.overscrollBehavior,
+    };
+    html.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
     html.style.overscrollBehavior = 'none';
     body.style.overscrollBehavior = 'none';
     let startY = 0;
@@ -200,8 +196,10 @@ export default function Home() {
     return () => {
       document.removeEventListener('touchstart', onStart);
       document.removeEventListener('touchmove', onMove);
-      html.style.overscrollBehavior = previous.html;
-      body.style.overscrollBehavior = previous.body;
+      html.style.overflow = previous.htmlOverflow;
+      body.style.overflow = previous.bodyOverflow;
+      html.style.overscrollBehavior = previous.htmlOverscroll;
+      body.style.overscrollBehavior = previous.bodyOverscroll;
     };
   }, [sidebarOpen]);
 

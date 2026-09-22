@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
-import { normalizeCharacterTaskModels } from '@/lib/character-task-models';
+import { normalizeCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
@@ -169,7 +169,7 @@ export async function POST(request: NextRequest) {
       json_mode: false,
       max_tokens: 16384,
     });
-    const backgroundExtraBody = buildBackgroundChatExtraBody(loadedSettings, settings.model, taskTarget);
+    const backgroundExtraBody = buildBackgroundChatExtraBody(settings.model, taskTarget);
 
     if (!settings.api_base || !settings.model) {
       return NextResponse.json({ error: '请先配置 LLM API' }, { status: 400 });
@@ -244,7 +244,7 @@ export async function POST(request: NextRequest) {
     const promptMessages = applyBackgroundSystemPrompt([
       { role: 'system', content: promptGenerationSystemForStyle(promptStyle) },
       { role: 'user', content: contextForLlm },
-    ], loadedSettings, settings.model);
+    ], resolveCharacterTaskSystemPrompt(taskTarget, settings.model));
 
     const result = await runWithBackgroundLlmDeadline(
       loadedSettings.memory_background_timeout_ms,

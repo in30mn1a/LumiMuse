@@ -300,7 +300,7 @@ test('memory model labels keep one target id for input and select variants', () 
     }));
 
     const expectedTag = withModelLists ? 'SELECT' : 'INPUT';
-    assert.equal(view.getByLabelText('settings.memoryBackgroundModel').tagName, expectedTag);
+    assert.equal(view.queryByLabelText('settings.memoryBackgroundModel'), null);
     assert.equal(view.getByLabelText('settings.memoryEmbeddingModel').tagName, expectedTag);
     assert.equal(view.getByLabelText('settings.memoryRerankerModel').tagName, expectedTag);
     assertNoOrphanLabels(view.container);

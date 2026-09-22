@@ -1,5 +1,30 @@
 import type { ChatMessage } from '@/lib/api-client';
-import type { Settings } from '@/types';
+
+interface BackgroundPromptSettings {
+  memory_background_system_prompt?: string;
+  memory_background_system_prompt_by_model?: Record<string, string>;
+}
+
+const MAX_PROMPT_CHARS = 32 * 1024;
+const MAX_PROMPT_MODELS = 256;
+const MAX_MODEL_NAME = 200;
+
+/** 丢弃非法 key 和超长提示词，保护按模型保存的后台系统提示词。 */
+export function sanitizeBackgroundSystemPromptByModel(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const result: Record<string, string> = {};
+  for (const [rawModel, prompt] of Object.entries(value as Record<string, unknown>)) {
+    if (Object.keys(result).length >= MAX_PROMPT_MODELS) break;
+    const model = rawModel.trim();
+    if (!model || model.length > MAX_MODEL_NAME) continue;
+    if (model === '__proto__' || model === 'constructor' || model === 'prototype') continue;
+    if (typeof prompt === 'string') {
+      result[model] = prompt.slice(0, MAX_PROMPT_CHARS);
+    }
+  }
+  return result;
+}
 
 /**
  * 在后台提示词字典中记住指定模型的系统提示词。
@@ -68,9 +93,7 @@ export function planBackgroundModelSwitch(params: {
  * 优先使用模型专属绑定的提示词；未绑定时回退至全局 memory_background_system_prompt。
  */
 export function resolveBackgroundSystemPrompt(
-  settings: Pick<Settings, 'memory_background_system_prompt'> & {
-    memory_background_system_prompt_by_model?: Record<string, string>;
-  },
+  settings: BackgroundPromptSettings,
   model?: string,
 ): string {
   const trimmedModel = model?.trim();
@@ -92,9 +115,7 @@ export function resolveBackgroundSystemPrompt(
  */
 export function applyBackgroundSystemPrompt(
   messages: ChatMessage[],
-  promptOrSettings?: string | (Pick<Settings, 'memory_background_system_prompt'> & {
-    memory_background_system_prompt_by_model?: Record<string, string>;
-  }),
+  promptOrSettings?: string | BackgroundPromptSettings,
   model?: string,
 ): ChatMessage[] {
   let prompt = '';

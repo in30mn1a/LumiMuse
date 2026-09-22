@@ -6,7 +6,7 @@ import {
   deleteLocalAssetUrls,
   filterUnreferencedLocalAssetUrls,
 } from '@/lib/character-file-utils';
-import { presentCharacter, serializeReasoningMap } from '@/lib/character-task-models';
+import { presentCharacter, serializePromptMap, serializeReasoningMap } from '@/lib/character-task-models';
 import { characterUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import {
   attachCharacterPresetBindings,
@@ -66,8 +66,9 @@ export async function PUT(
         name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
         greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?,
         active_preset_id = ?, memory_chat_injection_mode = ?,
-        background_model = ?, image_prompt_model = ?,
+        background_model = ?, image_prompt_model = ?, background_provider_id = ?,
         background_reasoning_by_model = ?, image_prompt_reasoning_by_model = ?,
+        background_system_prompt_by_model = ?, image_prompt_system_prompt_by_model = ?,
         updated_at = ?
       WHERE id = ?
     `).run(
@@ -89,12 +90,19 @@ export async function PUT(
       body.memory_chat_injection_mode ?? existing.memory_chat_injection_mode ?? 'full',
       body.background_model !== undefined ? body.background_model : (existing.background_model ?? ''),
       body.image_prompt_model !== undefined ? body.image_prompt_model : (existing.image_prompt_model ?? ''),
+      body.background_provider_id !== undefined ? body.background_provider_id : (existing.background_provider_id ?? ''),
       body.background_reasoning_by_model !== undefined
         ? serializeReasoningMap(body.background_reasoning_by_model)
         : serializeReasoningMap(existing.background_reasoning_by_model),
       body.image_prompt_reasoning_by_model !== undefined
         ? serializeReasoningMap(body.image_prompt_reasoning_by_model)
         : serializeReasoningMap(existing.image_prompt_reasoning_by_model),
+      body.background_system_prompt_by_model !== undefined
+        ? serializePromptMap(body.background_system_prompt_by_model)
+        : serializePromptMap(existing.background_system_prompt_by_model),
+      body.image_prompt_system_prompt_by_model !== undefined
+        ? serializePromptMap(body.image_prompt_system_prompt_by_model)
+        : serializePromptMap(existing.image_prompt_system_prompt_by_model),
       now,
       id,
     );

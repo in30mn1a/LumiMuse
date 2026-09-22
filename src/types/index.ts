@@ -32,8 +32,12 @@ export interface Character {
    */
   memory_chat_injection_mode: MemoryChatInjectionMode;
   /**
-   * 该角色的后台任务模型。空字符串表示使用设置页的后台模型。
-   * 影响记忆提取、画像、总结、归档和 AI 审核，不影响生图提示词。
+   * 该角色后台任务和生图提示词共用的供应商。空字符串表示使用主聊天接口。
+   */
+  background_provider_id?: string;
+  /**
+   * 该角色的后台任务模型。空字符串表示使用主聊天模型。
+   * 影响记忆提取、画像、总结、归档和 AI 审核，不影响单独的生图提示词模型。
    */
   background_model?: string;
   /** 该角色单独生成生图提示词时使用的模型。空字符串表示跟随后台任务模型。 */
@@ -42,6 +46,10 @@ export interface Character {
   background_reasoning_by_model?: Record<string, ReasoningEffort>;
   /** 生图提示词模型各自记住的思考强度。键是模型名。 */
   image_prompt_reasoning_by_model?: Record<string, ReasoningEffort>;
+  /** 后台任务模型各自记住的系统提示词。键是模型名。 */
+  background_system_prompt_by_model?: Record<string, string>;
+  /** 生图提示词模型各自记住的系统提示词。键是模型名。 */
+  image_prompt_system_prompt_by_model?: Record<string, string>;
   created_at: string;
   updated_at: string;
 }
@@ -459,21 +467,9 @@ export interface Settings {
   memory_trigger_keyword_enabled: boolean;
   memory_trigger_keywords: string;
   memory_max_inject: number;
-  // 后台任务（记忆提取/画像/总结）专用模型；留空则回退到主聊天模型 model。检索注入不受影响。
-  memory_background_model: string;
-  // 后台任务专用供应商 ID；留空则使用主接口的 api_base/api_key。设置后后台任务将使用该供应商的接口和模型。
-  memory_background_provider_id: string;
   // 后台 LLM 任务总时限（毫秒）；0 表示显式关闭。普通聊天不使用该设置。
+  // 模型、供应商、系统提示词和思考强度在角色编辑里配置。
   memory_background_timeout_ms: number;
-  // 后台任务使用 DeepSeek 模型时关闭 thinking，避免思考内容耗尽输出 token。正常聊天不受影响。
-  disable_deepseek_thinking_for_background: boolean;
-  // 为后台 LLM 请求单独发送 reasoning_effort（默认关闭，不继承聊天框选择）。
-  memory_background_reasoning_effort_enabled: boolean;
-  memory_background_reasoning_effort: ReasoningEffort;
-  // 后台任务专用系统提示词；置于所有后台请求顶部，留空则不额外注入。
-  memory_background_system_prompt: string;
-  // 按后台模型记住的系统提示词；切后台模型时同步切换对应条目。
-  memory_background_system_prompt_by_model: Record<string, string>;
   theme: 'light' | 'dark';
   show_timestamps: boolean;
   /**
@@ -524,14 +520,7 @@ export const DEFAULT_SETTINGS: Settings = {
   memory_trigger_keyword_enabled: true,
   memory_trigger_keywords: '晚安',
   memory_max_inject: 30,
-  memory_background_model: '',
-  memory_background_provider_id: '',
   memory_background_timeout_ms: 1_800_000,
-  disable_deepseek_thinking_for_background: false,
-  memory_background_reasoning_effort_enabled: false,
-  memory_background_reasoning_effort: 'medium',
-  memory_background_system_prompt: '',
-  memory_background_system_prompt_by_model: {},
   theme: 'light',
   show_timestamps: true,
   client_timezone: '',

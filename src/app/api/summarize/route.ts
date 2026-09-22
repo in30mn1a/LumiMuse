@@ -3,7 +3,7 @@ import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { Message, Character } from '@/types';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
-import { normalizeCharacterTaskModels } from '@/lib/character-task-models';
+import { normalizeCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
 import { REASONING_SAFE_MAX_TOKENS, sanitizeUpstreamError } from '@/lib/api-client';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
@@ -126,11 +126,10 @@ ${convText}`;
     // 客户端断开连接时同步取消上游请求，避免 reader 泄漏
     const taskTarget = { character: normalizeCharacterTaskModels(character), kind: 'background' as const };
     const bgConfig = resolveBackgroundConfig(settings, taskTarget);
-    const backgroundExtraBody = buildBackgroundChatExtraBody(settings, bgConfig.model, taskTarget);
+    const backgroundExtraBody = buildBackgroundChatExtraBody(bgConfig.model, taskTarget);
     const summaryMessages = applyBackgroundSystemPrompt(
       [{ role: 'user', content: summaryPrompt }],
-      settings,
-      bgConfig.model,
+      resolveCharacterTaskSystemPrompt(taskTarget, bgConfig.model),
     );
     const summaryContent = await runWithBackgroundLlmDeadline(
       settings.memory_background_timeout_ms,

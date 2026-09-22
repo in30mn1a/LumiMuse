@@ -88,8 +88,11 @@ function createCharacterDb() {
       sort_order INTEGER NOT NULL DEFAULT 0,
       background_model TEXT NOT NULL DEFAULT '',
       image_prompt_model TEXT NOT NULL DEFAULT '',
+      background_provider_id TEXT NOT NULL DEFAULT '',
       background_reasoning_by_model TEXT NOT NULL DEFAULT '{}',
       image_prompt_reasoning_by_model TEXT NOT NULL DEFAULT '{}',
+      background_system_prompt_by_model TEXT NOT NULL DEFAULT '{}',
+      image_prompt_system_prompt_by_model TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );

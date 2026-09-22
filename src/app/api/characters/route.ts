@@ -6,7 +6,7 @@ import {
   PRESET_ID_NONE,
   replaceCharacterModelPresetBindings,
 } from '@/lib/prompt-presets';
-import { presentCharacter, serializeReasoningMap } from '@/lib/character-task-models';
+import { presentCharacter, serializePromptMap, serializeReasoningMap } from '@/lib/character-task-models';
 import { characterCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET() {
@@ -59,9 +59,11 @@ export async function POST(request: NextRequest) {
       id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue,
       system_prompt, other_info, image_tags, user_image_tags, active_preset_id,
       memory_chat_injection_mode, sort_order, created_at, updated_at,
-      background_model, image_prompt_model, background_reasoning_by_model, image_prompt_reasoning_by_model
+      background_model, image_prompt_model, background_provider_id,
+      background_reasoning_by_model, image_prompt_reasoning_by_model,
+      background_system_prompt_by_model, image_prompt_system_prompt_by_model
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     body.name || 'New Character',
@@ -82,8 +84,11 @@ export async function POST(request: NextRequest) {
     now,
     body.background_model || '',
     body.image_prompt_model || '',
+    body.background_provider_id || '',
     serializeReasoningMap(body.background_reasoning_by_model),
     serializeReasoningMap(body.image_prompt_reasoning_by_model),
+    serializePromptMap(body.background_system_prompt_by_model),
+    serializePromptMap(body.image_prompt_system_prompt_by_model),
   );
 
   if (body.model_preset_bindings && body.model_preset_bindings.length > 0) {

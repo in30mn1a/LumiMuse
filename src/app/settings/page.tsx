@@ -71,9 +71,6 @@ export default function SettingsPage() {
   const [modelList, setModelList] = useState<string[]>([]);
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
-  const [bgModelList, setBgModelList] = useState<string[]>([]);
-  const [bgModelLoading, setBgModelLoading] = useState(false);
-  const [bgModelError, setBgModelError] = useState<string | null>(null);
   const [embeddingModelList, setEmbeddingModelList] = useState<string[]>([]);
   const [embeddingModelLoading, setEmbeddingModelLoading] = useState(false);
   const [embeddingModelError, setEmbeddingModelError] = useState<string | null>(null);
@@ -200,22 +197,16 @@ export default function SettingsPage() {
     }
   };
 
-  /** 通用模型列表获取，供 embedding / reranker / 后台模型等使用 */
+  /** 通用模型列表获取，供 embedding / reranker 使用 */
   const fetchModelList = async (
     apiBase: string,
     apiKey: string,
     credentialSource?: ModelCredentialSource,
-    providerId?: string,
   ): Promise<string[]> => {
-    const body: Record<string, unknown> = { refresh: true };
-    if (providerId) {
-      body.provider_id = providerId;
-    } else {
-      body.api_base = apiBase;
-      if (credentialSource) body.credential_source = credentialSource;
-      const effectiveKey = apiKey && apiKey !== API_KEY_MASK ? apiKey : undefined;
-      if (effectiveKey) body.api_key = effectiveKey;
-    }
+    const body: Record<string, unknown> = { refresh: true, api_base: apiBase };
+    if (credentialSource) body.credential_source = credentialSource;
+    const effectiveKey = apiKey && apiKey !== API_KEY_MASK ? apiKey : undefined;
+    if (effectiveKey) body.api_key = effectiveKey;
     const response = await fetch('/api/models', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -224,24 +215,6 @@ export default function SettingsPage() {
     const data = await parseJsonResponse<{ error?: string; models?: string[] }>(response);
     if (data.error) throw new Error(data.error);
     return data.models || [];
-  };
-
-  const fetchBgModels = async () => {
-    // 后台模型：根据选中的供应商或主接口获取模型列表
-    const providerId = settings.memory_background_provider_id;
-    const provider = providers.find(p => p.id === providerId);
-    const apiBase = providerId ? (provider?.api_base || '') : settings.api_base;
-    const apiKey = providerId ? (provider?.api_key || '') : settings.api_key;
-    if (!providerId && !apiBase) { setBgModelError(t('settings.apiBaseRequired')); return; }
-    setBgModelLoading(true);
-    setBgModelError(null);
-    try {
-      setBgModelList(await fetchModelList(apiBase, apiKey, undefined, providerId || undefined));
-    } catch (e) {
-      setBgModelError(String(e));
-    } finally {
-      setBgModelLoading(false);
-    }
   };
 
   const fetchEmbeddingModels = async () => {
@@ -651,10 +624,6 @@ export default function SettingsPage() {
             {activeTab === 'memory' && (<>
             <MemoryEngineSection
               settings={settings}
-              providers={providers}
-              bgModelList={bgModelList}
-              bgModelLoading={bgModelLoading}
-              bgModelError={bgModelError}
               embeddingModelList={embeddingModelList}
               embeddingModelLoading={embeddingModelLoading}
               embeddingModelError={embeddingModelError}
@@ -663,10 +632,8 @@ export default function SettingsPage() {
               rerankerModelError={rerankerModelError}
               update={update}
               updateMemoryEngine={updateMemoryEngine}
-              onFetchBgModels={fetchBgModels}
               onFetchEmbeddingModels={fetchEmbeddingModels}
               onFetchRerankerModels={fetchRerankerModels}
-              onClearBgModelList={() => setBgModelList([])}
               onClearEmbeddingModelList={() => setEmbeddingModelList([])}
               onClearRerankerModelList={() => setRerankerModelList([])}
               parseNumber={parseNumber}

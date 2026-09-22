@@ -153,17 +153,7 @@ export const settingsUpdateSchema = z.looseObject({
   memory_trigger_keyword_enabled: z.boolean().optional(),
   memory_trigger_keywords: settingMediumTextSchema.optional(),
   memory_max_inject: settingNonNegativeNumberSchema.optional(),
-  memory_background_model: settingModelSchema.optional(),
-  memory_background_provider_id: z.string().max(64).optional(),
   memory_background_timeout_ms: settingNonNegativeIntegerSchema.optional(),
-  disable_deepseek_thinking_for_background: z.boolean().optional(),
-  memory_background_reasoning_effort_enabled: z.boolean().optional(),
-  memory_background_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
-  memory_background_system_prompt: settingLargeTextSchema.optional(),
-  memory_background_system_prompt_by_model: z.record(
-    settingModelSchema.min(1),
-    settingLargeTextSchema,
-  ).refine((value) => Object.keys(value).length <= 256).optional(),
   theme: z.enum(['light', 'dark']).optional(),
   show_timestamps: z.boolean().optional(),
   limit_inject: z.boolean().optional(),
@@ -355,6 +345,7 @@ export const characterCreateSchema = z.object({
   active_preset_id: z.string().max(64).nullable().optional(),
   // 角色级聊天记忆注入模式；创建未传时服务端默认 full。
   memory_chat_injection_mode: z.enum(MEMORY_CHAT_INJECTION_MODES).optional(),
+  background_provider_id: z.string().trim().max(64).optional(),
   background_model: z.string().trim().max(MAX_MODEL_NAME).optional(),
   image_prompt_model: z.string().trim().max(MAX_MODEL_NAME).optional(),
   background_reasoning_by_model: z.record(
@@ -364,6 +355,14 @@ export const characterCreateSchema = z.object({
   image_prompt_reasoning_by_model: z.record(
     z.string().trim().min(1).max(MAX_MODEL_NAME),
     z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']),
+  ).refine(value => Object.keys(value).length <= 256).optional(),
+  background_system_prompt_by_model: z.record(
+    z.string().trim().min(1).max(MAX_MODEL_NAME),
+    z.string().max(MAX_LARGE_TEXT),
+  ).refine(value => Object.keys(value).length <= 256).optional(),
+  image_prompt_system_prompt_by_model: z.record(
+    z.string().trim().min(1).max(MAX_MODEL_NAME),
+    z.string().max(MAX_LARGE_TEXT),
   ).refine(value => Object.keys(value).length <= 256).optional(),
   model_preset_bindings: z.array(characterModelPresetBindingSchema).max(64).superRefine((items, ctx) => {
     const seen = new Set<string>();

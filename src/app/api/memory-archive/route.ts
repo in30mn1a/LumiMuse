@@ -8,7 +8,7 @@ import {
   type MemoryArchiveSourceMemory,
 } from '@/lib/memory-archive';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
-import { loadCharacterTaskModels } from '@/lib/character-task-models';
+import { loadCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
@@ -274,14 +274,13 @@ export async function POST(request: NextRequest) {
     if (!llmSettings.api_base.trim() || !llmSettings.model.trim()) {
       return NextResponse.json({ ok: false, error: 'LLM provider is not configured' }, { status: 400 });
     }
-    const backgroundExtraBody = buildBackgroundChatExtraBody(settings, llmSettings.model, taskTarget);
+    const backgroundExtraBody = buildBackgroundChatExtraBody(llmSettings.model, taskTarget);
 
     let response: string;
     try {
       const messages = applyBackgroundSystemPrompt(
         [{ role: 'user', content: prompt }],
-        settings,
-        llmSettings.model,
+        resolveCharacterTaskSystemPrompt(taskTarget, llmSettings.model),
       );
       response = await chatCompletion(llmSettings, messages, request.signal, backgroundExtraBody);
     } catch (err) {

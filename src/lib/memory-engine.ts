@@ -9,7 +9,7 @@ import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { structuredLog } from '@/lib/structured-log';
 import { extractBalancedJsonAt } from '@/lib/balanced-json';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
-import { loadCharacterTaskModels } from '@/lib/character-task-models';
+import { loadCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
@@ -654,6 +654,7 @@ async function applyLifecycleDecisions(
     llmSettings: Settings;
     extraBody: Record<string, unknown> | undefined;
     timeoutMs: number | undefined;
+    systemPrompt: string;
   },
 ): Promise<void> {
   try {
@@ -687,8 +688,7 @@ async function applyLifecycleDecisions(
 
     const messages = applyBackgroundSystemPrompt(
       [{ role: 'user', content: prompt }],
-      context.llmSettings,
-      context.llmSettings.model,
+      context.systemPrompt,
     );
     const response = await runWithBackgroundLlmDeadline(
       context.timeoutMs,
@@ -779,11 +779,11 @@ export async function extractMemories(
   const extractionSettings = mergeSettingsForBackgroundLlm(settings, bgConfig, {
     max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
   });
-  const backgroundExtraBody = buildBackgroundChatExtraBody(settings, extractionSettings.model, taskTarget);
+  const backgroundExtraBody = buildBackgroundChatExtraBody(extractionSettings.model, taskTarget);
+  const taskSystemPrompt = resolveCharacterTaskSystemPrompt(taskTarget, extractionSettings.model);
   const extractionMessages = applyBackgroundSystemPrompt(
     [{ role: 'user', content: prompt }],
-    settings,
-    extractionSettings.model,
+    taskSystemPrompt,
   );
   const response = await runWithBackgroundLlmDeadline(
     settings.memory_background_timeout_ms,
@@ -815,6 +815,7 @@ export async function extractMemories(
       llmSettings: extractionSettings,
       extraBody: backgroundExtraBody,
       timeoutMs: settings.memory_background_timeout_ms,
+      systemPrompt: taskSystemPrompt,
     });
   }
 

@@ -644,10 +644,13 @@ export default function CharacterEditor({ params }: Props) {
             <section className="surface-panel p-5 xl:col-span-2">
               <CharacterTaskModelsField
                 value={{
+                  background_provider_id: character.background_provider_id ?? '',
                   background_model: character.background_model ?? '',
                   image_prompt_model: character.image_prompt_model ?? '',
                   background_reasoning_by_model: character.background_reasoning_by_model ?? {},
                   image_prompt_reasoning_by_model: character.image_prompt_reasoning_by_model ?? {},
+                  background_system_prompt_by_model: character.background_system_prompt_by_model ?? {},
+                  image_prompt_system_prompt_by_model: character.image_prompt_system_prompt_by_model ?? {},
                 }}
                 onChange={(next) => {
                   setDirty(true);

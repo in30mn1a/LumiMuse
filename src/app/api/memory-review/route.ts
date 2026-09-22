@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
-import { loadCharacterTaskModels } from '@/lib/character-task-models';
+import { loadCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { blobToEmbedding, enqueueMemoryEmbeddingTask, loadReadyMemoryEmbeddings } from '@/lib/memory-embeddings';
@@ -465,7 +465,8 @@ export async function POST(request: NextRequest) {
   if (!llmSettings.api_base.trim() || !llmSettings.model.trim()) {
     return NextResponse.json({ ok: false, error: 'LLM provider is not configured' }, { status: 400 });
   }
-  const backgroundExtraBody = buildBackgroundChatExtraBody(settings, llmSettings.model, taskTarget);
+  const backgroundExtraBody = buildBackgroundChatExtraBody(llmSettings.model, taskTarget);
+  const taskSystemPrompt = resolveCharacterTaskSystemPrompt(taskTarget, llmSettings.model);
 
   type BatchLlmResult = {
     corrections: MemoryReviewCorrection[];
@@ -492,8 +493,7 @@ export async function POST(request: NextRequest) {
           try {
             const messages = applyBackgroundSystemPrompt(
               [{ role: 'user', content: prompt }],
-              settings,
-              llmSettings.model,
+              taskSystemPrompt,
             );
             llmResult = await chatCompletion(
               llmSettings,

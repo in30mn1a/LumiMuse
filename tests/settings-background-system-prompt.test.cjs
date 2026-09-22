@@ -181,36 +181,27 @@ test('planBackgroundModelSwitch saves current prompt and restores target model p
   assert.strictEqual(step4.prompt, 'Prompt B');
 });
 
-test('DEFAULT_SETTINGS contains memory_background_system_prompt and by_model dictionary', () => {
+test('global settings no longer store a background system prompt', () => {
   const { DEFAULT_SETTINGS } = requireFreshWithMocks('../src/types/index.ts');
-  assert.strictEqual(DEFAULT_SETTINGS.memory_background_system_prompt, '');
-  assert.deepEqual(DEFAULT_SETTINGS.memory_background_system_prompt_by_model, {});
+  assert.equal(Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, 'memory_background_system_prompt'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, 'memory_background_system_prompt_by_model'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, 'memory_background_model'), false);
 });
 
-test('settingsUpdateSchema validates memory_background_system_prompt and by_model within limits', () => {
-  const { settingsUpdateSchema } = requireFreshWithMocks('../src/lib/schemas.ts');
+test('character schema validates separate background and image prompt maps', () => {
+  const { characterCreateSchema } = requireFreshWithMocks('../src/lib/schemas.ts');
 
-  const valid = settingsUpdateSchema.safeParse({
-    memory_background_system_prompt: 'Custom background system prompt',
-    memory_background_system_prompt_by_model: {
-      'model-a': 'prompt a',
-      'model-b': 'prompt b',
-    },
+  const valid = characterCreateSchema.safeParse({
+    background_system_prompt_by_model: { 'model-a': 'prompt a' },
+    image_prompt_system_prompt_by_model: { 'model-b': 'prompt b' },
   });
-  assert.ok(valid.success);
+  assert.equal(valid.success, true);
 
   const oversized = 'a'.repeat(32 * 1024 + 1);
-  const invalidPrompt = settingsUpdateSchema.safeParse({
-    memory_background_system_prompt: oversized,
+  const invalid = characterCreateSchema.safeParse({
+    background_system_prompt_by_model: { 'model-a': oversized },
   });
-  assert.strictEqual(invalidPrompt.success, false);
-
-  const invalidByModel = settingsUpdateSchema.safeParse({
-    memory_background_system_prompt_by_model: {
-      'model-a': oversized,
-    },
-  });
-  assert.strictEqual(invalidByModel.success, false);
+  assert.equal(invalid.success, false);
 });
 
 test('sanitizeBackgroundSystemPromptByModel drops prototype pollution and oversized entries', () => {
@@ -229,34 +220,33 @@ test('sanitizeBackgroundSystemPromptByModel drops prototype pollution and oversi
   assert.strictEqual(Object.prototype.hasOwnProperty.call(sanitized, 'constructor'), false);
 });
 
-test('all 6 background LLM call sites pass model to applyBackgroundSystemPrompt', () => {
-  const memoryEngine = fs.readFileSync(path.join(root, 'src/lib/memory-engine.ts'), 'utf8');
-  const memoryProfile = fs.readFileSync(path.join(root, 'src/lib/memory-profile.ts'), 'utf8');
-  const summarize = fs.readFileSync(path.join(root, 'src/app/api/summarize/route.ts'), 'utf8');
-  const memoryReview = fs.readFileSync(path.join(root, 'src/app/api/memory-review/route.ts'), 'utf8');
-  const memoryArchive = fs.readFileSync(path.join(root, 'src/app/api/memory-archive/route.ts'), 'utf8');
-  const imagePrompt = fs.readFileSync(path.join(root, 'src/app/api/image-gen/prompt/route.ts'), 'utf8');
-
-  assert.match(memoryEngine, /applyBackgroundSystemPrompt\(\s*\[\{ role: 'user', content: prompt \}\],\s*context\.llmSettings,\s*context\.llmSettings\.model/);
-  assert.match(memoryEngine, /applyBackgroundSystemPrompt\(\s*\[\{ role: 'user', content: prompt \}\],\s*settings,\s*extractionSettings\.model/);
-  assert.match(memoryProfile, /applyBackgroundSystemPrompt\(\s*\[\{ role: 'user', content: prompt \}\],\s*loaded,\s*settings\.model/);
-  assert.match(summarize, /applyBackgroundSystemPrompt\(\s*\[\{ role: 'user', content: summaryPrompt \}\],\s*settings,\s*bgConfig\.model/);
-  assert.match(memoryReview, /applyBackgroundSystemPrompt\(\s*\[\{ role: 'user', content: prompt \}\],\s*settings,\s*llmSettings\.model/);
-  assert.match(memoryArchive, /applyBackgroundSystemPrompt\(\s*\[\{ role: 'user', content: prompt \}\],\s*settings,\s*llmSettings\.model/);
-  assert.match(imagePrompt, /applyBackgroundSystemPrompt\([\s\S]+?loadedSettings,\s*settings\.model\)/);
+test('background LLM call sites use the character task system prompt', () => {
+  const files = [
+    'src/lib/memory-engine.ts',
+    'src/lib/memory-profile.ts',
+    'src/app/api/summarize/route.ts',
+    'src/app/api/memory-review/route.ts',
+    'src/app/api/memory-archive/route.ts',
+    'src/app/api/image-gen/prompt/route.ts',
+  ];
+  for (const relativePath of files) {
+    const source = fs.readFileSync(path.join(root, relativePath), 'utf8');
+    assert.match(source, /resolveCharacterTaskSystemPrompt/, relativePath);
+    assert.match(source, /applyBackgroundSystemPrompt/, relativePath);
+  }
 });
 
-test('settings UI and i18n expose memory_background_system_prompt with model binding', () => {
+test('character editor exposes separate system prompts and settings no longer does', () => {
   const section = fs.readFileSync(path.join(root, 'src/components/settings/memory/MemoryEngineSection.tsx'), 'utf8');
+  const field = fs.readFileSync(path.join(root, 'src/components/ui/CharacterTaskModelsField.tsx'), 'utf8');
   const i18n = fs.readFileSync(path.join(root, 'src/lib/i18n.ts'), 'utf8');
 
-  assert.ok(section.includes('settings-memory-background-system-prompt'), 'Section has textarea ID');
-  assert.ok(section.includes('planBackgroundModelSwitch'), 'Section uses planBackgroundModelSwitch');
-  assert.ok(section.includes('handleBgModelChange'), 'Section handles background model change');
-  assert.ok(section.includes('handleBgPromptChange'), 'Section handles prompt change per model');
-
-  assert.ok(i18n.includes("'settings.memoryBackgroundSystemPrompt': '后台任务系统提示词'"));
-  assert.ok(i18n.includes("'settings.memoryBackgroundSystemPrompt': 'Background task system prompt'"));
-  assert.ok(i18n.includes('切换后台模型时将同步切换对应提示词'));
-  assert.ok(i18n.includes('switch automatically with model changes'));
+  assert.equal(section.includes('settings-memory-background-system-prompt'), false);
+  assert.equal(section.includes('memory_background_model'), false);
+  assert.match(field, /background_system_prompt_by_model/);
+  assert.match(field, /image_prompt_system_prompt_by_model/);
+  assert.match(field, /planBackgroundModelSwitch/);
+  assert.ok(i18n.includes("'editor.taskModelSystemPrompt': '系统提示词'"));
+  assert.ok(i18n.includes("'editor.taskModelSystemPrompt': 'System prompt'"));
+  assert.ok(i18n.includes('换成该模型自己的提示词'));
 });

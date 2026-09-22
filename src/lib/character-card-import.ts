@@ -1,4 +1,4 @@
-import { normalizeCharacterTaskModels } from '@/lib/character-task-models';
+import { EMPTY_CHARACTER_TASK_MODELS, normalizeCharacterTaskModels } from '@/lib/character-task-models';
 import type { Character, MemoryChatInjectionMode } from '@/types';
 
 export type CharacterDraft = Pick<Character,
@@ -15,10 +15,13 @@ export type CharacterDraft = Pick<Character,
   'user_image_tags' |
   'model_preset_bindings' |
   'memory_chat_injection_mode' |
+  'background_provider_id' |
   'background_model' |
   'image_prompt_model' |
   'background_reasoning_by_model' |
-  'image_prompt_reasoning_by_model'
+  'image_prompt_reasoning_by_model' |
+  'background_system_prompt_by_model' |
+  'image_prompt_system_prompt_by_model'
 >;
 
 function normalizeMemoryChatInjectionMode(value: unknown): MemoryChatInjectionMode {
@@ -107,9 +110,6 @@ export function normalizeCharacterCard(payload: unknown): CharacterDraft | null 
     image_tags: tagsToText(data.tags),
     user_image_tags: '',
     memory_chat_injection_mode: 'full',
-    background_model: '',
-    image_prompt_model: '',
-    background_reasoning_by_model: {},
-    image_prompt_reasoning_by_model: {},
+    ...EMPTY_CHARACTER_TASK_MODELS,
   };
 }

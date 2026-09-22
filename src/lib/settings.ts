@@ -1,5 +1,10 @@
 import { getDb } from '@/lib/db';
-import type { CharacterTaskModelFields } from '@/lib/character-task-models';
+import {
+  resolveCharacterTaskSelection,
+  resolveCharacterTaskSystemPrompt,
+  type BackgroundTaskTarget,
+} from '@/lib/character-task-models';
+import { RETIRED_BACKGROUND_SETTING_KEYS } from '@/lib/character-task-settings-migration';
 import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
 import { resolveReasoningEffortForModel, sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
 import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, Settings } from '@/types';
@@ -12,8 +17,6 @@ const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
   'memory_trigger_interval_enabled',
   'memory_trigger_time_enabled',
   'memory_trigger_keyword_enabled',
-  'disable_deepseek_thinking_for_background',
-  'memory_background_reasoning_effort_enabled',
   'show_timestamps',
   'limit_inject',
 ];
@@ -127,125 +130,69 @@ export function loadSettings(): Settings {
   }
 
   merged.reasoning_effort_by_model = sanitizeReasoningEffortByModel(map.reasoning_effort_by_model);
-  merged.memory_background_system_prompt_by_model = sanitizeBackgroundSystemPromptByModel(map.memory_background_system_prompt_by_model);
+  for (const key of RETIRED_BACKGROUND_SETTING_KEYS) {
+    delete (merged as unknown as Record<string, unknown>)[key];
+  }
 
   return merged;
 }
 
-/**
- * 解析后台任务（记忆提取 / 画像 patch / 总结）应使用的模型。
- * 用户配置了独立后台模型则用之，否则回退到主聊天模型。
- * 注意：记忆检索注入仍走主模型，不调用本函数。
- * 角色编辑里的覆盖由 resolveBackgroundConfig 处理，不在这里。
- */
-export function resolveBackgroundModel(settings: Settings): string {
-  const background = settings.memory_background_model?.trim();
-  return background || settings.model;
-}
-
-export type BackgroundTaskKind = 'background' | 'image_prompt';
-
-export interface BackgroundTaskTarget {
-  character?: CharacterTaskModelFields | null;
-  kind?: BackgroundTaskKind;
-}
+export type { BackgroundTaskKind, BackgroundTaskTarget } from '@/lib/character-task-models';
+export { resolveCharacterTaskSelection, resolveCharacterTaskSystemPrompt };
 
 /**
- * 角色指定了模型时返回该模型，并标明思考强度该读哪张表。
- * 生图模型留空时跟随本角色的后台任务模型，两处都留空才回到全局设置。
- */
-export function resolveCharacterTaskSelection(target?: BackgroundTaskTarget): {
-  model: string;
-  effortSource: 'image' | 'background' | 'global';
-} {
-  const character = target?.character;
-  if (!character) return { model: '', effortSource: 'global' };
-
-  const backgroundModel = character.background_model?.trim() ?? '';
-  if (target?.kind === 'image_prompt') {
-    const imageModel = character.image_prompt_model?.trim() ?? '';
-    if (imageModel) return { model: imageModel, effortSource: 'image' };
-    if (backgroundModel) return { model: backgroundModel, effortSource: 'background' };
-    return { model: '', effortSource: 'global' };
-  }
-
-  if (backgroundModel) return { model: backgroundModel, effortSource: 'background' };
-  return { model: '', effortSource: 'global' };
-}
-
-/**
- * 解析后台任务的完整接口配置（api_base / api_key / model）。
- * - 若设置了 memory_background_provider_id，从 api_providers 表读取该供应商的接口信息
- * - 否则使用主接口的 api_base/api_key，模型回退到 resolveBackgroundModel()
- *
- * 这是有意设计：后台模型配置是成本/速度优化，不是强依赖。后台供应商缺失或失效时回退主接口，
- * 能保持总结、记忆提取、画像 patch 继续可用；审查时不要把这种回退本身当作风险。
+ * 解析后台任务的接口和模型。
+ * 角色选了供应商就用该供应商的地址和密钥；供应商缺失时回退主接口。
+ * 模型优先用角色指定的任务模型，否则用主聊天模型。
+ * 记忆检索注入不走这里。
  */
 export function resolveBackgroundConfig(
   settings: Settings,
   target?: BackgroundTaskTarget,
 ): { api_base: string; api_key: string; model: string } {
-  const backgroundModel = settings.memory_background_model?.trim();
   const characterModel = resolveCharacterTaskSelection(target).model;
-  const providerId = settings.memory_background_provider_id?.trim();
+  const model = characterModel || settings.model;
+  const providerId = target?.character?.background_provider_id?.trim() ?? '';
   if (providerId) {
     const db = getDb();
-    const row = db.prepare('SELECT api_base, api_key, model FROM api_providers WHERE id = ?').get(providerId) as
-      | { api_base: string; api_key: string; model: string }
+    const row = db.prepare('SELECT api_base, api_key FROM api_providers WHERE id = ?').get(providerId) as
+      | { api_base: string; api_key: string }
       | undefined;
-    if (row && row.api_base && row.model) {
+    if (row?.api_base) {
       return {
         api_base: row.api_base,
         api_key: row.api_key,
-        model: characterModel || backgroundModel || row.model,
+        model,
       };
     }
-    // 供应商无效时回退到主接口：这是 local-first 可用性策略，不是静默绕过。
   }
   return {
     api_base: settings.api_base,
     api_key: settings.api_key,
-    model: characterModel || resolveBackgroundModel(settings),
+    model,
   };
 }
 
+function taskReasoningMap(
+  target: BackgroundTaskTarget | undefined,
+  source: 'image' | 'background' | 'global',
+) {
+  if (source === 'image') return target?.character?.image_prompt_reasoning_by_model;
+  return target?.character?.background_reasoning_by_model;
+}
+
 export function buildBackgroundChatExtraBody(
-  settings: Pick<
-    Settings,
-    | 'disable_deepseek_thinking_for_background'
-    | 'memory_background_reasoning_effort_enabled'
-    | 'memory_background_reasoning_effort'
-  >,
   model: string,
   target?: BackgroundTaskTarget,
 ): Record<string, unknown> | undefined {
-  const extra: Record<string, unknown> = {};
-  if (settings.disable_deepseek_thinking_for_background && /deepseek/i.test(model)) {
-    extra.thinking = { type: 'disabled' };
-  }
-
   const selection = resolveCharacterTaskSelection(target);
-  if (selection.effortSource === 'global') {
-    if (
-      settings.memory_background_reasoning_effort_enabled
-      && settings.memory_background_reasoning_effort
-      && settings.memory_background_reasoning_effort !== 'default'
-    ) {
-      extra.reasoning_effort = settings.memory_background_reasoning_effort;
-    }
-  } else {
-    const rawMap = selection.effortSource === 'image'
-      ? target?.character?.image_prompt_reasoning_by_model
-      : target?.character?.background_reasoning_by_model;
-    const effort = resolveReasoningEffortForModel(
-      model,
-      sanitizeReasoningEffortByModel(rawMap),
-      'default',
-    );
-    if (effort !== 'default') extra.reasoning_effort = effort;
-  }
-
-  return Object.keys(extra).length > 0 ? extra : undefined;
+  const effort = resolveReasoningEffortForModel(
+    model,
+    sanitizeReasoningEffortByModel(taskReasoningMap(target, selection.effortSource)),
+    'default',
+  );
+  if (effort === 'default') return undefined;
+  return { reasoning_effort: effort };
 }
 
 /** 后台 chatCompletion 用：覆盖供应商字段，且绝不继承主聊天的 reasoning_effort。 */
@@ -264,29 +211,13 @@ export function mergeSettingsForBackgroundLlm(
   };
 }
 
-/** 丢弃非法 key/超长提示词，保护后台系统提示词字典 */
-export function sanitizeBackgroundSystemPromptByModel(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-
-  const result: Record<string, string> = {};
-  for (const [rawModel, prompt] of Object.entries(value as Record<string, unknown>)) {
-    if (Object.keys(result).length >= 256) break;
-    const model = rawModel.trim();
-    if (!model || model.length > 200) continue;
-    if (model === '__proto__' || model === 'constructor' || model === 'prototype') continue;
-    if (typeof prompt === 'string') {
-      result[model] = prompt.slice(0, 32 * 1024);
-    }
-  }
-  return result;
-}
-
 export {
   applyBackgroundSystemPrompt,
   resolveBackgroundSystemPrompt,
   rememberBackgroundSystemPromptForModel,
   resolveBackgroundSystemPromptForModel,
   planBackgroundModelSwitch,
+  sanitizeBackgroundSystemPromptByModel,
 } from './background-system-prompt';
 
 // ─── 认证 token 撤销机制（M2） ─────────────────────────────────

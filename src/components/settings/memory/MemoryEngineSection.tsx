@@ -1,9 +1,5 @@
 import type { ReactNode } from 'react';
-import type { ApiProvider, MemoryEngineSettings, Settings } from '@/types';
-import {
-  planBackgroundModelSwitch,
-  rememberBackgroundSystemPromptForModel,
-} from '@/lib/background-system-prompt';
+import type { MemoryEngineSettings, Settings } from '@/types';
 
 type SettingsWithMemoryEngine = Settings & {
   memory_engine: MemoryEngineSettings;
@@ -11,10 +7,6 @@ type SettingsWithMemoryEngine = Settings & {
 
 interface MemoryEngineSectionProps {
   settings: SettingsWithMemoryEngine;
-  providers: ApiProvider[];
-  bgModelList: string[];
-  bgModelLoading: boolean;
-  bgModelError: string | null;
   embeddingModelList: string[];
   embeddingModelLoading: boolean;
   embeddingModelError: string | null;
@@ -23,10 +15,8 @@ interface MemoryEngineSectionProps {
   rerankerModelError: string | null;
   update: <K extends keyof SettingsWithMemoryEngine>(key: K, value: SettingsWithMemoryEngine[K]) => void;
   updateMemoryEngine: <K extends keyof MemoryEngineSettings>(key: K, value: MemoryEngineSettings[K]) => void;
-  onFetchBgModels: () => void;
   onFetchEmbeddingModels: () => void;
   onFetchRerankerModels: () => void;
-  onClearBgModelList: () => void;
   onClearEmbeddingModelList: () => void;
   onClearRerankerModelList: () => void;
   parseNumber: (value: string) => number;
@@ -36,10 +26,6 @@ interface MemoryEngineSectionProps {
 
 export function MemoryEngineSection({
   settings,
-  providers,
-  bgModelList,
-  bgModelLoading,
-  bgModelError,
   embeddingModelList,
   embeddingModelLoading,
   embeddingModelError,
@@ -48,42 +34,14 @@ export function MemoryEngineSection({
   rerankerModelError,
   update,
   updateMemoryEngine,
-  onFetchBgModels,
   onFetchEmbeddingModels,
   onFetchRerankerModels,
-  onClearBgModelList,
   onClearEmbeddingModelList,
   onClearRerankerModelList,
   parseNumber,
   t,
   children,
 }: MemoryEngineSectionProps) {
-  const handleBgModelChange = (nextModel: string) => {
-    const planned = planBackgroundModelSwitch({
-      previousModel: settings.memory_background_model,
-      previousPrompt: settings.memory_background_system_prompt || '',
-      nextModel,
-      fallbackModel: settings.model,
-      byModel: settings.memory_background_system_prompt_by_model || {},
-    });
-
-    update('memory_background_model', nextModel);
-    update('memory_background_system_prompt', planned.prompt);
-    update('memory_background_system_prompt_by_model', planned.byModel);
-  };
-
-  const handleBgPromptChange = (newPrompt: string) => {
-    update('memory_background_system_prompt', newPrompt);
-    const activeModel = (settings.memory_background_model || settings.model || '').trim();
-    if (activeModel) {
-      const currentByModel = settings.memory_background_system_prompt_by_model || {};
-      const nextByModel = rememberBackgroundSystemPromptForModel(currentByModel, activeModel, newPrompt);
-      update('memory_background_system_prompt_by_model', nextByModel);
-    }
-  };
-
-  const currentActiveModel = (settings.memory_background_model || settings.model || '').trim();
-
   return (
     <section className="surface-panel p-5">
       <div className="mb-4">
@@ -107,79 +65,6 @@ export function MemoryEngineSection({
 
         <div className="space-y-4 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
           <div>
-            <label htmlFor="settings-memory-background-provider" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundProvider')}</label>
-            <select
-              id="settings-memory-background-provider"
-              value={settings.memory_background_provider_id}
-              onChange={e => {
-                update('memory_background_provider_id', e.target.value);
-                onClearBgModelList();
-                const provider = providers.find(p => p.id === e.target.value);
-                handleBgModelChange(provider ? provider.model : '');
-              }}
-              className="select-rich"
-            >
-              <option value="">{t('settings.memoryBackgroundProviderNone')}</option>
-              {providers.map(p => (
-                <option key={p.id} value={p.id}>{p.name} ({p.model || t('settings.modelPlaceholder')})</option>
-              ))}
-            </select>
-            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundProviderHint')}</p>
-          </div>
-          <div>
-            <label htmlFor="settings-memory-background-model" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundModel')}</label>
-            <div className="flex flex-col gap-2 lg:flex-row">
-              {bgModelList.length > 0 ? (
-                <select
-                  id="settings-memory-background-model"
-                  value={settings.memory_background_model}
-                  onChange={e => handleBgModelChange(e.target.value)}
-                  className="select-rich flex-1"
-                >
-                  <option value="">{t('settings.modelSelectPlaceholder')}</option>
-                  {bgModelList.map(model => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  id="settings-memory-background-model"
-                  value={settings.memory_background_model}
-                  onChange={e => handleBgModelChange(e.target.value)}
-                  className="input-rich flex-1"
-                  placeholder={t('settings.modelPlaceholder')}
-                />
-              )}
-              <button
-                type="button"
-                onClick={onFetchBgModels}
-                disabled={bgModelLoading}
-                className="soft-button soft-button-secondary shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {bgModelLoading ? t('common.loading') : t('settings.fetchModels')}
-              </button>
-            </div>
-            {bgModelError && <p className="mt-2 text-xs text-red-500">{bgModelError}</p>}
-            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundModelHint')}</p>
-          </div>
-          <div>
-            <label htmlFor="settings-memory-background-system-prompt" className="mb-1.5 block text-sm font-medium text-text-secondary">
-              {t('settings.memoryBackgroundSystemPrompt')}
-              {currentActiveModel ? (
-                <span className="ml-1.5 font-normal text-text-muted">({currentActiveModel})</span>
-              ) : null}
-            </label>
-            <textarea
-              id="settings-memory-background-system-prompt"
-              rows={3}
-              value={settings.memory_background_system_prompt || ''}
-              onChange={e => handleBgPromptChange(e.target.value)}
-              className="textarea-rich w-full resize-y rounded-xl border border-border-light bg-white/70 px-3 py-2 font-mono text-sm"
-              placeholder={t('settings.memoryBackgroundSystemPromptPlaceholder')}
-            />
-            <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundSystemPromptHint')}</p>
-          </div>
-          <div>
             <label htmlFor="settings-memory-background-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundTimeout')}</label>
             <input
               id="settings-memory-background-timeout"
@@ -195,43 +80,6 @@ export function MemoryEngineSection({
             />
             <p className="mt-1.5 text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundTimeoutHint')}</p>
           </div>
-          <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input
-              type="checkbox"
-              checked={settings.disable_deepseek_thinking_for_background}
-              onChange={e => update('disable_deepseek_thinking_for_background', e.target.checked)}
-              className="mt-1"
-            />
-            <span>
-              <span className="block font-medium text-text-primary">{t('settings.disableDeepseekThinkingForBackground')}</span>
-              <span className="mt-1 block text-xs leading-relaxed text-text-muted">{t('settings.disableDeepseekThinkingForBackgroundHint')}</span>
-            </span>
-          </label>
-          <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-            <input
-              type="checkbox"
-              checked={settings.memory_background_reasoning_effort_enabled}
-              onChange={e => update('memory_background_reasoning_effort_enabled', e.target.checked)}
-              className="mt-1"
-            />
-            <span className="flex-1">
-              <span className="block font-medium text-text-primary">{t('settings.memoryBackgroundReasoningEffortEnabled')}</span>
-              <span className="mt-1 block text-xs leading-relaxed text-text-muted">{t('settings.memoryBackgroundReasoningEffortEnabledHint')}</span>
-              {settings.memory_background_reasoning_effort_enabled && (
-                <select
-                  value={settings.memory_background_reasoning_effort === 'default' ? 'medium' : settings.memory_background_reasoning_effort}
-                  onChange={e => update('memory_background_reasoning_effort', e.target.value as Settings['memory_background_reasoning_effort'])}
-                  className="select-rich mt-3 w-full max-w-xs"
-                >
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="xhigh">xhigh</option>
-                  <option value="max">max</option>
-                </select>
-              )}
-            </span>
-          </label>
           <div>
             <label htmlFor="settings-memory-package-token-budget" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryPackageTokenBudget')}</label>
             <input

@@ -49,7 +49,7 @@ function requireFreshWithMocks(modulePath, mocks) {
   }
 }
 
-test('buildBackgroundChatExtraBody disables thinking only for DeepSeek background models when enabled', () => {
+test('buildBackgroundChatExtraBody reads reasoning effort from the character model map', () => {
   const { buildBackgroundChatExtraBody } = requireFreshWithMocks('../src/lib/settings.ts', {
     '@/lib/db': {
       getDb: () => {
@@ -58,56 +58,32 @@ test('buildBackgroundChatExtraBody disables thinking only for DeepSeek backgroun
     },
   });
 
-  assert.deepEqual(
-    buildBackgroundChatExtraBody({ disable_deepseek_thinking_for_background: true }, 'deepseek-v4-pro'),
-    { thinking: { type: 'disabled' } },
-  );
-  assert.equal(
-    buildBackgroundChatExtraBody({ disable_deepseek_thinking_for_background: true }, 'gpt-4o-mini'),
-    undefined,
-  );
-  assert.equal(
-    buildBackgroundChatExtraBody({ disable_deepseek_thinking_for_background: false }, 'deepseek-v4-pro'),
-    undefined,
-  );
-});
-
-test('buildBackgroundChatExtraBody adds reasoning_effort only when background toggle is on', () => {
-  const { buildBackgroundChatExtraBody } = requireFreshWithMocks('../src/lib/settings.ts', {
-    '@/lib/db': {
-      getDb: () => {
-        throw new Error('db should not be used');
-      },
-    },
-  });
-
-  assert.equal(
-    buildBackgroundChatExtraBody(
-      {
-        disable_deepseek_thinking_for_background: false,
-        memory_background_reasoning_effort_enabled: false,
-        memory_background_reasoning_effort: 'high',
-      },
-      'gpt-4o',
-    ),
-    undefined,
-  );
+  const character = {
+    background_provider_id: '',
+    background_model: '',
+    image_prompt_model: '',
+    background_reasoning_by_model: { 'gpt-4o': 'high' },
+    image_prompt_reasoning_by_model: {},
+    background_system_prompt_by_model: {},
+    image_prompt_system_prompt_by_model: {},
+  };
 
   assert.deepEqual(
-    buildBackgroundChatExtraBody(
-      {
-        disable_deepseek_thinking_for_background: false,
-        memory_background_reasoning_effort_enabled: true,
-        memory_background_reasoning_effort: 'high',
-      },
-      'gpt-4o',
-    ),
+    buildBackgroundChatExtraBody('gpt-4o', { character, kind: 'background' }),
     { reasoning_effort: 'high' },
   );
+  assert.equal(
+    buildBackgroundChatExtraBody('gpt-4o', {
+      character: { ...character, background_reasoning_by_model: { 'gpt-4o': 'default' } },
+      kind: 'background',
+    }),
+    undefined,
+  );
+  assert.equal(buildBackgroundChatExtraBody('gpt-4o'), undefined);
 });
 
 test('character task models override background and image prompt models separately', () => {
-  const { resolveBackgroundConfig, buildBackgroundChatExtraBody } = requireFreshWithMocks('../src/lib/settings.ts', {
+  const { resolveBackgroundConfig, buildBackgroundChatExtraBody, resolveCharacterTaskSystemPrompt } = requireFreshWithMocks('../src/lib/settings.ts', {
     '@/lib/db': {
       getDb: () => {
         throw new Error('db should not be used when no background provider is selected');
@@ -119,17 +95,15 @@ test('character task models override background and image prompt models separate
     api_base: 'https://llm.example/v1',
     api_key: 'secret',
     model: 'chat-model',
-    memory_background_model: 'global-bg',
-    memory_background_provider_id: '',
-    disable_deepseek_thinking_for_background: false,
-    memory_background_reasoning_effort_enabled: true,
-    memory_background_reasoning_effort: 'low',
   };
   const character = {
+    background_provider_id: '',
     background_model: 'extract-model',
     image_prompt_model: 'draw-model',
     background_reasoning_by_model: { 'extract-model': 'high' },
     image_prompt_reasoning_by_model: { 'draw-model': 'max' },
+    background_system_prompt_by_model: { 'extract-model': 'extract carefully' },
+    image_prompt_system_prompt_by_model: { 'draw-model': 'draw carefully' },
   };
 
   assert.equal(
@@ -137,16 +111,24 @@ test('character task models override background and image prompt models separate
     'extract-model',
   );
   assert.deepEqual(
-    buildBackgroundChatExtraBody(settings, 'extract-model', { character, kind: 'background' }),
+    buildBackgroundChatExtraBody('extract-model', { character, kind: 'background' }),
     { reasoning_effort: 'high' },
+  );
+  assert.equal(
+    resolveCharacterTaskSystemPrompt({ character, kind: 'background' }, 'extract-model'),
+    'extract carefully',
   );
   assert.equal(
     resolveBackgroundConfig(settings, { character, kind: 'image_prompt' }).model,
     'draw-model',
   );
   assert.deepEqual(
-    buildBackgroundChatExtraBody(settings, 'draw-model', { character, kind: 'image_prompt' }),
+    buildBackgroundChatExtraBody('draw-model', { character, kind: 'image_prompt' }),
     { reasoning_effort: 'max' },
+  );
+  assert.equal(
+    resolveCharacterTaskSystemPrompt({ character, kind: 'image_prompt' }, 'draw-model'),
+    'draw carefully',
   );
 
   const followBackground = {
@@ -158,24 +140,27 @@ test('character task models override background and image prompt models separate
     'extract-model',
   );
   assert.deepEqual(
-    buildBackgroundChatExtraBody(settings, 'extract-model', { character: followBackground, kind: 'image_prompt' }),
+    buildBackgroundChatExtraBody('extract-model', { character: followBackground, kind: 'image_prompt' }),
     { reasoning_effort: 'high' },
   );
+  assert.equal(
+    resolveCharacterTaskSystemPrompt({ character: followBackground, kind: 'image_prompt' }, 'extract-model'),
+    'extract carefully',
+  );
 
-  assert.equal(resolveBackgroundConfig(settings).model, 'global-bg');
-  assert.deepEqual(
-    buildBackgroundChatExtraBody(settings, 'global-bg'),
-    { reasoning_effort: 'low' },
+  assert.equal(resolveBackgroundConfig(settings).model, 'chat-model');
+  assert.equal(
+    buildBackgroundChatExtraBody('chat-model', {
+      character: { ...character, background_model: '', image_prompt_model: '' },
+      kind: 'background',
+    }),
+    undefined,
   );
   assert.equal(
-    buildBackgroundChatExtraBody(
-      settings,
-      'draw-model',
-      {
-        character: { ...character, image_prompt_reasoning_by_model: { 'draw-model': 'default' } },
-        kind: 'image_prompt',
-      },
-    ),
+    buildBackgroundChatExtraBody('draw-model', {
+      character: { ...character, image_prompt_reasoning_by_model: { 'draw-model': 'default' } },
+      kind: 'image_prompt',
+    }),
     undefined,
   );
 });
@@ -208,7 +193,7 @@ test('mergeSettingsForBackgroundLlm clears chat reasoning_effort from background
   assert.equal(merged.reasoning_effort, 'default');
 });
 
-test('resolveBackgroundConfig lets explicit background model override provider model', () => {
+test('resolveBackgroundConfig uses the character provider and falls back to the main API', () => {
   const { resolveBackgroundConfig } = requireFreshWithMocks('../src/lib/settings.ts', {
     '@/lib/db': {
       getDb: () => ({
@@ -218,7 +203,6 @@ test('resolveBackgroundConfig lets explicit background model override provider m
             return {
               api_base: 'https://provider.example/v1',
               api_key: 'provider-key',
-              model: 'deepseek-v4-pro',
             };
           },
         }),
@@ -226,29 +210,32 @@ test('resolveBackgroundConfig lets explicit background model override provider m
     },
   });
 
+  const character = {
+    background_provider_id: 'provider-1',
+    background_model: 'grok-4.6',
+    image_prompt_model: '',
+    background_reasoning_by_model: {},
+    image_prompt_reasoning_by_model: {},
+    background_system_prompt_by_model: {},
+    image_prompt_system_prompt_by_model: {},
+  };
   assert.deepEqual(resolveBackgroundConfig({
     api_base: 'https://main.example/v1',
     api_key: 'main-key',
-    model: 'deepseek-v4-pro',
-    memory_background_provider_id: 'provider-1',
-    memory_background_model: 'gemini-3.1-pro-preview',
-  }), {
+    model: 'gemini-3.8-flash',
+  }, { character, kind: 'background' }), {
     api_base: 'https://provider.example/v1',
     api_key: 'provider-key',
-    model: 'gemini-3.1-pro-preview',
+    model: 'grok-4.6',
   });
 });
 
-test('resolveBackgroundConfig falls back to provider model when background model is blank', () => {
+test('resolveBackgroundConfig uses the main chat model when the character model is blank', () => {
   const { resolveBackgroundConfig } = requireFreshWithMocks('../src/lib/settings.ts', {
     '@/lib/db': {
       getDb: () => ({
         prepare: () => ({
-          get: () => ({
-            api_base: 'https://provider.example/v1',
-            api_key: 'provider-key',
-            model: 'deepseek-v4-pro',
-          }),
+          get: () => undefined,
         }),
       }),
     },
@@ -258,25 +245,30 @@ test('resolveBackgroundConfig falls back to provider model when background model
     api_base: 'https://main.example/v1',
     api_key: 'main-key',
     model: 'main-model',
-    memory_background_provider_id: 'provider-1',
-    memory_background_model: '   ',
+  }, {
+    character: {
+      background_provider_id: 'missing',
+      background_model: '',
+      image_prompt_model: '',
+      background_reasoning_by_model: {},
+      image_prompt_reasoning_by_model: {},
+      background_system_prompt_by_model: {},
+      image_prompt_system_prompt_by_model: {},
+    },
+    kind: 'background',
   }), {
-    api_base: 'https://provider.example/v1',
-    api_key: 'provider-key',
-    model: 'deepseek-v4-pro',
+    api_base: 'https://main.example/v1',
+    api_key: 'main-key',
+    model: 'main-model',
   });
 });
 
-test('settings background model fetch posts provider_id instead of provider api_key when provider is selected', () => {
+test('character task model list posts provider_id and settings no longer selects a background provider', () => {
   const settingsPage = fs.readFileSync(path.join(root, 'src/app/settings/page.tsx'), 'utf8');
+  const characterField = fs.readFileSync(path.join(root, 'src/components/ui/CharacterTaskModelsField.tsx'), 'utf8');
 
-  assert.ok(settingsPage.includes('providerId?: string'), 'fetchModelList should accept providerId');
-  assert.ok(settingsPage.includes('body.provider_id = providerId;'), 'provider branch should post provider_id');
-  assert.match(
-    settingsPage,
-    /fetchModelList\(apiBase,\s*apiKey,\s*undefined,\s*providerId \|\| undefined\)/,
-    'background model fetch should pass selected provider_id',
-  );
+  assert.equal(settingsPage.includes('memory_background_provider_id'), false);
+  assert.ok(characterField.includes('body.provider_id = selectedProviderId'));
 });
 
 test('image prompt route resolves background provider and model before chat completion', () => {

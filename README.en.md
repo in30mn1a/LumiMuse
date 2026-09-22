@@ -206,7 +206,7 @@ Import/export makes backup and migration easy; Docker lets you deploy on hardwar
 - AI review can batch-correct category, importance, emotional weight, and tags, then rebuild affected indexes
 - AI archive compresses older memories into summary memories with traceable batches
 - Memory profiles support init, queued processing, manual edits, version switching, and version deletion
-- Background tasks can use a separate provider/model; DeepSeek background reasoning can be disabled for faster review / profile / archive work
+- Background task API, model, reasoning effort, and system prompt are configured per character under "Task models", with a separate image prompt model; Settings only keeps the background task deadline
 - Settings includes index status, rebuild, index unindexed, retry failed, stop current job, and clear index
 
 ### 🎨 AI Image Generation
@@ -507,7 +507,7 @@ Extract → Manage / Review / Archive → Retrieve → Pack & Inject
 - Message-count / time / keyword extraction triggers
 - Enhanced memory engine and retrieval parameters
 - `memory_package_token_budget` — token budget for the injected memory package (default 12000)
-- Background model and reasoning effort
+- Background task deadline (background model, API, reasoning effort, and system prompt are set on the character)
 - Per-conversation ignore-extraction flag
 
 If a conversation is only for testing prompts, mark it to ignore memory extraction so it doesn't pollute the bank.

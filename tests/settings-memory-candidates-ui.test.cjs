@@ -691,7 +691,6 @@ test('settings memory profile display and model fetch errors use i18n keys', () 
   const i18n = readProjectFile('src/lib/i18n.ts');
 
   for (const snippet of [
-    "setBgModelError(t('settings.apiBaseRequired'))",
     "setEmbeddingModelError(t('settings.memoryEmbeddingApiBaseRequired'))",
     "setRerankerModelError(t('settings.memoryRerankerApiBaseRequired'))",
   ]) {
@@ -788,19 +787,12 @@ test('settings memory diagnostics no longer owns AI review entry point', () => {
   assert.doesNotMatch(settingsPage, /t\('settings\.memoryAiReview'\)/);
 });
 
-test('settings memory tab exposes DeepSeek background thinking toggle and backend tasks wire it', () => {
+test('settings memory tab no longer exposes DeepSeek background thinking, and tasks still forward extra body', () => {
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
-  const i18n = readProjectFile('src/lib/i18n.ts');
   const settingsTypes = readProjectFile('src/types/index.ts');
 
-  assert.ok(memoryEngineSection.includes('settings.disable_deepseek_thinking_for_background'));
-  assert.ok(memoryEngineSection.includes("update('disable_deepseek_thinking_for_background', e.target.checked)"));
-  assert.ok(memoryEngineSection.includes("t('settings.disableDeepseekThinkingForBackground')"));
-  assert.ok(memoryEngineSection.includes("t('settings.disableDeepseekThinkingForBackgroundHint')"));
-  assert.match(i18n, /'settings\.disableDeepseekThinkingForBackground'/);
-  assert.match(i18n, /'settings\.disableDeepseekThinkingForBackgroundHint'/);
-  assert.match(settingsTypes, /disable_deepseek_thinking_for_background:\s*boolean/);
-  assert.match(settingsTypes, /disable_deepseek_thinking_for_background:\s*false/);
+  assert.equal(memoryEngineSection.includes('disable_deepseek_thinking_for_background'), false);
+  assert.equal(settingsTypes.includes('disable_deepseek_thinking_for_background'), false);
 
   for (const relativePath of [
     'src/app/api/image-gen/prompt/route.ts',

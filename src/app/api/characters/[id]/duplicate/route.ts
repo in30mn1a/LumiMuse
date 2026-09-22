@@ -10,7 +10,7 @@ import {
 } from '@/lib/character-file-utils';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
-import { presentCharacter, serializeReasoningMap } from '@/lib/character-task-models';
+import { presentCharacter, serializePromptMap, serializeReasoningMap } from '@/lib/character-task-models';
 import { publicErrorMessage } from '@/lib/public-error';
 import { parseMessageMetadata } from '@/lib/messages';
 import {
@@ -459,10 +459,11 @@ export async function POST(
           id, name, avatar_url, basic_info, personality, scenario, greeting,
           example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
           active_preset_id, memory_chat_injection_mode,
-          background_model, image_prompt_model,
+          background_model, image_prompt_model, background_provider_id,
           background_reasoning_by_model, image_prompt_reasoning_by_model,
+          background_system_prompt_by_model, image_prompt_system_prompt_by_model,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         newCharacterId,
         newName,
@@ -480,8 +481,11 @@ export async function POST(
         original.memory_chat_injection_mode,
         original.background_model || '',
         original.image_prompt_model || '',
+        original.background_provider_id || '',
         serializeReasoningMap(original.background_reasoning_by_model),
         serializeReasoningMap(original.image_prompt_reasoning_by_model),
+        serializePromptMap(original.background_system_prompt_by_model),
+        serializePromptMap(original.image_prompt_system_prompt_by_model),
         now,
         now,
       );

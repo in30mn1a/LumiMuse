@@ -13,6 +13,7 @@ import {
   enableGeneratedImageFolderMigrationTracking,
   installGeneratedImageFolderMigrationTracking,
 } from '@/lib/generated-image-folder-migration';
+import { migrateGlobalBackgroundTaskSettings } from '@/lib/character-task-settings-migration';
 import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
 import type { MemoryChatInjectionMode } from '@/types';
 
@@ -776,6 +777,16 @@ function migrate(db: Database.Database): void {
   if (!charCols.some(c => c.name === 'image_prompt_reasoning_by_model')) {
     db.exec(`ALTER TABLE characters ADD COLUMN image_prompt_reasoning_by_model TEXT NOT NULL DEFAULT '{}'`);
   }
+  if (!charCols.some(c => c.name === 'background_provider_id')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN background_provider_id TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!charCols.some(c => c.name === 'background_system_prompt_by_model')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN background_system_prompt_by_model TEXT NOT NULL DEFAULT '{}'`);
+  }
+  if (!charCols.some(c => c.name === 'image_prompt_system_prompt_by_model')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN image_prompt_system_prompt_by_model TEXT NOT NULL DEFAULT '{}'`);
+  }
+  migrateGlobalBackgroundTaskSettings(db);
 
   // 聊天记忆注入模式从全局设置迁到角色：旧角色只在首次加列时复制一次旧全局有效值；
   // 此后全局字段即使变化也不得再覆盖角色。新建角色由列默认值使用 full。

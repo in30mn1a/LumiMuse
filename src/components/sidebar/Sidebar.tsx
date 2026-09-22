@@ -65,7 +65,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
   // 高度跟父级 h-full（= 视口 - 外层 py-4），避免再写 100dvh 与主栏 100vh 错位；
   // 宽度：抽屉 72vw；lg 起常驻侧栏用 18rem 保证角色卡编辑按钮可见，xl 回到 21rem
   return (
-    <aside className="surface-panel flex h-full min-h-0 w-[72vw] max-w-[21rem] flex-col overflow-hidden lg:w-[18rem] xl:w-[21rem]">
+    <aside className="surface-panel flex h-full min-h-0 w-[72vw] max-w-[21rem] flex-col overflow-hidden overscroll-contain lg:w-[18rem] xl:w-[21rem]">
       <div className="border-b border-border-light p-4">
         <div className="surface-hero p-4">
           <div className="flex items-center gap-3">
@@ -116,7 +116,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
               <div className="px-4 py-3 text-center text-xs text-text-muted">{t('search.noResults')}</div>
             )}
             {!loading && results.length > 0 && (
-              <div className="max-h-[60vh] overflow-y-auto">
+              <div data-sidebar-scroll className="max-h-[60vh] overflow-y-auto overscroll-contain">
                 {results.map(r => (
                   <button
                     key={r.messageId}

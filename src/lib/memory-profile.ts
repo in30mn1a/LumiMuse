@@ -3,6 +3,7 @@ import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { ensureMemoryProfileTables, getDb } from '@/lib/db';
 import { createDbTaskQueue } from '@/lib/db-task-queue';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
+import { loadCharacterTaskModels } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
@@ -364,7 +365,11 @@ async function generateMemoryProfilePatchWithLlm(
   if (!rawSourceText) return task.patch;
 
   const loaded = loadSettings();
-  const bgConfig = resolveBackgroundConfig(loaded);
+  const taskTarget = {
+    character: loadCharacterTaskModels(getDb(), task.character_id),
+    kind: 'background' as const,
+  };
+  const bgConfig = resolveBackgroundConfig(loaded, taskTarget);
 
   // 读取角色信息，让画像 patch LLM 知道角色是谁
   let characterInfo = '';
@@ -395,7 +400,7 @@ async function generateMemoryProfilePatchWithLlm(
   }
 
   const prompt = buildMemoryProfilePatchPrompt(task, currentProfile, rawSourceText, characterInfo);
-  const backgroundExtraBody = buildBackgroundChatExtraBody(loaded, settings.model);
+  const backgroundExtraBody = buildBackgroundChatExtraBody(loaded, settings.model, taskTarget);
   const messages = applyBackgroundSystemPrompt(
     [{ role: 'user', content: prompt }],
     loaded,

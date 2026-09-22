@@ -6,6 +6,7 @@ import {
   deleteLocalAssetUrls,
   filterUnreferencedLocalAssetUrls,
 } from '@/lib/character-file-utils';
+import { presentCharacter, serializeReasoningMap } from '@/lib/character-task-models';
 import { characterUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import {
   attachCharacterPresetBindings,
@@ -21,7 +22,7 @@ export async function GET(
   const db = getDb();
   const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as { id: string } | undefined;
   if (!character) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  return NextResponse.json(attachCharacterPresetBindings(character));
+  return NextResponse.json(presentCharacter(attachCharacterPresetBindings(character) as Record<string, unknown>));
 }
 
 export async function PUT(
@@ -64,7 +65,10 @@ export async function PUT(
       UPDATE characters SET
         name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
         greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?,
-        active_preset_id = ?, memory_chat_injection_mode = ?, updated_at = ?
+        active_preset_id = ?, memory_chat_injection_mode = ?,
+        background_model = ?, image_prompt_model = ?,
+        background_reasoning_by_model = ?, image_prompt_reasoning_by_model = ?,
+        updated_at = ?
       WHERE id = ?
     `).run(
       body.name ?? existing.name,
@@ -83,6 +87,14 @@ export async function PUT(
         ? (body.active_preset_id === null || body.active_preset_id === '' ? null : body.active_preset_id)
         : ((existing as Character & { active_preset_id?: string | null }).active_preset_id ?? null),
       body.memory_chat_injection_mode ?? existing.memory_chat_injection_mode ?? 'full',
+      body.background_model !== undefined ? body.background_model : (existing.background_model ?? ''),
+      body.image_prompt_model !== undefined ? body.image_prompt_model : (existing.image_prompt_model ?? ''),
+      body.background_reasoning_by_model !== undefined
+        ? serializeReasoningMap(body.background_reasoning_by_model)
+        : serializeReasoningMap(existing.background_reasoning_by_model),
+      body.image_prompt_reasoning_by_model !== undefined
+        ? serializeReasoningMap(body.image_prompt_reasoning_by_model)
+        : serializeReasoningMap(existing.image_prompt_reasoning_by_model),
       now,
       id,
     );
@@ -94,7 +106,7 @@ export async function PUT(
   saveCharacter();
 
   const updated = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as { id: string };
-  return NextResponse.json(attachCharacterPresetBindings(updated));
+  return NextResponse.json(presentCharacter(attachCharacterPresetBindings(updated) as Record<string, unknown>));
 }
 
 export async function DELETE(

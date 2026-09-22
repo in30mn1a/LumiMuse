@@ -764,6 +764,18 @@ function migrate(db: Database.Database): void {
   if (!charCols.some(c => c.name === 'user_image_tags')) {
     db.exec(`ALTER TABLE characters ADD COLUMN user_image_tags TEXT NOT NULL DEFAULT ''`);
   }
+  if (!charCols.some(c => c.name === 'background_model')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN background_model TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!charCols.some(c => c.name === 'image_prompt_model')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN image_prompt_model TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!charCols.some(c => c.name === 'background_reasoning_by_model')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN background_reasoning_by_model TEXT NOT NULL DEFAULT '{}'`);
+  }
+  if (!charCols.some(c => c.name === 'image_prompt_reasoning_by_model')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN image_prompt_reasoning_by_model TEXT NOT NULL DEFAULT '{}'`);
+  }
 
   // 聊天记忆注入模式从全局设置迁到角色：旧角色只在首次加列时复制一次旧全局有效值；
   // 此后全局字段即使变化也不得再覆盖角色。新建角色由列默认值使用 full。

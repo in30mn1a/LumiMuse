@@ -6,13 +6,14 @@ import {
   PRESET_ID_NONE,
   replaceCharacterModelPresetBindings,
 } from '@/lib/prompt-presets';
+import { presentCharacter, serializeReasoningMap } from '@/lib/character-task-models';
 import { characterCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
 
 export async function GET() {
   const db = getDb();
   // 按 sort_order 升序（越小越靠前），相同则按 updated_at 降序保持稳定
-  const characters = db.prepare('SELECT * FROM characters ORDER BY sort_order ASC, updated_at DESC').all();
-  return NextResponse.json(characters);
+  const characters = db.prepare('SELECT * FROM characters ORDER BY sort_order ASC, updated_at DESC').all() as Record<string, unknown>[];
+  return NextResponse.json(characters.map(presentCharacter));
 }
 
 export async function POST(request: NextRequest) {
@@ -54,8 +55,13 @@ export async function POST(request: NextRequest) {
   const nextSort = minRow.min_sort === null ? 0 : minRow.min_sort - 1;
 
   db.prepare(`
-    INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, active_preset_id, memory_chat_injection_mode, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO characters (
+      id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue,
+      system_prompt, other_info, image_tags, user_image_tags, active_preset_id,
+      memory_chat_injection_mode, sort_order, created_at, updated_at,
+      background_model, image_prompt_model, background_reasoning_by_model, image_prompt_reasoning_by_model
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     body.name || 'New Character',
@@ -74,12 +80,16 @@ export async function POST(request: NextRequest) {
     nextSort,
     now,
     now,
+    body.background_model || '',
+    body.image_prompt_model || '',
+    serializeReasoningMap(body.background_reasoning_by_model),
+    serializeReasoningMap(body.image_prompt_reasoning_by_model),
   );
 
   if (body.model_preset_bindings && body.model_preset_bindings.length > 0) {
     replaceCharacterModelPresetBindings(id, body.model_preset_bindings);
   }
 
-  const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(id);
-  return NextResponse.json(character, { status: 201 });
+  const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as Record<string, unknown>;
+  return NextResponse.json(presentCharacter(character), { status: 201 });
 }

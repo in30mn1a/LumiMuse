@@ -155,6 +155,57 @@ export default function Home() {
   // 移动/平板竖屏打开侧栏后扩到 lg+ 时必须关掉，否则会「看不见 dialog 却困住 Tab」。
   // 断点用 1024（lg）：iPad 竖屏 ~768–834 走抽屉；横屏 ≥1024 走常驻侧栏。
   useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const previous = { htmlOverflow: html.style.overflow, bodyOverflow: body.style.overflow };
+    html.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = previous.htmlOverflow;
+      body.style.overflow = previous.bodyOverflow;
+    };
+  }, []);
+
+  // 只在移动端抽屉打开时禁掉文档的 overscroll：桌面常驻侧栏不走这里，
+  // 保留触控板左右滑动返回等浏览器手势。
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const html = document.documentElement;
+    const body = document.body;
+    const previous = { html: html.style.overscrollBehavior, body: body.style.overscrollBehavior };
+    html.style.overscrollBehavior = 'none';
+    body.style.overscrollBehavior = 'none';
+    let startY = 0;
+    const onStart = (event: TouchEvent) => {
+      startY = event.touches[0]?.clientY ?? 0;
+    };
+    const onMove = (event: TouchEvent) => {
+      const currentY = event.touches[0]?.clientY ?? startY;
+      const fingerDelta = startY - currentY;
+      const element = event.target instanceof Element ? event.target : null;
+      // 输入框保留原生触摸行为（选字、光标定位）
+      if (element?.closest('input, textarea, [contenteditable="true"]')) return;
+      const scroller = element?.closest('[data-sidebar-scroll]');
+      if (!(scroller instanceof HTMLElement)) {
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
+      const atTop = scroller.scrollTop <= 0;
+      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+      const blocked = (fingerDelta > 0 && atBottom) || (fingerDelta < 0 && atTop);
+      if (blocked && event.cancelable) event.preventDefault();
+    };
+    document.addEventListener('touchstart', onStart, { passive: true });
+    document.addEventListener('touchmove', onMove, { passive: false });
+    return () => {
+      document.removeEventListener('touchstart', onStart);
+      document.removeEventListener('touchmove', onMove);
+      html.style.overscrollBehavior = previous.html;
+      body.style.overscrollBehavior = previous.body;
+    };
+  }, [sidebarOpen]);
+
+  useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
     const mq = window.matchMedia('(min-width: 1024px)');
     const closeIfDesktop = () => {

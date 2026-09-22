@@ -149,6 +149,46 @@ export function formatNaiPromptFields(fields: NaiPromptFields): string {
   return blocks.join('\n\n');
 }
 
+/**
+ * 生成结果里的 UC / NEGATIVE 不进入正面提示词。
+ * 用户手工保留在提示词里的 UC 不经过这里，画图设置里的负面词也不在这里处理。
+ */
+const UNDESIRED_FIELD_HEADER = /^(UC|NEGATIVE)\s*[:：]/i;
+const KEPT_FIELD_HEADER = /^(Prompt|POSITIVE|Character\s*\d+)\s*[:：]/i;
+
+export function stripGeneratedUndesiredContent(raw: string): string {
+  const text = raw.replace(/\r\n/g, '\n').trim();
+  if (!text) return '';
+
+  const fields = parseNaiPromptFields(text);
+  if (fields.structured) {
+    if (!fields.uc.trim()) return text;
+    return formatNaiPromptFields({ ...fields, uc: '' }).trim();
+  }
+  if (!UNDESIRED_FIELD_HEADER.test(text) && !text.split('\n').some(line => UNDESIRED_FIELD_HEADER.test(line.trim()))) {
+    return text;
+  }
+
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (UNDESIRED_FIELD_HEADER.test(trimmed)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (KEPT_FIELD_HEADER.test(trimmed)) {
+        skipping = false;
+        kept.push(line);
+      }
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function composeCaptionPrefix(cfg: ImageGenSettings, caption: string): string {
   const parts: string[] = [];
   if (cfg.nai_artist_tags?.trim()) parts.push(cfg.nai_artist_tags.trim());

@@ -115,6 +115,10 @@ function createImportDb() {
       user_image_tags TEXT NOT NULL DEFAULT '',
       memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full'
         CHECK (memory_chat_injection_mode IN ('full', 'local', 'hybrid', 'vector')),
+      background_model TEXT NOT NULL DEFAULT '',
+      image_prompt_model TEXT NOT NULL DEFAULT '',
+      background_reasoning_by_model TEXT NOT NULL DEFAULT '{}',
+      image_prompt_reasoning_by_model TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT ''
     );

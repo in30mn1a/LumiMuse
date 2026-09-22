@@ -9,6 +9,7 @@ import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/c
 import Modal from '@/components/ui/Modal';
 import PresetSelectField from '@/components/ui/PresetSelectField';
 import ModelPresetBindingsField from '@/components/ui/ModelPresetBindingsField';
+import CharacterTaskModelsField from '@/components/ui/CharacterTaskModelsField';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { clearCharacterContext } from '@/lib/character-context-cache';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
@@ -636,6 +637,21 @@ export default function CharacterEditor({ params }: Props) {
                   if (!character) return;
                   setDirty(true);
                   setCharacter({ ...character, model_preset_bindings: bindings });
+                }}
+              />
+            </section>
+
+            <section className="surface-panel p-5 xl:col-span-2">
+              <CharacterTaskModelsField
+                value={{
+                  background_model: character.background_model ?? '',
+                  image_prompt_model: character.image_prompt_model ?? '',
+                  background_reasoning_by_model: character.background_reasoning_by_model ?? {},
+                  image_prompt_reasoning_by_model: character.image_prompt_reasoning_by_model ?? {},
+                }}
+                onChange={(next) => {
+                  setDirty(true);
+                  setCharacter({ ...character, ...next });
                 }}
               />
             </section>

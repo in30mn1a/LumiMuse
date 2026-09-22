@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
+import { normalizeCharacterTaskModels } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
@@ -21,6 +22,7 @@ import {
   formatNaiPromptFields,
   parseNaiPromptFields,
   resolveImagePromptStyle,
+  stripGeneratedUndesiredContent,
   type ImagePromptStyle,
 } from '@/lib/nai-image';
 import {
@@ -143,16 +145,6 @@ export async function POST(request: NextRequest) {
     const db = getDb();
     const loadedSettings = loadSettings();
     const promptStyle = resolveImagePromptStyle(loadedSettings.image_gen);
-    const backgroundConfig = resolveBackgroundConfig(loadedSettings);
-    const settings = mergeSettingsForBackgroundLlm(loadedSettings, backgroundConfig, {
-      json_mode: false,
-      max_tokens: 16384,
-    });
-    const backgroundExtraBody = buildBackgroundChatExtraBody(loadedSettings, settings.model);
-
-    if (!settings.api_base || !settings.model) {
-      return NextResponse.json({ error: '请先配置 LLM API' }, { status: 400 });
-    }
 
     // 获取对话信息
     const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation_id) as { character_id: string } | undefined;
@@ -168,6 +160,20 @@ export async function POST(request: NextRequest) {
       image_tags?: string;
       user_image_tags?: string;
     } | undefined;
+    const taskTarget = {
+      character: normalizeCharacterTaskModels(character),
+      kind: 'image_prompt' as const,
+    };
+    const backgroundConfig = resolveBackgroundConfig(loadedSettings, taskTarget);
+    const settings = mergeSettingsForBackgroundLlm(loadedSettings, backgroundConfig, {
+      json_mode: false,
+      max_tokens: 16384,
+    });
+    const backgroundExtraBody = buildBackgroundChatExtraBody(loadedSettings, settings.model, taskTarget);
+
+    if (!settings.api_base || !settings.model) {
+      return NextResponse.json({ error: '请先配置 LLM API' }, { status: 400 });
+    }
 
     // 获取消息上下文：基于触发生图的消息，取该消息及之前共 10 条
     // 链式子对话的历史消息在父对话里，范围要沿 parent 链展开
@@ -251,8 +257,8 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({
-      prompt: parsedOutput.prompt,
-      negative_prompt: parsedOutput.negativePrompt,
+      prompt: stripGeneratedUndesiredContent(parsedOutput.prompt),
+      negative_prompt: '',
     });
   } catch (err) {
     structuredLog('error', 'image.prompt.failed', {

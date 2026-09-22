@@ -9,6 +9,7 @@ import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { structuredLog } from '@/lib/structured-log';
 import { extractBalancedJsonAt } from '@/lib/balanced-json';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
+import { loadCharacterTaskModels } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { parseMemoryMetadata } from '@/lib/metadata';
@@ -773,11 +774,12 @@ export async function extractMemories(
     .replace('{priority_memories}', () => prioritySection)
     .replace('{conversation_text}', () => conversationText);
 
-  const bgConfig = resolveBackgroundConfig(settings);
+  const taskTarget = { character: loadCharacterTaskModels(db, characterId), kind: 'background' as const };
+  const bgConfig = resolveBackgroundConfig(settings, taskTarget);
   const extractionSettings = mergeSettingsForBackgroundLlm(settings, bgConfig, {
     max_tokens: Math.max(settings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS),
   });
-  const backgroundExtraBody = buildBackgroundChatExtraBody(settings, extractionSettings.model);
+  const backgroundExtraBody = buildBackgroundChatExtraBody(settings, extractionSettings.model, taskTarget);
   const extractionMessages = applyBackgroundSystemPrompt(
     [{ role: 'user', content: prompt }],
     settings,

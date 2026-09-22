@@ -16,7 +16,7 @@ import {
   INLINE_PROMPT_SYSTEM_REMINDER,
   stripInlinePrompt,
 } from '@/lib/inline-image-prompt';
-import { resolveImagePromptStyle } from '@/lib/nai-image';
+import { resolveImagePromptStyle, stripGeneratedUndesiredContent } from '@/lib/nai-image';
 import {
   buildMessageTokenCountContent,
   createMessageTokenCount,
@@ -180,11 +180,11 @@ export function finalizeAssistantResponse(
   const withoutTimestamp = stripTimestampPrefix(rawText);
   const rawInlinePrompt = extractInlinePrompt(withoutTimestamp);
   const inlinePrompt = rawInlinePrompt
-    ? restoreSensitiveImageTagsToPrompt(
+    ? stripGeneratedUndesiredContent(restoreSensitiveImageTagsToPrompt(
         rawInlinePrompt,
         options.characterImageTags,
         options.userImageTags,
-      )
+      ))
     : '';
   const withoutInlinePrompt = rawInlinePrompt
     ? stripInlinePrompt(withoutTimestamp)

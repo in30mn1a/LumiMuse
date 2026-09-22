@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { inferMemoryDefaults, normalizeMemoryCategory } from '@/lib/memory-category';
+import { serializeReasoningMap } from '@/lib/character-task-models';
 import { normalizeCharacterCard, type CharacterDraft } from '@/lib/character-card-import';
 import { normalizeCharacterMemoryChatInjectionMode } from '@/lib/memory-runtime-policy';
 import { requireAuth } from '@/lib/route-auth';
@@ -581,9 +582,11 @@ function importPayload({
     INSERT INTO characters (
       id, name, avatar_url, basic_info, personality, scenario, greeting,
       example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
-      memory_chat_injection_mode, created_at, updated_at
+      memory_chat_injection_mode, created_at, updated_at,
+      background_model, image_prompt_model,
+      background_reasoning_by_model, image_prompt_reasoning_by_model
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertConversation = db.prepare(`
     INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
@@ -712,6 +715,10 @@ function importPayload({
         normalizeCharacterMemoryChatInjectionMode(char.memory_chat_injection_mode),
         asString(char.created_at) || now,
         now,
+        asString(char.background_model),
+        asString(char.image_prompt_model),
+        serializeReasoningMap(char.background_reasoning_by_model),
+        serializeReasoningMap(char.image_prompt_reasoning_by_model),
       );
       results.imported++;
     }

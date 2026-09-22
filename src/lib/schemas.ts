@@ -355,6 +355,16 @@ export const characterCreateSchema = z.object({
   active_preset_id: z.string().max(64).nullable().optional(),
   // 角色级聊天记忆注入模式；创建未传时服务端默认 full。
   memory_chat_injection_mode: z.enum(MEMORY_CHAT_INJECTION_MODES).optional(),
+  background_model: z.string().trim().max(MAX_MODEL_NAME).optional(),
+  image_prompt_model: z.string().trim().max(MAX_MODEL_NAME).optional(),
+  background_reasoning_by_model: z.record(
+    z.string().trim().min(1).max(MAX_MODEL_NAME),
+    z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']),
+  ).refine(value => Object.keys(value).length <= 256).optional(),
+  image_prompt_reasoning_by_model: z.record(
+    z.string().trim().min(1).max(MAX_MODEL_NAME),
+    z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']),
+  ).refine(value => Object.keys(value).length <= 256).optional(),
   model_preset_bindings: z.array(characterModelPresetBindingSchema).max(64).superRefine((items, ctx) => {
     const seen = new Set<string>();
     items.forEach((item, index) => {

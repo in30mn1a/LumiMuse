@@ -1,6 +1,7 @@
 import { getDb } from '@/lib/db';
+import type { CharacterTaskModelFields } from '@/lib/character-task-models';
 import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
-import { sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
+import { resolveReasoningEffortForModel, sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
 import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, Settings } from '@/types';
 
 const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
@@ -135,10 +136,41 @@ export function loadSettings(): Settings {
  * 解析后台任务（记忆提取 / 画像 patch / 总结）应使用的模型。
  * 用户配置了独立后台模型则用之，否则回退到主聊天模型。
  * 注意：记忆检索注入仍走主模型，不调用本函数。
+ * 角色编辑里的覆盖由 resolveBackgroundConfig 处理，不在这里。
  */
 export function resolveBackgroundModel(settings: Settings): string {
   const background = settings.memory_background_model?.trim();
   return background || settings.model;
+}
+
+export type BackgroundTaskKind = 'background' | 'image_prompt';
+
+export interface BackgroundTaskTarget {
+  character?: CharacterTaskModelFields | null;
+  kind?: BackgroundTaskKind;
+}
+
+/**
+ * 角色指定了模型时返回该模型，并标明思考强度该读哪张表。
+ * 生图模型留空时跟随本角色的后台任务模型，两处都留空才回到全局设置。
+ */
+export function resolveCharacterTaskSelection(target?: BackgroundTaskTarget): {
+  model: string;
+  effortSource: 'image' | 'background' | 'global';
+} {
+  const character = target?.character;
+  if (!character) return { model: '', effortSource: 'global' };
+
+  const backgroundModel = character.background_model?.trim() ?? '';
+  if (target?.kind === 'image_prompt') {
+    const imageModel = character.image_prompt_model?.trim() ?? '';
+    if (imageModel) return { model: imageModel, effortSource: 'image' };
+    if (backgroundModel) return { model: backgroundModel, effortSource: 'background' };
+    return { model: '', effortSource: 'global' };
+  }
+
+  if (backgroundModel) return { model: backgroundModel, effortSource: 'background' };
+  return { model: '', effortSource: 'global' };
 }
 
 /**
@@ -149,8 +181,12 @@ export function resolveBackgroundModel(settings: Settings): string {
  * 这是有意设计：后台模型配置是成本/速度优化，不是强依赖。后台供应商缺失或失效时回退主接口，
  * 能保持总结、记忆提取、画像 patch 继续可用；审查时不要把这种回退本身当作风险。
  */
-export function resolveBackgroundConfig(settings: Settings): { api_base: string; api_key: string; model: string } {
+export function resolveBackgroundConfig(
+  settings: Settings,
+  target?: BackgroundTaskTarget,
+): { api_base: string; api_key: string; model: string } {
   const backgroundModel = settings.memory_background_model?.trim();
+  const characterModel = resolveCharacterTaskSelection(target).model;
   const providerId = settings.memory_background_provider_id?.trim();
   if (providerId) {
     const db = getDb();
@@ -158,14 +194,18 @@ export function resolveBackgroundConfig(settings: Settings): { api_base: string;
       | { api_base: string; api_key: string; model: string }
       | undefined;
     if (row && row.api_base && row.model) {
-      return { api_base: row.api_base, api_key: row.api_key, model: backgroundModel || row.model };
+      return {
+        api_base: row.api_base,
+        api_key: row.api_key,
+        model: characterModel || backgroundModel || row.model,
+      };
     }
     // 供应商无效时回退到主接口：这是 local-first 可用性策略，不是静默绕过。
   }
   return {
     api_base: settings.api_base,
     api_key: settings.api_key,
-    model: resolveBackgroundModel(settings),
+    model: characterModel || resolveBackgroundModel(settings),
   };
 }
 
@@ -177,18 +217,34 @@ export function buildBackgroundChatExtraBody(
     | 'memory_background_reasoning_effort'
   >,
   model: string,
+  target?: BackgroundTaskTarget,
 ): Record<string, unknown> | undefined {
   const extra: Record<string, unknown> = {};
   if (settings.disable_deepseek_thinking_for_background && /deepseek/i.test(model)) {
     extra.thinking = { type: 'disabled' };
   }
-  if (
-    settings.memory_background_reasoning_effort_enabled
-    && settings.memory_background_reasoning_effort
-    && settings.memory_background_reasoning_effort !== 'default'
-  ) {
-    extra.reasoning_effort = settings.memory_background_reasoning_effort;
+
+  const selection = resolveCharacterTaskSelection(target);
+  if (selection.effortSource === 'global') {
+    if (
+      settings.memory_background_reasoning_effort_enabled
+      && settings.memory_background_reasoning_effort
+      && settings.memory_background_reasoning_effort !== 'default'
+    ) {
+      extra.reasoning_effort = settings.memory_background_reasoning_effort;
+    }
+  } else {
+    const rawMap = selection.effortSource === 'image'
+      ? target?.character?.image_prompt_reasoning_by_model
+      : target?.character?.background_reasoning_by_model;
+    const effort = resolveReasoningEffortForModel(
+      model,
+      sanitizeReasoningEffortByModel(rawMap),
+      'default',
+    );
+    if (effort !== 'default') extra.reasoning_effort = effort;
   }
+
   return Object.keys(extra).length > 0 ? extra : undefined;
 }
 

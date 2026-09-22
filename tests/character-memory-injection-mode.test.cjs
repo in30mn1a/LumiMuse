@@ -119,4 +119,23 @@ test('character CRUD defaults to full, persists valid modes, preserves omissions
   }));
   assert.equal(localCreated.status, 201);
   assert.equal((await localCreated.json()).memory_chat_injection_mode, 'local');
+
+  const taskModels = await detailRoute.PUT(jsonRequest({
+    background_model: 'extract-model',
+    image_prompt_model: 'draw-model',
+    background_reasoning_by_model: { 'extract-model': 'high' },
+    image_prompt_reasoning_by_model: { 'draw-model': 'max' },
+  }), params);
+  assert.equal(taskModels.status, 200);
+  const saved = await taskModels.json();
+  assert.equal(saved.background_model, 'extract-model');
+  assert.equal(saved.image_prompt_model, 'draw-model');
+  assert.deepEqual(saved.background_reasoning_by_model, { 'extract-model': 'high' });
+  assert.deepEqual(saved.image_prompt_reasoning_by_model, { 'draw-model': 'max' });
+
+  const reread = await detailRoute.GET({}, params);
+  const stored = await reread.json();
+  assert.equal(stored.background_model, 'extract-model');
+  assert.deepEqual(stored.image_prompt_reasoning_by_model, { 'draw-model': 'max' });
+  assert.equal(stored.memory_chat_injection_mode, 'vector');
 });

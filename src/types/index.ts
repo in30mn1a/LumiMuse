@@ -31,6 +31,17 @@ export interface Character {
    * 新建角色默认 `full`，不继承全局聊天模式。
    */
   memory_chat_injection_mode: MemoryChatInjectionMode;
+  /**
+   * 该角色的后台任务模型。空字符串表示使用设置页的后台模型。
+   * 影响记忆提取、画像、总结、归档和 AI 审核，不影响生图提示词。
+   */
+  background_model?: string;
+  /** 该角色单独生成生图提示词时使用的模型。空字符串表示跟随后台任务模型。 */
+  image_prompt_model?: string;
+  /** 后台任务模型各自记住的思考强度。键是模型名。 */
+  background_reasoning_by_model?: Record<string, ReasoningEffort>;
+  /** 生图提示词模型各自记住的思考强度。键是模型名。 */
+  image_prompt_reasoning_by_model?: Record<string, ReasoningEffort>;
   created_at: string;
   updated_at: string;
 }

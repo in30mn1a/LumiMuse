@@ -10,6 +10,7 @@ import {
 } from '@/lib/character-file-utils';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
+import { presentCharacter, serializeReasoningMap } from '@/lib/character-task-models';
 import { publicErrorMessage } from '@/lib/public-error';
 import { parseMessageMetadata } from '@/lib/messages';
 import {
@@ -457,8 +458,11 @@ export async function POST(
         INSERT INTO characters (
           id, name, avatar_url, basic_info, personality, scenario, greeting,
           example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
-          active_preset_id, memory_chat_injection_mode, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          active_preset_id, memory_chat_injection_mode,
+          background_model, image_prompt_model,
+          background_reasoning_by_model, image_prompt_reasoning_by_model,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         newCharacterId,
         newName,
@@ -474,6 +478,10 @@ export async function POST(
         original.user_image_tags || '',
         original.active_preset_id ?? null,
         original.memory_chat_injection_mode,
+        original.background_model || '',
+        original.image_prompt_model || '',
+        serializeReasoningMap(original.background_reasoning_by_model),
+        serializeReasoningMap(original.image_prompt_reasoning_by_model),
         now,
         now,
       );
@@ -673,7 +681,7 @@ export async function POST(
        ORDER BY sort_order ASC, model ASC`,
     ).all(newCharacterId);
     return NextResponse.json(
-      { ...character, model_preset_bindings: copiedBindings },
+      presentCharacter({ ...character, model_preset_bindings: copiedBindings }),
       { status: 201 },
     );
   } catch (err) {

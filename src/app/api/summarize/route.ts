@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { Message, Character } from '@/types';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
+import { normalizeCharacterTaskModels } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
 import { REASONING_SAFE_MAX_TOKENS, sanitizeUpstreamError } from '@/lib/api-client';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
@@ -123,8 +124,9 @@ ${convText}`;
   try {
     // 使用流式调用收集完整内容（兼容性更好）
     // 客户端断开连接时同步取消上游请求，避免 reader 泄漏
-    const bgConfig = resolveBackgroundConfig(settings);
-    const backgroundExtraBody = buildBackgroundChatExtraBody(settings, bgConfig.model);
+    const taskTarget = { character: normalizeCharacterTaskModels(character), kind: 'background' as const };
+    const bgConfig = resolveBackgroundConfig(settings, taskTarget);
+    const backgroundExtraBody = buildBackgroundChatExtraBody(settings, bgConfig.model, taskTarget);
     const summaryMessages = applyBackgroundSystemPrompt(
       [{ role: 'user', content: summaryPrompt }],
       settings,

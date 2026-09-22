@@ -106,6 +106,80 @@ test('buildBackgroundChatExtraBody adds reasoning_effort only when background to
   );
 });
 
+test('character task models override background and image prompt models separately', () => {
+  const { resolveBackgroundConfig, buildBackgroundChatExtraBody } = requireFreshWithMocks('../src/lib/settings.ts', {
+    '@/lib/db': {
+      getDb: () => {
+        throw new Error('db should not be used when no background provider is selected');
+      },
+    },
+  });
+
+  const settings = {
+    api_base: 'https://llm.example/v1',
+    api_key: 'secret',
+    model: 'chat-model',
+    memory_background_model: 'global-bg',
+    memory_background_provider_id: '',
+    disable_deepseek_thinking_for_background: false,
+    memory_background_reasoning_effort_enabled: true,
+    memory_background_reasoning_effort: 'low',
+  };
+  const character = {
+    background_model: 'extract-model',
+    image_prompt_model: 'draw-model',
+    background_reasoning_by_model: { 'extract-model': 'high' },
+    image_prompt_reasoning_by_model: { 'draw-model': 'max' },
+  };
+
+  assert.equal(
+    resolveBackgroundConfig(settings, { character, kind: 'background' }).model,
+    'extract-model',
+  );
+  assert.deepEqual(
+    buildBackgroundChatExtraBody(settings, 'extract-model', { character, kind: 'background' }),
+    { reasoning_effort: 'high' },
+  );
+  assert.equal(
+    resolveBackgroundConfig(settings, { character, kind: 'image_prompt' }).model,
+    'draw-model',
+  );
+  assert.deepEqual(
+    buildBackgroundChatExtraBody(settings, 'draw-model', { character, kind: 'image_prompt' }),
+    { reasoning_effort: 'max' },
+  );
+
+  const followBackground = {
+    ...character,
+    image_prompt_model: '',
+  };
+  assert.equal(
+    resolveBackgroundConfig(settings, { character: followBackground, kind: 'image_prompt' }).model,
+    'extract-model',
+  );
+  assert.deepEqual(
+    buildBackgroundChatExtraBody(settings, 'extract-model', { character: followBackground, kind: 'image_prompt' }),
+    { reasoning_effort: 'high' },
+  );
+
+  assert.equal(resolveBackgroundConfig(settings).model, 'global-bg');
+  assert.deepEqual(
+    buildBackgroundChatExtraBody(settings, 'global-bg'),
+    { reasoning_effort: 'low' },
+  );
+  assert.equal(
+    buildBackgroundChatExtraBody(
+      settings,
+      'draw-model',
+      {
+        character: { ...character, image_prompt_reasoning_by_model: { 'draw-model': 'default' } },
+        kind: 'image_prompt',
+      },
+    ),
+    undefined,
+  );
+});
+
 test('mergeSettingsForBackgroundLlm clears chat reasoning_effort from background requests', () => {
   const { mergeSettingsForBackgroundLlm } = requireFreshWithMocks('../src/lib/settings.ts', {
     '@/lib/db': {

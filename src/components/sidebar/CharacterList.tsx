@@ -225,7 +225,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
         {listError && <p className="mt-2 text-xs text-red-500">{listError}</p>}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+      <div data-sidebar-scroll className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-3 pb-4">
         {characters.length === 0 && (
           <div className="surface-panel-quiet mx-1 px-4 py-8 text-center">
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/80 text-accent-dark shadow-sm">

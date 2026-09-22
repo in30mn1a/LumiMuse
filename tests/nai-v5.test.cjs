@@ -7,6 +7,11 @@ registerTsLoader();
 
 const naiImage = require(path.resolve(__dirname, '../src/lib/nai-image.ts'));
 const { buildInlinePromptInstruction } = require(path.resolve(__dirname, '../src/lib/inline-image-prompt.ts'));
+const {
+  DANBOORU_PROMPT_GENERATION_SYSTEM,
+  NAI_V5_PROMPT_GENERATION_SYSTEM,
+  promptGenerationUserFooterForStyle,
+} = require(path.resolve(__dirname, '../src/lib/image-prompt-instructions.ts'));
 const { restoreSensitiveImageTagsToPrompt } = require(path.resolve(__dirname, '../src/lib/image-prompt-sensitive-tags.ts'));
 const { DEFAULT_IMAGE_GEN_SETTINGS } = require(path.resolve(__dirname, '../src/types/index.ts'));
 
@@ -147,6 +152,39 @@ test('V5 inline instruction stays compact and still requires creature Character 
   assert.match(v5, /不是角色与用户的亲密互动/);
   assert.match(v5, /不得包含任何用户外貌标签/);
   assert.match(v5, /固定外貌标签：silver hair, blue eyes/);
+  assert.match(v5, /性器/);
+  assert.match(v5, /不要输出 UC/);
+  assert.match(danbooru, /性器/);
+  assert.match(danbooru, /不要输出 UC 或 NEGATIVE/);
+});
+
+test('image prompt instructions do not ask for UC and require genital detail for sex', () => {
+  assert.match(DANBOORU_PROMPT_GENERATION_SYSTEM, /性器/);
+  assert.match(DANBOORU_PROMPT_GENERATION_SYSTEM, /不要输出 UC、NEGATIVE/);
+  assert.doesNotMatch(NAI_V5_PROMPT_GENERATION_SYSTEM, /^- UC：/m);
+  assert.doesNotMatch(NAI_V5_PROMPT_GENERATION_SYSTEM, /^UC:/m);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /不要输出 UC 或 NEGATIVE/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /性器/);
+  assert.match(promptGenerationUserFooterForStyle('nai-v5'), /不要输出 UC/);
+  assert.doesNotMatch(promptGenerationUserFooterForStyle('nai-v5'), /Character \/ UC/);
+});
+
+test('stripGeneratedUndesiredContent drops UC blocks and keeps the positive prompt', () => {
+  const structured = naiImage.stripGeneratedUndesiredContent(`Prompt:
+1girl, from side
+
+Character 1:
+girl, silver hair
+
+UC:
+lowres, bad hands`);
+  assert.match(structured, /^Prompt:/);
+  assert.match(structured, /Character 1:/);
+  assert.doesNotMatch(structured, /UC:/);
+  assert.doesNotMatch(structured, /lowres/);
+
+  const loose = naiImage.stripGeneratedUndesiredContent('1girl, smile\nUC:\nlowres, bad hands');
+  assert.equal(loose, '1girl, smile');
 });
 
 test('restoreSensitiveImageTagsToPrompt rejoins into Character 1 for V5 structured prompts', () => {

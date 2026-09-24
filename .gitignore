@@ -37,8 +37,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Claude Code
-.claude/
+# Claude Code (keep project skills tracked)
+.claude/*
+!.claude/skills/
 
 # Docs
 docs/

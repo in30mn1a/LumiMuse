@@ -360,6 +360,80 @@ test('/api/settings PUT deep-merges a partial image_gen update and preserves mas
   assert.equal(payload.image_gen.custom_api_key, API_KEY_MASK);
 });
 
+function createCustomImageHarness() {
+  return createSettingsHarness({
+    image_gen: {
+      enabled: true,
+      nai_api_key: 'nai-secret',
+      custom_url: 'https://image.example/v1/images',
+      custom_api_key: 'custom-secret',
+    },
+  });
+}
+
+test('/api/settings PUT clears masked custom_api_key when custom_url changes', async () => {
+  const { API_KEY_MASK } = require('../src/lib/constants.ts');
+  const harness = createCustomImageHarness();
+
+  const response = await harness.route.PUT(jsonRequest({
+    image_gen: {
+      custom_url: 'https://other-image.example/v1/images',
+      custom_api_key: API_KEY_MASK,
+      nai_api_key: API_KEY_MASK,
+    },
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(harness.settingsState.image_gen.custom_url, 'https://other-image.example/v1/images');
+  assert.equal(harness.settingsState.image_gen.custom_api_key, '');
+  assert.equal(harness.settingsState.image_gen.nai_api_key, 'nai-secret');
+  assert.equal(payload.image_gen.custom_api_key, '');
+});
+
+test('/api/settings PUT clears custom_api_key when custom_url changes without any key field', async () => {
+  const harness = createCustomImageHarness();
+
+  const response = await harness.route.PUT(jsonRequest({
+    image_gen: { custom_url: 'https://other-image.example/v1/images' },
+  }));
+
+  assert.equal(response.status, 200);
+  assert.equal(harness.settingsState.image_gen.custom_api_key, '');
+});
+
+test('/api/settings PUT keeps masked custom_api_key when custom_url is unchanged', async () => {
+  const { API_KEY_MASK } = require('../src/lib/constants.ts');
+  const harness = createCustomImageHarness();
+
+  const response = await harness.route.PUT(jsonRequest({
+    image_gen: {
+      custom_url: 'https://image.example/v1/images',
+      custom_api_key: API_KEY_MASK,
+    },
+  }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(harness.settingsState.image_gen.custom_api_key, 'custom-secret');
+  assert.equal(payload.image_gen.custom_api_key, API_KEY_MASK);
+});
+
+test('/api/settings PUT stores a new custom_api_key sent together with a new custom_url', async () => {
+  const harness = createCustomImageHarness();
+
+  const response = await harness.route.PUT(jsonRequest({
+    image_gen: {
+      custom_url: 'https://other-image.example/v1/images',
+      custom_api_key: 'other-secret',
+    },
+  }));
+
+  assert.equal(response.status, 200);
+  assert.equal(harness.settingsState.image_gen.custom_url, 'https://other-image.example/v1/images');
+  assert.equal(harness.settingsState.image_gen.custom_api_key, 'other-secret');
+});
+
 test('/api/settings PUT keeps masked api_key when api_base is unchanged', async () => {
   const { API_KEY_MASK } = require('../src/lib/constants.ts');
   const harness = createSettingsHarness();

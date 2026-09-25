@@ -69,14 +69,26 @@ export async function PUT(request: NextRequest) {
   // 处理 image_gen 中的密钥掩码
   if (updates.image_gen) {
     const currentImgGen = currentSettings.image_gen;
+    const incomingImgGen = updates.image_gen;
+    // 与 api_base / embedding / reranker 同一策略：custom_url 换了又没给新密钥时清空旧密钥，
+    // 否则旧密钥会以 Bearer 头发往新地址
+    const isCustomUrlChanging =
+      typeof incomingImgGen.custom_url === 'string' &&
+      incomingImgGen.custom_url !== currentImgGen?.custom_url;
+    const providesNewCustomKey =
+      typeof incomingImgGen.custom_api_key === 'string' &&
+      incomingImgGen.custom_api_key !== API_KEY_MASK;
+
     updates.image_gen = {
       ...currentImgGen,
-      ...updates.image_gen,
+      ...incomingImgGen,
     };
     if (updates.image_gen.nai_api_key === API_KEY_MASK) {
       updates.image_gen.nai_api_key = currentImgGen?.nai_api_key || '';
     }
-    if (updates.image_gen.custom_api_key === API_KEY_MASK) {
+    if (isCustomUrlChanging && !providesNewCustomKey) {
+      updates.image_gen.custom_api_key = '';
+    } else if (updates.image_gen.custom_api_key === API_KEY_MASK) {
       updates.image_gen.custom_api_key = currentImgGen?.custom_api_key || '';
     }
   }

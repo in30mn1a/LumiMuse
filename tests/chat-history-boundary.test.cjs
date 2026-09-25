@@ -574,10 +574,182 @@ test('runChat preserves regenerate target time even when the target is before th
   assert.doesNotMatch(probe.capture.messages[0].content, /Current Time/);
   assert.match(probe.capture.messages.at(-1).content, /2025-12-24 03:04/);
   assert.deepEqual(conversationContents(probe.capture.messages).map(stripTailBlock), ['question to regenerate']);
-  const targetQuery = probe.queries.find(query => query.sql === 'SELECT created_at, seq FROM messages WHERE id = ? AND conversation_id = ?');
+  const targetQuery = probe.queries.find(query => query.sql === 'SELECT created_at, seq FROM messages WHERE id = ? AND conversation_id = ? AND role = ?');
   assert.ok(targetQuery, 'regenerate should fetch the target timestamp independently of bounded history');
-  assert.deepEqual(targetQuery.calls, [['target-assistant', 'conv-a']]);
+  assert.deepEqual(targetQuery.calls, [['target-assistant', 'conv-a', 'assistant']]);
   assert.doesNotMatch(JSON.stringify(probe.capture.messages), /later summary|later question|old answer/);
+});
+
+const REGENERATE_BASE_ROWS = [
+  { id: 'a-user', role: 'user', content: 'question in a', seq: 1 },
+  { id: 'a-assistant', role: 'assistant', content: 'answer in a', seq: 2 },
+  { id: 'b-user', conversationId: 'conv-b', role: 'user', content: 'question in b', seq: 1 },
+  { id: 'b-assistant', conversationId: 'conv-b', role: 'assistant', content: 'answer in b', seq: 2 },
+];
+
+async function runRegenerateProbe(targetId, { rows = REGENERATE_BASE_ROWS, setupDatabase, duringGeneration } = {}) {
+  const probe = createDbProbe();
+  probe.database.prepare(`
+    INSERT INTO conversations (id, character_id, updated_at)
+    VALUES ('conv-b', 'char-a', '2026-07-10T00:00:00.000Z')
+  `).run();
+  setupDatabase?.(probe.database);
+  for (const row of rows) insertMessage(probe.database, row);
+  const result = { llmCalls: 0, done: [], errors: [] };
+
+  Module._load = function loadRegenerateMocks(request, parent, isMain) {
+    if (request === '@/lib/db') return { getDb: () => probe.db };
+    if (request === '@/lib/api-client') {
+      return {
+        async chatCompletion() {
+          result.llmCalls += 1;
+          duringGeneration?.(probe.database);
+          return 'regenerated answer';
+        },
+        async chatCompletionStream() {
+          throw new Error('streaming path should not run');
+        },
+      };
+    }
+    if (request === '@/lib/memory-engine') return { retrieveRelevantMemories: () => [] };
+    if (request === '@/lib/memory-retrieval') {
+      return { retrieveWorkingMemoryPackage: async () => ({ text: '', selectedMemories: [], tokenCount: 0, mode: 'test' }) };
+    }
+    if (request === '@/lib/prompt-presets') {
+      return { resolveActivePreset: () => null, loadEnabledEntries: () => [] };
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  const before = snapshotTables(probe.database);
+  try {
+    const resolved = require.resolve('../src/lib/chat-engine.ts');
+    delete require.cache[resolved];
+    const { runChat } = require('../src/lib/chat-engine.ts');
+    await runChat('conv-a', '', settings(), {
+      onChunk() {},
+      onDone(text) { result.done.push(text); },
+      onError(error) { result.errors.push(error.message); },
+    }, { regenerateAssistantId: targetId, skipUserInsert: true });
+  } finally {
+    Module._load = originalLoad;
+  }
+  return { ...probe, ...result, before };
+}
+
+function snapshotTables(database) {
+  return {
+    messages: database.prepare('SELECT * FROM messages ORDER BY id').all(),
+    conversations: database.prepare('SELECT * FROM conversations ORDER BY id').all(),
+  };
+}
+
+function messageIdentities(snapshot) {
+  return snapshot.messages.map(({ id, conversation_id, role, content, seq }) => ({ id, conversation_id, role, content, seq }));
+}
+
+for (const [label, targetId] of [
+  ['an assistant message of another conversation', 'b-assistant'],
+  ['a user message of another conversation', 'b-user'],
+  ['a user message of the same conversation', 'a-user'],
+  ['a message id that does not exist', 'missing'],
+]) {
+  test(`runChat rejects regenerating ${label} before calling the LLM`, async (t) => {
+    const probe = await runRegenerateProbe(targetId);
+    t.after(() => probe.database.close());
+
+    assert.deepEqual(probe.errors, ['Regenerate target message not found']);
+    assert.deepEqual(probe.done, []);
+    assert.equal(probe.llmCalls, 0);
+    assert.deepEqual(snapshotTables(probe.database), probe.before);
+  });
+}
+
+test('runChat reports an error instead of done when the regenerate target is deleted mid-generation', async (t) => {
+  const probe = await runRegenerateProbe('a-assistant', {
+    duringGeneration: database => database.prepare("DELETE FROM messages WHERE id = 'a-assistant'").run(),
+  });
+  t.after(() => probe.database.close());
+
+  assert.equal(probe.llmCalls, 1);
+  assert.deepEqual(probe.errors, ['Regenerate target message not found']);
+  assert.deepEqual(probe.done, []);
+  // 生成确实跑了，历史消息的 token_count 懒修复属正常写入；这里只看身份与正文
+  assert.deepEqual(
+    messageIdentities(snapshotTables(probe.database)),
+    messageIdentities(probe.before).filter(row => row.id !== 'a-assistant'),
+  );
+  assert.deepEqual(snapshotTables(probe.database).conversations, probe.before.conversations);
+});
+
+test('runChat regenerate appends a new active version to the in-chain assistant target', async (t) => {
+  const probe = await runRegenerateProbe('a-assistant');
+  t.after(() => probe.database.close());
+
+  assert.deepEqual(probe.errors, []);
+  assert.deepEqual(probe.done, ['regenerated answer']);
+  const target = probe.database.prepare("SELECT content, metadata FROM messages WHERE id = 'a-assistant'").get();
+  const metadata = JSON.parse(target.metadata);
+  assert.equal(target.content, 'regenerated answer');
+  assert.deepEqual(metadata.versions.map(version => version.content), ['answer in a', 'regenerated answer']);
+  assert.equal(metadata.activeVersion, 1);
+  assert.deepEqual(
+    messageIdentities(snapshotTables(probe.database)).filter(row => row.id !== 'a-assistant'),
+    messageIdentities(probe.before).filter(row => row.id !== 'a-assistant'),
+  );
+});
+
+const LINKED_CHAIN_PROBE = {
+  rows: [
+    { id: 'root-user', conversationId: 'conv-root', role: 'user', content: 'root question', seq: 1 },
+    { id: 'root-assistant', conversationId: 'conv-root', role: 'assistant', content: 'root answer', seq: 2 },
+    { id: 'root-after-fork', conversationId: 'conv-root', role: 'assistant', content: 'root only', seq: 3 },
+    { id: 'child-user', role: 'user', content: 'child question', seq: 4 },
+  ],
+  setupDatabase: database => {
+    database.prepare(`
+      INSERT INTO conversations (id, character_id, updated_at)
+      VALUES ('conv-root', 'char-a', '2026-07-10T00:00:00.000Z')
+    `).run();
+    database.prepare("UPDATE conversations SET parent_id = 'conv-root', parent_seq_end = 2 WHERE id = 'conv-a'").run();
+  },
+};
+
+test('runChat regenerates an assistant message stored in the parent of a linked conversation', async (t) => {
+  const probe = await runRegenerateProbe('root-assistant', LINKED_CHAIN_PROBE);
+  t.after(() => probe.database.close());
+
+  assert.deepEqual(probe.errors, []);
+  assert.deepEqual(probe.done, ['regenerated answer']);
+  const target = probe.database.prepare("SELECT content FROM messages WHERE id = 'root-assistant'").get();
+  assert.equal(target.content, 'regenerated answer');
+});
+
+test('runChat saves a regenerated inherited target whose seq shifted during generation', async (t) => {
+  const { allocateAssistantInsertAfterUser } = require('../src/lib/message-seq-insert.ts');
+  const probe = await runRegenerateProbe('root-assistant', {
+    ...LINKED_CHAIN_PROBE,
+    // 另一个流在父对话锚点后插入回复：父对话 seq 右移，子对话 parent_seq_end 同步 +1
+    duringGeneration: database => database.transaction(() => {
+      assert.ok(allocateAssistantInsertAfterUser(database, 'conv-root', 'root-user'));
+    })(),
+  });
+  t.after(() => probe.database.close());
+
+  assert.deepEqual(probe.errors, []);
+  assert.deepEqual(probe.done, ['regenerated answer']);
+  const target = probe.database.prepare("SELECT content, seq FROM messages WHERE id = 'root-assistant'").get();
+  assert.equal(target.content, 'regenerated answer');
+  assert.equal(target.seq, 3);
+});
+
+test('runChat rejects regenerating a parent message after the fork point of a linked conversation', async (t) => {
+  const probe = await runRegenerateProbe('root-after-fork', LINKED_CHAIN_PROBE);
+  t.after(() => probe.database.close());
+
+  assert.deepEqual(probe.errors, ['Regenerate target message not found']);
+  assert.equal(probe.llmCalls, 0);
+  assert.deepEqual(snapshotTables(probe.database), probe.before);
 });
 
 test('finalizeAssistantResponse 清理带星期的残留时间戳前缀（含不带星期的旧格式）', (t) => {

@@ -631,9 +631,15 @@ export async function runChat(
   }
 
   const regenerateTargetMessage = options?.regenerateAssistantId
-    ? db.prepare(`SELECT created_at, seq FROM messages WHERE id = ? AND ${scope.sql}`)
-        .get(options.regenerateAssistantId, ...scope.params) as { created_at: string; seq: number } | undefined
+    ? db.prepare(`SELECT created_at, seq FROM messages WHERE id = ? AND ${scope.sql} AND role = ?`)
+        .get(options.regenerateAssistantId, ...scope.params, 'assistant') as { created_at: string; seq: number } | undefined
     : undefined;
+  // 目标不在本对话链内或不是 assistant 时，必须在调用 LLM 之前拒绝：
+  // 否则会拿无上界的全量历史生成，落库时再覆盖别的消息或静默丢掉回复。
+  if (options?.regenerateAssistantId && !regenerateTargetMessage) {
+    callbacks.onError(new Error('Regenerate target message not found'));
+    return;
+  }
 
   const insertAfterUserMessage = options?.insertAssistantAfterUserId
     ? db.prepare(`SELECT created_at, seq FROM messages WHERE id = ? AND ${scope.sql} AND role = ?`)
@@ -804,12 +810,22 @@ export async function runChat(
     }
 
     if (options?.regenerateAssistantId) {
-      const existing = db.prepare('SELECT content, token_count, metadata FROM messages WHERE id = ?').get(options.regenerateAssistantId) as { content: string; token_count: number; metadata: string } | undefined;
-      const meta = existing ? parseMessageMetadata(existing.metadata) : {};
+      // 与入口校验同一口径（对话链 + assistant）；生成期间目标被删时抛错，
+      // 由 route 转成 error 事件，而不是发 done 却没有任何一行存下回复。
+      // 链要重新解析：LLM await 期间别的流在父对话插入回复会右移 seq 与 parent_seq_end，
+      // 沿用入口的 scope 会把仍在视图内的继承消息误判为不存在。
+      // 从这里到下方 UPDATE 之间没有 await，按主键 UPDATE 命中的就是这一行。
+      const saveScope = buildChainMessageScope(resolveConversationChain(db, conversationId));
+      const existing = db.prepare(`SELECT content, token_count, metadata FROM messages WHERE id = ? AND ${saveScope.sql} AND role = ?`)
+        .get(options.regenerateAssistantId, ...saveScope.params, 'assistant') as { content: string; token_count: number; metadata: string } | undefined;
+      if (!existing) {
+        throw new Error('Regenerate target message not found');
+      }
+      const meta = parseMessageMetadata(existing.metadata);
       const versions = meta.versions || [];
 
       // 如果 versions 为空（旧消息或首次重新生成），先把当前内容归档为版本 0
-      if (versions.length === 0 && existing) {
+      if (versions.length === 0) {
         versions.push({ content: existing.content, token_count: existing.token_count });
       }
 

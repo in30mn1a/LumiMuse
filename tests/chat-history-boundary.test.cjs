@@ -786,6 +786,41 @@ test('finalizeAssistantResponse 先提取 IMG 再剥 story XML，保留正文和
   assert.equal(result.inlinePrompt, '1girl, blue eyes');
 });
 
+test('finalizeAssistantResponse 清理截断或空的 IMG 块，同时保留普通正文空白', (t) => {
+  const probe = createDbProbe();
+  t.after(() => probe.database.close());
+  const { finalizeAssistantResponse } = loadChatEngine(probe.db, {});
+  const options = { storyPlotStrip: false, stripTags: [], characterImageTags: '' };
+
+  for (const tail of [
+    '[IMG]\nPrompt: 1girl, reading a book\nCharacter 1: girl, blue',
+    '[img]1girl, blue hair[/IM',
+    '[IMG',
+    '[IMG][/IMG]',
+    '[IMG]  \n[/IMG]',
+  ]) {
+    assert.deepEqual(finalizeAssistantResponse(`正文已经完成。\n${tail}`, options), {
+      fullText: '正文已经完成。',
+      inlinePrompt: '',
+    }, tail);
+  }
+  const ordinary = '  普通正文 [IMG_123] 与 [image]。\n    ';
+  assert.equal(finalizeAssistantResponse(ordinary, options).fullText, ordinary);
+});
+
+test('runChat 截断 IMG 在流式结束或停止后不会进入正文和版本记录', async (t) => {
+  const raw = '正文已经完成。\n[IMG]\nPrompt: 1girl, reading a book\nCharacter 1: girl, blue';
+  for (const abort of [false, true]) {
+    const result = await runStreamingStripProbe(raw, [1, 7, 2], { abort, stripTags: [] });
+    t.after(() => result.database.close());
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.doneText, '正文已经完成。');
+    assert.equal(result.storedText, '正文已经完成。');
+    assert.equal(result.storedMetadata.versions[0].content, '正文已经完成。');
+    assert.equal(result.storedMetadata.inlineImagePrompt, undefined);
+  }
+});
+
 test('runChat 参数化流式逐字符/任意 chunk 的可见文本与最终落库严格一致', async (t) => {
   const raw = '<think>草稿</think>\n\n<scene>客厅</scene>\n\n<content>正文</content>';
   for (const chunkSizes of [[1], [2, 7, 1, 9, 3]]) {

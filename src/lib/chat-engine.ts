@@ -186,7 +186,8 @@ export function finalizeAssistantResponse(
         options.userImageTags,
       ))
     : '';
-  const withoutInlinePrompt = rawInlinePrompt
+  // 未闭合或空的 IMG 块也要清理；无标记时保留正文原有的尾部空白。
+  const withoutInlinePrompt = /\[IMG\b/i.test(withoutTimestamp)
     ? stripInlinePrompt(withoutTimestamp)
     : withoutTimestamp;
   const fullText = options.storyPlotStrip && options.stripTags.length > 0

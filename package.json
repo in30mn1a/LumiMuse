@@ -24,7 +24,7 @@
     "better-sqlite3": "^12.11.1",
     "js-tiktoken": "^1.0.21",
     "jszip": "^3.10.2",
-    "next": "^16.3.5",
+    "next": "^16.3.6",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "9.1.0",

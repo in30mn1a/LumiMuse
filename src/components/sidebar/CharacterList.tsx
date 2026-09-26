@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -32,6 +32,12 @@ import {
   subscribeCharacterList,
 } from '@/lib/character-list-cache';
 import { PencilIcon, PlusIcon, SparkIcon } from '@/components/ui/icons';
+
+/**
+ * 列表滚动位置（模块级）：移动端抽屉每次打开都会重新挂载 CharacterList，
+ * 进编辑页再返回首页也会重挂载；记住位置，重新打开时回到上次浏览处而不是顶部。
+ */
+let savedScrollTop = 0;
 
 interface Props {
   selectedId: string | null;
@@ -140,7 +146,13 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
   // 优先用模块缓存做首屏，避免移动端 Modal 重挂载时空白闪一下
   const [characters, setCharacters] = useState<Character[]>(() => getCharacterListCache() ?? []);
   const [listError, setListError] = useState('');
+  const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
+
+  // 首帧已由模块缓存渲染出完整列表，绘制前恢复滚动位置，避免先闪顶部再跳走
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = savedScrollTop;
+  }, []);
 
   // 桌面端鼠标按下后移动 5px 才进入拖拽，避免误触；
   // 移动端长按 220ms 进入拖拽，避免和列表纵向滚动冲突
@@ -182,6 +194,8 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
         body: JSON.stringify({ name: t('char.newCharacterName') }),
       }));
       setCharacterListCache([newCharacter, ...(getCharacterListCache() ?? characters)]);
+      // 新角色插在列表顶部，编辑完返回时要能直接看到它
+      savedScrollTop = 0;
       onSelect(newCharacter.id, newCharacter);
       router.push(`/characters/${newCharacter.id}`);
     } catch {
@@ -225,7 +239,12 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
         {listError && <p className="mt-2 text-xs text-red-500">{listError}</p>}
       </div>
 
-      <div data-sidebar-scroll className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-3 pb-4">
+      <div
+        ref={scrollRef}
+        data-sidebar-scroll
+        onScroll={e => { savedScrollTop = e.currentTarget.scrollTop; }}
+        className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-3 pb-4"
+      >
         {characters.length === 0 && (
           <div className="surface-panel-quiet mx-1 px-4 py-8 text-center">
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/80 text-accent-dark shadow-sm">

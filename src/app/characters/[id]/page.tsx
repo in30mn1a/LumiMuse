@@ -13,6 +13,7 @@ import CharacterTaskModelsField from '@/components/ui/CharacterTaskModelsField';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { clearCharacterContext } from '@/lib/character-context-cache';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
+import { dismissVirtualKeyboard } from '@/lib/virtual-keyboard';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -226,7 +227,10 @@ export default function CharacterEditor({ params }: Props) {
     return () => window.removeEventListener('beforeunload', handler);
   }, [dirty]);
 
-  const returnToSidebar = () => {
+  // 必须先收起软键盘再跳：iOS 带着键盘切回首页，键盘收起时视口/触摸区域会错位，
+  // 而首页抽屉锁住了文档滚动，错位无法被纠正，角色列表就滑不动（长按拖拽触发重绘才恢复）。
+  const returnToSidebar = async () => {
+    await dismissVirtualKeyboard();
     sessionStorage.setItem('lumimuse_open_sidebar', '1');
     router.push('/');
   };
@@ -234,7 +238,7 @@ export default function CharacterEditor({ params }: Props) {
   // 取消按钮：若存在未保存修改，先弹原生 confirm，确认后才离开。
   const handleCancel = () => {
     if (dirty && !window.confirm(t('editor.confirmDiscard'))) return;
-    returnToSidebar();
+    void returnToSidebar();
   };
 
   const handleSave = async () => {
@@ -269,7 +273,8 @@ export default function CharacterEditor({ params }: Props) {
       }
       setDirty(false);
       showToast(t('editor.saveSuccess'), 'success');
-      returnToSidebar();
+      // await：等键盘收起期间保持 saving，避免重复点保存
+      await returnToSidebar();
     } catch (err) {
       showToast(`${t('editor.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {

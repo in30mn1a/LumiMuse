@@ -550,6 +550,10 @@ LumiMuse 的记忆不是简单把所有聊天塞回上下文，而是：
 3. 在新环境导入
 4. 检查角色、对话、记忆是否符合预期
 
+v3 备份会携带提示词预设、全部条目、角色默认选择和按模型绑定；单角色备份携带该角色引用的预设，全量备份携带全部预设。导入时为预设创建新 ID，不覆盖目标环境已有预设。请升级目标应用后再导入 v3 备份，旧版本会拒绝不支持的文件版本。
+
+旧版备份仍可导入；若备份只含预设 ID，导入会复用目标环境存在的同 ID 预设。目标环境也缺少该预设时，会明确告警且不恢复无效选择，需要从源环境重新导出完整备份来保留原有角色指令。
+
 **也可以直接备份目录：**
 
 ```text
@@ -671,7 +675,7 @@ npm run regression
 npm run build
 ```
 
-`package.json` 中针对 Next.js 的 PostCSS override 是有意的安全覆盖：它只替换 Next 的传递依赖，直到上游版本自带同等或更新修复。升级 Next 后可用 `npm explain postcss` 检查依赖树，并用 `npm prune --dry-run` 验证不会产生额外清理。
+当前 `package.json` 未配置 PostCSS override；PostCSS 的传递依赖版本由 Next.js 与锁文件决定。升级 Next 后可用 `npm explain postcss` 检查实际依赖树，并用 `npm prune --dry-run` 核对依赖清理计划。
 
 ---
 

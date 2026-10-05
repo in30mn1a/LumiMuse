@@ -21,6 +21,7 @@ import {
 } from '@/lib/chat-engine';
 import { buildCurrentTimeInstruction, ChatTimeContext } from '@/lib/chat-time';
 import { estimateTokens } from '@/lib/token-counter';
+import { buildMessageTokenCountContent } from '@/lib/message-token-provenance';
 import { mergeConsecutiveRoles } from '@/lib/merge-messages';
 import { buildInlinePromptInstruction, INLINE_PROMPT_SYSTEM_REMINDER } from '@/lib/inline-image-prompt';
 import { resolveImagePromptStyle } from '@/lib/nai-image';
@@ -58,11 +59,20 @@ function appendSegment(target: ChatMessage[], next: ChatMessage[]): void {
   target.push(...next);
 }
 
-function stripLatestPlainTextUser(history: ChatMessage[]): ChatMessage[] {
+function stripMacroUser(history: ChatMessage[], macroText: string, target: ChatMessage): ChatMessage[] {
   for (let i = history.length - 1; i >= 0; i -= 1) {
-    if (history[i].role !== 'user') continue;
-    if (typeof history[i].content !== 'string') return history;
-    return history.filter((_, index) => index !== i);
+    if (history[i] !== target) continue;
+    const content = history[i].content;
+    if (typeof content !== 'string') {
+      const remaining = content.map(part => part.type === 'text'
+        ? { ...part, text: part.text.replace(macroText, '').trim() }
+        : part).filter(part => part.type !== 'text' || part.text.length > 0);
+      return history.map((message, index) => index === i ? { ...message, content: remaining } : message);
+    }
+    const remaining = content.replace(macroText, '').trim();
+    return remaining
+      ? history.map((message, index) => index === i ? { ...message, content: remaining } : message)
+      : history.filter((_, index) => index !== i);
   }
   return history;
 }
@@ -342,11 +352,13 @@ export async function assemblePresetPrompt(
     ? [{ role: 'system', content: normalizedMemoryText }]
     : [];
 
-  // 取最新 user 消息原文供 {{lastUserMessage}} 替换。数据库正文不含展示层时间戳。
+  // 取当前 user 正文及文本附件供 {{lastUserMessage}} 替换，不含展示层时间戳。
   const lastUserRaw = (() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i];
-      if (m.role === 'user' && typeof m.content === 'string' && m.content.trim()) return m.content.trim();
+      if (m.role === 'user') {
+        return buildMessageTokenCountContent(m.content, m.role, m.metadata.attachments).trim();
+      }
     }
     return '';
   })();
@@ -431,7 +443,7 @@ export async function assemblePresetPrompt(
   const hasStoryHistoryClose = relativeEntries.some(
     e => e.marker_key == null && e.content.trim() === '</story_history>',
   );
-  const usesLastUserMessageMacro = relativeEntries.some(
+  const usesLastUserMessageMacro = [...relativeEntries, ...inChatEntries].some(
     e => e.marker_key == null && /\{\{lastUserMessage\}\}/.test(e.content),
   );
   const useRongSingleBlockHistory = hasChatHistoryMarker
@@ -443,11 +455,12 @@ export async function assemblePresetPrompt(
     && history.every(message => typeof message.content === 'string')
     && history.at(-1)?.role === 'user';
 
-  // in-chat 只能相对真实聊天历史注入，不能把 relative prompt 条目计入 depth。
-  const historyWithInjections = populateInjectionPrompts(history, injectionGroups);
-  const historyForPrompt = usesLastUserMessageMacro
-    ? stripLatestPlainTextUser(historyWithInjections)
-    : historyWithInjections;
+  // 按完整真实历史定位 depth，再仅去除被宏替代的原消息正文，避免位置偏移或误删 user 注入。
+  const macroUser = history.findLast(message => message.role === 'user');
+  const injectedHistory = populateInjectionPrompts(history, injectionGroups);
+  const historyForPrompt = usesLastUserMessageMacro && lastUserRaw && macroUser
+    ? stripMacroUser(injectedHistory, lastUserRaw, macroUser)
+    : injectedHistory;
 
   const result: ChatMessage[] = [];
   let chatHistoryInserted = false;

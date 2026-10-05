@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react';
 import { HttpResponseError, expectOkResponse, getErrorMessage, parseJsonResponse } from '@/lib/http';
 import type { ToastType } from '@/components/ui/Toast';
 
@@ -59,12 +59,39 @@ export function useMemoryProfilePanel({
   showToast,
 }: UseMemoryProfilePanelOptions) {
   const [memoryProfile, setMemoryProfile] = useState<MemoryProfileResponse | null>(null);
-  const [memoryProfileLoading, setMemoryProfileLoading] = useState(false);
+  const [loadingCharacterId, setLoadingCharacterId] = useState<string | null>(null);
+  const memoryProfileLoading = loadingCharacterId === selectedCharacterId.trim();
   const [memoryProfileActionLoading, setMemoryProfileActionLoading] = useState(false);
   const [memoryProfileError, setMemoryProfileError] = useState<string | null>(null);
   const [editingProfile, setEditingProfile] = useState(false);
   const [editingProfileDraft, setEditingProfileDraft] = useState<Record<string, string>>({});
   const memoryProfileRequestSeqRef = useRef(0);
+  const [profileCharacterId, setProfileCharacterId] = useState(selectedCharacterId);
+  if (profileCharacterId !== selectedCharacterId) {
+    setProfileCharacterId(selectedCharacterId);
+    setMemoryProfileActionLoading(false);
+  }
+  const scopeRef = useRef({ characterId: selectedCharacterId.trim() });
+  const actionSeqRef = useRef(0);
+  // 选择角色时可在 React 提交前发起加载；请求与提交必须使用同一角色作用域。
+  const syncScope = useCallback((characterId: string) => {
+    if (scopeRef.current.characterId !== characterId) scopeRef.current = { characterId };
+    return scopeRef.current;
+  }, []);
+  useLayoutEffect(() => {
+    syncScope(selectedCharacterId.trim());
+  }, [selectedCharacterId, syncScope]);
+  useLayoutEffect(() => () => {
+    scopeRef.current = { characterId: scopeRef.current.characterId };
+  }, []);
+
+  const beginAction = (characterId: string) => {
+    const scope = syncScope(characterId);
+    const actionSeq = ++actionSeqRef.current;
+    return () => scope === scopeRef.current
+      && actionSeq === actionSeqRef.current
+      && memoryManagementCharacterIdRef.current.trim() === characterId;
+  };
 
   const resetProfile = useCallback(() => {
     setMemoryProfile(null);
@@ -80,7 +107,9 @@ export function useMemoryProfilePanel({
       return;
     }
 
-    setMemoryProfileLoading(true);
+    if (memoryManagementCharacterIdRef.current.trim() !== trimmed) return;
+    const scope = syncScope(trimmed);
+    setLoadingCharacterId(trimmed);
     setMemoryProfileError(null);
     memoryProfileRequestSeqRef.current += 1;
     const requestSeq = memoryProfileRequestSeqRef.current;
@@ -88,17 +117,17 @@ export function useMemoryProfilePanel({
       const data = await parseJsonResponse<MemoryProfileResponse>(
         await fetch('/api/memory-profile?character_id=' + encodeURIComponent(trimmed)),
       );
-      if (memoryManagementCharacterIdRef.current.trim() !== trimmed || requestSeq !== memoryProfileRequestSeqRef.current) return;
+      if (scope !== scopeRef.current || memoryManagementCharacterIdRef.current.trim() !== trimmed || requestSeq !== memoryProfileRequestSeqRef.current) return;
       setMemoryProfile(data);
     } catch (err) {
-      if (memoryManagementCharacterIdRef.current.trim() !== trimmed || requestSeq !== memoryProfileRequestSeqRef.current) return;
+      if (scope !== scopeRef.current || memoryManagementCharacterIdRef.current.trim() !== trimmed || requestSeq !== memoryProfileRequestSeqRef.current) return;
       setMemoryProfileError(getErrorMessage(err));
     } finally {
-      if (memoryManagementCharacterIdRef.current.trim() === trimmed && requestSeq === memoryProfileRequestSeqRef.current) {
-        setMemoryProfileLoading(false);
+      if (scope === scopeRef.current && memoryManagementCharacterIdRef.current.trim() === trimmed && requestSeq === memoryProfileRequestSeqRef.current) {
+        setLoadingCharacterId(null);
       }
     }
-  }, [memoryManagementCharacterIdRef, t]);
+  }, [memoryManagementCharacterIdRef, syncScope, t]);
 
   const handleMemoryProfileAction = async (action: 'init_from_memories') => {
     const characterId = selectedCharacterId.trim();
@@ -107,6 +136,7 @@ export function useMemoryProfilePanel({
       return;
     }
 
+    const isCurrent = beginAction(characterId);
     setMemoryProfileActionLoading(true);
     setMemoryProfileError(null);
     showToast(t('settings.memoryProfileInitFromMemoriesStarted'), 'success');
@@ -121,9 +151,12 @@ export function useMemoryProfilePanel({
       if (!isRecord(data) || data.ok !== true) {
         throw new HttpResponseError('Invalid memory profile action response', response.status, data);
       }
+      if (!isCurrent()) return;
       const result = data as unknown as MemoryProfileActionResponse;
       if (characterId) await loadMemoryProfile(characterId);
+      if (!isCurrent()) return;
       await loadMemoryDiagnostics();
+      if (!isCurrent()) return;
       setEditingProfile(false);
       setEditingProfileDraft({});
       if (result.status === 'no_changes') {
@@ -132,19 +165,22 @@ export function useMemoryProfilePanel({
       }
       showToast(t('settings.memoryProfileInitFromMemoriesDone').replace('{count}', String(result.memory_count ?? 0)), 'success');
     } catch (err) {
+      if (!isCurrent()) return;
       if (
         err instanceof HttpResponseError
         && isRecord(err.data)
         && err.data.error === 'no_active_memories'
       ) {
         if (characterId) await loadMemoryProfile(characterId);
+        if (!isCurrent()) return;
         await loadMemoryDiagnostics();
+        if (!isCurrent()) return;
         showToast(t('settings.memoryProfileInitFromMemoriesNoMemories'), 'error');
         return;
       }
       showToast(`${t('settings.memoryProfileActionFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
-      setMemoryProfileActionLoading(false);
+      if (isCurrent()) setMemoryProfileActionLoading(false);
     }
   };
 
@@ -155,6 +191,7 @@ export function useMemoryProfilePanel({
       return;
     }
 
+    const isCurrent = beginAction(characterId);
     setMemoryProfileActionLoading(true);
     setMemoryProfileError(null);
     try {
@@ -163,12 +200,16 @@ export function useMemoryProfilePanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'rollback', character_id: characterId, version_id: versionId }),
       }));
+      if (!isCurrent()) return;
       await loadMemoryProfile(characterId);
+      if (!isCurrent()) return;
       await loadMemoryDiagnostics();
+      if (!isCurrent()) return;
     } catch (err) {
+      if (!isCurrent()) return;
       showToast(`${t('settings.memoryProfileActionFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
-      setMemoryProfileActionLoading(false);
+      if (isCurrent()) setMemoryProfileActionLoading(false);
     }
   };
 
@@ -180,6 +221,7 @@ export function useMemoryProfilePanel({
     }
     if (!window.confirm(t('settings.memoryProfileDeleteVersionConfirm'))) return;
 
+    const isCurrent = beginAction(characterId);
     setMemoryProfileActionLoading(true);
     setMemoryProfileError(null);
     try {
@@ -188,13 +230,18 @@ export function useMemoryProfilePanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'delete_version', character_id: characterId, version_id: versionId }),
       }));
+      if (!isCurrent()) return;
       if (result.deleted) showToast(t('settings.memoryProfileVersionDeleted'), 'success');
+      if (!isCurrent()) return;
       await loadMemoryProfile(characterId);
+      if (!isCurrent()) return;
       await loadMemoryDiagnostics();
+      if (!isCurrent()) return;
     } catch (err) {
+      if (!isCurrent()) return;
       showToast(`${t('settings.memoryProfileActionFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
-      setMemoryProfileActionLoading(false);
+      if (isCurrent()) setMemoryProfileActionLoading(false);
     }
   };
 
@@ -224,6 +271,7 @@ export function useMemoryProfilePanel({
     if (!memoryProfile?.profile) return;
     const currentProfile = memoryProfile.profile;
 
+    const isCurrent = beginAction(characterId);
     setMemoryProfileActionLoading(true);
     setMemoryProfileError(null);
     try {
@@ -249,7 +297,7 @@ export function useMemoryProfilePanel({
 
       if (Object.keys(patch).length === 0) {
         showToast(t('settings.memoryProfileEditNoChanges'), 'info');
-        setMemoryProfileActionLoading(false);
+        if (isCurrent()) setMemoryProfileActionLoading(false);
         return;
       }
 
@@ -264,15 +312,20 @@ export function useMemoryProfilePanel({
         }),
       }));
 
+      if (!isCurrent()) return;
       setEditingProfile(false);
       setEditingProfileDraft({});
       showToast(t('settings.memoryProfileEditSaved'), 'success');
+      if (!isCurrent()) return;
       await loadMemoryProfile(characterId);
+      if (!isCurrent()) return;
       await loadMemoryDiagnostics();
+      if (!isCurrent()) return;
     } catch (err) {
+      if (!isCurrent()) return;
       showToast(`${t('settings.memoryProfileActionFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
-      setMemoryProfileActionLoading(false);
+      if (isCurrent()) setMemoryProfileActionLoading(false);
     }
   };
 

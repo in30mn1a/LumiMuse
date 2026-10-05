@@ -26,6 +26,16 @@ export function sanitizeUpstreamError(text: string): string {
   return sanitized.slice(0, 200);
 }
 
+/** HTTP 200 流仍可能携带上游错误；聊天与总结共享相同脱敏边界。 */
+export function upstreamStreamError(raw: unknown): Error | undefined {
+  if (!raw || typeof raw !== 'object' || !('error' in raw) || raw.error == null) return undefined;
+  const error = raw.error;
+  const detail = typeof error === 'object' && error && 'message' in error
+    ? String(error.message)
+    : typeof error === 'string' ? error : JSON.stringify(error);
+  return new Error(`API error: ${sanitizeUpstreamError(detail)}`);
+}
+
 export type ChatMessageContent =
   | string
   | Array<
@@ -61,6 +71,8 @@ export interface LlmUsage {
 export interface StreamCallbacks {
   onChunk: (text: string) => void;
   onDone: (fullText: string) => Promise<void> | void;
+  /** 保存错误发生前的可见正文，不触发成功完成。 */
+  onPartial?: (fullText: string) => Promise<void> | void;
   onError: (error: Error) => void;
   /**
    * 上游返回 usage 时触发（流式仅在最后一个 chunk 携带）。
@@ -181,6 +193,8 @@ export async function chatCompletionStream(
 
   try {
     await parseSseStream(reader, ({ text, raw }) => {
+      const upstreamError = upstreamStreamError(raw);
+      if (upstreamError) throw upstreamError;
       if (text) {
         fullText += text;
         callbacks.onChunk(text);
@@ -213,16 +227,22 @@ export async function chatCompletionStream(
     // 非 abort 错误：若已累积部分内容，先保存再向上抛出，避免用户已看到的回复丢失
     if (fullText) {
       try {
-        await callbacks.onDone(fullText);
+        await callbacks.onPartial?.(fullText);
       } catch {
         // 保存失败不应掩盖原始错误
       }
     }
-    throw err;
+    try { await reader.cancel(); } catch { /* 释放失败流 */ }
+    callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+    return;
   }
 
   // parseSseStream 在 abort 时静默返回；已有部分内容时仍保存，空内容则不写入空回复
   if (callbacks.signal?.aborted && !fullText) return;
+  if (!fullText.trim()) {
+    callbacks.onError(new Error('API 未返回有效正文（可能仅返回了推理内容）'));
+    return;
+  }
 
   // 正常结束：先上报 usage（若有），再触发 onDone
   if (capturedUsage && callbacks.onUsage) {

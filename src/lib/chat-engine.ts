@@ -661,7 +661,7 @@ export async function runChat(
 
   // 正常聊天定位全局最后一条 summary；分支生成则只取锚点之前的 summary，且不把锚点之后的消息送入上下文。
   const summarySql = `
-    SELECT seq
+    SELECT id, seq, metadata
     FROM messages
     WHERE ${scope.sql}
       ${summaryUpperSql}
@@ -673,19 +673,29 @@ export async function runChat(
   `;
   const lastSummary = (historyUpperBound
     ? db.prepare(summarySql).get(...scope.params, historyUpperBound.seq)
-    : db.prepare(summarySql).get(...scope.params)) as { seq: number } | undefined;
+    : db.prepare(summarySql).get(...scope.params)) as { id: string; seq: number; metadata: string } | undefined;
+  const summaryMetadata = lastSummary ? parseMessageMetadata(lastSummary.metadata) : undefined;
+  const coveredIds = summaryMetadata?.summaryCoverageVersion === 1 && Array.isArray(summaryMetadata.summarizedIds)
+    ? new Set(summaryMetadata.summarizedIds)
+    : undefined;
   const historySql = [
     `SELECT * FROM messages WHERE ${scope.sql}`,
-    lastSummary ? 'AND seq >= ?' : '',
+    lastSummary && !coveredIds ? 'AND seq >= ?' : '',
     historyUpperSql,
     `ORDER BY ${ascendingMessageOrder}`,
   ].filter(Boolean).join(' ');
   const historyParams: Array<string | number> = [...scope.params];
-  if (lastSummary) historyParams.push(lastSummary.seq);
+  if (lastSummary && !coveredIds) historyParams.push(lastSummary.seq);
   if (historyUpperBound) historyParams.push(historyUpperBound.seq);
-  const history = serializeTypedMessages(
+  let history = serializeTypedMessages(
     db.prepare(historySql).all(...historyParams) as Message[]
   );
+  if (coveredIds && lastSummary) {
+    // 总结在等待期间可能被尾插；按实际覆盖ID保留并发消息，且把总结放在未覆盖历史之前。
+    const summary = history.find(message => message.id === lastSummary.id);
+    const uncovered = history.filter(message => !message.metadata.isSummary && !coveredIds.has(message.id));
+    history = summary ? [summary, ...uncovered] : uncovered;
+  }
   const repairTokenCount = db.prepare(
     'UPDATE messages SET token_count = ?, metadata = ? WHERE id = ?',
   );
@@ -789,13 +799,17 @@ export async function runChat(
   // abort 场景下可能未捕获到（usage 在流末尾），此时 metadata 不写入 last_usage。
   let capturedUsage: LlmUsage | undefined;
 
-  const saveAssistantMessage = async (rawText: string) => {
+  const saveAssistantMessage = async (rawText: string, failed = false) => {
     const { fullText, inlinePrompt } = finalizeAssistantResponse(rawText, {
       storyPlotStrip: activePreset?.story_plot_strip === true,
       stripTags: activePreset?.strip_tags ?? [],
       characterImageTags: character.image_tags,
       userImageTags: character.user_image_tags,
     });
+    if (!fullText.trim()) {
+      if (failed || options?.signal?.aborted) return;
+      throw new Error('API 未返回有效正文');
+    }
     const tokenResult = createMessageTokenCount(fullText, 'assistant');
     const tokenCount = tokenResult.tokenCount;
     const asstNow = new Date().toISOString();
@@ -838,9 +852,9 @@ export async function runChat(
       } else {
         delete meta.inlineImagePrompt;
       }
-      if (wasStopped) {
+      if (wasStopped || failed) {
         meta.generation_stopped = true;
-        meta.generation_stop_reason = 'abort';
+        meta.generation_stop_reason = failed ? 'error' : 'abort';
       } else {
         delete meta.generation_stopped;
         delete meta.generation_stop_reason;
@@ -864,7 +878,7 @@ export async function runChat(
           .run(fullText, tokenCount, JSON.stringify(meta), options.regenerateAssistantId);
         db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
       })();
-      await callbacks.onDone(fullText, tokenCount);
+      if (!failed) await callbacks.onDone(fullText, tokenCount);
     } else {
       const asstId = crypto.randomUUID().slice(0, 12);
       const meta: Record<string, unknown> = {
@@ -875,9 +889,9 @@ export async function runChat(
       if (inlinePrompt) {
         meta.inlineImagePrompt = inlinePrompt;
       }
-      if (wasStopped) {
+      if (wasStopped || failed) {
         meta.generation_stopped = true;
-        meta.generation_stop_reason = 'abort';
+        meta.generation_stop_reason = failed ? 'error' : 'abort';
       }
       // 保存上游真实 usage，供前端展示「上次真实输入 token」校准估算
       if (capturedUsage) {
@@ -924,7 +938,7 @@ export async function runChat(
           db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(asstNow, conversationId);
         })();
       }
-      await callbacks.onDone(fullText, tokenCount);
+      if (!failed) await callbacks.onDone(fullText, tokenCount);
     }
   };
 
@@ -967,6 +981,7 @@ export async function runChat(
         }
         await saveAssistantMessage(rawText);
       },
+      onPartial: (rawText) => saveAssistantMessage(rawText, true),
       onError: callbacks.onError,
       onUsage: (usage) => { capturedUsage = usage; },
       signal: options?.signal,

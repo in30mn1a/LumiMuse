@@ -725,6 +725,7 @@ test('/api/summarize uses one ISO timestamp for the summary message and conversa
     '@/lib/api-client': {
       REASONING_SAFE_MAX_TOKENS: 1024,
       sanitizeUpstreamError: value => value,
+      upstreamStreamError: require('../src/lib/api-client.ts').upstreamStreamError,
     },
     '@/lib/ssrf-guard': {
       safeFetch: async () => ({ ok: true, body: { getReader: () => ({ cancel: async () => {} }) } }),

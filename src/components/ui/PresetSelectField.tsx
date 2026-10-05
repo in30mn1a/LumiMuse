@@ -19,9 +19,10 @@ interface Props {
    */
   value: string | null;
   onChange: (nextValue: string | null) => void;
+  refreshKey?: number;
 }
 
-export default function PresetSelectField({ value, onChange }: Props) {
+export default function PresetSelectField({ value, onChange, refreshKey = 0 }: Props) {
   const { t } = useTranslation();
   const [presets, setPresets] = useState<PresetSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,6 +32,8 @@ export default function PresetSelectField({ value, onChange }: Props) {
     let cancelled = false;
     const controller = new AbortController();
     (async () => {
+      setLoading(true);
+      setError(null);
       try {
         const res = await fetch('/api/prompt-presets', { signal: controller.signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -47,7 +50,7 @@ export default function PresetSelectField({ value, onChange }: Props) {
       cancelled = true;
       controller.abort();
     };
-  }, []);
+  }, [refreshKey]);
 
   const uiValue = value == null || value === '' ? PRESET_ID_NONE : value;
 

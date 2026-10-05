@@ -885,7 +885,46 @@ test('runChat abort 不补发或落库首个未完成协议前缀', async (t) =>
     assert.equal(result.emitted, '');
     assert.equal(result.doneText, '');
     assert.equal(result.storedText, '');
-    assert.equal(result.storedMetadata.generation_stopped, true);
-    assert.equal(result.storedMetadata.generation_stop_reason, 'abort');
+    assert.deepEqual(result.storedMetadata, {}, '没有有效正文的取消不写入空 assistant');
   }
 });
+
+
+for (const [label, frames, partial] of [
+  ['error', [{ error: { message: 'API key sk-fixture-secret123 failed' } }], null],
+  ['reasoning', [{ choices: [{ delta: { reasoning_content: 'thought' } }] }], null],
+  ['partial-error', [{ choices: [{ delta: { content: 'visible partial' } }] }, { error: { message: 'stream failed' } }], 'visible partial'],
+]) {
+  test(`runChat真实SSE ${label}不成功完成且保留有效部分`, async t => {
+    const probe = createDbProbe();
+    t.after(() => probe.database.close());
+    const payload = frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('');
+    Module._load = function(request, parent, isMain) {
+      if (request === '@/lib/db') return { getDb: () => probe.db };
+      if (request === './ssrf-guard') return { safeFetch: async () => new Response(payload) };
+      if (request === '@/lib/memory-engine') return { retrieveRelevantMemories: () => [] };
+      if (request === '@/lib/memory-retrieval') return { retrieveWorkingMemoryPackage: async () => ({ text: '', selectedMemories: [], tokenCount: 0, mode: 'test' }) };
+      if (request === '@/lib/prompt-presets') return { resolveActivePreset: () => null, loadEnabledEntries: () => [] };
+      return originalLoad.call(this, request, parent, isMain);
+    };
+    const result = { done: [], errors: [], emitted: '' };
+    try {
+      delete require.cache[require.resolve('../src/lib/api-client.ts')];
+      delete require.cache[require.resolve('../src/lib/chat-engine.ts')];
+      const { runChat } = require('../src/lib/chat-engine.ts');
+      await runChat('conv-a', '', { ...settings(), streaming: true }, {
+        onChunk: text => { result.emitted += text; },
+        onDone: text => result.done.push(text),
+        onError: error => result.errors.push(error.message),
+      }, { skipUserInsert: true });
+    } finally { Module._load = originalLoad; }
+    assert.deepEqual(result.done, []);
+    assert.equal(result.errors.length, 1);
+    assert.doesNotMatch(result.errors[0], /sk-fixture-secret123/);
+    const saved = readLatestAssistant(probe.database);
+    if (partial) {
+      assert.equal(saved.content, partial);
+      assert.equal(JSON.parse(saved.metadata).generation_stop_reason, 'error');
+    } else assert.equal(saved, undefined);
+  });
+}

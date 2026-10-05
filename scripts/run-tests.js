@@ -16,14 +16,14 @@ const testsDir = path.join(root, 'tests');
 function listMatchingTests() {
   const entries = fs.readdirSync(testsDir);
   return entries
-    .filter(name => name.endsWith('.test.cjs') || name.endsWith('-smoke.cjs'))
+    .filter(name => name.endsWith('.test.cjs') || name.endsWith('-smoke.cjs') || name.endsWith('.e2e.cjs'))
     .sort()
     .map(name => path.join('tests', name));
 }
 
 const files = listMatchingTests();
 if (files.length === 0) {
-  console.error('No test files matched tests/*.test.cjs or tests/*-smoke.cjs');
+  console.error('No test files matched tests/*.test.cjs, tests/*-smoke.cjs or tests/*.e2e.cjs');
   process.exit(1);
 }
 

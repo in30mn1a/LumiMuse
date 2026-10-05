@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Character, Message, ReasoningEffort, Settings } from '@/types';
 import {
@@ -31,6 +31,7 @@ import { parseConversation, useNewChat } from '@/hooks/chat/useNewChat';
 import { canBeginChatSend } from '@/hooks/chat/chat-send-guard';
 import { formatTemplate } from '@/lib/i18n';
 import { estimateClientTokens } from '@/lib/token-counter-client';
+import { countSummaryContextTokens } from '@/lib/summary-context-tokens';
 import type { TextHighlightRange } from '@/lib/text-highlight';
 import { getVersionInfo } from '@/lib/chat-view-utils';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
@@ -101,6 +102,12 @@ export default function ChatView({
   const clearStreamingTextRef = useRef<() => void>(() => {});
   const scrollControllerRef = useRef<Pick<UseChatScrollControllerResult, 'markTargetForScroll' | 'markScrollToBottomOnLoad'> | null>(null);
   const creatingConversationRef = useRef(false);
+  const creationScopeRef = useRef(0);
+  useLayoutEffect(() => {
+    creationScopeRef.current += 1;
+    creatingConversationRef.current = false;
+    return () => { creationScopeRef.current += 1; };
+  }, [character?.id]);
   const hasCharacter = Boolean(character);
 
   // 总结上下文
@@ -339,14 +346,7 @@ export default function ChatView({
   }, [memories]);
 
   const messageTokens = useMemo(() => {
-    // 有 summary 消息时，只计算最后一条 summary 及其之后的消息 token
-    // 这样 token 数才能反映实际发送给 AI 的上下文大小
-    const lastSummaryIdx = visibleMessages.findLastIndex(m => {
-      const meta = (m.metadata || {}) as Record<string, unknown>;
-      return meta.isSummary === true;
-    });
-    const relevant = lastSummaryIdx >= 0 ? visibleMessages.slice(lastSummaryIdx) : visibleMessages;
-    const localSum = relevant.reduce((sum, m) => sum + (m.token_count || 0), 0);
+    const localSum = countSummaryContextTokens(visibleMessages);
     // 取本地求和与服务端总量的较大值：
     // - 分页未加载完时，服务端总量包含未加载的旧消息（localSum 偏小）→ 取服务端
     // - 本地刚发送新消息但服务端总量还未刷新时，localSum 暂时领先 → 取 localSum
@@ -680,6 +680,8 @@ export default function ChatView({
     // 当前对话正在生成时不允许重复发送（但其他对话可以）
     if (!canBeginChatSend(activeConvId, creatingConversationRef.current, activeStreamsRef.current)) return;
 
+    const creationScope = creationScopeRef.current;
+    const isCurrentCreation = () => creationScopeRef.current === creationScope;
     let convId = activeConvId;
     let createdNewConversation = false;
     try {
@@ -693,12 +695,17 @@ export default function ChatView({
         });
         // 与 useNewChat 一致：先校验状态码与响应形状，再写入状态 / beginStream。
         const conversation = parseConversation(await parseJsonResponse<unknown>(response));
-        setConversations(prev => [conversation, ...prev]);
         prependCharacterConversation(character.id, conversation);
+        if (!isCurrentCreation() || activeConvIdRef.current !== activeConvId) {
+          if (isCurrentCreation()) creatingConversationRef.current = false;
+          return;
+        }
+        setConversations(prev => [conversation, ...prev]);
         selectUserConversation(conversation.id);
         convId = conversation.id;
       }
     } catch (error) {
+      if (!isCurrentCreation()) return;
       creatingConversationRef.current = false;
       showToast(getErrorMessage(error) || t('chat.errorGeneral'));
       return;
@@ -737,7 +744,7 @@ export default function ChatView({
         },
       });
     } finally {
-      if (createdNewConversation) {
+      if (createdNewConversation && isCurrentCreation()) {
         creatingConversationRef.current = false;
       }
     }

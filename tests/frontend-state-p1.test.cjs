@@ -983,8 +983,10 @@ test('chat image generation aborts on active conversation change and skips stale
       return promptRequest.promise;
     }
     if (parsedUrl.pathname === '/api/messages/msg-a') {
-      messageWrites.push(JSON.parse(String(init.body)));
-      return jsonResponse({ ok: true });
+      const body = JSON.parse(String(init.body));
+      messageWrites.push(body);
+      const metadata = body.metadata ?? { generatedImages: messageWrites[0].metadata.generatedImages.map(image => ({ ...image, status: 'failed' })) };
+      return jsonResponse({ metadata });
     }
     if (parsedUrl.pathname === '/api/image-gen') {
       return jsonResponse({ url: '/generated/stale.png' });
@@ -1006,7 +1008,9 @@ test('chat image generation aborts on active conversation change and skips stale
         characterRef: { current: { id: 'char-a', name: 'Alice' } },
         messagesRef: { current: messages },
         updateMessagesForConversation: (conversationIdToUpdate, updater) => {
-          localWrites.push({ conversationIdToUpdate, nextMessages: updater(messages) });
+          const nextMessages = updater(messages);
+          messages.splice(0, messages.length, ...nextMessages);
+          localWrites.push({ conversationIdToUpdate, nextMessages });
         },
         markSkipNextScroll: () => {},
         showToast: (message, type) => toasts.push({ message, type }),
@@ -1030,8 +1034,11 @@ test('chat image generation aborts on active conversation change and skips stale
     promptRequest.resolve(jsonResponse({ prompt: 'stale prompt' }));
     await generation;
 
-    assert.equal(messageWrites.length, 1, 'only the initial placeholder may be persisted before abort');
-    assert.equal(localWrites.length, 1, 'stale prompt/image results must not write into the new conversation');
+    assert.equal(messageWrites.length, 2, 'cancellation must end the persisted placeholder');
+    assert.ok(messageWrites[1].imageCancellation.requestToken);
+    assert.equal(localWrites.length, 2);
+    assert.ok(localWrites.every(write => write.conversationIdToUpdate === 'conv-a'), 'all cache writes retain the original conversation');
+    assert.equal(localWrites.at(-1).nextMessages[0].metadata.generatedImages[0].status, 'failed');
     assert.deepEqual(toasts, [{ message: 'chat.imageGenStart', type: 'info' }]);
   } finally {
     global.fetch = originalFetch;
@@ -1156,6 +1163,8 @@ test('chat image generation rechecks inline prompt freshness after a delayed pla
   global.fetch = async (url, init = {}) => {
     const parsedUrl = new URL(String(url), 'http://localhost');
     if (parsedUrl.pathname === '/api/messages/msg-a') {
+      const body = JSON.parse(init.body);
+      if (body.imageCancellation) return jsonResponse({ metadata: { generatedImages: [] } });
       return placeholderWrite.promise;
     }
     if (parsedUrl.pathname === '/api/image-gen') {
@@ -1463,8 +1472,11 @@ test('chat image generation restores an existing image after replacement failure
     if (parsedUrl.pathname === '/api/messages/msg-a') {
       const body = JSON.parse(String(init.body));
       messageWrites.push(body);
-      messages[0] = { ...messages[0], metadata: body.metadata };
-      return jsonResponse({ ok: true });
+      const metadata = body.metadata ?? { ...messages[0].metadata, generatedImages: messages[0].metadata.generatedImages.map(image =>
+        image.id === body.imageCancellation.imageId && image.requestToken === body.imageCancellation.requestToken
+          ? { ...image, status: 'ready', error: undefined } : image) };
+      messages[0] = { ...messages[0], metadata };
+      return jsonResponse({ metadata });
     }
     if (parsedUrl.pathname === '/api/image-gen') {
       return jsonResponse({ error: 'image backend down' });

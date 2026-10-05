@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Memory, MEMORY_CATEGORIES } from '@/types';
 import MemoryCard from './MemoryCard';
 import { useTranslation } from '@/lib/i18n-context';
@@ -39,7 +39,23 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [listError, setListError] = useState('');
   const [mutationError, setMutationError] = useState('');
+  const queryKey = JSON.stringify([characterId, categoryFilter, tagFilters, keyword, sortOrder, showArchived]);
+  const [previousQueryKey, setPreviousQueryKey] = useState(queryKey);
+  if (previousQueryKey !== queryKey) {
+    setPreviousQueryKey(queryKey);
+    setAddingMemory(false);
+    setBatchDeleting(false);
+    setEditingMemoryId(null);
+    setMutationError('');
+    setBatchDeleteError('');
+  }
   const requestSeqRef = useRef(0);
+  const scopeRef = useRef(0);
+  useLayoutEffect(() => {
+    scopeRef.current += 1;
+    requestSeqRef.current += 1;
+    return () => { scopeRef.current += 1; };
+  }, [characterId, categoryFilter, tagFilters, keyword, sortOrder, showArchived]);
   const { t } = useTranslation();
 
   // 只保留当前页面中存在的选中 ID（切换角色/筛选后旧 ID 自动失效）
@@ -79,6 +95,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
   const allSelected = memories.length > 0 && memories.every(m => validSelectedIds.has(m.id));
 
   const handleBatchDelete = async () => {
+    const scope = scopeRef.current;
     const ids = Array.from(validSelectedIds);
     if (ids.length === 0 || batchDeleting) return;
     if (!window.confirm(t('memory.batchDeleteConfirm').replace('{count}', String(ids.length)))) return;
@@ -92,6 +109,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
         body: JSON.stringify({ ids, character_id: characterId || undefined }),
       });
       await expectOkResponse(response);
+      if (scope !== scopeRef.current) return;
       setSelectMode(false);
       setSelectedIds(new Set());
       const remaining = totalMemories - ids.length;
@@ -102,13 +120,19 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
         await fetchMemories(page);
       }
     } catch {
+      if (scope !== scopeRef.current) return;
       setBatchDeleteError(t('memory.batchDeleteFailed'));
     } finally {
-      setBatchDeleting(false);
+      if (scope === scopeRef.current) setBatchDeleting(false);
     }
   };
 
+  const queryKeyRef = useRef(queryKey);
+  useLayoutEffect(() => { queryKeyRef.current = queryKey; }, [queryKey]);
+
   const fetchMemories = useCallback(async (targetPage = page, signal?: AbortSignal) => {
+    if (queryKeyRef.current !== queryKey) return;
+    const scope = scopeRef.current;
     setListError('');
     const requestSeq = ++requestSeqRef.current;
     const params = new URLSearchParams();
@@ -125,14 +149,14 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
 
     try {
       const data = await parseJsonResponse<MemoriesResponse>(await fetch(`/api/memories?${params}`, { signal }));
-      if (signal?.aborted || requestSeq !== requestSeqRef.current) return;
+      if (scope !== scopeRef.current || signal?.aborted || requestSeq !== requestSeqRef.current) return;
       setMemories(data.memories);
       setTotalMemories(data.total);
       setHasMore(data.hasMore);
       if (data.memories.length === 0 && targetPage > 1) setPage(1);
     } catch (error) {
       if (
-        signal?.aborted ||
+        scope !== scopeRef.current || signal?.aborted ||
         requestSeq !== requestSeqRef.current ||
         (error instanceof DOMException && error.name === 'AbortError')
       ) {
@@ -140,7 +164,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
       }
       setListError(t('common.loadFailed'));
     }
-  }, [characterId, categoryFilter, tagFilters, keyword, page, sortOrder, showArchived, t]);
+  }, [characterId, categoryFilter, tagFilters, keyword, page, sortOrder, showArchived, t, queryKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -168,6 +192,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
   }, [exitSelectMode]);
 
   const handleDelete = async (id: string) => {
+    const scope = scopeRef.current;
     setMutationError('');
     try {
       // 注意：proxy.ts 的 CSRF 校验会要求所有写方法（含 DELETE）带 application/json
@@ -177,6 +202,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ character_id: characterId || undefined }),
       }));
+      if (scope !== scopeRef.current) return;
       const nextPage = memories.length === 1 && page > 1 ? page - 1 : page;
       if (nextPage !== page) {
         setPage(nextPage);
@@ -184,11 +210,13 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
         await fetchMemories(nextPage);
       }
     } catch {
+      if (scope !== scopeRef.current) return;
       setMutationError(t('common.operationFailed'));
     }
   };
 
   const handleUpdate = async (id: string, updates: Partial<Memory>) => {
+    const scope = scopeRef.current;
     setMutationError('');
     try {
       await parseJsonResponse<Memory>(await fetch(`/api/memories/${id}`, {
@@ -196,14 +224,17 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...updates, character_id: characterId || undefined }),
       }));
+      if (scope !== scopeRef.current) return;
       await fetchMemories(page);
     } catch {
+      if (scope !== scopeRef.current) return;
       setMutationError(t('common.operationFailed'));
       throw new Error(t('common.operationFailed'));
     }
   };
 
   const handleAdd = async () => {
+    const scope = scopeRef.current;
     if (!characterId || addingMemory) return;
     setMutationError('');
     setAddingMemory(true);
@@ -219,13 +250,15 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
           tags: [],
         }),
       }));
+      if (scope !== scopeRef.current) return;
       setEditingMemoryId(newMemory.id);
       if (page !== 1) setPage(1);
       await fetchMemories(1);
     } catch {
+      if (scope !== scopeRef.current) return;
       setMutationError(t('common.operationFailed'));
     } finally {
-      setAddingMemory(false);
+      if (scope === scopeRef.current) setAddingMemory(false);
     }
   };
 

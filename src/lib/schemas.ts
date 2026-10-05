@@ -283,6 +283,7 @@ export const generatedImageSchema = z.object({
   url: z.string().max(MAX_URL).optional(),
   prompt: z.string().max(MAX_MESSAGE_CONTENT),
   status: z.enum(['pending_prompt', 'pending_image', 'failed', 'ready']).optional(),
+  requestToken: z.string().min(1).max(128).optional(),
   error: z.string().max(MAX_MESSAGE_CONTENT).optional(),
   versions: z.array(generatedImageVersionSchema).max(100).optional(),
   activeVersion: z.number().int().nonnegative().optional(),
@@ -500,6 +501,12 @@ export type MessageCreate = z.infer<typeof messageCreateSchema>;
 
 // --------- /api/messages/[id] PUT ---------
 export const messageUpdateSchema = z.object({
+  imageCancellation: z.object({
+    imageId: z.string().min(1).max(64),
+    requestToken: z.string().min(1).max(128),
+    error: z.string().max(MAX_MESSAGE_CONTENT),
+    restoreFailed: z.boolean().optional(),
+  }).optional(),
   content: z.string().max(MAX_MESSAGE_CONTENT).optional(),
   metadata: messageMetadataSchema.optional(),
   activeVersion: z.number().int().nonnegative().optional(),

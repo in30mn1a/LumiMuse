@@ -33,6 +33,8 @@ interface ImportPayload {
   // memory_profile_versions 和 memory_embeddings 在两种格式下字段名相同
   character_memory_configs?: Record<string, unknown>[];
   character_model_preset_bindings?: Record<string, unknown>[];
+  prompt_presets?: Record<string, unknown>[];
+  prompt_preset_entries?: Record<string, unknown>[];
 }
 
 interface ConversationWithMessages {
@@ -371,7 +373,10 @@ function createEmptyResults() {
     memoryConfigsImported: 0,
     modelPresetBindingsImported: 0,
     // 同名冲突重命名后的角色列表，便于前端提示用户「这些角色已重命名导入」。
-    warnings: [] as { type: 'character_renamed'; originalName: string; newName: string }[],
+    warnings: [] as Array<
+      { type: 'character_renamed'; originalName: string; newName: string }
+      | { type: 'preset_missing'; presetId: string; message: string }
+    >,
   };
 }
 
@@ -472,6 +477,16 @@ export async function POST(request: NextRequest) {
     ...(payload.character_memory_config ? [payload.character_memory_config] : []),
   ];
   const modelPresetBindingsToImport = collectModelPresetBindingsFromPayload(payload);
+  const includePresets = includeCharacter || modelPresetBindingsToImport.length > 0;
+  const presetsToImport = includePresets ? asArray<Record<string, unknown>>(payload.prompt_presets) : [];
+  const presetEntriesToImport = includePresets ? asArray<Record<string, unknown>>(payload.prompt_preset_entries) : [];
+  const presetIds = new Set(presetsToImport.map(row => asString(row.id)));
+  if (presetsToImport.some(row => !asString(row.id) || !asString(row.name))
+    || presetIds.size !== presetsToImport.length
+    || presetEntriesToImport.some(row => !presetIds.has(asString(row.preset_id))
+      || !MESSAGE_ROLES.includes(row.role as typeof MESSAGE_ROLES[number]))) {
+    return NextResponse.json({ error: '导入数据包含非法预设或预设条目' }, { status: 400 });
+  }
 
   const enumValidationError = findImportEnumValidationError(conversationsToImport, memoriesToImport);
   if (enumValidationError) {
@@ -512,7 +527,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const results = importPayload({
+  const { results, resolvePresetId } = importPayload({
     db,
     characterExists,
     charactersToImport,
@@ -523,13 +538,27 @@ export async function POST(request: NextRequest) {
     embeddingsToImport,
     configsToImport,
     modelPresetBindingsToImport,
+    presetsToImport,
+    presetEntriesToImport,
     target_character_id,
   });
 
+  const draftSource = asRecord(payload.character) ?? asArray<Record<string, unknown>>(payload.characters)[0];
+  const mappedDraft = characterDraft ? {
+    ...characterDraft,
+    ...(draftSource && Object.hasOwn(draftSource, 'active_preset_id')
+      ? { active_preset_id: resolvePresetId(draftSource.active_preset_id) } : {}),
+    ...(characterDraft.model_preset_bindings ? {
+      model_preset_bindings: characterDraft.model_preset_bindings.flatMap(binding => {
+        const presetId = resolvePresetId(binding.preset_id);
+        return presetId ? [{ ...binding, preset_id: presetId }] : [];
+      }),
+    } : {}),
+  } : null;
   return NextResponse.json({
     ok: true,
     ...results,
-    ...(characterDraft ? { characterDraft } : {}),
+    ...(mappedDraft ? { characterDraft: mappedDraft } : {}),
   });
 }
 
@@ -556,6 +585,8 @@ function importPayload({
   embeddingsToImport,
   configsToImport,
   modelPresetBindingsToImport,
+  presetsToImport,
+  presetEntriesToImport,
   target_character_id,
 }: {
   db: ReturnType<typeof getDb>;
@@ -568,13 +599,38 @@ function importPayload({
   embeddingsToImport: Record<string, unknown>[];
   configsToImport: Record<string, unknown>[];
   modelPresetBindingsToImport: Record<string, unknown>[];
+  presetsToImport: Record<string, unknown>[];
+  presetEntriesToImport: Record<string, unknown>[];
   target_character_id?: string;
 }) {
   const now = new Date().toISOString();
   const results = createEmptyResults();
   const idMap = new Map<string, string>(); // 原 character id → 新 id
   const messageIdMap = new Map<string, string>(); // 原消息 id → 新消息 id
+  const summaryMetadataToRemap: Array<{
+    messageId: string;
+    metadata: ReturnType<typeof parseMessageMetadata>;
+    conversationMessageIdMap: Map<string, string>;
+  }> = [];
   const memoryIdMap = new Map<string, string>(); // 原记忆 id → 新记忆 id（embedding 导入需要）
+  const presetIdMap = new Map<string, string>();
+  const missingPresetIds = new Set<string>();
+  const hasPresetTable = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompt_presets'").get());
+  const resolvePresetId = (value: unknown): string | null => {
+    const oldId = asString(value);
+    if (!oldId) return null;
+    if (oldId === '__none__') return oldId;
+    const mapped = presetIdMap.get(oldId);
+    if (mapped) return mapped;
+    // 旧备份没有预设本体时，只复用目标实例实际存在的预设。
+    if (hasPresetTable && db.prepare('SELECT 1 FROM prompt_presets WHERE id = ?').get(oldId)) return oldId;
+    if (!missingPresetIds.has(oldId)) {
+      missingPresetIds.add(oldId);
+      results.warnings.push({ type: 'preset_missing', presetId: oldId,
+        message: `备份未包含预设 ${oldId}，目标实例也不存在；该预设选择未恢复，请从源实例重新导出完整备份。` });
+    }
+    return null;
+  };
 
   const findCharacterByName = db.prepare('SELECT id FROM characters WHERE name = ?');
   const characterExistsByName = (name: string) => Boolean(findCharacterByName.get(name));
@@ -585,9 +641,9 @@ function importPayload({
       memory_chat_injection_mode, created_at, updated_at,
       background_model, image_prompt_model, background_provider_id,
       background_reasoning_by_model, image_prompt_reasoning_by_model,
-      background_system_prompt_by_model, image_prompt_system_prompt_by_model
+      background_system_prompt_by_model, image_prompt_system_prompt_by_model, active_preset_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertConversation = db.prepare(`
     INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
@@ -671,6 +727,37 @@ function importPayload({
   `);
 
   const importAll = db.transaction(() => {
+    // 先恢复预设再写角色选择；创建独立 ID，避免覆盖目标实例同 ID 的预设。
+    for (const preset of presetsToImport) {
+      const newId = crypto.randomUUID();
+      presetIdMap.set(asString(preset.id), newId);
+      db.prepare(`INSERT INTO prompt_presets
+        (id, name, description, is_built_in, story_plot_strip, strip_tags, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, asString(preset.name), asString(preset.description),
+          asFlag(preset.is_built_in), asFlag(preset.story_plot_strip), jsonArrayString(preset.strip_tags),
+          asString(preset.created_at) || now, asString(preset.updated_at) || now);
+    }
+    // 条目排序以 sort_order、id 为准；重新分配 UUID 时保留原 ID 的相对顺序，
+    // 避免相同 sort_order 的条目在恢复后随机换序，改变角色指令。
+    const orderedEntries = [...presetEntriesToImport].sort((a, b) => {
+      const left = asString(a.id);
+      const right = asString(b.id);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+    const entryIds = orderedEntries.map(() => crypto.randomUUID()).sort();
+    for (const [index, entry] of orderedEntries.entries()) {
+      db.prepare(`INSERT INTO prompt_preset_entries
+        (id, preset_id, name, role, content, is_marker, marker_key, is_system_prompt,
+         injection_position, injection_depth, injection_order, forbid_overrides, enabled,
+         sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          entryIds[index], presetIdMap.get(asString(entry.preset_id)), asString(entry.name), asString(entry.role),
+          asString(entry.content), asFlag(entry.is_marker), asString(entry.marker_key) || null,
+          asFlag(entry.is_system_prompt), asNumber(entry.injection_position) ?? 0,
+          asNumber(entry.injection_depth) ?? 4, asNumber(entry.injection_order) ?? 100,
+          asFlag(entry.forbid_overrides), entry.enabled === undefined ? 1 : asFlag(entry.enabled),
+          asNumber(entry.sort_order) ?? 0, asString(entry.created_at) || now, asString(entry.updated_at) || now);
+    }
     // ── 导入角色 ────────────────────────────────────────────────
     // 用 asString / asArray 替换原先的 `as string` 断言，确保即使输入 JSON
     // 把字段类型恶意改成对象 / 数字，也不会污染 SQLite 参数或导致运行时异常。
@@ -723,6 +810,7 @@ function importPayload({
         serializeReasoningMap(char.image_prompt_reasoning_by_model),
         serializePromptMap(char.background_system_prompt_by_model),
         serializePromptMap(char.image_prompt_system_prompt_by_model),
+        resolvePresetId(char.active_preset_id),
       );
       results.imported++;
     }
@@ -753,6 +841,7 @@ function importPayload({
 
       // 导入该对话的消息
       const messages = asArray<Record<string, unknown>>(conv.messages);
+      const conversationMessageIdMap = new Map<string, string>();
       // 始终按稳定顺序重建 1..N，避免外部重复/非整数/稀疏 seq 破坏游标分页。
       const seqByIndex = resolveImportMessageSeq(messages);
       for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
@@ -760,6 +849,7 @@ function importPayload({
         const newMsgId = crypto.randomUUID().slice(0, 12);
         const originalMsgId = asString(msg.id);
         if (originalMsgId) messageIdMap.set(originalMsgId, newMsgId);
+        if (originalMsgId) conversationMessageIdMap.set(originalMsgId, newMsgId);
 
         // 导入包属于外部信任边界：不复用其中的 token_count/provenance，按当前
         // 服务端算法和实际 content/attachments 重新生成可信计数。
@@ -767,7 +857,11 @@ function importPayload({
         const content = asString(msg.content);
         const metadata = parseMessageMetadata(msg.metadata);
         const tokenResult = createMessageTokenCount(content, role, metadata.attachments);
-        const metaStr = JSON.stringify(metadataWithTokenCountProvenance(metadata, tokenResult.provenance));
+        const importedMetadata = metadataWithTokenCountProvenance(metadata, tokenResult.provenance);
+        const metaStr = JSON.stringify(importedMetadata);
+        if (metadata.summaryCoverageVersion === 1 && Array.isArray(metadata.summarizedIds)) {
+          summaryMetadataToRemap.push({ messageId: newMsgId, metadata: importedMetadata, conversationMessageIdMap });
+        }
 
         insertMessage.run(
           newMsgId,
@@ -780,6 +874,20 @@ function importPayload({
           seqByIndex[messageIndex],
         );
         results.messagesImported++;
+      }
+    }
+
+    // 完成全部消息 ID 映射后恢复总结覆盖范围。链式对话导出会将祖先消息复制
+    // 到每个独立对话，优先使用本对话的副本 ID，避免指向其他导入对话。
+    if (summaryMetadataToRemap.length > 0) {
+      const updateSummaryMetadata = db.prepare('UPDATE messages SET metadata = ? WHERE id = ?');
+      for (const summary of summaryMetadataToRemap) {
+        summary.metadata.summarizedIds = [...new Set((summary.metadata.summarizedIds ?? [])
+          .flatMap(id => {
+            const mapped = summary.conversationMessageIdMap.get(id) || messageIdMap.get(id);
+            return mapped ? [mapped] : [];
+          }))];
+        updateSummaryMetadata.run(JSON.stringify(summary.metadata), summary.messageId);
       }
     }
 
@@ -966,6 +1074,8 @@ function importPayload({
 
         const normalized = normalizeImportedBinding(row);
         if (!normalized) continue;
+        const presetId = resolvePresetId(normalized.preset_id);
+        if (!presetId) continue;
 
         if (!clearedCharacters.has(newCharId)) {
           deleteBindings.run(newCharId);
@@ -975,7 +1085,7 @@ function importPayload({
         insertBinding.run(
           newCharId,
           normalized.model,
-          normalized.preset_id,
+          presetId,
           asNumber(row.sort_order) ?? fallbackOrder,
           now,
           now,
@@ -988,5 +1098,5 @@ function importPayload({
 
   importAll();
 
-  return results;
+  return { results, resolvePresetId };
 }

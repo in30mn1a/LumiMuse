@@ -710,10 +710,25 @@ export async function processMemoryProfileUpdateTasks(options: {
           return { applied: false, profile: getOrCreateMemoryProfile(task.character_id, db) };
         }
 
-        const updated = patchMemoryProfile(task.character_id, patch, db);
-        createMemoryProfileVersion(task.character_id, task.reason, task.id, db);
-        profileTaskQueue.complete(db, task);
-        return { applied: true, profile: updated };
+        const latestProfile = getOrCreateMemoryProfile(task.character_id, db);
+        const applicablePatch = { ...patch };
+        let conflicted = false;
+        if (task.source_text) {
+          for (const field of PATCH_FIELDS) {
+            if (Object.prototype.hasOwnProperty.call(applicablePatch, field)
+              && JSON.stringify(latestProfile[field]) !== JSON.stringify(currentProfile[field])) {
+              delete applicablePatch[field];
+              conflicted = true;
+            }
+          }
+        }
+        const applied = hasPatchChanges(applicablePatch);
+        const updated = applied ? patchMemoryProfile(task.character_id, applicablePatch, db) : latestProfile;
+        if (applied) createMemoryProfileVersion(task.character_id, task.reason, task.id, db);
+        profileTaskQueue.complete(db, task, conflicted ? {
+          errorMessage: 'profile fields changed during generation; conflicting fields preserved',
+        } : {});
+        return { applied, profile: updated };
       })();
       if (result.applied) {
         processed += 1;

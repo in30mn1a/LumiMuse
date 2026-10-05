@@ -740,6 +740,44 @@ test('/api/image-gen reuses the custom engine deadline signal for a returned ima
   assert.equal(signals[1], signals[0]);
 });
 
+for (const engine of ['custom', 'comfyui']) {
+  for (const stage of ['headers', 'body']) {
+    test(`/api/image-gen retains the ${engine} total deadline during stalled download ${stage}`, async () => {
+      const client = new AbortController();
+      let downloadSignal;
+      let bodyCancelled = false;
+      const harness = createImageGenHarness({
+        imageGenSettings: engine === 'custom'
+          ? customSettings({ generate_timeout_ms: 50 })
+          : comfySettings({ generate_timeout_ms: 50 }),
+        safeFetchImpl: async (url, init) => {
+          if (url === 'https://images.example/v1/images') return Response.json({ data: [{ url: 'https://cdn.example/stalled.png' }] });
+          if (url.endsWith('/prompt')) return Response.json({ prompt_id: 'deadline' });
+          if (url.endsWith('/history/deadline')) return Response.json({ deadline: { outputs: { '9': { images: [{ filename: 'stalled.png' }] } } } });
+          downloadSignal = init.signal;
+          if (stage === 'headers') return rejectWhenAborted(init.signal, 'stalled download');
+          return new Response(new ReadableStream({ cancel() { bodyCancelled = true; } }), {
+            headers: { 'content-type': 'image/png' },
+          });
+        },
+      });
+      let response;
+      try {
+        await withImmediateComfyPollDelay(async () => {
+          const pending = harness.route.POST(jsonRequest({ prompt: 'cat' }, client.signal));
+          response = await Promise.race([pending, new Promise(resolve => setTimeout(() => resolve(null), 500))]);
+        });
+        assert.ok(response, '下载必须在总截止时间内结束');
+        assert.equal(response.status, 500);
+        assert.match((await response.json()).error, /出图超时/);
+        assert.equal(downloadSignal.aborted, true);
+        if (stage === 'body') assert.equal(bodyCancelled, true);
+        assert.equal(harness.writes.length, 0);
+      } finally { client.abort(); }
+    });
+  }
+}
+
 test('/api/image-gen aborts a stalled NovelAI response body at the configured deadline', async () => {
   let responseBodyCancelled = false;
   const stalledBody = new ReadableStream({

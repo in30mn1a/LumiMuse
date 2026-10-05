@@ -53,6 +53,7 @@ export function useChatImageGeneration({
     conversationId: string;
     characterId: string | null;
   }>>(new Map());
+  const latestMessageRequestRef = useRef<Map<string, number>>(new Map());
   const inFlightMessageIdsRef = useRef<Set<string>>(new Set());
   const [generatingImageMessageIds, setGeneratingImageMessageIds] = useState<Set<string>>(() => new Set());
 
@@ -104,6 +105,14 @@ export function useChatImageGeneration({
     if (!targetMsg) return false;
 
     if (inFlightMessageIdsRef.current.has(messageId)) return false;
+    let requestToken: string;
+    try {
+      // getRandomValues 在普通 HTTP 中也可用；初始化失败时尚未占用生图状态。
+      requestToken = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    } catch (error) {
+      showToast(`${t('chat.imageGenGeneric')}: ${getErrorMessage(error)}`, 'error');
+      return false;
+    }
     inFlightMessageIdsRef.current.add(messageId);
     setGeneratingImageMessageIds(current => {
       const next = new Set(current);
@@ -116,6 +125,7 @@ export function useChatImageGeneration({
     const placeholderId = replaceImageId || Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const requestId = ++imageRequestSeqRef.current;
     const controller = new AbortController();
+    latestMessageRequestRef.current.set(messageId, requestId);
     activeImageRequestsRef.current.set(requestId, {
       controller,
       conversationId: targetConversationId,
@@ -124,7 +134,7 @@ export function useChatImageGeneration({
 
     const canWriteImageRequest = (allowCompletedRequest = false) => {
       if (allowCompletedRequest) {
-        return !controller.signal.aborted;
+        return !controller.signal.aborted && latestMessageRequestRef.current.get(messageId) === requestId;
       }
       return isCurrentImageRequest(requestId, targetConversationId, controller);
     };
@@ -146,11 +156,9 @@ export function useChatImageGeneration({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ metadata: nextMeta }),
-        signal: controller.signal,
       }));
-      if (!canWriteImageRequest(options?.allowCompletedRequest)) return workingMeta;
-
       workingMeta = nextMeta;
+      if (!canWriteImageRequest(options?.allowCompletedRequest)) return workingMeta;
       markSkipNextScroll();
       updateMessagesForConversation(targetConversationId, messages => {
         let found = false;
@@ -166,6 +174,24 @@ export function useChatImageGeneration({
         return next;
       });
       return nextMeta;
+    };
+
+    const persistTerminalImage = async (restoreFailed = false) => {
+      const updated = await parseJsonResponse<Message>(await fetch(`/api/messages/${messageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageCancellation: { imageId: placeholderId, requestToken, error: t('chat.imageGenCancelled'), restoreFailed } }),
+      }));
+      const serverImage = sanitizeGeneratedImages(updated.metadata.generatedImages).find(image => image.id === placeholderId);
+      updateMessagesForConversation(targetConversationId, messages => messages.map(message => {
+        if (message.id !== messageId || !serverImage) return message;
+        const images = sanitizeGeneratedImages(message.metadata.generatedImages);
+        const image = images.find(image => image.id === placeholderId);
+        if (image?.requestToken !== requestToken || (restoreFailed
+          ? image.status !== 'failed'
+          : image.status !== 'pending_prompt' && image.status !== 'pending_image')) return message;
+        return { ...message, metadata: { ...message.metadata, generatedImages: images.map(image => image.id === placeholderId ? serverImage : image) } };
+      }));
     };
 
     const upsertPlaceholder = async (patch: Partial<ImageEntry>) => {
@@ -190,6 +216,7 @@ export function useChatImageGeneration({
       await upsertPlaceholder({
         prompt: generatedPrompt,
         status: generatedPrompt ? 'pending_image' : 'pending_prompt',
+        requestToken,
         error: undefined,
       });
 
@@ -268,6 +295,7 @@ export function useChatImageGeneration({
       if (replaceImageId) {
         setTimeout(async () => {
           try {
+            if (latestMessageRequestRef.current.get(messageId) !== requestId) return;
             const currentMsg = messagesRef.current.find(m => m.id === messageId);
             const currentMeta = currentMsg
               ? { ...(currentMsg.metadata as Record<string, unknown> || {}) }
@@ -275,14 +303,7 @@ export function useChatImageGeneration({
             const currentImages = sanitizeGeneratedImages(currentMeta.generatedImages);
             const targetImg = currentImages.find((img: ImageEntry) => img.id === replaceImageId);
             if (targetImg && targetImg.status === 'failed' && targetImg.error === message) {
-              await persistImages(
-                images => images.map(img =>
-                  img.id === replaceImageId
-                    ? { ...img, status: 'ready' as const, error: undefined }
-                    : img
-                ),
-                { allowCompletedRequest: true },
-              );
+              await persistTerminalImage(true);
             }
           } catch (restoreErr) {
             console.warn('[image-gen] 恢复旧图片状态失败：', restoreErr);
@@ -291,6 +312,17 @@ export function useChatImageGeneration({
       }
       return true;
     } finally {
+      // 占位写入不随上游取消中断；确认写入完成后，再把本任务的占位收束到终态。
+      const pendingImage = sanitizeGeneratedImages(workingMeta.generatedImages)
+        .find(image => image.id === placeholderId && (image.status === 'pending_prompt' || image.status === 'pending_image'));
+      if (pendingImage && !isCurrentImageRequest(requestId, targetConversationId, controller)
+        && latestMessageRequestRef.current.get(messageId) === requestId) {
+        try {
+          await persistTerminalImage();
+        } catch (error) {
+          console.warn('[image-gen] 写入取消状态失败：', error);
+        }
+      }
       const request = activeImageRequestsRef.current.get(requestId);
       if (request?.controller === controller) {
         activeImageRequestsRef.current.delete(requestId);

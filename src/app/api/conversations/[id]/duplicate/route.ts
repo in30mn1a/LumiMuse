@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { readJsonObject } from '@/lib/request-json';
+import { parseMessageMetadata } from '@/lib/messages';
 import {
   ascendingMessageOrderSqlForChain,
   buildChainMessageScope,
@@ -84,6 +85,7 @@ export async function POST(
   const messages = db.prepare(
     `SELECT * FROM messages WHERE ${scope.sql} ORDER BY ${ascendingMessageOrderSqlForChain(chain)}`
   ).all(...scope.params) as Message[];
+  const messageIdMap = new Map(messages.map(message => [message.id, crypto.randomUUID().slice(0, 12)]));
 
   const insertMsg = db.prepare(`
     INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
@@ -95,11 +97,18 @@ export async function POST(
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      const newMsgId = crypto.randomUUID().slice(0, 12);
-      // metadata 保持原样（包括 memory_extracted 标记），避免副本重复提取已有记忆
-      const metaStr = typeof msg.metadata === 'string'
+      const newMsgId = messageIdMap.get(msg.id)!;
+      // 保留处理标记，但总结的覆盖引用必须指向副本中的消息。
+      const metadata = parseMessageMetadata(msg.metadata);
+      const originalMetaStr = typeof msg.metadata === 'string'
         ? (msg.metadata as unknown as string)
         : JSON.stringify(msg.metadata || {});
+      const metaStr = Array.isArray(metadata.summarizedIds)
+        ? JSON.stringify({ ...metadata, summarizedIds: metadata.summarizedIds.flatMap(sourceId => {
+          const copiedId = messageIdMap.get(sourceId);
+          return copiedId ? [copiedId] : [];
+        }) })
+        : originalMetaStr;
 
       insertMsg.run(
         newMsgId,

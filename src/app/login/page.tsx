@@ -9,10 +9,19 @@ import { useTranslation } from '@/lib/i18n-context';
 // 限制登录后跳转地址只能是站内相对路径，避免开放重定向
 function safeReturnTo(from: string | null): string {
   if (!from) return '/';
+  // URL 解析会移除制表符、换行等控制字符，必须在规范化前拒绝。
+  if (/[\u0000-\u0020\u007f]/.test(from)) return '/';
   // 必须以 `/` 开头；不允许 `//xxx`（协议相对 URL）或 `/\xxx`（反斜杠绕过）
   if (!from.startsWith('/')) return '/';
   if (from.startsWith('//') || from.startsWith('/\\')) return '/';
-  return from;
+  try {
+    const destination = new URL(from, 'https://lumimuse.invalid');
+    if (destination.origin !== 'https://lumimuse.invalid') return '/';
+    if (destination.pathname.startsWith('//')) return '/';
+    return `${destination.pathname}${destination.search}${destination.hash}`;
+  } catch {
+    return '/';
+  }
 }
 
 function LoginForm() {

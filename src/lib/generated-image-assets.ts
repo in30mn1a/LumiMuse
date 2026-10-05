@@ -9,6 +9,7 @@ export type GeneratedImage = {
   url?: string;
   prompt: string;
   status?: 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
+  requestToken?: string;
   error?: string;
   versions?: Array<GeneratedImageVersion>;
   activeVersion?: number;
@@ -90,6 +91,7 @@ export function sanitizeGeneratedImages(value: unknown): Array<GeneratedImage> {
       image.status = item.status as GeneratedImage['status'];
     }
     if (typeof item.error === 'string') image.error = item.error;
+    if (typeof item.requestToken === 'string') image.requestToken = item.requestToken;
     if (Array.isArray(item.versions)) {
       const versions = item.versions
         .map(sanitizeGeneratedImageVersion)

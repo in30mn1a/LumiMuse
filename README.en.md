@@ -548,6 +548,10 @@ When deploying publicly:
 3. Import it in the new environment
 4. Verify characters, conversations, and memories look correct
 
+v3 backups include prompt presets, all entries, the character's default choice, and model bindings. A character backup includes its referenced presets; a full backup includes all presets. Import creates new preset IDs without overwriting existing presets. Upgrade the destination app before importing v3; older versions reject unsupported backup versions.
+
+Older backups remain supported. If a backup contains only preset IDs, import reuses matching presets in the destination. Missing presets produce a warning and their invalid selections are not restored; export a complete backup from the source to preserve the original character instructions.
+
 **Or back up directories directly:**
 
 ```text
@@ -667,7 +671,7 @@ npm run regression
 npm run build
 ```
 
-The Next.js-scoped PostCSS override in `package.json` is intentional security hardening. It replaces only Next's transitive copy until upstream ships an equal or newer fix. After upgrading Next, inspect the tree with `npm explain postcss` and verify cleanup with `npm prune --dry-run`.
+The current `package.json` has no PostCSS override; Next.js and the lockfile determine the transitive PostCSS version. After upgrading Next, inspect the actual dependency tree with `npm explain postcss` and review cleanup with `npm prune --dry-run`.
 
 ---
 

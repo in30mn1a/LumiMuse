@@ -92,6 +92,10 @@ export async function GET(request: NextRequest) {
     // 角色级记忆引擎覆盖（token 预算 / 向量 / reranker 等），与角色绑定导出。
     const memoryConfig = loadMemoryConfigForCharacter(db, characterId);
     const modelPresetBindings = loadModelPresetBindingsForCharacter(db, characterId);
+    const presetData = loadPresetData(db, [
+      (character as Record<string, unknown>).active_preset_id,
+      ...modelPresetBindings.map(row => row.preset_id),
+    ]);
 
     const payload = {
       version: EXPORT_VERSION,
@@ -105,6 +109,7 @@ export async function GET(request: NextRequest) {
       memory_embeddings: embeddings,
       character_memory_config: memoryConfig,
       model_preset_bindings: modelPresetBindings,
+      ...presetData,
     };
 
     return new Response(JSON.stringify(payload), {
@@ -148,6 +153,7 @@ export async function GET(request: NextRequest) {
     memory_embeddings: embeddings,
     character_memory_configs: memoryConfigs,
     character_model_preset_bindings: modelPresetBindings,
+    ...loadPresetData(db, includeCharacters ? undefined : []),
   };
 
   // 根据实际包含内容生成文件名
@@ -169,6 +175,19 @@ export async function GET(request: NextRequest) {
 }
 
 // ── 工具函数 ────────────────────────────────────────────────
+
+function loadPresetData(db: ReturnType<typeof getDb>, referencedIds?: unknown[]) {
+  if (!tableExists(db, 'prompt_presets') || !tableExists(db, 'prompt_preset_entries')) {
+    return { prompt_presets: [], prompt_preset_entries: [] };
+  }
+  const ids = referencedIds ? new Set(referencedIds) : null;
+  const presets = (db.prepare('SELECT * FROM prompt_presets ORDER BY created_at, id').all() as Record<string, unknown>[])
+    .filter(row => !ids || ids.has(row.id));
+  const exportedIds = new Set(presets.map(row => row.id));
+  const entries = (db.prepare('SELECT * FROM prompt_preset_entries ORDER BY preset_id, sort_order, id').all() as Record<string, unknown>[])
+    .filter(row => exportedIds.has(row.preset_id));
+  return { prompt_presets: presets, prompt_preset_entries: entries };
+}
 
 function serializeMemory(m: Record<string, unknown>) {
   return {

@@ -65,6 +65,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<LocalAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
+  const composingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -237,7 +238,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // 触屏设备保留浏览器默认行为（换行），避免软键盘回车误发送
-    if (enterInsertsNewline) return;
+    if (enterInsertsNewline || composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       handleSubmit();
@@ -360,6 +361,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
               ref={textareaRef}
               value={text}
               onChange={e => setText(e.target.value)}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
               onKeyDown={handleKeyDown}
               rows={1}
               className="textarea-rich min-h-[3.1rem] max-h-44 resize-none border-none bg-transparent px-1 py-1 shadow-none focus:ring-0"

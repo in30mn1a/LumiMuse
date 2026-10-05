@@ -901,9 +901,16 @@ export async function processMemoryEmbeddingTasks(
     if (embeddingTaskQueue.fail(db, task, errorMessage)) failed += 1;
   };
 
-  const completeTask = (task: MemoryEmbeddingTask, memory: Memory, text: string, embedding: ArrayLike<number>) => {
+  const completeTask = (task: MemoryEmbeddingTask, text: string, embedding: ArrayLike<number>) => {
     const completed = db.transaction(() => {
       if (!embeddingTaskQueue.confirmClaim(db, task)) return false;
+      const latestMemory = db.prepare('SELECT * FROM memories WHERE id = ? AND character_id = ?')
+        .get(task.memory_id, task.character_id) as Memory | undefined;
+      if (!latestMemory || latestMemory.status !== 'active') return embeddingTaskQueue.complete(db, task);
+      if (buildMemoryEmbeddingText(latestMemory) !== text) {
+        embeddingTaskQueue.requeue(db, task, { errorMessage: 'memory changed during embedding generation' });
+        return false;
+      }
 
       upsertMemoryEmbedding({
         memoryId: task.memory_id,
@@ -921,7 +928,7 @@ export async function processMemoryEmbeddingTasks(
   };
 
   if (embedBatch) {
-    const batchItems: Array<{ task: MemoryEmbeddingTask; memory: Memory; text: string }> = [];
+    const batchItems: Array<{ task: MemoryEmbeddingTask; text: string }> = [];
     for (const task of tasks) {
       const memory = db.prepare('SELECT * FROM memories WHERE id = ? AND character_id = ?')
         .get(task.memory_id, task.character_id) as Memory | undefined;
@@ -929,7 +936,7 @@ export async function processMemoryEmbeddingTasks(
         finishMissingMemoryTask(task);
         continue;
       }
-      batchItems.push({ task, memory, text: buildMemoryEmbeddingText(memory) });
+      batchItems.push({ task, text: buildMemoryEmbeddingText(memory) });
     }
 
     if (batchItems.length > 0) {
@@ -940,7 +947,7 @@ export async function processMemoryEmbeddingTasks(
         }
         for (let index = 0; index < batchItems.length; index += 1) {
           const item = batchItems[index];
-          completeTask(item.task, item.memory, item.text, embeddings[index]);
+          completeTask(item.task, item.text, embeddings[index]);
         }
       } catch (error) {
         for (const item of batchItems) {
@@ -963,7 +970,7 @@ export async function processMemoryEmbeddingTasks(
 
       const text = buildMemoryEmbeddingText(memory);
       const embedding = await embed(text, config);
-      completeTask(task, memory, text, embedding);
+      completeTask(task, text, embedding);
     } catch (error) {
       failTask(task, error);
     }

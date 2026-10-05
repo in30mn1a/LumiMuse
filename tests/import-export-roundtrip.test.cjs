@@ -103,6 +103,7 @@ function createImportDb() {
     CREATE TABLE characters (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      active_preset_id TEXT,
       avatar_url TEXT,
       basic_info TEXT NOT NULL DEFAULT '',
       personality TEXT NOT NULL DEFAULT '',
@@ -917,7 +918,7 @@ test('/api/import preserves explicit embedding normalized=0', async () => {
   assert.equal(emb.normalized, 0);
 });
 
-test('/api/export and /api/import round-trip model preset bindings with id remapping', async () => {
+test('/api/import preserves none bindings and warns instead of restoring dangling preset bindings', async () => {
   const exportDb = createImportDb();
   exportDb.prepare(`
     INSERT INTO characters (id, name, avatar_url, basic_info, personality, scenario, greeting, example_dialogue, system_prompt, other_info, image_tags, user_image_tags, created_at, updated_at)
@@ -953,13 +954,14 @@ test('/api/export and /api/import round-trip model preset bindings with id remap
   ));
   const importBody = await importResponse.json();
   assert.equal(importResponse.status, 200, importBody.error);
-  assert.equal(importBody.modelPresetBindingsImported, 2);
+  assert.equal(importBody.modelPresetBindingsImported, 1);
+  assert.equal(importBody.warnings[0].type, 'preset_missing');
+  assert.equal(importBody.warnings[0].presetId, 'preset-claude');
 
   const rows = importDb.prepare(
     'SELECT model, preset_id FROM character_model_preset_bindings WHERE character_id = ? ORDER BY sort_order ASC, model ASC',
   ).all('target-char');
   assert.deepEqual(rows, [
-    { model: 'claude-sonnet-4', preset_id: 'preset-claude' },
     { model: 'gpt-4o', preset_id: '__none__' },
   ]);
 });

@@ -141,3 +141,27 @@ test('touch devices still send through the send button', () => {
 
   assert.deepEqual(sent, ['hello']);
 });
+
+test('desktop IME Enter preserves the draft until composition ends', () => {
+  stubMatchMedia(false);
+  const sent = [];
+  const { textarea } = renderInput(sent);
+  fireEvent.compositionStart(textarea);
+  assert.equal(fireEvent.keyDown(textarea, { key: 'Enter' }), true);
+  assert.deepEqual(sent, []);
+  assert.equal(textarea.value, 'hello');
+  fireEvent.compositionEnd(textarea);
+  fireEvent.keyDown(textarea, { key: 'Enter' });
+  assert.deepEqual(sent, ['hello']);
+});
+
+for (const event of [{ isComposing: true }, { keyCode: 229 }]) {
+  test(`desktop IME native Enter guard ${JSON.stringify(event)}`, () => {
+    stubMatchMedia(false);
+    const sent = [];
+    const { textarea } = renderInput(sent);
+    assert.equal(fireEvent.keyDown(textarea, { key: 'Enter', ...event }), true);
+    assert.deepEqual(sent, []);
+    assert.equal(textarea.value, 'hello');
+  });
+}

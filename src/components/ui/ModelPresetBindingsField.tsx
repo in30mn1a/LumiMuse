@@ -16,9 +16,10 @@ interface PresetSummary {
 interface Props {
   value: CharacterModelPresetBinding[];
   onChange: (next: CharacterModelPresetBinding[]) => void;
+  refreshKey?: number;
 }
 
-export default function ModelPresetBindingsField({ value, onChange }: Props) {
+export default function ModelPresetBindingsField({ value, onChange, refreshKey = 0 }: Props) {
   const { t } = useTranslation();
   const [presets, setPresets] = useState<PresetSummary[]>([]);
   const [models, setModels] = useState<string[]>([]);
@@ -30,6 +31,9 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
     let cancelled = false;
     const controller = new AbortController();
     (async () => {
+      setLoading(true);
+      setError(null);
+      setModelError(null);
       try {
         const [presetRes, modelRes] = await Promise.all([
           fetch('/api/prompt-presets', { signal: controller.signal }),
@@ -63,7 +67,7 @@ export default function ModelPresetBindingsField({ value, onChange }: Props) {
       cancelled = true;
       controller.abort();
     };
-  }, []);
+  }, [refreshKey]);
 
   /**
    * 下拉选项 = 上游模型列表 ∪ 已保存的绑定值。

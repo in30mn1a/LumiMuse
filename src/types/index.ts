@@ -103,6 +103,7 @@ export interface GeneratedImage {
   url?: string;
   prompt: string;
   status?: 'pending_prompt' | 'pending_image' | 'failed' | 'ready';
+  requestToken?: string;
   error?: string;
   versions?: GeneratedImageVersion[];
   activeVersion?: number;
@@ -121,6 +122,8 @@ export interface MessageMetadata {
   // and camelCase (`summarizedIds`, `generatedImages`). Do not rename these persisted keys.
   isSummary?: boolean;
   summarizedIds?: string[];
+  /** 1 表示 summarizedIds 累计记录实际覆盖消息，而非旧版单批列表。 */
+  summaryCoverageVersion?: number;
   memory_extracted?: boolean;
   attachments?: MessageAttachment[];
   token_count_provenance?: MessageTokenCountProvenance;

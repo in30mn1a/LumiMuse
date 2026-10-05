@@ -66,9 +66,23 @@ function createHookRuntime(hookFactory, optionsFactory) {
   let refCursor = 0;
   let currentResult;
   let isRendering = false;
+  let effectCursor = 0;
+  let dirty = false;
+  const effects = [];
+  let pendingEffects = [];
 
   const reactMock = {
     useCallback: callback => callback,
+    useLayoutEffect: (callback, dependencies) => {
+      const index = effectCursor++;
+      const previous = effects[index];
+      if (!previous || dependencies.some((value, i) => !Object.is(value, previous.dependencies[i]))) {
+        pendingEffects.push(() => {
+          previous?.cleanup?.();
+          effects[index] = { dependencies, cleanup: callback() };
+        });
+      }
+    },
     useRef: initialValue => {
       const index = refCursor;
       refCursor += 1;
@@ -86,6 +100,7 @@ function createHookRuntime(hookFactory, optionsFactory) {
       const setState = nextValue => {
         stateValues[index] = typeof nextValue === 'function' ? nextValue(stateValues[index]) : nextValue;
         if (!isRendering) render();
+        else dirty = true;
       };
       return [stateValues[index], setState];
     },
@@ -97,8 +112,15 @@ function createHookRuntime(hookFactory, optionsFactory) {
     isRendering = true;
     stateCursor = 0;
     refCursor = 0;
+    effectCursor = 0;
+    pendingEffects = [];
+    dirty = false;
     currentResult = hook(optionsFactory());
     isRendering = false;
+    if (dirty) return render();
+    const committedEffects = pendingEffects;
+    pendingEffects = [];
+    committedEffects.forEach(effect => effect());
     return currentResult;
   }
 
@@ -157,6 +179,7 @@ test('memory profile loading stays true when an older request finishes after a n
     assert.equal(runtime.current.memoryProfileLoading, true);
 
     memoryManagementCharacterIdRef.current = 'B';
+    runtime.render();
     const secondLoad = runtime.current.loadMemoryProfile('B');
     assert.equal(runtime.current.memoryProfileLoading, true);
 

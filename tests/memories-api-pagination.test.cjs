@@ -277,6 +277,61 @@ test('/api/memories GET keyword search treats percent and underscore as literal 
   assert.deepEqual(underscorePayload.memories.map(memory => memory.id), ['literal-underscore']);
 });
 
+test('/api/memories GET 按完整或部分编号搜索，并保留筛选和分页', async () => {
+  const db = createMemoryDb();
+  try {
+    insertMemory(db, { id: 'ab123456-1111-4000-8000-000000000001' });
+    insertMemory(db, { id: 'ab123456-2222-4000-8000-000000000002' });
+    insertMemory(db, { id: 'ab123456-other-character', character_id: 'char-b' });
+    insertMemory(db, { id: 'ab123456-archived', status: 'archived' });
+    insertMemory(db, { id: 'unrelated' });
+    const route = requireFreshWithMocks('../src/app/api/memories/route.ts', {
+      'next/server': jsonResponseMock(),
+      '@/lib/db': { getDb: () => db },
+    });
+    const search = async (keyword, extra = '') => (await route.GET(requestFor(
+      `http://test.local/api/memories?character_id=char-a&keyword=${encodeURIComponent(keyword)}${extra}`,
+    ))).json();
+
+    const exact = await search('ab123456-1111-4000-8000-000000000001');
+    assert.deepEqual(exact.map(memory => memory.id), ['ab123456-1111-4000-8000-000000000001']);
+    const firstPage = await search('ab123456', '&limit=1&offset=0');
+    const secondPage = await search('ab123456', '&limit=1&offset=1');
+    assert.equal(firstPage.total, 2);
+    assert.equal(firstPage.hasMore, true);
+    assert.equal(secondPage.total, 2);
+    assert.equal(secondPage.hasMore, false);
+    assert.deepEqual([...firstPage.memories, ...secondPage.memories].map(memory => memory.id), [
+      'ab123456-2222-4000-8000-000000000002',
+      'ab123456-1111-4000-8000-000000000001',
+    ]);
+    const archived = await search('ab123456', '&status=archived');
+    assert.deepEqual(archived.map(memory => memory.id), ['ab123456-archived']);
+  } finally {
+    db.close();
+  }
+});
+
+test('/api/memories GET 编号搜索按字面匹配 SQL 通配符', async () => {
+  const db = createMemoryDb();
+  try {
+    insertMemory(db, { id: 'id-100%_\\literal' });
+    insertMemory(db, { id: 'id-100XYliteral' });
+    const route = requireFreshWithMocks('../src/app/api/memories/route.ts', {
+      'next/server': jsonResponseMock(),
+      '@/lib/db': { getDb: () => db },
+    });
+    for (const keyword of ['100%', '%_', '_\\']) {
+      const response = await route.GET(requestFor(
+        `http://test.local/api/memories?character_id=char-a&keyword=${encodeURIComponent(keyword)}`,
+      ));
+      assert.deepEqual((await response.json()).map(memory => memory.id), ['id-100%_\\literal']);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test('/api/memories GET 默认排除 superseded，与后端仅注入 active 对齐', async () => {
   const db = createMemoryDb();
 

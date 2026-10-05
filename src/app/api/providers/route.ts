@@ -36,7 +36,7 @@ function resolveProviderKey({
   fallback: string;
   baseChanged: boolean;
 }): string {
-  if (incoming === API_KEY_MASK) {
+  if (incoming === API_KEY_MASK || incoming === undefined) {
     return baseChanged ? '' : fallback;
   }
   return incoming ?? fallback;

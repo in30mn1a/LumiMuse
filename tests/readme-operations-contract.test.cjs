@@ -19,6 +19,9 @@ for (const filename of ['README.md', 'README.en.md']) {
     assert.match(readme, /Start\.bat/);
     assert.match(readme, /npm explain postcss/);
     assert.match(readme, /npm prune --dry-run/);
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    assert.equal(manifest.overrides, undefined, '当前文档的无 override 说明需与清单一致');
+    assert.match(readme, /(?:未配置 PostCSS override|no PostCSS override)/);
     assert.match(readme, /npm run lint[\s\S]*npm test[\s\S]*npm run regression[\s\S]*npm run build/);
   });
 }

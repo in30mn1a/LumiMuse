@@ -44,9 +44,9 @@ export async function GET(request: NextRequest) {
     params.push(characterId);
   }
   if (keyword) {
-    sql += " AND (content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')";
+    sql += " AND (id LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')";
     const escapedKeyword = escapeLikePattern(keyword);
-    params.push(`%${escapedKeyword}%`, `%${escapedKeyword}%`);
+    params.push(`%${escapedKeyword}%`, `%${escapedKeyword}%`, `%${escapedKeyword}%`);
   }
   if (category) {
     sql += ' AND category = ?';

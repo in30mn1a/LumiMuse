@@ -12,6 +12,7 @@ import {
   resolveConversationChain,
 } from '@/lib/conversation-chain';
 import { MEMORY_PROCESSED_SQL } from '@/lib/memory-extraction-scope';
+import { getSummaryCoverageIds } from '@/lib/summary-context-tokens';
 
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
@@ -62,13 +63,21 @@ export async function GET(request: NextRequest) {
     unextractedCount = unextractedRow.cnt;
 
     // 整对话的 token 总和（基于服务端持久化的 token_count），用于前端在分页未加载完时正确显示。
-    // 与前端 messageTokens 的语义一致：若存在 summary 消息，则从最后一条 summary 起累加；否则全量。
+    // 与聊天上下文一致：最新总结加未覆盖消息，旧总结仍按 seq 边界计算。
     const lastSummaryRow = db.prepare(
-      `SELECT seq FROM messages
-       WHERE ${scope.sql} AND json_extract(metadata, '$.isSummary') = 1
+      `SELECT id, seq, metadata FROM messages
+       WHERE ${scope.sql} AND CASE WHEN json_valid(metadata)
+         THEN json_extract(metadata, '$.isSummary') = 1 ELSE 0 END
        ORDER BY seq DESC LIMIT 1`
-    ).get(...scope.params) as { seq: number } | undefined;
-    const tokenSumRow = (lastSummaryRow
+    ).get(...scope.params) as { id: string; seq: number; metadata: string } | undefined;
+    const coveredIds = lastSummaryRow ? getSummaryCoverageIds(lastSummaryRow.metadata) : undefined;
+    const tokenSumRow = (lastSummaryRow && coveredIds
+      ? db.prepare(`SELECT SUM(token_count) as s FROM messages WHERE ${scope.sql}
+          AND (id = ? OR (
+            COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.isSummary') END, 0) != 1
+            AND id NOT IN (SELECT value FROM json_each(?))
+          ))`).get(...scope.params, lastSummaryRow.id, JSON.stringify(coveredIds))
+      : lastSummaryRow
       ? db.prepare(`SELECT SUM(token_count) as s FROM messages WHERE ${scope.sql} AND seq >= ?`)
           .get(...scope.params, lastSummaryRow.seq)
       : db.prepare(`SELECT SUM(token_count) as s FROM messages WHERE ${scope.sql}`)

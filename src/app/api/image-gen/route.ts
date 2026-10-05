@@ -469,7 +469,7 @@ async function generateComfyUI(
     // 下载第一张图片（saveRemoteImage 已内置大小 + magic bytes 校验）
     const img = outputImages[0];
     const imgUrl = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
-    return saveRemoteImage(imgUrl, characterId, { signal });
+    return await saveRemoteImage(imgUrl, characterId, { signal });
   } catch (err) {
     throw wrapTimeoutError(err, 'ComfyUI');
   } finally {
@@ -546,7 +546,7 @@ async function generateCustom(
       return saveBase64Image(data.data[0].b64_json, characterId);
     }
     if (data.data?.[0]?.url) {
-      return saveRemoteImage(data.data[0].url, characterId, { signal });
+      return await saveRemoteImage(data.data[0].url, characterId, { signal });
     }
     // 兼容直接返回 base64 的格式
     if (data.images?.[0]) {

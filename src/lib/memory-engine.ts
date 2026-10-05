@@ -734,7 +734,7 @@ export async function extractMemories(
   settings: Settings,
   options: ExtractMemoryOptions = {},
 ): Promise<{ insertCount: number; mergeCount: number }> {
-  if (conversationText.length < 100) return { insertCount: 0, mergeCount: 0 };
+  if (!conversationText.trim()) return { insertCount: 0, mergeCount: 0 };
 
   const db = getDb();
 

@@ -872,3 +872,83 @@ test('预设 lastUserMessage 形态下，相同记忆的续聊前缀保持稳定
   assert.match(String(lastUserA.content), /第二轮提问/);
   assert.match(String([...turnB].reverse().find(m => m.role === 'user').content), /第三轮提问/);
 });
+
+
+for (const [label, attachments] of [
+  ['纯文本', []],
+  ['文本附件', [{ type: 'text', name: 'facts.txt', data: 'ATTACHMENT_UNIQUE_FACT' }]],
+  ['图片附件', [{ type: 'image', name: 'tiny.png', data: 'data:image/png;base64,iVBORw0KGgo=', mimeType: 'image/png' }]],
+  ['混合附件', [{ type: 'text', name: 'facts.txt', data: 'ATTACHMENT_UNIQUE_FACT' }, { type: 'image', name: 'tiny.png', data: 'data:image/png;base64,iVBORw0KGgo=', mimeType: 'image/png' }]],
+]) {
+  test(`lastUserMessage保留${label}且不误删depth=0 user注入`, async () => {
+    const preset = lib.createPreset({ name: `macro-${label}` });
+    lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', is_marker: true, marker_key: 'chatHistory', sort_order: 10 });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Current', role: 'user', content: '<input>{{lastUserMessage}}</input>', sort_order: 20 });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Injected', role: 'user', content: 'INJECTED_USER_UNIQUE', injection_position: 1, injection_depth: 0 });
+    const current = makeMessage(1, 'user', 'QUESTION_UNIQUE');
+    current.metadata = { attachments };
+    const result = await assembler.assemblePresetPrompt(makeCharacter(), [current], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, lib.loadEnabledEntries(preset.id));
+    const texts = result.flatMap(message => typeof message.content === 'string' ? [message.content] : message.content.filter(part => part.type === 'text').map(part => part.text)).join('\n');
+    assert.equal((texts.match(/QUESTION_UNIQUE/g) || []).length, 1);
+    assert.equal((texts.match(/INJECTED_USER_UNIQUE/g) || []).length, 1);
+    if (attachments.some(a => a.type === 'text')) assert.equal((texts.match(/ATTACHMENT_UNIQUE_FACT/g) || []).length, 1);
+    const images = result.flatMap(message => Array.isArray(message.content) ? message.content.filter(part => part.type === 'image_url') : []);
+    assert.equal(images.length, attachments.filter(a => a.type === 'image').length);
+  });
+}
+
+
+test('lastUserMessage仅在in-chat使用也不重复正文与文本附件', async () => {
+  const preset = lib.createPreset({ name: 'in-chat-macro' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Current', role: 'user', content: '{{lastUserMessage}}', injection_position: 1, injection_depth: 0 });
+  const current = makeMessage(1, 'user', 'QUESTION_ONLY_ONCE');
+  current.metadata = { attachments: [{ type: 'text', name: 'facts.txt', data: 'ATTACH_ONLY_ONCE' }] };
+  const result = await assembler.assemblePresetPrompt(makeCharacter(), [current], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, lib.loadEnabledEntries(preset.id));
+  const text = result.map(message => message.content).join('\n');
+  assert.equal((text.match(/QUESTION_ONLY_ONCE/g) || []).length, 1);
+  assert.equal((text.match(/ATTACH_ONLY_ONCE/g) || []).length, 1);
+});
+
+test('lastUserMessage保留无法读取图片附件的说明', async () => {
+  const preset = lib.createPreset({ name: 'missing-image-macro' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Current', role: 'user', content: '{{lastUserMessage}}', sort_order: 20 });
+  const current = makeMessage(1, 'user', 'QUESTION_WITH_MISSING_IMAGE');
+  current.metadata = { attachments: [{ type: 'image', name: 'audit-missing.png', url: '/api/files/attachments/audit-missing.png', mimeType: 'image/png' }] };
+  const result = await assembler.assemblePresetPrompt(makeCharacter(), [current], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, lib.loadEnabledEntries(preset.id));
+  const text = result.map(message => message.content).join('\n');
+  assert.equal((text.match(/QUESTION_WITH_MISSING_IMAGE/g) || []).length, 1);
+  assert.match(text, /audit-missing.png/);
+});
+
+for (const depth of [1, 2]) {
+  for (const [label, attachments] of [
+    ['纯文本', []],
+    ['文本附件', [{ type: 'text', name: 'facts.txt', data: 'DEPTH_ATTACHMENT_FACT' }]],
+    ['混合附件', [{ type: 'text', name: 'facts.txt', data: 'DEPTH_ATTACHMENT_FACT' }, { type: 'image', name: 'tiny.png', data: 'data:image/png;base64,iVBORw0KGgo=', mimeType: 'image/png' }]],
+  ]) {
+    test(`lastUserMessage的depth=${depth}按完整真实历史定位（${label}）`, async () => {
+      const preset = lib.createPreset({ name: `macro-depth-${depth}-${label}` });
+      lib.upsertEntry({ preset_id: preset.id, name: 'Current', role: 'user', content: '<current>{{lastUserMessage}}</current>', injection_position: 1, injection_depth: depth });
+      lib.upsertEntry({ preset_id: preset.id, name: 'Tail', role: 'user', content: 'TAIL_INJECTION', injection_position: 1, injection_depth: 0 });
+      const current = makeMessage(3, 'user', 'CURRENT_QUESTION');
+      current.metadata = { attachments };
+      const result = await assembler.assemblePresetPrompt(makeCharacter(), [
+        makeMessage(1, 'user', 'PREVIOUS_QUESTION'),
+        makeMessage(2, 'assistant', 'PREVIOUS_REPLY'),
+        current,
+      ], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, lib.loadEnabledEntries(preset.id));
+      const text = result.flatMap(message => typeof message.content === 'string'
+        ? [message.content]
+        : message.content.filter(part => part.type === 'text').map(part => part.text)).join('\n');
+      assert.equal((text.match(/CURRENT_QUESTION/g) || []).length, 1);
+      assert.equal((text.match(/TAIL_INJECTION/g) || []).length, 1);
+      assert.ok(text.indexOf('PREVIOUS_QUESTION') < text.indexOf('CURRENT_QUESTION'));
+      if (depth === 1) assert.ok(text.indexOf('PREVIOUS_REPLY') < text.indexOf('CURRENT_QUESTION'), 'depth=1位于上一条assistant之后');
+      else assert.ok(text.indexOf('CURRENT_QUESTION') < text.indexOf('PREVIOUS_REPLY'), 'depth=2位于上一条assistant之前');
+      assert.ok(text.indexOf('TAIL_INJECTION') > text.indexOf('CURRENT_QUESTION'));
+      if (attachments.some(attachment => attachment.type === 'text')) assert.equal((text.match(/DEPTH_ATTACHMENT_FACT/g) || []).length, 1);
+      const images = result.flatMap(message => Array.isArray(message.content) ? message.content.filter(part => part.type === 'image_url') : []);
+      assert.equal(images.length, attachments.filter(attachment => attachment.type === 'image').length);
+    });
+  }
+}

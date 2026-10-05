@@ -5,7 +5,7 @@ import { Message, Character } from '@/types';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { normalizeCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, resolveBackgroundConfig } from '@/lib/settings';
-import { REASONING_SAFE_MAX_TOKENS, sanitizeUpstreamError } from '@/lib/api-client';
+import { upstreamStreamError, REASONING_SAFE_MAX_TOKENS, sanitizeUpstreamError } from '@/lib/api-client';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { parseSseStream } from '@/lib/sse-parser';
@@ -70,11 +70,16 @@ export async function POST(request: NextRequest) {
     ).all(...scope.params) as Message[]
   );
 
-  // 找到最后一条 summary 消息（metadata.isSummary），只总结它之后的内容
+  // 新总结沿用累计覆盖集合，保留生成期间新增或后来插入的未覆盖消息。
   const lastSummaryIdx = allMessages.findLastIndex(m => m.metadata.isSummary === true);
-  const messagesToSummarize = lastSummaryIdx >= 0
-    ? allMessages.slice(lastSummaryIdx + 1)
-    : allMessages;
+  const previousSummary = lastSummaryIdx >= 0 ? allMessages[lastSummaryIdx] : undefined;
+  const coveredIds = new Set<string>(previousSummary?.metadata.summaryCoverageVersion === 1
+    && Array.isArray(previousSummary.metadata.summarizedIds)
+    ? previousSummary.metadata.summarizedIds.filter((id): id is string => typeof id === 'string')
+    : allMessages.slice(0, Math.max(0, lastSummaryIdx)).map(message => message.id));
+  if (previousSummary) coveredIds.add(previousSummary.id);
+  const messagesToSummarize = allMessages.filter(message =>
+    !coveredIds.has(message.id) && (message.role === 'user' || message.role === 'assistant'));
 
   if (messagesToSummarize.length < 2) {
     return NextResponse.json({ error: '消息太少，暂时不需要总结' }, { status: 400 });
@@ -115,10 +120,11 @@ export async function POST(request: NextRequest) {
 - 必须全程使用角色 ${character.name} 的第一人称口吻（自称“我”或符合性格的自称，称呼用户时使用“你”）
 - 这是写给 ${character.name} 自己看的备忘录，不能使用第三人称或旁观者叙事视角，也不要写成是给“你”看的内容
 - 总结和后续话题建议必须深度契合人设背景和当前记忆画像
+- 如有上一份总结，必须将其与新增对话合并，保留既有事实、承诺、关系和未完事项；只有新增对话明确改变的事实才更新
 - 不要列举每一条消息，要提炼核心
 - 建议要具体，不要太泛泛
 
-${charDetailsText}对话内容：
+${charDetailsText}${previousSummary ? `上一份总结：\n${previousSummary.content}\n\n` : ''}新增对话内容：
 ${convText}`;
 
   try {
@@ -164,7 +170,9 @@ ${convText}`;
         const reader = response.body.getReader();
         let content = '';
         try {
-          await parseSseStream(reader, ({ text }) => {
+          await parseSseStream(reader, ({ text, raw }) => {
+            const error = upstreamStreamError(raw);
+            if (error) throw error;
             if (text) content += text;
           }, { signal });
         } finally {
@@ -187,21 +195,40 @@ ${convText}`;
     const now = new Date().toISOString();
     const tokenResult = createMessageTokenCount(summaryContent, 'system');
     const tokenCount = tokenResult.tokenCount;
-    const summarizedIds = messagesToSummarize.map(m => m.id);
+    const summarizedIds = [...new Set([...coveredIds, ...messagesToSummarize.map(m => m.id)])];
     const meta = metadataWithTokenCountProvenance(
-      { summarizedIds, isSummary: true },
+      { summarizedIds, isSummary: true, summaryCoverageVersion: 1 },
       tokenResult.provenance,
     );
 
     let nextSeq = 0;
-    db.transaction(() => {
+    const saved = db.transaction(() => {
+      const latestChain = resolveConversationChain(db, conversation_id);
+      const latestScope = buildChainMessageScope(latestChain);
+      const latestMessages = serializeTypedMessages(db.prepare(
+        `SELECT * FROM messages WHERE ${latestScope.sql} ORDER BY ${ascendingMessageOrderSqlForChain(latestChain)}`,
+      ).all(...latestScope.params) as Message[]);
+      const latestSummary = latestMessages.findLast(message => message.metadata.isSummary === true);
+      if (latestSummary?.id !== previousSummary?.id) return false;
+      const byId = new Map(latestMessages.map(message => [message.id, message]));
+      for (const snapshot of [...messagesToSummarize, ...(previousSummary ? [previousSummary] : [])]) {
+        const current = byId.get(snapshot.id);
+        if (!current || current.content !== snapshot.content || current.role !== snapshot.role
+          || current.metadata.isSummary !== snapshot.metadata.isSummary) return false;
+      }
+      if (previousSummary && (latestSummary?.metadata.summaryCoverageVersion !== previousSummary.metadata.summaryCoverageVersion
+        || JSON.stringify(latestSummary?.metadata.summarizedIds) !== JSON.stringify(previousSummary.metadata.summarizedIds))) return false;
       nextSeq = nextChainSeq(db, conversation_id);
       db.prepare(`
         INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
         VALUES (?, ?, 'system', ?, ?, ?, ?, ?)
       `).run(summaryId, conversation_id, summaryContent, tokenCount, now, nextSeq, JSON.stringify(meta));
       db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
+      return true;
     })();
+    if (!saved) {
+      return NextResponse.json({ error: '总结期间对话内容已更新，请重新总结', code: 'SUMMARY_CONFLICT' }, { status: 409 });
+    }
 
     const summaryMessage: Message = {
       id: summaryId,

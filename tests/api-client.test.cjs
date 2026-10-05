@@ -9,6 +9,32 @@ const root = path.resolve(__dirname, '..');
 const originalResolveFilename = Module._resolveFilename;
 const originalLoad = Module._load;
 
+for (const [name, chunks, expectedPartial] of [
+  ['HTTP 200 error event', [{ error: { message: 'invalid api_key=sk-fixture-secret123' } }], ''],
+  ['reasoning-only stream', [{ choices: [{ delta: { reasoning_content: 'thinking' }, finish_reason: 'stop' }] }], ''],
+  ['error after visible text', [{ choices: [{ delta: { content: 'partial reply' } }] }, { error: { message: 'upstream failed' } }], 'partial reply'],
+]) {
+  test(`chatCompletionStream rejects ${name} without successful completion`, async () => {
+    const payload = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('');
+    const { chatCompletionStream } = requireFreshWithMocks('../src/lib/api-client.ts', {
+      './ssrf-guard': { safeFetch: async () => new Response(payload) },
+    });
+    const done = [];
+    const partial = [];
+    const errors = [];
+    await chatCompletionStream({ api_base: 'https://fixture.invalid/v1', api_key: '', model: 'test' }, [], {
+      onChunk() {},
+      onDone: text => done.push(text),
+      onPartial: text => partial.push(text),
+      onError: error => errors.push(error.message),
+    });
+    assert.deepEqual(done, []);
+    assert.deepEqual(partial, expectedPartial ? [expectedPartial] : []);
+    assert.equal(errors.length, 1);
+    assert.doesNotMatch(errors[0], /sk-fixture-secret123/);
+  });
+}
+
 Module._resolveFilename = function resolveFilename(request, parent, isMain, options) {
   if (request.startsWith('@/')) {
     const mapped = path.join(root, 'src', request.slice(2));

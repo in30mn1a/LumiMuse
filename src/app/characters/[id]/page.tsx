@@ -28,6 +28,7 @@ interface ImportResponse {
   profileVersionsImported?: number;
   embeddingsImported?: number;
   characterDraft?: Partial<Character>;
+  warnings?: Array<{ message?: string }>;
 }
 
 function ExportDialog({ characterId, onClose }: { characterId: string; onClose: () => void }) {
@@ -187,6 +188,7 @@ export default function CharacterEditor({ params }: Props) {
   const [aiError, setAiError] = useState('');
   const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [pendingImport, setPendingImport] = useState<{ fileName: string; file: File } | null>(null);
+  const [presetRefreshKey, setPresetRefreshKey] = useState(0);
   const characterImportRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const deleteInFlightRef = useRef(false);
@@ -383,6 +385,7 @@ export default function CharacterEditor({ params }: Props) {
         setDirty(true);
         setCharacter({ ...character, ...data.characterDraft });
       }
+      setPresetRefreshKey(value => value + 1);
 
       // 拼接导入成功提示，包含记忆/对话/画像/向量索引的数量
       const parts: string[] = [];
@@ -392,7 +395,8 @@ export default function CharacterEditor({ params }: Props) {
       if (data.profileVersionsImported) parts.push(`${data.profileVersionsImported} ${t('import.profileVersionsUnit')}`);
       if (data.embeddingsImported) parts.push(`${data.embeddingsImported} ${t('import.embeddingsUnit')}`);
       const summary = parts.length > 0 ? parts.join('，') : t('import.nothingImported');
-      setImportMsg({ type: 'ok', text: `${t('import.successPrefix')}${summary}。${t('import.characterFormHint')}` });
+      const warnings = data.warnings?.flatMap(warning => warning.message ? [warning.message] : []) ?? [];
+      setImportMsg({ type: 'ok', text: `${t('import.successPrefix')}${summary}。${t('import.characterFormHint')}${warnings.length ? ` ${warnings.join(' ')}` : ''}` });
     } catch (err) {
       setImportMsg({ type: 'err', text: err instanceof Error ? err.message : t('editor.importError') });
     } finally {
@@ -601,6 +605,7 @@ export default function CharacterEditor({ params }: Props) {
               <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
                 <PresetSelectField
                   value={character.active_preset_id ?? null}
+                  refreshKey={presetRefreshKey}
                   onChange={(v) => {
                     if (!character) return;
                     setDirty(true);
@@ -638,6 +643,7 @@ export default function CharacterEditor({ params }: Props) {
               </div>
               <ModelPresetBindingsField
                 value={character.model_preset_bindings ?? []}
+                refreshKey={presetRefreshKey}
                 onChange={(bindings) => {
                   if (!character) return;
                   setDirty(true);

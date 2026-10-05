@@ -1,4 +1,4 @@
-import { useCallback, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { Character, Conversation, Message } from '@/types';
 import type { MessagesResponse } from '@/lib/chat-stream-client';
 import { writeCachedMessages } from '@/lib/chat-message-cache';
@@ -71,9 +71,24 @@ export function useNewChat({
   t,
 }: UseNewChatOptions) {
   const [creating, setCreating] = useState(false);
+  const [creatingCharacterId, setCreatingCharacterId] = useState(character?.id);
+  if (creatingCharacterId !== character?.id) {
+    setCreatingCharacterId(character?.id);
+    setCreating(false);
+  }
+  const scopeRef = useRef(0);
+  const pendingRef = useRef(false);
+  useLayoutEffect(() => {
+    scopeRef.current += 1;
+    pendingRef.current = false;
+    return () => { scopeRef.current += 1; };
+  }, [character?.id]);
 
   const handleNewChat = useCallback(async () => {
-    if (!character || creating) return;
+    if (!character || pendingRef.current) return;
+    const scope = scopeRef.current;
+    const isCurrent = () => scope === scopeRef.current;
+    pendingRef.current = true;
     setCreating(true);
     try {
       const response = await fetch('/api/conversations', {
@@ -82,8 +97,9 @@ export function useNewChat({
         body: JSON.stringify({ character_id: character.id }),
       });
       const conversation = parseConversation(await parseJsonResponse<unknown>(response));
-      setConversations(prev => [conversation, ...prev]);
       prependCharacterConversation(character.id, conversation);
+      if (!isCurrent()) return;
+      setConversations(prev => [conversation, ...prev]);
       initializeEmptyMessages(conversation.id);
       clearMessages();
       selectActiveConvId(conversation.id);
@@ -100,6 +116,7 @@ export function useNewChat({
             await parseJsonResponse<unknown>(greetingResponse),
             conversation.id,
           );
+          if (!isCurrent()) return;
           applyMessagesResponse(conversation.id, {
             messages: [greetingMessage],
             hasMore: false,
@@ -108,22 +125,26 @@ export function useNewChat({
             totalTokens: greetingMessage.token_count,
           });
         } catch (error) {
+          if (!isCurrent()) return;
           showToast(`${t('chat.greetingCreateFailed')}: ${getErrorMessage(error)}`, 'error');
         }
       }
 
-      void refreshConversationState(conversation.id);
+      if (isCurrent()) void refreshConversationState(conversation.id);
     } catch (error) {
+      if (!isCurrent()) return;
       showToast(`${t('common.operationFailed')}: ${getErrorMessage(error)}`, 'error');
     } finally {
-      setCreating(false);
+      if (isCurrent()) {
+        pendingRef.current = false;
+        setCreating(false);
+      }
     }
   }, [
     applyMessagesResponse,
     character,
     clearMessages,
     clearStreamingText,
-    creating,
     refreshConversationState,
     selectActiveConvId,
     setConversations,

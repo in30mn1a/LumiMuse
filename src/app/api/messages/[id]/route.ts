@@ -100,6 +100,26 @@ export async function PUT(
 
   const existing = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (body.imageCancellation) {
+    const cancellation = body.imageCancellation;
+    db.transaction(() => {
+      const latest = db.prepare('SELECT metadata FROM messages WHERE id = ?').get(id) as { metadata: unknown };
+      const metadata = parseMessageMetadata(latest.metadata);
+      if (!Array.isArray(metadata.generatedImages)) return;
+      let changed = false;
+      metadata.generatedImages = metadata.generatedImages.map(image => {
+        if (image.id !== cancellation.imageId || image.requestToken !== cancellation.requestToken
+          || (cancellation.restoreFailed
+            ? image.status !== 'failed' || !image.url
+            : image.status !== 'pending_prompt' && image.status !== 'pending_image')) return image;
+        changed = true;
+        return { ...image, status: image.url ? 'ready' as const : 'failed' as const, error: image.url ? undefined : cancellation.error };
+      });
+      if (changed) db.prepare('UPDATE messages SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), id);
+    })();
+    const updated = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
+    return NextResponse.json(serializeMessage(updated));
+  }
   const previousFileUrls = collectMessageLocalAssetUrls(existing);
 
   // 用事务包裹多个 UPDATE，避免中途失败留下不一致状态

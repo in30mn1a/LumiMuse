@@ -99,13 +99,14 @@ export const NAI_V5_PROMPT_GENERATION_SYSTEM = `# 核心功能
 
 # 字段分工（必须拆开，不要合成一坨）
 - Prompt：人数 · 镜头 · 动作 · 表情 · 场景 · 背景 · 光影 · 氛围。这里禁止出现发型/发色/瞳色/服装/配饰/角色名。
-- Character N：画面里每一个可辨认的主体各占一栏，只放该主体外貌。人、兽、魔物、机器、非人生物都算，不能只写女角色而把狗/兽/其他生物塞进 Prompt 一句带过。原创角色把用户给的样貌锚点原样写全，不许精简、替换、优化。衣服可按画面换。
+- Character N：画面里每一个可辨认的主体各占一栏，只放该主体外貌。人、兽、魔物、机器、非人生物都算，不能只写女角色而把狗/兽/其他生物塞进 Prompt 一句带过。原创角色把用户给的样貌锚点原样写全，不许精简、替换、优化（其中的人数和主体计数 tag 除外，见「写法」）。衣服可按画面换。
 - 不要输出 UC 或 NEGATIVE。负面提示词由画图设置单独提供，不要写进这次输出。
 
 # 写法
 - **tag 与自然语言混用**：人数、构图、物种、外貌用 Danbooru tag；空间关系、正在发生的动作、谁对谁做什么、光影叙事用句子。Prompt 里两套必须同时出现，禁止只堆 tag 或只写一段话。
 - 人数 tag 只在 Prompt 最前面出现一次（1girl / 1boy / 1girl 1boy / 1girl 1other 等）。solo 只配单人。兽、魔物、非人主体用 1other / 1animal 等，不要用 1boy 凑数。
 - 角色栏用 girl / boy / other 打头，不带数字。禁止再写 1girl。非人主体用 other 打头，写清物种、体型、毛色、耳尾爪牙等外形。
+- **人数/主体计数 tag 只归 Prompt**：image_tags 或样貌锚点里若含 1girl / 1boy / solo / 1girl 1boy / 1other 等计数 tag，把它们放到 Prompt 开头的人数位置，不要写进任何 Character 栏——这与「外貌标签必须完整写入」不冲突：计数 tag 本就不属于外貌，其余外貌锚点照写不改。
 - 外貌、服装用词组 tag；句子直接写，不要加引号（引号=要画进图里的字）。
 - 英文为主；很长、结构复杂或英文容易歧义的句子可以直接写中文。
 - 默认不加权。只在某层效果确实需要时用 1.2::tag:: / 0.7::tag::。数字权重必须写闭合 ::。
@@ -119,9 +120,9 @@ export const NAI_V5_PROMPT_GENERATION_SYSTEM = `# 核心功能
 - SFW 不要无故加男性角色，除非用户外貌标明 1boy，或对话是 kiss / hugging 等双人互动。
 
 # 视觉一致性
-- 角色固定外貌标签（image_tags）必须完整写入 Character 1，不得省略或改写。
+- 角色固定外貌标签（image_tags）必须完整写入 Character 1，不得省略或改写；其中的人数和主体计数 tag（1girl / 1boy / solo / 1other 等）是唯一例外，放 Prompt 开头的人数位置，不重复写进角色栏。
 - 画面里每个出场主体都必须有自己的 Character N 栏，按出场重要性编号：Character 1 永远是主角色；随后是其他生物/配角（狗、兽、魔物等）；用户出场时占用再下一个编号。用户未出场就不要给用户开栏，也不要把用户外貌写进 Prompt 或其他栏。
-- 用户外貌标签（user_image_tags）只在用户出场时写入用户那一栏，必须完整包含。
+- 用户外貌标签（user_image_tags）只在用户出场时写入用户那一栏，必须完整包含；其中的人数和主体计数 tag（1girl / 1boy / solo 等）同样只放 Prompt 开头的人数位置，不写进用户栏。
 - 多主体时在 Prompt 的句子里用 Character 1 / Character 2 / Character 3 写死动作归属，编号与角色栏一致。
 - 但 Prompt 正文里禁止出现「Character 1:」这种带冒号的行首写法（那是字段头，会截断 Prompt）；要指代就写「Character 1 正在…」不带冒号。
 
@@ -153,8 +154,8 @@ export function promptGenerationUserFooterForStyle(style: ImagePromptStyle): str
 export function appearanceTagsContextLabel(style: ImagePromptStyle, kind: 'character' | 'user'): string {
   if (style === 'nai-v5') {
     return kind === 'character'
-      ? '【角色固定外貌标签（必须完整写入 Character 1，不得省略）】'
-      : '【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时写入用户自己的 Character 栏——通常是 Character 2，若画面已有其他生物/配角则顺延为 Character 3。用户未出场则忽略这些标签，不要给用户开栏）】';
+      ? '【角色固定外貌标签（外貌锚点必须完整写入 Character 1，不得省略；其中的人数和主体计数 tag 放 Prompt 开头，不写进角色栏）】'
+      : '【用户外貌标签（描述用户本人的外貌。仅当用户出现在画面中时写入用户自己的 Character 栏——通常是 Character 2，若画面已有其他生物/配角则顺延为 Character 3。其中的人数和主体计数 tag 放 Prompt 开头，不写进任何角色栏。用户未出场则忽略这些标签，不要给用户开栏）】';
   }
   return kind === 'character'
     ? '【角色固定外貌标签（必须完整包含在 POSITIVE 中，不得省略）】'
@@ -179,7 +180,7 @@ export function buildDanbooruInlinePromptInstruction(imageTags?: string, userIma
 
 export function buildNaiV5InlinePromptInstruction(imageTags?: string, userImageTags?: string): string {
   const { tagPart, userPart, soloPart } = appearanceClause(imageTags, userImageTags);
-  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行用 [IMG] 和 [/IMG] 包裹一段 NovelAI Diffusion V5 提示词，描述本条回复对应的画面。最重要：tag 和自然语言必须混用，禁止纯 tag 串或纯散文。格式：Prompt: 人数tag只写一次（人用 1girl/1boy，兽/非人用 1other），构图外貌用 tag，动作/空间关系/谁对谁做什么用句子，句子不要加引号，正文里用 Character 1 指代但不要写带冒号的 Character 1:；Character 1: 以 girl/boy 打头（不带数字），只写外貌服装${tagPart}；画面里每个出场主体都必须另开 Character N 栏（狗/兽/魔物用 other 打头写清物种体型毛色），不能只写女角色把其他生物塞进 Prompt；用户出场时占用再下一个编号写用户外貌${userPart}${soloPart}。禁止把发型瞳色服装写进 Prompt；禁止写 masterpiece/very aesthetic/no text/best quality 等质量词；禁止编画师串。如果画面是性行为，必须在 Prompt 的句子里写清可见性器与接触方式，不要省略；不要输出 UC。[IMG] 块只出现一次放最后；正文不要提及提示词；无论对话长短都不要省略。`;
+  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行用 [IMG] 和 [/IMG] 包裹一段 NovelAI Diffusion V5 提示词，描述本条回复对应的画面。最重要：tag 和自然语言必须混用，禁止纯 tag 串或纯散文。格式：Prompt: 人数tag只写一次（人用 1girl/1boy，兽/非人用 1other），构图外貌用 tag，动作/空间关系/谁对谁做什么用句子，句子不要加引号，正文里用 Character 1 指代但不要写带冒号的 Character 1:；Character 1: 以 girl/boy 打头（不带数字），只写外貌服装${tagPart}；固定外貌标签里的人数和主体计数 tag（1girl/1boy/solo 等）不算外貌，放 Prompt 开头、不写进角色栏；画面里每个出场主体都必须另开 Character N 栏（狗/兽/魔物用 other 打头写清物种体型毛色），不能只写女角色把其他生物塞进 Prompt；用户出场时占用再下一个编号写用户外貌${userPart}${soloPart}。禁止把发型瞳色服装写进 Prompt；禁止写 masterpiece/very aesthetic/no text/best quality 等质量词；禁止编画师串。如果画面是性行为，必须在 Prompt 的句子里写清可见性器与接触方式，不要省略；不要输出 UC。[IMG] 块只出现一次放最后；正文不要提及提示词；无论对话长短都不要省略。`;
 }
 
 export function buildInlinePromptInstructionForStyle(

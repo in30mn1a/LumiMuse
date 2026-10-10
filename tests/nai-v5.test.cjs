@@ -344,3 +344,25 @@ test('V5 system prompt requires a Character slot for every visible creature', ()
   assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /不能只写女角色而把狗\/兽\/其他生物塞进 Prompt 一句带过/);
   assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /other, 物种 体型 毛色/);
 });
+
+// image_tags 常带 1girl / solo 等计数 tag；它既被要求「完整写入 Character 1」，
+// 又被禁止出现在角色栏。规则必须显式指路，否则模型每轮都要自行消解这处矛盾。
+test('V5 system prompt routes subject-count tags out of Character slots', () => {
+  const {
+    NAI_V5_PROMPT_GENERATION_SYSTEM,
+    buildNaiV5InlinePromptInstruction,
+    appearanceTagsContextLabel,
+  } = require(path.resolve(__dirname, '../src/lib/image-prompt-instructions.ts'));
+
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /人数\/主体计数 tag 只归 Prompt/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /写进任何 Character 栏/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /是唯一例外，放 Prompt 开头的人数位置/);
+  // 用户栏同样要挡计数 tag，否则用户的 1boy 会长进用户 Character 栏
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /同样只放 Prompt 开头的人数位置，不写进用户栏/);
+
+  assert.match(appearanceTagsContextLabel('nai-v5', 'character'), /不写进角色栏/);
+  assert.match(appearanceTagsContextLabel('nai-v5', 'user'), /不写进任何角色栏/);
+
+  const inline = buildNaiV5InlinePromptInstruction('1girl, hindenburg (azur lane), pantyhose', undefined);
+  assert.match(inline, /不算外貌，放 Prompt 开头、不写进角色栏/);
+});

@@ -319,7 +319,7 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   fireEvent.click(view.getByLabelText('settings.exampleDialogue'));
   fireEvent.click(view.getByLabelText('settings.showTimestamps'));
 
-  fireEvent.click(view.getByRole('button', { name: 'settings.tabMemory' }));
+  fireEvent.click(view.getByRole('button', { name: 'settings.tabAppearance' }));
   fireEvent.change(view.getByLabelText('settings.theme'), { target: { value: 'dark' } });
   fireEvent.change(view.getByLabelText('settings.language'), { target: { value: 'en' } });
   fireEvent.click(view.getByRole('button', { name: /settings\.fontNameSystem/ }));

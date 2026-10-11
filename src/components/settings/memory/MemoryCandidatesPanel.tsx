@@ -100,14 +100,24 @@ export function MemoryCandidatesPanel({
                     {t('settings.memoryCandidateAccept')}
                   </button>
                   {isEditing ? (
-                    <button
-                      type="button"
-                      onClick={() => void handleMemoryCandidateAction(candidate, 'edit-accept')}
-                      disabled={isBusy}
-                      className="soft-button soft-button-primary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {t('settings.memoryCandidateEditAccept')}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleMemoryCandidateAction(candidate, 'edit-accept')}
+                        disabled={isBusy}
+                        className="soft-button soft-button-primary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {t('settings.memoryCandidateEditAccept')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingMemoryCandidateId(null)}
+                        disabled={isBusy}
+                        className="soft-button soft-button-secondary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {t('common.cancel')}
+                      </button>
+                    </>
                   ) : (
                     <button
                       type="button"

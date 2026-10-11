@@ -15,7 +15,6 @@ interface Props {
   selectedCharacterId: string | null;
   onCharacterSelect: (id: string, character: Character) => void;
   onConversationSelect?: (characterId: string, conversationId: string, messageId: string, highlightRanges?: readonly TextHighlightRange[]) => void;
-  onSearchOpen?: () => void;
 }
 
 export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConversationSelect }: Props) {

@@ -222,7 +222,6 @@ export default function Home() {
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
           onConversationSelect={handleConversationSelect}
-          onSearchOpen={() => openSearch(null)}
         />
       </div>
 
@@ -238,7 +237,6 @@ export default function Home() {
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
           onConversationSelect={handleConversationSelect}
-          onSearchOpen={() => openSearch(null)}
         />
       </Modal>
 

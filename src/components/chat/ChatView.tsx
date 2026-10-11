@@ -14,9 +14,8 @@ import ChatInput from './ChatInput';
 import ChatHeader from './ChatHeader';
 import ChatToolbar from './ChatToolbar';
 import ChatMessageList, { type SearchHighlight } from './ChatMessageList';
-import RenameConvModal from './RenameConvModal';
-import DeleteConvModal from './DeleteConvModal';
-import DuplicateConvModal, { type DuplicateMode } from './DuplicateConvModal';
+import ChatModals from './ChatModals';
+import type { DuplicateMode } from './DuplicateConvModal';
 import type { TokenBreakdownItem, RealUsage, MemoryInjectionInfo } from './TokenBreakdownModal';
 import { ConversationDrawer } from './ConversationListPanels';
 import { useTranslation } from '@/lib/i18n-context';
@@ -948,106 +947,89 @@ export default function ChatView({
         </section>
       </div>
 
-      {renameOpen && (
-        <RenameConvModal
-          open={renameOpen}
-          initialValue={renameValue}
-          onClose={() => setRenameOpen(false)}
-          onConfirm={async (newTitle) => {
-            setRenameValue(newTitle);
-            await handleRenameConv(newTitle);
-          }}
-        />
-      )}
-
-      {deleteOpen && (
-        <DeleteConvModal
-          open={deleteOpen}
-          onClose={() => setDeleteOpen(false)}
-          onConfirm={handleDeleteConv}
-        />
-      )}
-
-      {duplicateOpen && (
-        <DuplicateConvModal
-          open={duplicateOpen}
-          onClose={() => setDuplicateOpen(false)}
-          onConfirm={handleDuplicateConv}
-        />
-      )}
-
-      {/* 重置提取状态弹窗 */}
-      {resetExtractionOpen && (
-        <ResetExtractionModal
-          open={resetExtractionOpen}
-          conversationId={activeConvId}
-          conversation={activeConversation}
-          serverUnextractedCount={serverUnextractedCount}
-          memoryExtractStatus={memoryExtractStatus}
-          onClose={() => setResetExtractionOpen(false)}
-          onSubmit={async (messageIds, action) => {
-            await handleResetExtraction(messageIds, action);
-          }}
-          onToggleIgnore={async () => {
-            if (!activeConvId) return;
-            const isIgnored = Boolean(activeConversation?.ignore_memory);
-            try {
-              await expectOkResponse(await fetch(`/api/conversations/${activeConvId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ignore_memory: !isIgnored }),
-              }));
-              setConversations(prev => prev.map(c =>
-                c.id === activeConvId ? { ...c, ignore_memory: isIgnored ? 0 : 1 } : c
-              ));
-              if (character?.id) {
-                patchCharacterConversation(character.id, activeConvId, { ignore_memory: isIgnored ? 0 : 1 });
-              }
-              showToast(isIgnored ? t('chat.ignoreOff') : t('chat.ignoreOn'), 'info');
-            } catch (err) {
-              showToast(err instanceof Error ? err.message : t('chat.ignoreToggleFail'), 'error');
-            }
-          }}
-          onManualExtract={handleManualExtract}
-          loadAllMessages={async (cid) => {
-            const { messages: msgs } = await fetchMessagesPage(cid, { all: true });
-            return msgs;
-          }}
-        />
-      )}
-
-      {/* 对话切换抽屉（全断点：<lg 底部抽屉，lg+ 居中弹窗） */}
-      <ConversationDrawer
-        open={convDrawerOpen}
-        conversations={conversations}
+      <ChatModals
+        renameOpen={renameOpen}
+        renameValue={renameValue}
+        onCloseRename={() => setRenameOpen(false)}
+        onConfirmRename={async (newTitle) => {
+          setRenameValue(newTitle);
+          await handleRenameConv(newTitle);
+        }}
+        deleteOpen={deleteOpen}
+        onCloseDelete={() => setDeleteOpen(false)}
+        onConfirmDelete={handleDeleteConv}
+        duplicateOpen={duplicateOpen}
+        onCloseDuplicate={() => setDuplicateOpen(false)}
+        onConfirmDuplicate={handleDuplicateConv}
+        resetExtractionOpen={resetExtractionOpen}
         activeConvId={activeConvId}
-        onSelect={selectUserConversation}
-        onClose={() => setConvDrawerOpen(false)}
-      />
-
-      {/* 图片管理弹窗 */}
-      {imageManagerOpen && (
-        <ImageManagerModal
-          open={imageManagerOpen}
-          character={character}
-          onClose={() => setImageManagerOpen(false)}
-          onAfterBatchDelete={async () => {
-            if (activeConvId) await refreshMessages();
-          }}
-          showToast={showToast}
+        activeConversation={activeConversation}
+        serverUnextractedCount={serverUnextractedCount}
+        memoryExtractStatus={memoryExtractStatus}
+        onCloseResetExtraction={() => setResetExtractionOpen(false)}
+        onSubmitResetExtraction={async (messageIds, action) => {
+          await handleResetExtraction(messageIds, action);
+        }}
+        onToggleIgnore={async () => {
+          if (!activeConvId) return;
+          const isIgnored = Boolean(activeConversation?.ignore_memory);
+          try {
+            await expectOkResponse(await fetch(`/api/conversations/${activeConvId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ignore_memory: !isIgnored }),
+            }));
+            setConversations(prev => prev.map(c =>
+              c.id === activeConvId ? { ...c, ignore_memory: isIgnored ? 0 : 1 } : c
+            ));
+            if (character?.id) {
+              patchCharacterConversation(character.id, activeConvId, { ignore_memory: isIgnored ? 0 : 1 });
+            }
+            showToast(isIgnored ? t('chat.ignoreOff') : t('chat.ignoreOn'), 'info');
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : t('chat.ignoreToggleFail'), 'error');
+          }
+        }}
+        onManualExtract={handleManualExtract}
+        loadAllMessages={async (cid) => {
+          const { messages: msgs } = await fetchMessagesPage(cid, { all: true });
+          return msgs;
+        }}
+        ResetExtractionModalComponent={ResetExtractionModal}
+      >
+        {/* 对话切换抽屉（全断点：<lg 底部抽屉，lg+ 居中弹窗） */}
+        <ConversationDrawer
+          open={convDrawerOpen}
+          conversations={conversations}
+          activeConvId={activeConvId}
+          onSelect={selectUserConversation}
+          onClose={() => setConvDrawerOpen(false)}
         />
-      )}
 
-      {/* Token 拆分弹窗 */}
-      {tokenBreakdownOpen && (
-        <TokenBreakdownModal
-          open={tokenBreakdownOpen}
-          onClose={() => setTokenBreakdownOpen(false)}
-          items={tokenBreakdownItems}
-          lastRealUsage={lastRealUsage}
-          lastMemoryInjection={lastMemoryInjection}
-        />
-      )}
+        {/* 图片管理弹窗 */}
+        {imageManagerOpen && (
+          <ImageManagerModal
+            open={imageManagerOpen}
+            character={character}
+            onClose={() => setImageManagerOpen(false)}
+            onAfterBatchDelete={async () => {
+              if (activeConvId) await refreshMessages();
+            }}
+            showToast={showToast}
+          />
+        )}
+
+        {/* Token 拆分弹窗 */}
+        {tokenBreakdownOpen && (
+          <TokenBreakdownModal
+            open={tokenBreakdownOpen}
+            onClose={() => setTokenBreakdownOpen(false)}
+            items={tokenBreakdownItems}
+            lastRealUsage={lastRealUsage}
+            lastMemoryInjection={lastMemoryInjection}
+          />
+        )}
+      </ChatModals>
     </div>
   );
 }

@@ -32,8 +32,10 @@ import { MemoryProfilePanel } from '@/components/settings/memory/MemoryProfilePa
 import { MemoryArchivePanel } from '@/components/settings/memory/MemoryArchivePanel';
 import { MemoryCandidatesPanel } from '@/components/settings/memory/MemoryCandidatesPanel';
 import { ImageGenSettingsSection } from '@/components/settings/ImageGenSettingsSection';
+import { DisplaySettingsSection } from '@/components/settings/DisplaySettingsSection';
 import { ApiSettingsSection } from '@/components/settings/ApiSettingsSection';
 import { ProviderSettingsSection } from '@/components/settings/ProviderSettingsSection';
+import ConfirmModal from '@/components/ui/ConfirmModal';
 import { useSettingsAuth } from '@/hooks/settings/useSettingsAuth';
 import { useSettingsProviders } from '@/hooks/settings/useSettingsProviders';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
@@ -77,7 +79,8 @@ export default function SettingsPage() {
   const [rerankerModelList, setRerankerModelList] = useState<string[]>([]);
   const [rerankerModelLoading, setRerankerModelLoading] = useState(false);
   const [rerankerModelError, setRerankerModelError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'api' | 'generation' | 'memory' | 'advanced'>('api');
+  const [activeTab, setActiveTab] = useState<'api' | 'generation' | 'memory' | 'appearance' | 'advanced'>('api');
+  const [pendingCharacterId, setPendingCharacterId] = useState<string | null>(null);
   const { t, setLang } = useTranslation();
   const tRef = useRef(t);
   const { showToast } = useToast();
@@ -308,7 +311,7 @@ export default function SettingsPage() {
     }
   };
 
-  const handleMemoryManagementCharacterChange = (characterId: string) => {
+  const applyMemoryManagementCharacterChange = (characterId: string) => {
     memoryManagementPanel.handleMemoryManagementCharacterChange(characterId, {
       resetProfile: memoryProfilePanel.resetProfile,
       resetArchiveForCharacterChange: memoryArchivePanel.resetArchiveForCharacterChange,
@@ -318,6 +321,17 @@ export default function SettingsPage() {
       loadMemoryArchiveBatches: memoryArchivePanel.loadMemoryArchiveBatches,
     });
     void loadMemoryCandidates(characterId);
+  };
+
+  const handleMemoryManagementCharacterChange = (characterId: string) => {
+    if (
+      characterId !== memoryManagementPanel.memoryManagementCharacterId
+      && memoryProfilePanel.isProfileDraftDirty
+    ) {
+      setPendingCharacterId(characterId);
+      return;
+    }
+    applyMemoryManagementCharacterChange(characterId);
   };
 
   const loadInitialSettingsAndAuth = useCallback(() => {
@@ -416,6 +430,7 @@ export default function SettingsPage() {
               { key: 'api', label: t('settings.tabApi') },
               { key: 'generation', label: t('settings.tabGeneration') },
               { key: 'memory', label: t('settings.tabMemory') },
+              { key: 'appearance', label: t('settings.tabAppearance') },
               { key: 'advanced', label: t('settings.tabAdvanced') },
             ] as const).map(tab => (
               <button
@@ -687,105 +702,17 @@ export default function SettingsPage() {
                 candidates={memoryCandidatesPanel}
               />
             </MemoryEngineSection>
-            <section className="surface-panel p-5">
-              <div className="mb-4">
-                <h2 className="section-title text-lg">{t('settings.display')}</h2>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary">
-                  <span className="mb-2 block">{t('settings.theme')}</span>
-                  <select
-                    value={settings.theme}
-                    onChange={e => update('theme', e.target.value as 'light' | 'dark')}
-                    className="select-rich"
-                  >
-                    <option value="light">{t('settings.themeLight')}</option>
-                    <option value="dark">{t('settings.themeDark')}</option>
-                  </select>
-                </label>
-
-                <label className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary">
-                  <span className="mb-2 block">{t('settings.language')}</span>
-                  <select
-                    value={settings.language}
-                    onChange={e => update('language', e.target.value as 'zh' | 'en')}
-                    className="select-rich"
-                  >
-                    <option value="zh">{t('settings.languageZh')}</option>
-                    <option value="en">{t('settings.languageEn')}</option>
-                  </select>
-                </label>
-
-                <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
-                  <span className="mb-2 block">{t('settings.font')}</span>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(['wenkai', 'system', 'serif'] as const).map(f => (
-                      <button
-                        key={f}
-                        type="button"
-                        onClick={() => {
-                          update('font_style', f);
-                          // 实时预览
-                          applyFontStyle(f);
-                        }}
-                        className={`rounded-xl border px-3 py-2.5 text-center text-sm transition-colors ${
-                          (settings.font_style || 'wenkai') === f
-                            ? 'border-accent bg-accent/10 text-accent-dark font-medium'
-                            : 'border-border-light bg-white/50 text-text-secondary hover:border-accent/40 hover:bg-accent/5'
-                        }`}
-                      >
-                        <span className="block text-base leading-snug" style={{
-                          fontFamily: f === 'wenkai'
-                            ? "'LXGW WenKai Screen', 'PingFang SC', sans-serif"
-                            : f === 'system'
-                            ? "'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
-                            : "'Noto Serif SC', 'SimSun', Georgia, serif"
-                        }}>
-                          {f === 'wenkai' ? t('settings.fontNameWenkai') : f === 'system' ? t('settings.fontNameSystem') : t('settings.fontNameSerif')}
-                        </span>
-                        <span className="mt-0.5 block text-xs text-text-muted">{t(`settings.font${f.charAt(0).toUpperCase() + f.slice(1)}`)}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
-                  <span className="mb-2 block">{t('settings.fontSize')}</span>
-                  <div className="grid grid-cols-3 gap-2">
-                    {([
-                      { id: 'small' as const, labelKey: 'settings.fontSizeSmall', sample: '14' },
-                      { id: 'medium' as const, labelKey: 'settings.fontSizeMedium', sample: '16' },
-                      { id: 'large' as const, labelKey: 'settings.fontSizeLarge', sample: '18' },
-                    ]).map(option => (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() => {
-                          update('font_size', option.id);
-                          // 实时预览
-                          applyFontSize(option.id);
-                        }}
-                        className={`rounded-xl border px-3 py-2.5 text-center text-sm transition-colors ${
-                          (settings.font_size || 'medium') === option.id
-                            ? 'border-accent bg-accent/10 text-accent-dark font-medium'
-                            : 'border-border-light bg-white/50 text-text-secondary hover:border-accent/40 hover:bg-accent/5'
-                        }`}
-                      >
-                        <span
-                          className="block leading-snug"
-                          style={{ fontSize: option.id === 'small' ? '0.875rem' : option.id === 'large' ? '1.125rem' : '1rem' }}
-                        >
-                          {t(option.labelKey)}
-                        </span>
-                        <span className="mt-0.5 block text-xs text-text-muted">{option.sample}px</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </section>
             </>)}
+
+            {activeTab === 'appearance' && (
+              <DisplaySettingsSection
+                settings={settings}
+                update={update}
+                t={t}
+                applyFontStyle={applyFontStyle}
+                applyFontSize={applyFontSize}
+              />
+            )}
 
             {activeTab === 'advanced' && (<>
             <ErrorBoundary>
@@ -797,6 +724,20 @@ export default function SettingsPage() {
           </main>
         </div>
       </div>
+
+      <ConfirmModal
+        open={pendingCharacterId !== null}
+        title={t('settings.memoryProfileTitle')}
+        message={t('settings.memoryProfileDiscardConfirm')}
+        danger
+        confirmLabel={t('common.confirm')}
+        onConfirm={() => {
+          const nextId = pendingCharacterId;
+          setPendingCharacterId(null);
+          if (nextId !== null) applyMemoryManagementCharacterChange(nextId);
+        }}
+        onCancel={() => setPendingCharacterId(null)}
+      />
     </div>
   );
 }

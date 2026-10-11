@@ -329,6 +329,26 @@ export function useMemoryProfilePanel({
     }
   };
 
+  const isProfileDraftDirty = (() => {
+    if (!editingProfile || !memoryProfile?.profile) return false;
+    const currentProfile = memoryProfile.profile;
+    for (const key of [
+      'profile_name',
+      'relationship_state',
+      'recent_story_state',
+      'emotional_baseline',
+      'user_profile_summary',
+      'pinned_summary',
+    ] as const) {
+      if (String(editingProfileDraft[key] ?? '').trim() !== (currentProfile[key] ?? '').trim()) {
+        return true;
+      }
+    }
+    const threads = String(editingProfileDraft.open_threads ?? '').split('\n').map(s => s.trim()).filter(Boolean);
+    const currentThreads = Array.isArray(currentProfile.open_threads) ? currentProfile.open_threads : [];
+    return threads.join('\n') !== currentThreads.join('\n');
+  })();
+
   return {
     memoryProfile,
     memoryProfileLoading,
@@ -336,6 +356,7 @@ export function useMemoryProfilePanel({
     memoryProfileError,
     editingProfile,
     editingProfileDraft,
+    isProfileDraftDirty,
     setEditingProfileDraft,
     resetProfile,
     loadMemoryProfile,

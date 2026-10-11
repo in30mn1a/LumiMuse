@@ -196,6 +196,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
       setCharacterListCache([newCharacter, ...(getCharacterListCache() ?? characters)]);
       // 新角色插在列表顶部，编辑完返回时要能直接看到它
       savedScrollTop = 0;
+      sessionStorage.setItem('lumimuse_new_character_id', newCharacter.id);
       onSelect(newCharacter.id, newCharacter);
       router.push(`/characters/${newCharacter.id}`);
     } catch {

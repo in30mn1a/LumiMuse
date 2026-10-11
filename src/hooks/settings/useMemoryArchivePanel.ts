@@ -99,6 +99,7 @@ export function useMemoryArchivePanel({
   const memoryArchiveRequestSeqRef = useRef(0);
   const memoryArchiveBatchRequestSeqRef = useRef(0);
   const memoryArchiveActionRequestSeqRef = useRef(0);
+  const memoryArchiveSelectionRevisionRef = useRef(0);
   const memoryArchiveDetailRequestSeqRef = useRef(0);
   const memoryArchiveAiControllerRef = useRef<AbortController | null>(null);
 
@@ -227,13 +228,28 @@ export function useMemoryArchivePanel({
     }
   }, [memoryManagementCharacterIdRef]);
 
+  const invalidateMemoryArchivePreview = () => {
+    memoryArchiveSelectionRevisionRef.current += 1;
+    setMemoryArchivePlan(null);
+  };
+
+  const selectMemoryArchiveIds = (memoryIds: string[]) => {
+    invalidateMemoryArchivePreview();
+    setSelectedMemoryArchiveIds(prev => Array.from(new Set([...prev, ...memoryIds])));
+  };
+
+  const clearMemoryArchiveSelection = () => {
+    invalidateMemoryArchivePreview();
+    setSelectedMemoryArchiveIds([]);
+  };
+
   const toggleMemoryArchiveSelection = (memoryId: string) => {
+    invalidateMemoryArchivePreview();
     setSelectedMemoryArchiveIds(prev => (
       prev.includes(memoryId)
         ? prev.filter(id => id !== memoryId)
         : [...prev, memoryId]
     ));
-    setMemoryArchivePlan(null);
   };
 
   const buildMemoryArchiveBody = (action: 'preview' | 'execute') => {
@@ -258,6 +274,10 @@ export function useMemoryArchivePanel({
     memoryArchiveActionRequestSeqRef.current += 1;
     const requestSeq = memoryArchiveActionRequestSeqRef.current;
 
+    const selectionRevision = memoryArchiveSelectionRevisionRef.current;
+    const isCurrentPreview = () => isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)
+      && selectionRevision === memoryArchiveSelectionRevisionRef.current;
+
     setMemoryArchiveLoading(true);
     setMemoryArchiveError(null);
     try {
@@ -266,10 +286,10 @@ export function useMemoryArchivePanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       }));
-      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      if (!isCurrentPreview()) return;
       setMemoryArchivePlan(data.plan);
     } catch (err) {
-      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      if (!isCurrentPreview()) return;
       setMemoryArchiveError(getErrorMessage(err));
     } finally {
       if (isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) {
@@ -306,6 +326,8 @@ export function useMemoryArchivePanel({
       await loadMemoryArchiveMemories(requestedCharacterId);
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryArchiveBatches(requestedCharacterId);
+      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      showToast(t('settings.memoryArchiveExecuteSuccess'), 'success');
     } catch (err) {
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       setMemoryArchiveError(getErrorMessage(err));
@@ -346,6 +368,8 @@ export function useMemoryArchivePanel({
       await loadMemoryArchiveMemories(requestedCharacterId);
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryArchiveBatches(requestedCharacterId);
+      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      showToast(t('settings.memoryArchiveUndoSuccess'), 'success');
     } catch (err) {
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       setMemoryArchiveError(getErrorMessage(err));
@@ -472,6 +496,8 @@ export function useMemoryArchivePanel({
     memoryArchiveError,
     memoryArchiveAiRunning,
     setMemoryArchiveSummary,
+    selectMemoryArchiveIds,
+    clearMemoryArchiveSelection,
     setSelectedMemoryArchiveBatchId,
     resetArchiveForCharacterChange,
     loadMemoryArchiveMemories,

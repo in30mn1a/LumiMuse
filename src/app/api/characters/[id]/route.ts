@@ -11,6 +11,7 @@ import { characterUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import {
   attachCharacterPresetBindings,
   findMissingBindingPresetId,
+  PRESET_ID_NONE,
   replaceCharacterModelPresetBindings,
 } from '@/lib/prompt-presets';
 
@@ -59,7 +60,8 @@ export async function PUT(
     }
   }
 
-  const now = new Date().toISOString();
+  // 同毫秒内保存也必须区别于创建时间，条件清理不能把已保存角色当空白草稿。
+  const now = new Date(Math.max(Date.now(), Date.parse(existing.updated_at) + 1)).toISOString();
   const saveCharacter = db.transaction(() => {
     db.prepare(`
       UPDATE characters SET
@@ -118,16 +120,44 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
   const db = getDb();
+  const cleanupCreatedAt = request.headers?.get('X-Character-Cleanup');
   const fileUrls = collectCharacterLocalAssetUrls(db, id);
 
   const deleteCharacter = db.transaction(() => {
-    const existing = db.prepare('SELECT id FROM characters WHERE id = ?').get(id);
+    const existing = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!existing) return 0;
+
+    if (cleanupCreatedAt !== null && cleanupCreatedAt !== undefined) {
+      const emptyFields = [
+        'avatar_url', 'basic_info', 'personality', 'scenario', 'greeting', 'example_dialogue',
+        'system_prompt', 'other_info', 'image_tags', 'user_image_tags',
+        'background_model', 'image_prompt_model', 'background_provider_id',
+      ];
+      const mapFields = [
+        'background_reasoning_by_model', 'image_prompt_reasoning_by_model',
+        'background_system_prompt_by_model', 'image_prompt_system_prompt_by_model',
+      ];
+      if (!cleanupCreatedAt || existing.created_at !== cleanupCreatedAt
+        || existing.updated_at !== existing.created_at
+        || emptyFields.some(field => existing[field] !== '' && existing[field] !== null)
+        || mapFields.some(field => existing[field] !== '{}')
+        || existing.active_preset_id !== PRESET_ID_NONE
+        || existing.memory_chat_injection_mode !== 'full') return -1;
+
+      // 在同一事务内检查全部角色关联表；未来新增关联数据也默认保留而非误删。
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>;
+      for (const { name } of tables) {
+        const quotedName = `"${name.replaceAll('"', '""')}"`;
+        const columns = db.prepare(`PRAGMA table_info(${quotedName})`).all() as Array<{ name: string }>;
+        if (columns.some(column => column.name === 'character_id')
+          && db.prepare(`SELECT 1 FROM ${quotedName} WHERE character_id = ? LIMIT 1`).get(id)) return -1;
+      }
+    }
 
     // 级联删除：记忆任务、消息、对话、记忆、画像、向量索引
     // 注：这些表大多有 ON DELETE CASCADE 外键，理论上删 characters 行会自动级联。
@@ -149,9 +179,13 @@ export async function DELETE(
   });
 
   const changes = deleteCharacter();
+  if (changes === -1) return NextResponse.json({ ok: true, deleted: false });
+  if (changes === 0 && cleanupCreatedAt !== null && cleanupCreatedAt !== undefined) {
+    return NextResponse.json({ ok: true, deleted: false });
+  }
   if (changes === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   const orphanUrls = filterUnreferencedLocalAssetUrls(db, fileUrls);
   const deletedUrls = await deleteLocalAssetUrls(orphanUrls);
-  return NextResponse.json({ ok: true, deletedUrls });
+  return NextResponse.json({ ok: true, ...(cleanupCreatedAt !== null && cleanupCreatedAt !== undefined ? { deleted: true } : {}), deletedUrls });
 }

@@ -7,11 +7,16 @@ import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
+import ConfirmModal from '@/components/ui/ConfirmModal';
+import TagChipInput from '@/components/ui/TagChipInput';
 import PresetSelectField from '@/components/ui/PresetSelectField';
 import ModelPresetBindingsField from '@/components/ui/ModelPresetBindingsField';
 import CharacterTaskModelsField from '@/components/ui/CharacterTaskModelsField';
+import { CharacterExportDialog } from '@/components/characters/CharacterExportDialog';
+import { CharacterAiGeneratorPanel } from '@/components/characters/CharacterAiGeneratorPanel';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { clearCharacterContext } from '@/lib/character-context-cache';
+import { getCharacterListCache, setCharacterListCache } from '@/lib/character-list-cache';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
 import { dismissVirtualKeyboard } from '@/lib/virtual-keyboard';
 
@@ -29,76 +34,6 @@ interface ImportResponse {
   embeddingsImported?: number;
   characterDraft?: Partial<Character>;
   warnings?: Array<{ message?: string }>;
-}
-
-function ExportDialog({ characterId, onClose }: { characterId: string; onClose: () => void }) {
-  const { t } = useTranslation();
-  const [includeCharacter, setIncludeCharacter] = useState(true);
-  const [includeMemories, setIncludeMemories] = useState(true);
-  const [includeConversations, setIncludeConversations] = useState(true);
-  const [includeProfiles, setIncludeProfiles] = useState(true);
-  // embedding 默认关闭：向量索引体积大（每条记忆几十 KB），且可从记忆内容重建，
-  // 默认勾选会让备份膨胀到几十甚至上百 MB。需要保留索引的用户手动勾选。
-  const [includeEmbeddings, setIncludeEmbeddings] = useState(false);
-
-  const handleExport = () => {
-    const params = new URLSearchParams({ type: 'character', id: characterId });
-    if (!includeCharacter) params.set('include_characters', '0');
-    if (!includeMemories) params.set('include_memories', '0');
-    if (!includeConversations) params.set('include_conversations', '0');
-    if (!includeProfiles) params.set('include_profiles', '0');
-    if (includeEmbeddings) params.set('include_embeddings', '1');
-    const a = document.createElement('a');
-    a.href = '/api/export?' + params.toString();
-    a.download = '';
-    a.click();
-    onClose();
-  };
-
-  const nothingSelected = !includeCharacter && !includeMemories && !includeConversations && !includeProfiles && !includeEmbeddings;
-
-  return (
-    <Modal open onClose={onClose} title={t('export.characterTitle')} maxWidth="max-w-sm">
-      <p className="mb-4 text-sm text-text-muted">{t('export.characterHint')}</p>
-      <div className="space-y-2">
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-          <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
-          {t('export.includeCharacters')}
-        </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-          <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
-          {t('export.includeMemories')}
-        </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-          <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
-          {t('export.includeConversations')}
-        </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
-          <input type="checkbox" checked={includeProfiles} onChange={e => setIncludeProfiles(e.target.checked)} />
-          {t('export.includeProfiles')}
-        </label>
-        <label className={`flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm ${includeMemories ? 'cursor-pointer text-text-secondary' : 'cursor-not-allowed opacity-50'}`}>
-          <input
-            type="checkbox"
-            checked={includeMemories && includeEmbeddings}
-            disabled={!includeMemories}
-            onChange={e => setIncludeEmbeddings(e.target.checked)}
-          />
-          {t('export.includeEmbeddings')}
-        </label>
-      </div>
-      <div className="mt-5 flex justify-end gap-2">
-        <button onClick={onClose} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
-        <button
-          onClick={handleExport}
-          disabled={nothingSelected}
-          className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {t('export.download')}
-        </button>
-      </div>
-    </Modal>
-  );
 }
 
 function ImportDialog({
@@ -192,6 +127,14 @@ export default function CharacterEditor({ params }: Props) {
   const characterImportRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const deleteInFlightRef = useRef(false);
+  const operationRef = useRef(false);
+  const [leaving, setLeaving] = useState(false);
+  const [creationMarker] = useState(() => typeof window !== 'undefined'
+    ? window.sessionStorage.getItem('lumimuse_new_character_id') : null);
+  const cleanupEligibleRef = useRef<string | null>(null);
+  const creationFlowEndedRef = useRef(false);
+  const characterRef = useRef<Character | null>(null);
+  const [tagDrafts, setTagDrafts] = useState({ image_tags: '', user_image_tags: '' });
   const { t } = useTranslation();
   const { showToast } = useToast();
   // dirty 标记：表单是否存在未保存的修改。
@@ -199,13 +142,32 @@ export default function CharacterEditor({ params }: Props) {
   // - handleSave() 成功后置为 false
   // 用于：取消按钮二次确认 + beforeunload 浏览器关闭/刷新拦截
   const [dirty, setDirty] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<'discard' | 'delete' | 'duplicate' | null>(null);
+  const hasUnsavedChanges = dirty || Boolean(tagDrafts.image_tags || tagDrafts.user_image_tags);
+
+  useEffect(() => {
+    characterRef.current = character;
+  }, [character]);
+
+  useEffect(() => {
+    // 将一次性创建标记转移到本次编辑流程；离开后再进入不能复用资格。
+    if (creationMarker !== id) creationFlowEndedRef.current = true;
+    cleanupEligibleRef.current = !creationFlowEndedRef.current && creationMarker === id ? id : null;
+    if (window.sessionStorage.getItem('lumimuse_new_character_id') === id) {
+      window.sessionStorage.removeItem('lumimuse_new_character_id');
+    }
+    return () => { cleanupEligibleRef.current = null; };
+  }, [creationMarker, id]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const loadedCharacter = await parseJsonResponse<Character>(await fetch(`/api/characters/${id}`));
-        if (!cancelled) setCharacter(loadedCharacter);
+        if (!cancelled) {
+          characterRef.current = loadedCharacter;
+          setCharacter(loadedCharacter);
+        }
       } catch (error) {
         if (!cancelled) {
           showToast(`${t('common.loadFailed')}: ${getErrorMessage(error)}`, 'error');
@@ -220,14 +182,14 @@ export default function CharacterEditor({ params }: Props) {
   // beforeunload：dirty 时拦截浏览器关闭/刷新/前进后退，避免误丢修改。
   // 注意：现代浏览器会忽略我们设置的提示文案，统一显示其原生提示，但仍需调用以触发拦截。
   useEffect(() => {
-    if (!dirty) return;
+    if (!hasUnsavedChanges) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [dirty]);
+  }, [hasUnsavedChanges]);
 
   // 必须先收起软键盘再跳：iOS 带着键盘切回首页，键盘收起时视口/触摸区域会错位，
   // 而首页抽屉锁住了文档滚动，错位无法被纠正，角色列表就滑不动（长按拖拽触发重绘才恢复）。
@@ -237,15 +199,54 @@ export default function CharacterEditor({ params }: Props) {
     router.push('/');
   };
 
-  // 取消按钮：若存在未保存修改，先弹原生 confirm，确认后才离开。
+  // 若当前角色是刚刚新建且从未保存过的空白角色，取消离开时自动删除，避免残留孤儿角色。
+  const discardAndLeave = async () => {
+    if (operationRef.current || !character) return;
+    operationRef.current = true;
+    setLeaving(true);
+    setConfirmAction(null);
+    try {
+      if (cleanupEligibleRef.current === id) {
+        const response = await fetch(`/api/characters/${id}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', 'X-Character-Cleanup': character.created_at },
+        });
+        const data = await parseJsonResponse<{ ok: boolean; deleted?: boolean; deletedUrls?: string[] }>(response);
+        if (data.deleted) {
+          await forgetImageBlobs(data.deletedUrls ?? []).catch(() => {});
+          const cached = getCharacterListCache();
+          if (cached) setCharacterListCache(cached.filter(c => c.id !== id));
+          clearCharacterContext(id);
+        }
+      }
+      cleanupEligibleRef.current = null;
+      creationFlowEndedRef.current = true;
+      setDirty(false);
+      setTagDrafts({ image_tags: '', user_image_tags: '' });
+      await returnToSidebar();
+    } catch (error) {
+      showToast(`${t('editor.deleteFailed')}: ${getErrorMessage(error)}`, 'error');
+    } finally {
+      operationRef.current = false;
+      setLeaving(false);
+    }
+  };
+
+  // 取消按钮：若存在未保存修改，先弹 ConfirmModal，确认后才离开（若为未保存新建角色则自动清理）。
   const handleCancel = () => {
-    if (dirty && !window.confirm(t('editor.confirmDiscard'))) return;
-    void returnToSidebar();
+    if (operationRef.current) return;
+    if (hasUnsavedChanges) {
+      setConfirmAction('discard');
+      return;
+    }
+    void discardAndLeave();
   };
 
   const handleSave = async () => {
-    if (!character) return;
-    const bindings = character.model_preset_bindings ?? [];
+    if (operationRef.current || !characterRef.current) return;
+    // blur 可能先提交标签，读取同步快照，避免点击保存时使用旧渲染闭包。
+    const snapshot = characterRef.current;
+    const bindings = snapshot.model_preset_bindings ?? [];
     if (bindings.some(row => !row.model.trim())) {
       showToast(t('preset.modelBindEmptyModel'), 'error');
       return;
@@ -255,13 +256,14 @@ export default function CharacterEditor({ params }: Props) {
       showToast(t('preset.modelBindDuplicate'), 'error');
       return;
     }
+    operationRef.current = true;
     setSaving(true);
     try {
       const response = await fetch(`/api/characters/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...character,
+          ...snapshot,
           model_preset_bindings: bindings.map(row => ({
             model: row.model.trim(),
             preset_id: row.preset_id || '__none__',
@@ -273,21 +275,34 @@ export default function CharacterEditor({ params }: Props) {
         const data = await response.json().catch(() => ({}));
         throw new Error((data as { error?: string }).error || `HTTP ${response.status}`);
       }
+      if (sessionStorage.getItem('lumimuse_new_character_id') === id) {
+        sessionStorage.removeItem('lumimuse_new_character_id');
+      }
       setDirty(false);
+      cleanupEligibleRef.current = null;
+      creationFlowEndedRef.current = true;
+      setTagDrafts({ image_tags: '', user_image_tags: '' });
       showToast(t('editor.saveSuccess'), 'success');
       // await：等键盘收起期间保持 saving，避免重复点保存
       await returnToSidebar();
     } catch (err) {
       showToast(`${t('editor.saveFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
+      operationRef.current = false;
       setSaving(false);
     }
   };
 
   const handleDelete = async () => {
     if (deleteInFlightRef.current) return;
-    if (!confirm(t('editor.deleteConfirm'))) return;
+    if (operationRef.current) return;
+    if (confirmAction !== 'delete') {
+      setConfirmAction('delete');
+      return;
+    }
+    setConfirmAction(null);
     deleteInFlightRef.current = true;
+    operationRef.current = true;
     setDeleting(true);
     try {
       // 注意：proxy.ts 的 CSRF 校验要求写方法（含 DELETE）带 application/json 头
@@ -301,12 +316,23 @@ export default function CharacterEditor({ params }: Props) {
       } catch (error) {
         console.warn('[image-cache] 角色删除已成功，但本地图片缓存失效失败：', error);
       }
+      if (sessionStorage.getItem('lumimuse_new_character_id') === id) {
+        sessionStorage.removeItem('lumimuse_new_character_id');
+      }
+      const cached = getCharacterListCache();
+      if (cached) {
+        setCharacterListCache(cached.filter(c => c.id !== id));
+      }
       // 删除成功后清掉该角色的本地上下文缓存（内存 + IndexedDB），避免同 id 重建/导入时闪幽灵快照
       clearCharacterContext(id);
       // 删除成功后离开页面前清除 dirty，避免触发 beforeunload
       setDirty(false);
+      setTagDrafts({ image_tags: '', user_image_tags: '' });
+      cleanupEligibleRef.current = null;
+      creationFlowEndedRef.current = true;
       router.push('/');
     } catch (err) {
+      operationRef.current = false;
       deleteInFlightRef.current = false;
       setDeleting(false);
       showToast(`${t('editor.deleteFailed')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
@@ -314,7 +340,13 @@ export default function CharacterEditor({ params }: Props) {
   };
 
   const handleDuplicate = async () => {
-    if (!confirm(t('editor.duplicateConfirm'))) return;
+    if (operationRef.current) return;
+    if (confirmAction !== 'duplicate') {
+      setConfirmAction('duplicate');
+      return;
+    }
+    setConfirmAction(null);
+    operationRef.current = true;
     setDuplicating(true);
     try {
       // 注意：proxy.ts 的 CSRF 校验要求写方法带 application/json 头
@@ -328,6 +360,7 @@ export default function CharacterEditor({ params }: Props) {
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('editor.duplicateError'), 'error');
     } finally {
+      operationRef.current = false;
       setDuplicating(false);
     }
   };
@@ -448,7 +481,9 @@ export default function CharacterEditor({ params }: Props) {
     if (!character) return;
     // 任意字段被修改即标记为 dirty，触发未保存提示
     setDirty(true);
-    setCharacter({ ...character, [field]: value });
+    const next = { ...(characterRef.current ?? character), [field]: value };
+    characterRef.current = next;
+    setCharacter(next);
   };
 
   if (!character) {
@@ -465,7 +500,7 @@ export default function CharacterEditor({ params }: Props) {
 
   return (
     <div className="app-shell min-h-screen px-4 py-4">
-      {exportOpen && <ExportDialog characterId={id} onClose={() => setExportOpen(false)} />}
+      {exportOpen && <CharacterExportDialog characterId={id} onClose={() => setExportOpen(false)} />}
       {pendingImport && (
         <ImportDialog
           fileName={pendingImport.fileName}
@@ -473,11 +508,47 @@ export default function CharacterEditor({ params }: Props) {
           onConfirm={applyPendingImport}
         />
       )}
+      <ConfirmModal
+        open={confirmAction !== null}
+        title={
+          confirmAction === 'delete'
+            ? t('editor.delete')
+            : confirmAction === 'duplicate'
+            ? t('editor.duplicate')
+            : t('editor.cancel')
+        }
+        message={
+          confirmAction === 'delete'
+            ? t('editor.deleteConfirm')
+            : confirmAction === 'duplicate'
+            ? t('editor.duplicateConfirm')
+            : t('editor.confirmDiscard')
+        }
+        danger={confirmAction === 'delete' || confirmAction === 'discard'}
+        busy={saving || deleting || duplicating || leaving}
+        confirmLabel={
+          confirmAction === 'delete'
+            ? t('editor.delete')
+            : confirmAction === 'duplicate'
+            ? t('editor.duplicate')
+            : t('common.confirm')
+        }
+        onConfirm={() => {
+          if (confirmAction === 'delete') {
+            void handleDelete();
+          } else if (confirmAction === 'duplicate') {
+            void handleDuplicate();
+          } else if (confirmAction === 'discard') {
+            void discardAndLeave();
+          }
+        }}
+        onCancel={() => setConfirmAction(null)}
+      />
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
         <header className="surface-hero px-5 py-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-4">
-              <button onClick={handleCancel} className="soft-button soft-button-secondary shrink-0 whitespace-nowrap px-3 py-2">
+              <button onClick={handleCancel} disabled={saving || deleting || duplicating || leaving} className="soft-button soft-button-secondary shrink-0 whitespace-nowrap px-3 py-2">
                 <ArrowLeftIcon className="h-4 w-4" />
                 {t('editor.cancel')}
               </button>
@@ -512,13 +583,13 @@ export default function CharacterEditor({ params }: Props) {
                 {deleting ? t('editor.deleting') : t('editor.delete')}
               </button>
               <button type="button" onClick={() => characterImportRef.current?.click()} className="soft-button soft-button-secondary">
-                              {t('editor.importTitle')}
-                            </button>
-                            <input ref={characterImportRef} type="file" accept=".json,application/json" onChange={handleImportCharacterCard} className="hidden" />
-                            <button type="button" onClick={() => setExportOpen(true)} className="soft-button soft-button-secondary">
-                              {t('editor.export')}
-                            </button>
-              <button onClick={handleSave} disabled={saving} className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-50">
+                {t('editor.importTitle')}
+              </button>
+              <input ref={characterImportRef} type="file" accept=".json,application/json" onChange={handleImportCharacterCard} className="hidden" />
+              <button type="button" onClick={() => setExportOpen(true)} className="soft-button soft-button-secondary">
+                {t('editor.export')}
+              </button>
+              <button onClick={handleSave} disabled={saving || deleting || duplicating || leaving} className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-50">
                 <SparkIcon className="h-4 w-4" />
                 {saving ? t('editor.saving') : t('editor.save')}
               </button>
@@ -530,32 +601,13 @@ export default function CharacterEditor({ params }: Props) {
             </div>
           )}
           {showAiGenerator && (
-            <div data-role="aiGeneratorPanel" className="mt-4 flex w-full flex-col gap-2 rounded-2xl border border-border-light bg-white/70 p-3 shadow-sm lg:ml-auto lg:max-w-[38rem] lg:self-end">
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <input
-                  value={aiRequirement}
-                  onChange={e => setAiRequirement(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleGenerateCharacter();
-                    }
-                  }}
-                  disabled={aiGenerating}
-                  className="input-rich min-w-0 flex-1"
-                  placeholder={t('editor.aiRequirementPlaceholder')}
-                />
-                <button
-                  type="button"
-                  onClick={handleGenerateCharacter}
-                  disabled={aiGenerating || !aiRequirement.trim()}
-                  className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {aiGenerating ? t('editor.aiGenerating') : t('editor.aiApplyHint')}
-                </button>
-              </div>
-              {aiError && <p className="text-xs text-danger">{aiError}</p>}
-            </div>
+            <CharacterAiGeneratorPanel
+              aiRequirement={aiRequirement}
+              aiGenerating={aiGenerating}
+              aiError={aiError}
+              onChangeRequirement={setAiRequirement}
+              onGenerate={handleGenerateCharacter}
+            />
           )}
         </header>
 
@@ -753,23 +805,21 @@ export default function CharacterEditor({ params }: Props) {
                 <div>
                   <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.imageTags')}</label>
                   <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.imageTagsHint')}</p>
-                  <textarea
+                  <TagChipInput
                     value={character.image_tags || ''}
-                    onChange={e => update('image_tags', e.target.value)}
-                    rows={3}
+                    onChange={val => update('image_tags', val)}
+                    onDraftChange={value => setTagDrafts(prev => ({ ...prev, image_tags: value }))}
                     placeholder="1girl, silver hair, short hair, orange eyes, slender..."
-                    className="textarea-rich font-mono text-sm"
                   />
                 </div>
                 <div>
                   <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.userImageTags')}</label>
                   <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.userImageTagsHint')}</p>
-                  <textarea
+                  <TagChipInput
                     value={character.user_image_tags || ''}
-                    onChange={e => update('user_image_tags', e.target.value)}
-                    rows={3}
+                    onChange={val => update('user_image_tags', val)}
+                    onDraftChange={value => setTagDrafts(prev => ({ ...prev, user_image_tags: value }))}
                     placeholder="1boy, black hair, brown eyes, glasses..."
-                    className="textarea-rich font-mono text-sm"
                   />
                 </div>
               </div>

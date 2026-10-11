@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import { RefreshIcon, SparkIcon, StopIcon } from '@/components/ui/icons';
 import type { UseMemoryArchivePanelResult } from '@/hooks/settings/useMemoryArchivePanel';
 
@@ -7,17 +8,55 @@ interface MemoryArchivePanelProps {
   memoryManagementCharacterId: string;
 }
 
-export function MemoryArchivePanel({
+export function MemoryArchivePanel(props: MemoryArchivePanelProps) {
+  return <MemoryArchivePanelContent key={props.memoryManagementCharacterId} {...props} />;
+}
+
+function MemoryArchivePanelContent({
   t,
   archive,
   memoryManagementCharacterId,
 }: MemoryArchivePanelProps) {
   const { loadMemoryArchiveMemories } = archive;
+  const [filterKeyword, setFilterKeyword] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
   const memoryArchiveShownCount = Math.max(archive.memoryArchiveMemories.length, archive.memoryArchiveOffset);
   const handleLoadMoreMemoryArchiveMemories = () => {
     if (!memoryManagementCharacterId || archive.memoryArchiveListLoading) return;
     const memoryArchiveNextOffset = archive.memoryArchiveMemories.length;
     void loadMemoryArchiveMemories(memoryManagementCharacterId, { append: true, offset: memoryArchiveNextOffset });
+  };
+
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of archive.memoryArchiveMemories) {
+      if (m.category) set.add(m.category);
+    }
+    return Array.from(set);
+  }, [archive.memoryArchiveMemories]);
+
+  if (filterCategory && !categories.includes(filterCategory)) {
+    setFilterCategory('');
+  }
+
+  const filteredMemories = useMemo(() => {
+    const kw = filterKeyword.trim().toLowerCase();
+    return archive.memoryArchiveMemories.filter(memory => {
+      if (filterCategory && memory.category !== filterCategory) return false;
+      if (kw && !memory.content.toLowerCase().includes(kw) && !memory.category.toLowerCase().includes(kw)) {
+        return false;
+      }
+      return true;
+    });
+  }, [archive.memoryArchiveMemories, filterCategory, filterKeyword]);
+
+  const handleSelectAllFiltered = () => {
+    const visibleIds = filteredMemories.map(m => m.id);
+    archive.selectMemoryArchiveIds(visibleIds);
+  };
+
+  const handleClearSelection = () => {
+    archive.clearMemoryArchiveSelection();
   };
 
   return (
@@ -40,27 +79,69 @@ export function MemoryArchivePanel({
             {memoryManagementCharacterId ? t('settings.memoryArchiveNoMemories') : t('settings.memoryManagementChooseCharacter')}
           </p>
         ) : (
-          <div className="max-h-64 space-y-2 overflow-auto rounded-xl border border-border-light bg-white/60 p-2">
-            {archive.memoryArchiveMemories.map(memory => (
-              <label
-                key={memory.id}
-                className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs text-text-secondary hover:bg-white/70"
+          <>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={filterKeyword}
+                onChange={e => setFilterKeyword(e.target.value)}
+                placeholder={t('settings.memoryArchiveFilterPlaceholder')}
+                aria-label={t('settings.memoryArchiveFilterPlaceholder')}
+                className="input-rich min-w-[12rem] flex-1 rounded-xl border border-border-light bg-white/80 px-3 py-1.5 text-xs"
+              />
+              {categories.length > 0 && (
+                <select
+                  value={filterCategory}
+                  onChange={e => setFilterCategory(e.target.value)}
+                  aria-label={t('settings.memoryArchiveAllCategories')}
+                  className="select-rich w-auto rounded-xl border border-border-light bg-white/80 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="">{t('settings.memoryArchiveAllCategories')}</option>
+                  {categories.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                disabled={filteredMemories.length === 0}
+                className="soft-button soft-button-secondary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <input
-                  type="checkbox"
-                  checked={archive.selectedMemoryArchiveIds.includes(memory.id)}
-                  onChange={() => archive.toggleMemoryArchiveSelection(memory.id)}
-                  className="mt-0.5"
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-medium text-text-primary">
-                    {memory.category} · {memory.status}{memory.pinned ? ` · ${t('common.current')}` : ''}
+                {t('settings.memoryArchiveSelectAll')}
+              </button>
+              {archive.selectedMemoryArchiveIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearSelection}
+                  className="soft-button soft-button-secondary px-2.5 py-1 text-xs"
+                >
+                  {t('settings.memoryArchiveClearSelection')} ({archive.selectedMemoryArchiveIds.length})
+                </button>
+              )}
+            </div>
+            <div className="max-h-64 space-y-2 overflow-auto rounded-xl border border-border-light bg-white/60 p-2">
+              {filteredMemories.map(memory => (
+                <label
+                  key={memory.id}
+                  className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs text-text-secondary hover:bg-white/70"
+                >
+                  <input
+                    type="checkbox"
+                    checked={archive.selectedMemoryArchiveIds.includes(memory.id)}
+                    onChange={() => archive.toggleMemoryArchiveSelection(memory.id)}
+                    className="mt-0.5"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium text-text-primary">
+                      {memory.category} · {memory.status}{memory.pinned ? ` · ${t('common.current')}` : ''}
+                    </span>
+                    <span className="mt-1 block line-clamp-2 break-words">{memory.content}</span>
                   </span>
-                  <span className="mt-1 block line-clamp-2 break-words">{memory.content}</span>
-                </span>
-              </label>
-            ))}
-          </div>
+                </label>
+              ))}
+            </div>
+          </>
         )}
         {archive.memoryArchiveHasMore && memoryManagementCharacterId && (
           <button

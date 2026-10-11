@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { ArtistString, DEFAULT_IMAGE_GEN_SETTINGS, ImageGenSettings, Settings } from '@/types';
 import { ImageIcon } from '@/components/ui/icons';
+import ConfirmModal from '@/components/ui/ConfirmModal';
+import PromptModal from '@/components/ui/PromptModal';
 
 // ========== 生图设置子组件 ==========
 export function ImageGenSettingsSection({
@@ -46,6 +48,8 @@ export function ImageGenSettingsSection({
   }
 
   const [presetName, setPresetName] = useState('');
+  const [presetNamePromptOpen, setPresetNamePromptOpen] = useState(false);
+  const [deletePresetConfirmOpen, setDeletePresetConfirmOpen] = useState(false);
 
   const handleSelectPreset = (id: string) => {
     if (!id) { setSelectedPresetId(''); return; }
@@ -56,17 +60,26 @@ export function ImageGenSettingsSection({
     }
   };
 
-  const handleSaveAsPreset = () => {
-    const name = presetName.trim() || window.prompt(t('settings.artistStringsNamePrompt'));
-    if (!name) return;
+  const commitSaveAsPreset = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
     const newPreset: ArtistString = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      name,
+      name: trimmed,
       tags: imgGen.nai_artist_tags,
     };
     update('artist_strings', [...artistStrings, newPreset]);
     setSelectedPresetId(newPreset.id);
     setPresetName('');
+    setPresetNamePromptOpen(false);
+  };
+
+  const handleSaveAsPreset = () => {
+    if (presetName.trim()) {
+      commitSaveAsPreset(presetName);
+      return;
+    }
+    setPresetNamePromptOpen(true);
   };
 
   const handleUpdatePreset = () => {
@@ -78,9 +91,14 @@ export function ImageGenSettingsSection({
 
   const handleDeletePreset = () => {
     if (!selectedPresetId) return;
-    if (!window.confirm(t('settings.artistStringsDeleteConfirm'))) return;
+    setDeletePresetConfirmOpen(true);
+  };
+
+  const confirmDeletePreset = () => {
+    if (!selectedPresetId) return;
     update('artist_strings', artistStrings.filter(a => a.id !== selectedPresetId));
     setSelectedPresetId('');
+    setDeletePresetConfirmOpen(false);
   };
 
   const handleArtistTagsChange = (value: string) => {
@@ -415,6 +433,26 @@ export function ImageGenSettingsSection({
           </>
         )}
       </div>
+      <PromptModal
+        open={presetNamePromptOpen}
+        title={t('settings.artistStringsNamePrompt')}
+        placeholder={t('settings.artistStringsNamePlaceholder')}
+        confirmLabel={t('common.save')}
+        cancelLabel={t('common.cancel')}
+        onConfirm={commitSaveAsPreset}
+        onCancel={() => setPresetNamePromptOpen(false)}
+      />
+
+      <ConfirmModal
+        open={deletePresetConfirmOpen}
+        title={t('common.delete')}
+        message={t('settings.artistStringsDeleteConfirm')}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        danger
+        onConfirm={confirmDeletePreset}
+        onCancel={() => setDeletePresetConfirmOpen(false)}
+      />
     </section>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { memo } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import {
   ChevronDownIcon,
@@ -43,7 +43,7 @@ interface Props {
  * 移动/平板竖屏(<lg ≈1024)：紧凑栏 + 默认展开的二级操作（可手动收起） + 对话抽屉入口。
  * 桌面/平板横屏(lg+)：完整工具栏；按钮统一只留图标（说明走 title/aria-label），
  * 避免按钮组撑宽后把左侧角色信息挤成竖排；「最近对话」按钮打开对话切换抽屉（ConversationDrawer）。
- * 数据来自 ChatView，所有交互通过 props 回调，无内部状态（除 toolbarExpanded 由父级管理）。
+ * 在紧凑/中等桌面宽度(<xl)下，次要操作（复制对话、删除对话）收敛到「更多」(⋯) 下拉菜单中，防止角色名被挤压截断。
  */
 function ChatHeaderImpl({
   character,
@@ -67,6 +67,30 @@ function ChatHeaderImpl({
   onRequestDelete,
 }: Props) {
   const { t } = useTranslation();
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMoreOpen(false);
+        moreTriggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [moreOpen]);
 
   return (
     <>
@@ -186,7 +210,7 @@ function ChatHeaderImpl({
       </section>
 
       {/* === 桌面/平板横屏(lg+)：完整工具栏 === */}
-      <section className="surface-hero hidden px-5 py-5 lg:block">
+      <section className="surface-hero relative z-10 hidden px-5 py-5 lg:block">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
@@ -252,15 +276,6 @@ function ChatHeaderImpl({
               {summarizing ? <span className="spinner-sm" aria-hidden="true" /> : <SummaryIcon className="h-4 w-4" />}
             </button>
             <button
-              onClick={onDuplicate}
-              disabled={!activeConversation || isStreamingHere || duplicating}
-              className="soft-button soft-button-secondary px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title={t('chat.duplicateTitle')}
-              aria-label={duplicating ? t('chat.duplicating') : t('chat.duplicate')}
-            >
-              {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
-            </button>
-            <button
               onClick={onOpenImageManager}
               className="soft-button soft-button-secondary px-3 py-2 text-sm"
               title={t('chat.imageManagerTitleHint')}
@@ -269,14 +284,73 @@ function ChatHeaderImpl({
               <ImageIcon className="h-4 w-4" />
             </button>
             <button
+              onClick={onDuplicate}
+              disabled={!activeConversation || isStreamingHere || duplicating}
+              className="soft-button soft-button-secondary hidden px-3 py-2 text-sm xl:inline-flex disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('chat.duplicateTitle')}
+              aria-label={duplicating ? t('chat.duplicating') : t('chat.duplicate')}
+            >
+              {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
+            </button>
+            <button
               onClick={onRequestDelete}
               disabled={!activeConversation}
-              className="soft-button soft-button-danger px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              className="soft-button soft-button-danger hidden px-3 py-2 text-sm xl:inline-flex disabled:cursor-not-allowed disabled:opacity-50"
               title={t('common.delete')}
               aria-label={t('common.delete')}
             >
               <TrashIcon className="h-4 w-4" />
             </button>
+            <div className="relative xl:hidden" ref={moreMenuRef}>
+              <button
+                ref={moreTriggerRef}
+                type="button"
+                onClick={() => setMoreOpen(prev => !prev)}
+                className="soft-button soft-button-secondary px-3 py-2 text-sm"
+                title={t('common.more')}
+                aria-label={t('common.more')}
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+              >
+                <span aria-hidden="true" className="text-base leading-none">⋯</span>
+              </button>
+              {moreOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-50 mt-1 min-w-[10rem] rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      // 菜单项即将卸载，先让弹窗记录仍存在的焦点恢复目标。
+                      moreTriggerRef.current?.focus();
+                      setMoreOpen(false);
+                      onDuplicate();
+                    }}
+                    disabled={!activeConversation || isStreamingHere || duplicating}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
+                    <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      moreTriggerRef.current?.focus();
+                      setMoreOpen(false);
+                      onRequestDelete();
+                    }}
+                    disabled={!activeConversation}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-500 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-950/30"
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                    <span>{t('common.delete')}</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </section>

@@ -415,7 +415,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 tabIndex={-1}
                 aria-label={t('input.modelSelect')}
                 aria-activedescendant={currentModel ? `model-option-${currentModel}` : undefined}
-                className="absolute bottom-full left-0 z-50 mb-1 max-h-60 w-72 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+                className="absolute bottom-full left-0 z-50 mb-1 w-72 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl md:max-h-60 dark:bg-[rgba(25,20,37,0.95)]"
               >
                 <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
                   {modelLoading ? t('common.loading') : t('input.modelSelect')}
@@ -475,7 +475,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 tabIndex={-1}
                 aria-label={t('input.reasoningEffort')}
                 aria-activedescendant={`effort-option-${reasoningEffort}`}
-                className="absolute bottom-full left-0 z-50 mb-1 w-44 overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+                className="absolute bottom-full left-0 z-50 mb-1 w-44 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
               >
                 <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
                   {t('input.reasoningEffort')}

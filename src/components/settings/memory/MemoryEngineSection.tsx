@@ -303,7 +303,7 @@ export function MemoryEngineSection({
 
         {settings.memory_trigger_time_enabled && (
           <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
-            <label htmlFor="settings-memory-trigger-time" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerTimeMinutes')}</label>
+            <label htmlFor="settings-memory-trigger-time" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerTimeHours')}</label>
             <input
               id="settings-memory-trigger-time"
               type="number"

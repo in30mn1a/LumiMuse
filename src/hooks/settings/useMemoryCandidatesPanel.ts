@@ -132,6 +132,8 @@ export function useMemoryCandidatesPanel({
       await loadMemoryDiagnostics();
       if (!isCurrentMemoryCandidateActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryIndexStatus();
+      if (!isCurrentMemoryCandidateActionRequest(requestedCharacterId, requestSeq)) return;
+      showToast(t('settings.memoryCandidateActionSuccess'), 'success');
     } catch (err) {
       if (!isCurrentMemoryCandidateActionRequest(requestedCharacterId, requestSeq)) return;
       showToast(`${t('settings.memoryCandidatesActionFailed')}: ${getErrorMessage(err)}`, 'error');

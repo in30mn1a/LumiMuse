@@ -6,6 +6,7 @@ import MemoryCard from './MemoryCard';
 import { useTranslation } from '@/lib/i18n-context';
 import { expectOkResponse, parseJsonResponse } from '@/lib/http';
 import { PlusIcon, SearchIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
+import ConfirmModal from '@/components/ui/ConfirmModal';
 
 interface Props {
   characterId: string | null;
@@ -37,6 +38,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
   const [batchDeleteError, setBatchDeleteError] = useState('');
   const [addingMemory, setAddingMemory] = useState(false);
   const [batchDeleting, setBatchDeleting] = useState(false);
+  const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false);
   const [listError, setListError] = useState('');
   const [mutationError, setMutationError] = useState('');
   const queryKey = JSON.stringify([characterId, categoryFilter, tagFilters, keyword, sortOrder, showArchived]);
@@ -45,6 +47,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
     setPreviousQueryKey(queryKey);
     setAddingMemory(false);
     setBatchDeleting(false);
+    setBatchDeleteConfirmOpen(false);
     setEditingMemoryId(null);
     setMutationError('');
     setBatchDeleteError('');
@@ -98,7 +101,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
     const scope = scopeRef.current;
     const ids = Array.from(validSelectedIds);
     if (ids.length === 0 || batchDeleting) return;
-    if (!window.confirm(t('memory.batchDeleteConfirm').replace('{count}', String(ids.length)))) return;
+    setBatchDeleteConfirmOpen(false);
     setBatchDeleteError('');
     setMutationError('');
     setBatchDeleting(true);
@@ -415,7 +418,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
                   {batchDeleteError || t('memory.selectedCount').replace('{count}', String(validSelectedIds.size))}
                 </span>
                 <button
-                  onClick={handleBatchDelete}
+                  onClick={() => setBatchDeleteConfirmOpen(true)}
                   disabled={batchDeleting}
                   aria-busy={batchDeleting}
                   className="soft-button soft-button-danger px-3 py-2 text-xs"
@@ -461,6 +464,18 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
           </div>
         )}
       </div>
+
+      <ConfirmModal
+        open={batchDeleteConfirmOpen}
+        title={t('memory.batchDelete')}
+        message={t('memory.batchDeleteConfirm').replace('{count}', String(validSelectedIds.size))}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        danger
+        busy={batchDeleting}
+        onConfirm={handleBatchDelete}
+        onCancel={() => setBatchDeleteConfirmOpen(false)}
+      />
     </div>
   );
 }

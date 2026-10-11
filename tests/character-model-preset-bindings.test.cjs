@@ -186,3 +186,19 @@ test('character editor exposes model preset bindings and per-character memory in
   assert.match(i18n, /'editor\.memoryChatInjectionModeVector': '向量优先（Vector）'/);
   assert.match(i18n, /'editor\.memoryChatInjectionModeVector': 'Vector first \(Vector\)'/);
 });
+
+test('character editor auto-deletes unsaved newly created blank characters on cancel and uses TagChipInput', () => {
+  const page = fs.readFileSync(path.join(root, 'src/app/characters/[id]/page.tsx'), 'utf8');
+  const charList = fs.readFileSync(path.join(root, 'src/components/sidebar/CharacterList.tsx'), 'utf8');
+  const tagChip = fs.readFileSync(path.join(root, 'src/components/ui/TagChipInput.tsx'), 'utf8');
+
+  assert.match(charList, /sessionStorage\.setItem\('lumimuse_new_character_id',\s*newCharacter\.id\)/);
+  assert.match(page, /sessionStorage\.getItem\('lumimuse_new_character_id'\)\s*===\s*id/);
+  assert.match(page, /sessionStorage\.removeItem\('lumimuse_new_character_id'\)/);
+  assert.match(page, /const discardAndLeave = async \(\) =>/);
+  assert.match(page, /fetch\(`\/api\/characters\/\$\{id\}`,\s*\{\s*method:\s*'DELETE'/);
+  assert.match(page, /<TagChipInput[\s\S]*?value=\{character\.image_tags \|\| ''\}/);
+  assert.match(page, /<TagChipInput[\s\S]*?value=\{character\.user_image_tags \|\| ''\}/);
+  assert.match(tagChip, /export default function TagChipInput/);
+});
+

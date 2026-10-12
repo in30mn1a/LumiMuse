@@ -124,7 +124,7 @@ test('/memories page places AI review beside character selector and exposes late
     'handleUndoMerge',
     'aggregateResult.reviewed += result.reviewed ?? 0;',
     'aggregateResult.changes.push(...(result.changes ?? []));',
-    'changes: Array<{ id: string; fields: string[]; content: string }>',
+    'changes: Array<{ id: string; fields: string[]; content: string; diffs: MemoryReviewChangeDiff[] }>',
     "t('memory.aiReview')",
     "t('memory.viewLatestAiReviewChanges')",
     "t('memory.hideLatestAiReviewChanges')",
@@ -139,7 +139,7 @@ test('/memories page places AI review beside character selector and exposes late
 
   assert.match(
     memoriesPage,
-    /\{change\.id\}[\s\S]*?\{t\('memory\.aiReviewChangedFields'\)\}: \{change\.fields\.join\('；'\)\}[\s\S]*?<details[\s\S]*?\{change\.content\}/,
+    /<details[\s\S]*?\{change\.content\}[\s\S]*?<\/details>[\s\S]*?\{t\('memory\.aiReviewChangedFields'\)\}:[\s\S]*?change\.diffs\.map\(/,
     'AI review changes should keep changed fields visible and collapse only memory content',
   );
 
@@ -172,8 +172,25 @@ test('/memories page places AI review beside character selector and exposes late
     'memory.mergeFailed',
     'memory.mergeUndoDone',
     'memory.mergeConflict',
+    'memory.tags',
+    'memory.aiReviewProgress',
+    'memory.aiReviewStop',
+    'memory.aiReviewStopped',
+    'memory.aiReviewStoppedEmpty',
+    'memory.aiReviewFailedBatches',
+    'memory.aiReviewCorrections',
+    'memory.aiReviewEmptyValue',
+    'memory.mergeSuggestionsHint',
+    'memory.mergeResult',
+    'memory.mergeAcceptedBadge',
+    'memory.mergeStaleBadge',
+    'memory.mergeStale.not_active',
+    'memory.mergeStale.not_found',
+    'memory.mergeStale.pinned',
+    'memory.mergeStale.reserved',
   ]) {
-    assert.match(i18n, new RegExp(`'${key}'`));
+    // 中英文各定义一次，缺任何一边都会在界面上露出原始 key。
+    assert.equal(i18n.split(`'${key}':`).length - 1, 2, `i18n key should exist in zh and en: ${key}`);
   }
 });
 
@@ -303,6 +320,202 @@ test('/memories page opens source details and closes them with an explicit butto
   assert.ok(closeButton.tabIndex >= 0);
   fireEvent.click(closeButton);
   await waitFor(() => assert.equal(view.queryByRole('dialog'), null));
+});
+
+const reviewCharacter = {
+  id: 'char-a',
+  name: '角色 A',
+  avatar_url: null,
+  description: '',
+  personality: '',
+  system_prompt: '',
+  first_message: '',
+  example_dialogues: [],
+  tags: [],
+  created_at: '2026-07-31T00:00:00.000Z',
+  updated_at: '2026-07-31T00:00:00.000Z',
+};
+
+function reviewPayload(overrides = {}) {
+  return {
+    ok: true,
+    reviewed: 2,
+    total_active: 2,
+    skipped_due_to_limit: 0,
+    reviewed_offset: 0,
+    next_offset: null,
+    next_batch_index: null,
+    has_more: false,
+    corrected: 0,
+    failed_batches: 0,
+    failed_messages: [],
+    indexing_queued: 0,
+    indexing_started: false,
+    changes: [],
+    merge_suggestions: [],
+    ...overrides,
+  };
+}
+
+test('/memories page marks a merge suggestion as expired when its sources can no longer be merged', async () => {
+  global.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === '/api/characters') return jsonResponse([reviewCharacter]);
+    if (url === '/api/memory-review') {
+      return jsonResponse(reviewPayload({
+        reviewed: 4,
+        total_active: 4,
+        merge_suggestions: [
+          {
+            source_ids: ['mem-a', 'mem-b'],
+            merged_content: '用户喜欢美式咖啡。',
+            kind: 'merge',
+            sources: [
+              { id: 'mem-a', content: '第一条源记忆全文', category: '偏好习惯', tags: [] },
+              { id: 'mem-b', content: '第二条源记忆全文', category: '偏好习惯', tags: [] },
+            ],
+          },
+          {
+            source_ids: ['mem-c', 'mem-d'],
+            merged_content: '用户养了一只猫。',
+            kind: 'merge',
+            sources: [
+              { id: 'mem-c', content: '第三条源记忆全文', category: '四季日常', tags: [] },
+              { id: 'mem-d', content: '第四条源记忆全文', category: '四季日常', tags: [] },
+            ],
+          },
+        ],
+      }));
+    }
+    if (url === '/api/memory-merge') {
+      const body = JSON.parse(init.body);
+      // 第一条：源记忆已不是 active（真实 bug 场景）；第二条：与源记忆状态无关的普通失败。
+      return body.source_ids.includes('mem-a')
+        ? jsonResponse({ ok: false, error: 'Only active memories can be merged', reason: 'not_active' }, 400)
+        : jsonResponse({ ok: false, error: '合并记忆失败' }, 400);
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  const MemoriesPage = loadMemoriesPage();
+  const view = render(React.createElement(MemoriesPage));
+  const reviewButton = await view.findByRole('button', { name: 'memory.aiReview' });
+  await waitFor(() => assert.equal(reviewButton.disabled, false));
+  fireEvent.click(reviewButton);
+
+  const staleCard = (await view.findByText('用户喜欢美式咖啡。')).parentElement;
+  const failedCard = view.getByText('用户养了一只猫。').parentElement;
+  // 源记忆内容直接展示在建议卡片上，不必先打开弹窗才能判断。
+  assert.ok(within(staleCard).getByText('第一条源记忆全文'));
+  assert.ok(within(staleCard).getByText('第二条源记忆全文'));
+
+  fireEvent.click(within(staleCard).getByRole('button', { name: 'memory.mergeAccept' }));
+  await within(staleCard).findByText('memory.mergeStale.not_active');
+  assert.ok(within(staleCard).getByText('memory.mergeStaleBadge'));
+  assert.equal(within(staleCard).queryByText('Only active memories can be merged'), null);
+  assert.equal(
+    within(staleCard).queryByRole('button', { name: 'memory.mergeAccept' }),
+    null,
+    'an expired suggestion must not offer a retry that can never succeed',
+  );
+
+  fireEvent.click(within(failedCard).getByRole('button', { name: 'memory.mergeAccept' }));
+  await within(failedCard).findByText('合并记忆失败');
+  assert.equal(within(failedCard).queryByText('memory.mergeStaleBadge'), null);
+  assert.ok(
+    within(failedCard).getByRole('button', { name: 'memory.mergeAccept' }),
+    'a failure unrelated to the sources stays retryable',
+  );
+
+  // 失效与失败的建议都可以手动清掉。
+  fireEvent.click(within(staleCard).getByRole('button', { name: 'memory.mergeReject' }));
+  await waitFor(() => assert.equal(view.queryByText('用户喜欢美式咖啡。'), null));
+  fireEvent.click(within(failedCard).getByRole('button', { name: 'memory.mergeReject' }));
+  await waitFor(() => assert.equal(view.queryByText('用户养了一只猫。'), null));
+});
+
+test('/memories page shows corrections as before and after values and lists failed batches', async () => {
+  global.fetch = async input => {
+    const url = String(input);
+    if (url === '/api/characters') return jsonResponse([reviewCharacter]);
+    if (url === '/api/memory-review') {
+      return jsonResponse(reviewPayload({
+        corrected: 1,
+        failed_batches: 1,
+        failed_messages: ['批次 2: 上游超时'],
+        changes: [{
+          id: 'mem-a',
+          fields: ['category→四季日常', 'tags→[午餐]', 'importance→0.4'],
+          diffs: [
+            { field: 'category', before: '重要事件', after: '四季日常' },
+            { field: 'tags', before: [], after: ['午餐', '面条'] },
+            { field: 'importance', before: 0.9, after: 0.4 },
+          ],
+          content: '用户午饭吃了面。',
+        }],
+      }));
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  const MemoriesPage = loadMemoriesPage();
+  const view = render(React.createElement(MemoriesPage));
+  const reviewButton = await view.findByRole('button', { name: 'memory.aiReview' });
+  await waitFor(() => assert.equal(reviewButton.disabled, false));
+  fireEvent.click(reviewButton);
+
+  const diffRow = (await view.findByText('memory.aiReviewChangedFields:')).parentElement;
+  const text = diffRow.textContent.replace(/\s+/g, ' ');
+  assert.match(text, /memory\.category 重要事件 → 四季日常/);
+  assert.match(text, /memory\.tags memory\.aiReviewEmptyValue → 午餐、面条/);
+  assert.match(text, /memory\.importance 0\.9 → 0\.4/);
+  assert.doesNotMatch(text, /category→/, 'raw field→value strings must not be shown to the user');
+
+  assert.ok(view.getByText('memory.aiReviewFailedBatches'));
+  assert.ok(view.getByText('批次 2: 上游超时'));
+});
+
+test('/memories page reports progress and lets the user stop a multi-batch AI review', async () => {
+  const reviewRequests = [];
+  global.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === '/api/characters') return jsonResponse([reviewCharacter]);
+    if (url === '/api/memory-review') {
+      const body = JSON.parse(init.body);
+      reviewRequests.push(body);
+      if (body.batch_index === 0) {
+        return jsonResponse(reviewPayload({
+          plan_id: 'plan-1',
+          batch_count: 2,
+          reviewed: 500,
+          total_active: 800,
+          next_batch_index: 1,
+          has_more: true,
+        }));
+      }
+      // 第二批一直挂起，直到被用户中止。
+      return new Promise((_, reject) => {
+        init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  const MemoriesPage = loadMemoriesPage();
+  const view = render(React.createElement(MemoriesPage));
+  const reviewButton = await view.findByRole('button', { name: 'memory.aiReview' });
+  await waitFor(() => assert.equal(reviewButton.disabled, false));
+  fireEvent.click(reviewButton);
+
+  // t 是恒等函数，占位符替换后只剩 key；按钮文案切到进度 key 即表示进度已上报。
+  await view.findByRole('button', { name: 'memory.aiReviewProgress' });
+  await waitFor(() => assert.equal(reviewRequests.length, 2));
+  fireEvent.click(view.getByRole('button', { name: 'memory.aiReviewStop' }));
+
+  await view.findByRole('button', { name: 'memory.aiReview' });
+  assert.equal(view.queryByRole('button', { name: 'memory.aiReviewStop' }), null);
+  // 已完成批次的结果保留可见，而不是随中止一起丢掉。
+  assert.ok(view.getByText('memory.aiReviewDone'));
 });
 
 test('memory list accumulates clicked tag filters and shows removable tag chips without label text', () => {

@@ -17,8 +17,11 @@ import { AI_ARCHIVE_PROMPT } from '@/lib/prompt-templates';
 import type { MemoryCategory, MemoryKind, MemoryStatus } from '@/types';
 import { findFirstBalancedJson } from '@/lib/balanced-json';
 import { publicErrorMessage } from '@/lib/public-error';
+import { BackgroundLlmTimeoutError, runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 
 const MAX_SUMMARY_CONTENT_LENGTH = 8 * 1024;
+/** covered_memory_ids 里有记忆已被删除 / 归档 / 合并：方案已过期，重试不会成功。 */
+const COVERED_NOT_ARCHIVABLE_CODE = 'COVERED_NOT_ARCHIVABLE';
 
 type MemoryRow = {
   id: string;
@@ -76,6 +79,27 @@ function toSourceMemory(row: MemoryRow): MemoryArchiveSourceMemory {
     pinned: row.pinned === 1,
     metadata: parseMetadata(row.metadata),
   };
+}
+
+/** AI 归档方案里的一组：同一主题的若干记忆 + 一条覆盖它们的摘要。 */
+type AiArchiveProposalGroup = {
+  title: string;
+  summary: string;
+  memories: Array<{ id: string; category: string; content: string }>;
+};
+
+/** 把 LLM 输出规整为分组；兼容旧版单组格式 { archive_memory_ids, summary }。 */
+function readAiArchiveGroups(parsed: Record<string, unknown>): Array<{ title: string; summary: string; memoryIds: string[] }> {
+  const rawGroups: unknown[] = Array.isArray(parsed.groups)
+    ? parsed.groups
+    : [{ memory_ids: parsed.archive_memory_ids, summary: parsed.summary }];
+  return rawGroups.filter(isObject).map(group => ({
+    title: typeof group.title === 'string' ? group.title.trim() : '',
+    summary: typeof group.summary === 'string' ? group.summary.trim() : '',
+    memoryIds: Array.isArray(group.memory_ids)
+      ? group.memory_ids.filter((id): id is string => typeof id === 'string')
+      : [],
+  }));
 }
 
 function readNonEmptyString(body: Record<string, unknown>, key: string): string | null {
@@ -235,31 +259,34 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, result });
   }
 
-  // ── AI 归档：LLM 自动选择记忆并生成摘要 ─────────────────────────
+  // ── AI 归档：LLM 挑选记忆、按主题分组并生成摘要 ─────────────────────
+  // 只返回方案、不落库：归档会让记忆退出聊天，必须由用户确认后再逐组走 execute。
   if (action === 'ai_archive') {
     const db = getDb();
     // 读取角色所有 active 非 summary 非 pinned 的记忆
     const memories = db.prepare(`
-      SELECT id, category, content, importance, emotional_weight, pinned, memory_kind
+      SELECT id, category, content, importance, emotional_weight, pinned, memory_kind, created_at
       FROM memories
       WHERE character_id = ? AND status = 'active' AND pinned = 0
         AND json_extract(metadata, '$.archiveRole') IS NULL
       ORDER BY importance ASC, updated_at ASC
     `).all(characterId) as Array<{
       id: string; category: string; content: string;
-      importance: number; emotional_weight: number; memory_kind: string;
+      importance: number; emotional_weight: number; memory_kind: string; created_at: string;
     }>;
 
     if (memories.length === 0) {
       return NextResponse.json({ ok: false, error: 'no_archivable_memories' }, { status: 400 });
     }
 
-    // 拼接记忆列表给 LLM
+    // 拼接记忆列表给 LLM；带上日期，否则模型无从判断哪些记忆"陈旧"。
     const memoriesText = memories.map((m, i) =>
-      `[${i + 1}] ID:${m.id} | 分类:${m.category} | 种类:${m.memory_kind} | 重要度:${m.importance.toFixed(2)} | 情绪:${m.emotional_weight.toFixed(2)}\n${m.content}`
+      `[${i + 1}] ID:${m.id} | 日期:${m.created_at.slice(0, 10)} | 分类:${m.category} | 种类:${m.memory_kind} | 重要度:${m.importance.toFixed(2)} | 情绪:${m.emotional_weight.toFixed(2)}\n${m.content}`
     ).join('\n\n');
 
-    const prompt = AI_ARCHIVE_PROMPT.replace('{memories}', () => memoriesText);
+    const prompt = AI_ARCHIVE_PROMPT
+      .replace('{today}', () => now.slice(0, 10))
+      .replace('{memories}', () => memoriesText);
 
     // 调用 LLM
     const settings = loadSettings();
@@ -282,8 +309,18 @@ export async function POST(request: NextRequest) {
         [{ role: 'user', content: prompt }],
         resolveCharacterTaskSystemPrompt(taskTarget, llmSettings.model),
       );
-      response = await chatCompletion(llmSettings, messages, request.signal, backgroundExtraBody);
+      response = await runWithBackgroundLlmDeadline(
+        settings.memory_background_timeout_ms,
+        signal => chatCompletion(llmSettings, messages, signal, backgroundExtraBody),
+        request.signal,
+      );
     } catch (err) {
+      if (err instanceof BackgroundLlmTimeoutError) {
+        return NextResponse.json(
+          { ok: false, error: 'AI 归档请求超过服务器处理时限', code: 'UPSTREAM_TIMEOUT' },
+          { status: 504 },
+        );
+      }
       return NextResponse.json(
         // 上游 LLM 错误（chatCompletion 抛出前已脱敏）透传；DB / 意外异常收口
         { ok: false, error: `LLM call failed: ${publicErrorMessage(err, '上游调用失败')}` },
@@ -316,64 +353,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const archiveIds = Array.isArray(parsed.archive_memory_ids)
-      ? parsed.archive_memory_ids.filter((id): id is string => typeof id === 'string')
-      : [];
-    const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
-
-    if (archiveIds.length === 0 || !summary) {
-      return NextResponse.json({
-        ok: true,
-        status: 'no_archive_needed',
-        archive_count: 0,
-        summary: '',
-        message: 'AI 判断当前无需归档的记忆',
+    // 校验每个分组：ID 必须是本次送审的 active 记忆；一条记忆只归入一个分组（先到先得），
+    // 否则前一组归档后，后一组执行时会因源记忆已非 active 而失败。
+    const memoryById = new Map(memories.map(m => [m.id, m]));
+    const claimedIds = new Set<string>();
+    const groups: AiArchiveProposalGroup[] = [];
+    for (const group of readAiArchiveGroups(parsed)) {
+      const ids = [...new Set(group.memoryIds)].filter(id => memoryById.has(id) && !claimedIds.has(id));
+      // 只剩一条的分组没有可合并的内容，归档它只会把原记忆换成一条分类/重要度被抹平的摘要。
+      if (ids.length < 2 || !group.summary) continue;
+      for (const id of ids) claimedIds.add(id);
+      groups.push({
+        title: group.title,
+        summary: group.summary,
+        memories: ids.map(id => {
+          const memory = memoryById.get(id)!;
+          return { id: memory.id, category: memory.category, content: memory.content };
+        }),
       });
     }
 
-    // 校验 ID 合法性：必须在角色的 active 记忆中
-    const validIds = new Set(memories.map(m => m.id));
-    const filteredIds = [...new Set(archiveIds.filter(id => validIds.has(id)))];
-
-    if (filteredIds.length === 0) {
-      return NextResponse.json({
-        ok: true,
-        status: 'no_archive_needed',
-        archive_count: 0,
-        summary: '',
-        message: 'AI 返回的记忆 ID 无效',
-      });
-    }
-
-    // 执行归档
-    const aiBatchId = crypto.randomUUID();
-    const summaryMemoryId = crypto.randomUUID().slice(0, 12);
-    try {
-      const plan = executeMemorySummaryArchive(db, {
-        batchId: aiBatchId,
-        characterId,
-        summaryMemoryId,
-        summaryContent: summary,
-        coveredMemoryIds: filteredIds,
-        now,
-      });
-      const indexing = queueArchiveSummaryIndex(plan.summaryMemory.id, characterId);
-      return NextResponse.json({
-        ok: true,
-        status: 'archived',
-        archive_count: filteredIds.length,
-        summary,
-        batch_id: aiBatchId,
-        plan,
-        ...indexing,
-      });
-    } catch (err) {
-      return NextResponse.json(
-        // executeMemorySummaryArchive 的错误多为业务校验文案，透传；DB 异常收口
-        { ok: false, error: `Archive execution failed: ${publicErrorMessage(err, 'internal error')}` },
-        { status: 500 },
-      );
-    }
+    return NextResponse.json({
+      ok: true,
+      status: groups.length > 0 ? 'proposed' : 'no_archive_needed',
+      candidate_count: memories.length,
+      groups,
+    });
   }
 
   const coveredMemoryIds = readStringIds(rawBody, 'covered_memory_ids');
@@ -394,7 +399,10 @@ export async function POST(request: NextRequest) {
 
   const sourceMemories = loadCoveredMemories(characterId, coveredMemoryIds);
   if (!sourceMemories) {
-    return NextResponse.json({ error: 'Some covered memories were not found' }, { status: 404 });
+    return NextResponse.json(
+      { error: 'Some covered memories were not found', code: COVERED_NOT_ARCHIVABLE_CODE },
+      { status: 404 },
+    );
   }
 
   // 提前拒绝非 active / 已是 summary / 已归档的记忆,给用户明确的 400 反馈;
@@ -406,7 +414,7 @@ export async function POST(request: NextRequest) {
   );
   if (invalidCovered) {
     return NextResponse.json(
-      { error: 'covered_memory_ids must reference active, non-summary memories' },
+      { error: 'covered_memory_ids must reference active, non-summary memories', code: COVERED_NOT_ARCHIVABLE_CODE },
       { status: 400 },
     );
   }

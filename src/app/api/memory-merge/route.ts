@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import {
   executeMemoryMerge,
   listUndoableMemoryMergeBatches,
+  MemoryMergeSourceError,
   undoMemoryMergeBatch,
 } from '@/lib/memory-merge';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
@@ -140,6 +141,13 @@ export async function POST(request: NextRequest) {
       indexing_started: indexingStarted,
     });
   } catch (error) {
+    if (error instanceof MemoryMergeSourceError) {
+      // 建议已过期或源记忆不可合并：附带机器可读 reason，前端据此标记建议失效并给出本地化说明。
+      return NextResponse.json(
+        { ok: false, error: error.message, reason: error.reason },
+        { status: 400 },
+      );
+    }
     return NextResponse.json(
       // execute 的错误均为业务校验文案（源记忆状态 / 长度上限），透传；DB 异常收口
       { ok: false, error: publicErrorMessage(error, '合并记忆失败') },

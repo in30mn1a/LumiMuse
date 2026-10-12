@@ -6,9 +6,9 @@ import MemoryList from '@/components/memories/MemoryList';
 import Link from 'next/link';
 import Modal from '@/components/ui/Modal';
 import { useTranslation } from '@/lib/i18n-context';
-import { getErrorMessage, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
+import { getErrorMessage, HttpResponseError, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
 import { useToast } from '@/components/ui/Toast';
-import { ArrowLeftIcon, ChevronDownIcon, MemoryIcon, SparkIcon } from '@/components/ui/icons';
+import { ArrowLeftIcon, ChevronDownIcon, MemoryIcon, SparkIcon, StopIcon } from '@/components/ui/icons';
 
 interface MemoryMergeSuggestionSource {
   id: string;
@@ -28,6 +28,11 @@ interface MemoryMergeSuggestion {
   sources: MemoryMergeSuggestionSource[];
 }
 
+type MemoryReviewChangeDiff =
+  | { field: 'category'; before: string; after: string }
+  | { field: 'tags'; before: string[]; after: string[] }
+  | { field: 'importance'; before: number; after: number };
+
 interface MemoryAiReviewResult {
   ok: boolean;
   plan_id?: string;
@@ -45,15 +50,25 @@ interface MemoryAiReviewResult {
   failed_messages: string[];
   indexing_queued: number;
   indexing_started: boolean;
-  changes: Array<{ id: string; fields: string[]; content: string }>;
+  changes: Array<{ id: string; fields: string[]; content: string; diffs: MemoryReviewChangeDiff[] }>;
   merge_suggestions: MemoryMergeSuggestion[];
 }
 
 interface PendingMergeSuggestion extends MemoryMergeSuggestion {
   key: string;
-  status: 'pending' | 'accepted' | 'rejected' | 'failed';
+  /** stale：源记忆在建议生成后已变化（被归档 / 合并 / 删除 / 钉选），无法再执行。 */
+  status: 'pending' | 'accepted' | 'rejected' | 'failed' | 'stale';
   merge_batch_id?: string;
   error?: string;
+}
+
+const MERGE_SOURCE_ISSUES = ['not_found', 'not_active', 'pinned', 'reserved'] as const;
+
+/** /api/memory-merge 在源记忆不可合并时返回的机器可读原因。 */
+function readMergeSourceIssue(error: unknown): typeof MERGE_SOURCE_ISSUES[number] | null {
+  if (!(error instanceof HttpResponseError)) return null;
+  const reason = (error.data as { reason?: unknown } | null)?.reason;
+  return MERGE_SOURCE_ISSUES.find(issue => issue === reason) ?? null;
 }
 
 interface MergeSourcesModalState {
@@ -65,6 +80,7 @@ export default function MemoriesPage() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
   const [memoryAiReviewRunning, setMemoryAiReviewRunning] = useState(false);
+  const [memoryAiReviewProgress, setMemoryAiReviewProgress] = useState<{ reviewed: number; total: number } | null>(null);
   const [lastMemoryAiReviewResult, setLastMemoryAiReviewResult] = useState<MemoryAiReviewResult | null>(null);
   const [showMemoryAiReviewChanges, setShowMemoryAiReviewChanges] = useState(false);
   const [mergeSuggestions, setMergeSuggestions] = useState<PendingMergeSuggestion[]>([]);
@@ -72,6 +88,7 @@ export default function MemoriesPage() {
   const [mergeSourcesModal, setMergeSourcesModal] = useState<MergeSourcesModalState | null>(null);
   const [memoryRefreshNonce, setMemoryRefreshNonce] = useState(0);
   const selectedCharIdRef = useRef<string | null>(null);
+  const memoryAiReviewAbortRef = useRef<AbortController | null>(null);
   const { t } = useTranslation();
   const { showToast } = useToast();
 
@@ -104,7 +121,10 @@ export default function MemoriesPage() {
   const handleMemoryAiReview = async () => {
     if (!selectedCharId) return;
     const requestedCharacterId = selectedCharId;
+    const abortController = new AbortController();
+    memoryAiReviewAbortRef.current = abortController;
     setMemoryAiReviewRunning(true);
+    setMemoryAiReviewProgress(null);
     setShowMemoryAiReviewChanges(false);
     setMergeSuggestions([]);
     // 在 try 外声明，catch 块需读取已聚合的进度（前面已落库的页）来展示中断状态。
@@ -140,6 +160,7 @@ export default function MemoriesPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal: abortController.signal,
         });
         if (response.status === 404) {
           const errBody = await response.json().catch(() => ({})) as { code?: string; error?: string };
@@ -172,6 +193,7 @@ export default function MemoriesPage() {
             aggregateResult.merge_suggestions.push(suggestion);
           }
         }
+        setMemoryAiReviewProgress({ reviewed: aggregateResult.reviewed, total: aggregateResult.total_active });
 
         if (!result.has_more || result.next_batch_index === null || result.next_batch_index === undefined) {
           nextBatchIndex = null;
@@ -200,18 +222,23 @@ export default function MemoriesPage() {
       }
     } catch (err) {
       if (selectedCharIdRef.current !== requestedCharacterId) return;
+      // 用户主动点了停止：不是故障，不按错误提示。
+      const stoppedByUser = abortController.signal.aborted;
       // 整页失败会中断后续页，但此前已成功的页其修正已落库；保留并展示已处理进度，避免表现为全盘失败、让已落库的修改对用户不可见。
       if (aggregateResult.reviewed > 0) {
         setLastMemoryAiReviewResult(aggregateResult);
         setMergeSuggestions(pendingMerges);
         setMemoryRefreshNonce(prev => prev + 1);
         setShowMemoryAiReviewChanges(true);
+        const progressSummary = t(stoppedByUser ? 'memory.aiReviewStopped' : 'memory.aiReviewInterrupted')
+          .replace('{reviewed}', String(aggregateResult.reviewed))
+          .replace('{corrected}', String(aggregateResult.corrected));
         showToast(
-          `${t('memory.aiReviewInterrupted')
-            .replace('{reviewed}', String(aggregateResult.reviewed))
-            .replace('{corrected}', String(aggregateResult.corrected))}: ${getErrorMessage(err)}`,
-          'error',
+          stoppedByUser ? progressSummary : `${progressSummary}: ${getErrorMessage(err)}`,
+          stoppedByUser ? 'info' : 'error',
         );
+      } else if (stoppedByUser) {
+        showToast(t('memory.aiReviewStoppedEmpty'), 'info');
       } else {
         showToast(`${t('memory.aiReviewFailed')}: ${getErrorMessage(err)}`, 'error');
       }
@@ -223,7 +250,12 @@ export default function MemoriesPage() {
   };
 
   const handleAcceptMerge = async (suggestion: PendingMergeSuggestion) => {
-    if (!selectedCharId || suggestion.kind !== 'merge' || suggestion.status === 'accepted') return;
+    if (
+      !selectedCharId
+      || suggestion.kind !== 'merge'
+      || suggestion.status === 'accepted'
+      || suggestion.status === 'stale'
+    ) return;
     setMergeBusyKey(suggestion.key);
     try {
       const response = await fetch('/api/memory-merge', {
@@ -249,12 +281,17 @@ export default function MemoriesPage() {
       setMemoryRefreshNonce(prev => prev + 1);
       showToast(t('memory.mergeAccepted').replace('{count}', '1'), 'success');
     } catch (error) {
+      // 源记忆在建议生成后被归档 / 合并 / 删除 / 钉选：重试也不会成功，标记为失效并说明原因。
+      const sourceIssue = readMergeSourceIssue(error);
+      const message = sourceIssue ? t(`memory.mergeStale.${sourceIssue}`) : getErrorMessage(error);
       setMergeSuggestions(prev => prev.map(item => (
         item.key === suggestion.key
-          ? { ...item, status: 'failed', error: getErrorMessage(error) }
+          ? { ...item, status: sourceIssue ? 'stale' : 'failed', error: message }
           : item
       )));
-      showToast(`${t('memory.mergeFailed')}: ${getErrorMessage(error)}`, 'error');
+      // 列表里的源记忆也已过时，刷新出它们现在的状态。
+      if (sourceIssue) setMemoryRefreshNonce(prev => prev + 1);
+      showToast(`${t('memory.mergeFailed')}: ${message}`, 'error');
     } finally {
       setMergeBusyKey(null);
     }
@@ -294,6 +331,10 @@ export default function MemoriesPage() {
   };
 
   const visibleMerges = mergeSuggestions.filter(item => item.status !== 'rejected');
+  const formatReviewDiffValue = (value: string | string[] | number): string => {
+    if (Array.isArray(value)) return value.length > 0 ? value.join('、') : t('memory.aiReviewEmptyValue');
+    return String(value);
+  };
 
   return (
     <div className="app-shell min-h-screen px-4 py-4">
@@ -325,8 +366,24 @@ export default function MemoriesPage() {
                 ) : (
                   <SparkIcon className="h-4 w-4" />
                 )}
-                {memoryAiReviewRunning ? t('memory.aiReviewRunning') : t('memory.aiReview')}
+                {!memoryAiReviewRunning
+                  ? t('memory.aiReview')
+                  : memoryAiReviewProgress
+                    ? t('memory.aiReviewProgress')
+                      .replace('{reviewed}', String(memoryAiReviewProgress.reviewed))
+                      .replace('{total}', String(memoryAiReviewProgress.total))
+                    : t('memory.aiReviewRunning')}
               </button>
+              {memoryAiReviewRunning && (
+                <button
+                  type="button"
+                  onClick={() => memoryAiReviewAbortRef.current?.abort()}
+                  className="soft-button soft-button-danger whitespace-nowrap"
+                >
+                  <StopIcon className="h-4 w-4" />
+                  {t('memory.aiReviewStop')}
+                </button>
+              )}
               {lastMemoryAiReviewResult && (
                 <button
                   type="button"
@@ -373,47 +430,61 @@ export default function MemoriesPage() {
                 </span>
               )}
             </div>
-            {lastMemoryAiReviewResult.changes.length > 0 ? (
-              <div className="space-y-2">
-                {lastMemoryAiReviewResult.changes.map(change => (
-                  <div key={change.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
-                    <div className="font-medium text-text-primary break-all">{change.id}</div>
-                    <div className="mt-1 text-xs text-text-muted">
-                      {t('memory.aiReviewChangedFields')}: {change.fields.join('；')}
-                    </div>
-                    <details className="group mt-2 border-t border-border-light pt-2">
-                      <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-text-primary marker:hidden">
-                        <ChevronDownIcon className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
-                        <span>{t('memory.aiReviewMemoryContent')}</span>
-                      </summary>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">{change.content}</p>
-                    </details>
-                  </div>
-                ))}
+            {lastMemoryAiReviewResult.failed_messages.length > 0 && (
+              <div className="mb-3 rounded-xl border border-red-300/60 bg-red-500/5 px-3 py-2 text-xs text-red-600">
+                <p className="font-medium">
+                  {t('memory.aiReviewFailedBatches').replace('{failed}', String(lastMemoryAiReviewResult.failed_batches))}
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {lastMemoryAiReviewResult.failed_messages.map((message, index) => (
+                    <li key={index} className="break-words">{message}</li>
+                  ))}
+                </ul>
               </div>
-            ) : (
-              <p className="text-sm text-text-muted">{t('memory.aiReviewNoChanges')}</p>
             )}
 
+            {/* 合并建议需要用户逐条决定，放在只读的修正明细之前，免得被长列表压到页面底部。 */}
             {visibleMerges.length > 0 && (
-              <div className="mt-4 border-t border-border-light pt-4">
-                <h2 className="mb-2 text-sm font-semibold text-text-primary">{t('memory.mergeSuggestions')}</h2>
+              <div className="mb-4 border-b border-border-light pb-4">
+                <h2 className="text-sm font-semibold text-text-primary">
+                  {t('memory.mergeSuggestions')} ({visibleMerges.length})
+                </h2>
+                <p className="mb-2 mt-1 text-xs text-text-muted">{t('memory.mergeSuggestionsHint')}</p>
                 <div className="space-y-2">
                   {visibleMerges.map(suggestion => (
-                    <div key={suggestion.key} className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+                    <div
+                      key={suggestion.key}
+                      className={`rounded-xl border border-border-light bg-white/60 px-3 py-2 dark:bg-white/5 ${suggestion.status === 'stale' ? 'opacity-70' : ''}`}
+                    >
                       <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
                         <span className="chip">
                           {suggestion.kind === 'conflict' ? t('memory.mergeConflict') : t('memory.mergeSuggestions')}
                         </span>
-                        <span>{t('memory.mergeSources')}: {suggestion.source_ids.join(', ')}</span>
-                        {suggestion.status === 'accepted' && suggestion.merge_batch_id && (
-                          <span className="chip chip-active">{suggestion.merge_batch_id}</span>
+                        {suggestion.status === 'accepted' && (
+                          <span className="chip chip-active">{t('memory.mergeAcceptedBadge')}</span>
+                        )}
+                        {suggestion.status === 'stale' && (
+                          <span className="chip">{t('memory.mergeStaleBadge')}</span>
                         )}
                       </div>
                       {suggestion.reason && (
                         <p className="mt-1 text-xs text-text-muted">{suggestion.reason}</p>
                       )}
-                      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+                      <div className="mt-2 text-xs font-medium text-text-secondary">
+                        {t('memory.mergeSources')} ×{suggestion.source_ids.length}
+                      </div>
+                      <ul className="mt-1 space-y-1">
+                        {suggestion.sources.map(source => (
+                          <li
+                            key={source.id}
+                            className="memory-snippet break-words border-l-2 border-border-light pl-2 text-xs leading-5 text-text-secondary"
+                          >
+                            {source.content}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-2 text-xs font-medium text-text-secondary">{t('memory.mergeResult')}</div>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
                         {suggestion.merged_content}
                       </p>
                       <div className="mt-2 flex flex-wrap gap-2">
@@ -430,7 +501,7 @@ export default function MemoriesPage() {
                             {t('memory.mergeViewSources')}
                           </button>
                         )}
-                        {suggestion.kind === 'merge' && suggestion.status !== 'accepted' && (
+                        {suggestion.kind === 'merge' && (suggestion.status === 'pending' || suggestion.status === 'failed') && (
                           <button
                             type="button"
                             disabled={mergeBusyKey === suggestion.key}
@@ -440,7 +511,7 @@ export default function MemoriesPage() {
                             {t('memory.mergeAccept')}
                           </button>
                         )}
-                        {suggestion.status === 'pending' && (
+                        {suggestion.status !== 'accepted' && (
                           <button
                             type="button"
                             disabled={mergeBusyKey === suggestion.key}
@@ -468,6 +539,42 @@ export default function MemoriesPage() {
                   ))}
                 </div>
               </div>
+            )}
+
+            {lastMemoryAiReviewResult.changes.length > 0 ? (
+              <>
+                <h2 className="mb-2 text-sm font-semibold text-text-primary">
+                  {t('memory.aiReviewCorrections')} ({lastMemoryAiReviewResult.changes.length})
+                </h2>
+                <div className="max-h-[32rem] space-y-2 overflow-y-auto">
+                  {lastMemoryAiReviewResult.changes.map(change => (
+                    <div key={change.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-2 dark:bg-white/5">
+                      <details className="group">
+                        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm text-text-primary marker:hidden">
+                          <ChevronDownIcon className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+                          <span className="min-w-0 flex-1 truncate group-open:hidden">{change.content}</span>
+                          <span className="hidden text-xs font-medium group-open:inline">{t('memory.aiReviewMemoryContent')}</span>
+                        </summary>
+                        <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">{change.content}</p>
+                      </details>
+                      <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-text-muted">
+                        <span>{t('memory.aiReviewChangedFields')}:</span>
+                        {change.diffs.map(diff => (
+                          <span key={diff.field}>
+                            {t(`memory.${diff.field}`)}{' '}
+                            <span className="line-through">{formatReviewDiffValue(diff.before)}</span>
+                            {' → '}
+                            <span className="font-medium text-text-primary">{formatReviewDiffValue(diff.after)}</span>
+                          </span>
+                        ))}
+                      </div>
+                      <div className="mt-1 break-all font-mono text-[11px] text-text-muted">{change.id}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-text-muted">{t('memory.aiReviewNoChanges')}</p>
             )}
           </section>
         )}
@@ -497,14 +604,14 @@ export default function MemoriesPage() {
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {mergeSourcesModal?.sources.map(source => (
             <div key={source.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-2 dark:bg-white/5">
-              <div className="font-medium text-text-primary break-all">{source.id}</div>
-              <div className="mt-1 text-xs text-text-muted">
+              <div className="text-xs text-text-muted">
                 {source.category}
                 {source.tags.length > 0 ? ` · ${source.tags.join(',')}` : ''}
               </div>
-              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
                 {source.content}
               </p>
+              <div className="mt-1 break-all font-mono text-[11px] text-text-muted">{source.id}</div>
             </div>
           ))}
         </div>

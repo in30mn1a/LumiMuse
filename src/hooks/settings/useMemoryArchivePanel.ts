@@ -29,14 +29,29 @@ interface MemoryArchiveBatchDetail {
   summary: { id: string; content: string } | null;
 }
 
+export interface MemoryArchiveAiProposalMemory {
+  id: string;
+  category: string;
+  content: string;
+}
+
+/** AI 归档方案中的一组：同一主题的若干记忆 + 一条摘要。用户确认后才会执行。 */
+export interface MemoryArchiveAiProposal {
+  key: string;
+  title: string;
+  summary: string;
+  memories: MemoryArchiveAiProposalMemory[];
+  /** 仍保留在这一组里、确认后会被归档的记忆 ID。 */
+  selectedIds: string[];
+  /** stale：组内有记忆在方案生成后已被归档 / 合并 / 删除，无法再执行。 */
+  status: 'pending' | 'archived' | 'failed' | 'stale';
+  error?: string;
+}
+
 interface MemoryArchiveAiResponse {
   ok: true;
   status?: string;
-  archive_count?: number;
-  summary?: string;
-  message?: string;
-  batch_id?: string;
-  plan?: MemoryArchivePlan;
+  groups: Array<{ title: string; summary: string; memories: MemoryArchiveAiProposalMemory[] }>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -44,10 +59,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseMemoryArchiveAiResponse(response: Response, data: unknown): MemoryArchiveAiResponse {
-  if (!isRecord(data) || data.ok !== true) {
+  if (!isRecord(data) || data.ok !== true || !Array.isArray(data.groups)) {
     throw new HttpResponseError('Invalid memory archive AI response', response.status, data);
   }
   return data as unknown as MemoryArchiveAiResponse;
+}
+
+/** /api/memory-archive 在 covered 记忆已被归档 / 合并 / 删除时返回的机器可读标记。 */
+function isCoveredNotArchivableError(error: unknown): boolean {
+  return error instanceof HttpResponseError
+    && isRecord(error.data)
+    && error.data.code === 'COVERED_NOT_ARCHIVABLE';
 }
 
 function parseMemoryArchiveBatchDetail(response: Response, data: unknown): MemoryArchiveBatchDetail {
@@ -96,6 +118,7 @@ export function useMemoryArchivePanel({
   const [memoryArchiveOffset, setMemoryArchiveOffset] = useState(0);
   const [memoryArchiveError, setMemoryArchiveError] = useState<string | null>(null);
   const [memoryArchiveAiRunning, setMemoryArchiveAiRunning] = useState(false);
+  const [memoryArchiveAiProposals, setMemoryArchiveAiProposals] = useState<MemoryArchiveAiProposal[]>([]);
   const memoryArchiveRequestSeqRef = useRef(0);
   const memoryArchiveBatchRequestSeqRef = useRef(0);
   const memoryArchiveActionRequestSeqRef = useRef(0);
@@ -144,6 +167,7 @@ export function useMemoryArchivePanel({
     setMemoryArchiveOffset(0);
     setMemoryArchiveError(null);
     setMemoryArchiveAiRunning(false);
+    setMemoryArchiveAiProposals([]);
   }, []);
 
   const loadMemoryArchiveMemories = useCallback(async (nextCharacterId: string, options: { append?: boolean; offset?: number } = {}) => {
@@ -319,6 +343,7 @@ export function useMemoryArchivePanel({
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       setMemoryArchivePlan(data.plan);
       setSelectedMemoryArchiveIds([]);
+      setMemoryArchiveSummary('');
       await loadMemoryDiagnostics();
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryIndexStatus();
@@ -407,29 +432,20 @@ export function useMemoryArchivePanel({
 
       if (!isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)) return;
 
-      if (result.status === 'no_archive_needed') {
-        showToast(result.message || t('settings.memoryArchiveAiNoArchiveNeeded'), 'success');
-        setMemoryArchivePlan(null);
-      } else if (result.plan) {
-        const count = result.archive_count ?? result.plan.coveredMemoryUpdates.length;
-        showToast(t('settings.memoryArchiveAiDone').replace('{count}', String(count)), 'success');
-        setMemoryArchivePlan({
-          summaryMemory: result.plan.summaryMemory,
-          coveredMemoryUpdates: result.plan.coveredMemoryUpdates,
-        });
-        if (result.summary) setMemoryArchiveSummary(result.summary);
+      // AI 只给出方案，此时还没有任何记忆被归档；等用户逐组确认后再执行。
+      setMemoryArchiveAiProposals(result.groups.map((group, index) => ({
+        key: `${requestSeq}-${index}`,
+        title: group.title,
+        summary: group.summary,
+        memories: group.memories,
+        selectedIds: group.memories.map(memory => memory.id),
+        status: 'pending',
+      })));
+      if (result.groups.length === 0) {
+        showToast(t('settings.memoryArchiveAiNoArchiveNeeded'), 'info');
       } else {
-        showToast(t('settings.memoryArchiveAiDone')
-          .replace('{count}', String(result.archive_count ?? 0)), 'success');
+        showToast(t('settings.memoryArchiveAiProposed').replace('{count}', String(result.groups.length)), 'success');
       }
-
-      await loadMemoryDiagnostics();
-      if (!isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)) return;
-      await loadMemoryIndexStatus();
-      if (!isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)) return;
-      await loadMemoryArchiveMemories(requestedCharacterId);
-      if (!isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)) return;
-      await loadMemoryArchiveBatches(requestedCharacterId);
     } catch (err) {
       if (controller.signal.aborted) {
         if (isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)) setMemoryArchiveError(null);
@@ -455,6 +471,98 @@ export function useMemoryArchivePanel({
     showToast(t('settings.memoryArchiveAiStopping'), 'success');
   };
 
+  const updateMemoryArchiveAiProposal = (
+    key: string,
+    update: (proposal: MemoryArchiveAiProposal) => MemoryArchiveAiProposal,
+  ) => {
+    setMemoryArchiveAiProposals(prev => prev.map(proposal => (proposal.key === key ? update(proposal) : proposal)));
+  };
+
+  const setMemoryArchiveAiProposalSummary = (key: string, summary: string) => {
+    updateMemoryArchiveAiProposal(key, proposal => ({ ...proposal, summary }));
+  };
+
+  const toggleMemoryArchiveAiProposalMemory = (key: string, memoryId: string) => {
+    updateMemoryArchiveAiProposal(key, proposal => ({
+      ...proposal,
+      selectedIds: proposal.selectedIds.includes(memoryId)
+        ? proposal.selectedIds.filter(id => id !== memoryId)
+        : [...proposal.selectedIds, memoryId],
+    }));
+  };
+
+  const dismissMemoryArchiveAiProposal = (key: string) => {
+    setMemoryArchiveAiProposals(prev => prev.filter(proposal => proposal.key !== key));
+  };
+
+  const handleExecuteMemoryArchiveAiProposals = async (keys: string[]) => {
+    const characterId = selectedCharacterId.trim();
+    const targets = memoryArchiveAiProposals.filter(proposal => (
+      keys.includes(proposal.key)
+        && (proposal.status === 'pending' || proposal.status === 'failed')
+        && proposal.selectedIds.length > 0
+        && proposal.summary.trim().length > 0
+    ));
+    if (!characterId || targets.length === 0) return;
+    const requestedCharacterId = characterId;
+    memoryArchiveActionRequestSeqRef.current += 1;
+    const requestSeq = memoryArchiveActionRequestSeqRef.current;
+
+    setMemoryArchiveLoading(true);
+    setMemoryArchiveError(null);
+    let archivedCount = 0;
+    try {
+      // 逐组执行：每组是一个独立的归档批次，可以单独撤销；一组失败不影响其它组。
+      for (const proposal of targets) {
+        try {
+          await expectOkResponse(await fetch('/api/memory-archive', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'execute',
+              character_id: requestedCharacterId,
+              covered_memory_ids: proposal.selectedIds,
+              summary_content: proposal.summary.trim(),
+            }),
+          }));
+          if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+          archivedCount += proposal.selectedIds.length;
+          updateMemoryArchiveAiProposal(proposal.key, item => ({ ...item, status: 'archived', error: undefined }));
+          // 这些记忆已不再是 active；手动归档区若还勾着它们，之后执行必然被服务端拒绝。
+          invalidateMemoryArchivePreview();
+          setSelectedMemoryArchiveIds(prev => prev.filter(id => !proposal.selectedIds.includes(id)));
+        } catch (err) {
+          if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+          const stale = isCoveredNotArchivableError(err);
+          updateMemoryArchiveAiProposal(proposal.key, item => ({
+            ...item,
+            status: stale ? 'stale' : 'failed',
+            error: stale ? t('settings.memoryArchiveAiProposalStale') : getErrorMessage(err),
+          }));
+        }
+      }
+      if (archivedCount > 0) {
+        showToast(t('settings.memoryArchiveAiDone').replace('{count}', String(archivedCount)), 'success');
+      } else {
+        showToast(t('settings.memoryArchiveAiFailed'), 'error');
+      }
+      await loadMemoryDiagnostics();
+      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      await loadMemoryIndexStatus();
+      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      await loadMemoryArchiveMemories(requestedCharacterId);
+      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      await loadMemoryArchiveBatches(requestedCharacterId);
+    } catch (err) {
+      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
+      setMemoryArchiveError(getErrorMessage(err));
+    } finally {
+      if (isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) {
+        setMemoryArchiveLoading(false);
+      }
+    }
+  };
+
   const loadMemoryArchiveBatchDetail = async (batchId: string) => {
     if (!batchId) { memoryArchiveDetailRequestSeqRef.current += 1; setMemoryArchiveBatchDetail(null); return; }
     const characterId = selectedCharacterId.trim();
@@ -473,7 +581,6 @@ export function useMemoryArchivePanel({
       if (!isCurrentMemoryArchiveDetailRequest(requestedCharacterId, requestSeq)) return;
       setMemoryArchiveBatchDetail(data);
       setMemoryArchiveError(null);
-      if (data.summary?.content) setMemoryArchiveSummary(data.summary.content);
     } catch (err) {
       if (!isCurrentMemoryArchiveDetailRequest(requestedCharacterId, requestSeq)) return;
       setMemoryArchiveError(getErrorMessage(err));
@@ -495,6 +602,7 @@ export function useMemoryArchivePanel({
     memoryArchiveOffset,
     memoryArchiveError,
     memoryArchiveAiRunning,
+    memoryArchiveAiProposals,
     setMemoryArchiveSummary,
     selectMemoryArchiveIds,
     clearMemoryArchiveSelection,
@@ -508,6 +616,10 @@ export function useMemoryArchivePanel({
     handleMemoryArchiveUndo,
     handleMemoryArchiveAi,
     handleStopMemoryArchiveAi,
+    setMemoryArchiveAiProposalSummary,
+    toggleMemoryArchiveAiProposalMemory,
+    dismissMemoryArchiveAiProposal,
+    handleExecuteMemoryArchiveAiProposals,
     loadMemoryArchiveBatchDetail,
   };
 }

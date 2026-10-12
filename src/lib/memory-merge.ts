@@ -137,29 +137,59 @@ function resolveMergedTimestamp(rows: MemoryRow[], now: string): string {
   return nowTimestamp !== null && latest.timestamp >= nowTimestamp ? now : latest.value;
 }
 
+/** 源记忆为何不能参与合并。 */
+export type MemoryMergeSourceIssue = 'not_found' | 'not_active' | 'pinned' | 'reserved';
+
+const MERGE_SOURCE_ISSUE_MESSAGES: Record<MemoryMergeSourceIssue, string> = {
+  not_found: 'Some source memories were not found',
+  not_active: 'Only active memories can be merged',
+  pinned: 'Pinned memories cannot be merged',
+  reserved: 'Memories already reserved by merge/archive cannot be re-merged',
+};
+
+/**
+ * 源记忆不可合并：建议生成后源记忆状态已变，或它在结构上本就不能合并。
+ * 机器可读原因放在 `reason` 而非 `code`——publicErrorMessage 会把带字符串 `code`
+ * 的异常当作系统错误收口，业务文案就传不到前端了。
+ */
+export class MemoryMergeSourceError extends Error {
+  constructor(public readonly reason: MemoryMergeSourceIssue) {
+    super(MERGE_SOURCE_ISSUE_MESSAGES[reason]);
+    this.name = 'MemoryMergeSourceError';
+  }
+}
+
+/**
+ * 单条记忆不能作为合并源的原因；可合并时返回 null。
+ * execute 守卫与 AI 整理的建议过滤共用这一份判定，避免「建议了却执行不了」。
+ */
+export function getMergeSourceIssue(
+  row: Pick<MemoryRow, 'status' | 'pinned' | 'metadata'>,
+): Exclude<MemoryMergeSourceIssue, 'not_found'> | null {
+  if (row.status !== 'active') return 'not_active';
+  if (row.pinned === 1) return 'pinned';
+  const metadata = parseJsonObject(row.metadata);
+  if (
+    metadata.mergeRole === 'result'
+    || metadata.mergeBatchId
+    || metadata.archiveRole === 'summary'
+    || metadata.archiveBatchId
+  ) {
+    return 'reserved';
+  }
+  return null;
+}
+
 function assertMergeSources(rows: MemoryRow[], sourceIds: string[]): void {
   if (sourceIds.length < 2) {
     throw new Error('source_ids must contain at least 2 memories');
   }
   if (rows.length !== sourceIds.length) {
-    throw new Error('Some source memories were not found');
+    throw new MemoryMergeSourceError('not_found');
   }
   for (const row of rows) {
-    if (row.status !== 'active') {
-      throw new Error('Only active memories can be merged');
-    }
-    if (row.pinned === 1) {
-      throw new Error('Pinned memories cannot be merged');
-    }
-    const metadata = parseJsonObject(row.metadata);
-    if (
-      metadata.mergeRole === 'result'
-      || metadata.mergeBatchId
-      || metadata.archiveRole === 'summary'
-      || metadata.archiveBatchId
-    ) {
-      throw new Error('Memories already reserved by merge/archive cannot be re-merged');
-    }
+    const issue = getMergeSourceIssue(row);
+    if (issue) throw new MemoryMergeSourceError(issue);
   }
 }
 
@@ -191,7 +221,7 @@ export function executeMemoryMerge(
     const rowById = new Map(rows.map(row => [row.id, row]));
     const orderedRows = sourceIds.map(id => {
       const row = rowById.get(id);
-      if (!row) throw new Error('Some source memories were not found');
+      if (!row) throw new MemoryMergeSourceError('not_found');
       return row;
     });
     assertMergeSources(orderedRows, sourceIds);

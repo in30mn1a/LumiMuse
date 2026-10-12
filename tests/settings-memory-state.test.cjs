@@ -301,18 +301,21 @@ test('memory archive AI state is aborted and cleared on character change without
 
     aiArchiveRequest.resolve(jsonResponse({
       ok: true,
-      status: 'archived',
-      archive_count: 1,
-      summary: 'A summary should stay on A',
-      plan: {
-        summaryMemory: { id: 'summary-A', content: 'summary A' },
-        coveredMemoryUpdates: [{ id: 'memory-A', status: 'summarized' }],
-      },
+      status: 'proposed',
+      groups: [{
+        title: 'A proposal should stay on A',
+        summary: 'summary A',
+        memories: [
+          { id: 'memory-A1', category: 'fact', content: 'A1' },
+          { id: 'memory-A2', category: 'fact', content: 'A2' },
+        ],
+      }],
     }));
     await archiveAi;
 
     assert.equal(runtime.current.memoryArchiveAiRunning, false);
     assert.equal(runtime.current.memoryArchiveLoading, false);
+    assert.deepEqual(runtime.current.memoryArchiveAiProposals, []);
     assert.equal(runtime.current.memoryArchivePlan, null);
     assert.equal(runtime.current.memoryArchiveSummary, '');
     assert.deepEqual(toastMessages, []);
@@ -609,6 +612,7 @@ test('memory archive undo and batch detail ignore stale character responses', as
     memoryManagementCharacterIdRef.current = 'B';
     runtime.current.resetArchiveForCharacterChange();
     runtime.current.setSelectedMemoryArchiveBatchId('batch-B');
+    runtime.current.setMemoryArchiveSummary('draft B');
     const currentDetail = runtime.current.loadMemoryArchiveBatchDetail('batch-B');
     const currentUndo = runtime.current.handleMemoryArchiveUndo();
     assert.equal(runtime.current.memoryArchiveLoading, true);
@@ -624,7 +628,7 @@ test('memory archive undo and batch detail ignore stale character responses', as
 
     assert.equal(runtime.current.memoryArchiveLoading, true);
     assert.equal(runtime.current.memoryArchiveBatchDetail, null);
-    assert.equal(runtime.current.memoryArchiveSummary, '');
+    assert.equal(runtime.current.memoryArchiveSummary, 'draft B');
     assert.deepEqual(refreshes, []);
     assert.deepEqual(followUpRequests, []);
 
@@ -636,7 +640,8 @@ test('memory archive undo and batch detail ignore stale character responses', as
     await currentDetail;
 
     assert.deepEqual(runtime.current.memoryArchiveBatchDetail.covered.map(memory => memory.id), ['memory-B']);
-    assert.equal(runtime.current.memoryArchiveSummary, 'summary B');
+    assert.equal(runtime.current.memoryArchiveBatchDetail.summary.content, 'summary B');
+    assert.equal(runtime.current.memoryArchiveSummary, 'draft B', 'batch detail must not overwrite the manual summary draft');
 
     undoB.resolve(jsonResponse({ ok: true }));
     await currentUndo;
@@ -689,6 +694,7 @@ test('memory archive AI failure shows an error without reporting success or appl
     assert.equal(runtime.current.memoryArchiveLoading, false);
     assert.equal(runtime.current.memoryArchiveError, 'archive failed');
     assert.equal(runtime.current.memoryArchivePlan, null);
+    assert.deepEqual(runtime.current.memoryArchiveAiProposals, []);
     assert.deepEqual(toastMessages, [{ message: 'archive failed', type: 'error' }]);
   } finally {
     global.fetch = originalFetch;
@@ -744,6 +750,316 @@ test('memory archive batch detail keeps old state and exposes non-2xx or invalid
     await runtime.current.loadMemoryArchiveBatchDetail('batch-1');
     assert.deepEqual(runtime.current.memoryArchiveBatchDetail, oldDetail);
     assert.match(runtime.current.memoryArchiveError, /Invalid memory archive batch detail response/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+function archiveGroup(title, ids) {
+  return {
+    title,
+    summary: `${title} 摘要`,
+    memories: ids.map(id => ({ id, category: '话题历史', content: `内容 ${id}` })),
+  };
+}
+
+// 让带 {count} 的提示把数量带进断言里，其余文案仍然原样返回 key。
+function archiveT(key) {
+  return key === 'settings.memoryArchiveAiProposed' || key === 'settings.memoryArchiveAiDone' ? `${key}:{count}` : key;
+}
+
+test('memory archive AI only stores proposals and leaves archiving to an explicit confirmation', async () => {
+  const toastMessages = [];
+  const requests = [];
+  const refreshes = [];
+  const memoryManagementCharacterIdRef = { current: 'A' };
+  const aiResponses = [
+    { ok: true, status: 'proposed', groups: [archiveGroup('日常', ['m1', 'm2']), archiveGroup('旅行', ['m3', 'm4'])] },
+    { ok: true, status: 'no_archive_needed', groups: [] },
+  ];
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    requests.push(init.body ? JSON.parse(String(init.body)) : String(url));
+    return jsonResponse(aiResponses.shift());
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryArchivePanel } = requireFreshWithMocks('../src/hooks/settings/useMemoryArchivePanel.ts', {
+          react: reactMock,
+        });
+        return useMemoryArchivePanel;
+      },
+      () => ({
+        characterId: memoryManagementCharacterIdRef.current,
+        memoryManagementCharacterIdRef,
+        loadMemoryDiagnostics: async () => refreshes.push('diagnostics'),
+        loadMemoryIndexStatus: async () => refreshes.push('index-status'),
+        t: archiveT,
+        showToast: (message, type) => toastMessages.push({ message, type }),
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.handleMemoryArchiveAi();
+
+    assert.deepEqual(
+      requests,
+      [{ action: 'ai_archive', character_id: 'A' }],
+      'a proposal must not trigger an archive or any list refresh',
+    );
+    assert.deepEqual(refreshes, []);
+    const proposals = runtime.current.memoryArchiveAiProposals;
+    assert.deepEqual(
+      proposals.map(({ title, summary, selectedIds, status }) => ({ title, summary, selectedIds, status })),
+      [
+        { title: '日常', summary: '日常 摘要', selectedIds: ['m1', 'm2'], status: 'pending' },
+        { title: '旅行', summary: '旅行 摘要', selectedIds: ['m3', 'm4'], status: 'pending' },
+      ],
+    );
+    assert.equal(new Set(proposals.map(proposal => proposal.key)).size, 2);
+    assert.deepEqual(toastMessages, [{ message: 'settings.memoryArchiveAiProposed:2', type: 'success' }]);
+    assert.equal(runtime.current.memoryArchivePlan, null);
+    assert.equal(runtime.current.memoryArchiveSummary, '');
+
+    await runtime.current.handleMemoryArchiveAi();
+
+    assert.deepEqual(runtime.current.memoryArchiveAiProposals, [], 'a new run replaces the previous proposals');
+    assert.deepEqual(toastMessages.at(-1), { message: 'settings.memoryArchiveAiNoArchiveNeeded', type: 'info' });
+    assert.equal(runtime.current.memoryArchiveAiRunning, false);
+    assert.equal(runtime.current.memoryArchiveLoading, false);
+    assert.equal(requests.length, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('memory archive AI proposals are archived group by group with edits applied and failures isolated', async () => {
+  const toastMessages = [];
+  const refreshes = [];
+  const executeBodies = [];
+  const memoryManagementCharacterIdRef = { current: 'A' };
+  let thirdGroupFails = true;
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname === '/api/memory-archive' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      if (body.action === 'ai_archive') {
+        return jsonResponse({
+          ok: true,
+          status: 'proposed',
+          groups: [
+            archiveGroup('一', ['m1', 'm2', 'm3']),
+            archiveGroup('二', ['m4', 'm5']),
+            archiveGroup('三', ['m6', 'm7']),
+            archiveGroup('四', ['m8', 'm9']),
+          ],
+        });
+      }
+      if (body.action === 'execute') {
+        executeBodies.push(body);
+        if (body.covered_memory_ids.includes('m4')) {
+          return jsonResponse({
+            ok: false,
+            error: 'covered_memory_ids must reference active, non-summary memories',
+            code: 'COVERED_NOT_ARCHIVABLE',
+          }, { status: 400 });
+        }
+        if (body.covered_memory_ids.includes('m6') && thirdGroupFails) {
+          return jsonResponse({ ok: false, error: 'boom' }, { status: 500 });
+        }
+        return jsonResponse({
+          ok: true,
+          plan: { summaryMemory: { id: 'summary', content: body.summary_content }, coveredMemoryUpdates: [] },
+        });
+      }
+      throw new Error(`unexpected archive action: ${JSON.stringify(body)}`);
+    }
+    if (parsedUrl.pathname === '/api/memories') {
+      refreshes.push(`memories:${parsedUrl.searchParams.get('character_id')}`);
+      return jsonResponse({ memories: [], total: 0, hasMore: false, offset: 0 });
+    }
+    if (parsedUrl.pathname === '/api/memory-archive') {
+      refreshes.push(`batches:${parsedUrl.searchParams.get('character_id')}`);
+      return jsonResponse({ batches: [] });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryArchivePanel } = requireFreshWithMocks('../src/hooks/settings/useMemoryArchivePanel.ts', {
+          react: reactMock,
+        });
+        return useMemoryArchivePanel;
+      },
+      () => ({
+        characterId: memoryManagementCharacterIdRef.current,
+        memoryManagementCharacterIdRef,
+        loadMemoryDiagnostics: async () => refreshes.push('diagnostics'),
+        loadMemoryIndexStatus: async () => refreshes.push('index-status'),
+        t: archiveT,
+        showToast: (message, type) => toastMessages.push({ message, type }),
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.handleMemoryArchiveAi();
+    const keys = runtime.current.memoryArchiveAiProposals.map(proposal => proposal.key);
+    const statuses = () => runtime.current.memoryArchiveAiProposals.map(proposal => proposal.status);
+
+    // 手动归档区恰好也勾着 m1（即将被 AI 分组归档）和 m9（所在分组不会执行）。
+    runtime.current.toggleMemoryArchiveSelection('m1');
+    runtime.current.toggleMemoryArchiveSelection('m9');
+    // 用户改写第一组的摘要并把 m2 留下；第四组一条都不留，等于放弃这一组。
+    runtime.current.setMemoryArchiveAiProposalSummary(keys[0], '  改过的摘要  ');
+    runtime.current.toggleMemoryArchiveAiProposalMemory(keys[0], 'm2');
+    runtime.current.toggleMemoryArchiveAiProposalMemory(keys[3], 'm8');
+    runtime.current.toggleMemoryArchiveAiProposalMemory(keys[3], 'm9');
+    toastMessages.length = 0;
+
+    await runtime.current.handleExecuteMemoryArchiveAiProposals(keys);
+
+    assert.deepEqual(executeBodies, [
+      { action: 'execute', character_id: 'A', covered_memory_ids: ['m1', 'm3'], summary_content: '改过的摘要' },
+      { action: 'execute', character_id: 'A', covered_memory_ids: ['m4', 'm5'], summary_content: '二 摘要' },
+      { action: 'execute', character_id: 'A', covered_memory_ids: ['m6', 'm7'], summary_content: '三 摘要' },
+    ]);
+    assert.deepEqual(statuses(), ['archived', 'stale', 'failed', 'pending']);
+    assert.deepEqual(
+      runtime.current.memoryArchiveAiProposals.map(proposal => proposal.error),
+      [undefined, 'settings.memoryArchiveAiProposalStale', 'boom', undefined],
+    );
+    assert.deepEqual(toastMessages, [{ message: 'settings.memoryArchiveAiDone:2', type: 'success' }]);
+    assert.deepEqual(refreshes, ['diagnostics', 'index-status', 'memories:A', 'batches:A']);
+    assert.deepEqual(runtime.current.selectedMemoryArchiveIds, ['m9'], 'archived memories must leave the manual selection');
+    assert.equal(runtime.current.memoryArchiveLoading, false);
+    assert.equal(runtime.current.memoryArchiveError, null);
+
+    // 重试时只有失败的那一组会再发请求：已归档的不重复归档，已失效的不再尝试。
+    thirdGroupFails = false;
+    await runtime.current.handleExecuteMemoryArchiveAiProposals(keys);
+
+    assert.equal(executeBodies.length, 4);
+    assert.deepEqual(executeBodies[3].covered_memory_ids, ['m6', 'm7']);
+    assert.deepEqual(statuses(), ['archived', 'stale', 'archived', 'pending']);
+    assert.equal(runtime.current.memoryArchiveAiProposals[2].error, undefined);
+
+    runtime.current.dismissMemoryArchiveAiProposal(keys[1]);
+    assert.deepEqual(runtime.current.memoryArchiveAiProposals.map(proposal => proposal.key), [keys[0], keys[2], keys[3]]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('memory archive AI proposals report a failure when no group could be archived', async () => {
+  const toastMessages = [];
+  const memoryManagementCharacterIdRef = { current: 'A' };
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname === '/api/memory-archive' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      if (body.action === 'ai_archive') {
+        return jsonResponse({ ok: true, status: 'proposed', groups: [archiveGroup('一', ['m1', 'm2'])] });
+      }
+      return jsonResponse({ ok: false, error: 'Some covered memories were not found', code: 'COVERED_NOT_ARCHIVABLE' }, { status: 404 });
+    }
+    return jsonResponse({ memories: [], batches: [], total: 0, hasMore: false, offset: 0 });
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryArchivePanel } = requireFreshWithMocks('../src/hooks/settings/useMemoryArchivePanel.ts', {
+          react: reactMock,
+        });
+        return useMemoryArchivePanel;
+      },
+      () => ({
+        characterId: memoryManagementCharacterIdRef.current,
+        memoryManagementCharacterIdRef,
+        loadMemoryDiagnostics: async () => {},
+        loadMemoryIndexStatus: async () => {},
+        t: archiveT,
+        showToast: (message, type) => toastMessages.push({ message, type }),
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.handleMemoryArchiveAi();
+    toastMessages.length = 0;
+    await runtime.current.handleExecuteMemoryArchiveAiProposals(
+      runtime.current.memoryArchiveAiProposals.map(proposal => proposal.key),
+    );
+
+    assert.deepEqual(runtime.current.memoryArchiveAiProposals.map(proposal => proposal.status), ['stale']);
+    assert.deepEqual(toastMessages, [{ message: 'settings.memoryArchiveAiFailed', type: 'error' }]);
+    assert.equal(runtime.current.memoryArchiveLoading, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('memory archive execute clears the manual form, and viewing a batch keeps the summary draft', async () => {
+  const memoryManagementCharacterIdRef = { current: 'A' };
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname === '/api/memory-archive' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      if (body.action === 'batch_details') {
+        return jsonResponse({
+          ok: true,
+          covered: [{ id: 'old-1', category: 'fact', content: 'old memory', status: 'archived' }],
+          summary: { id: 'old-summary', content: '旧批次的摘要' },
+        });
+      }
+      return jsonResponse({
+        ok: true,
+        plan: { summaryMemory: { id: 'summary', content: body.summary_content }, coveredMemoryUpdates: [{ id: 'm1', status: 'archived' }] },
+      });
+    }
+    return jsonResponse({ memories: [], batches: [], total: 0, hasMore: false, offset: 0 });
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryArchivePanel } = requireFreshWithMocks('../src/hooks/settings/useMemoryArchivePanel.ts', {
+          react: reactMock,
+        });
+        return useMemoryArchivePanel;
+      },
+      () => ({
+        characterId: memoryManagementCharacterIdRef.current,
+        memoryManagementCharacterIdRef,
+        loadMemoryDiagnostics: async () => {},
+        loadMemoryIndexStatus: async () => {},
+        t: key => key,
+        showToast: () => {},
+      }),
+    );
+
+    runtime.render();
+    runtime.current.toggleMemoryArchiveSelection('m1');
+    runtime.current.setMemoryArchiveSummary('正在写的摘要');
+
+    await runtime.current.loadMemoryArchiveBatchDetail('batch-old');
+    assert.equal(runtime.current.memoryArchiveBatchDetail.summary.content, '旧批次的摘要');
+    assert.equal(runtime.current.memoryArchiveSummary, '正在写的摘要', 'viewing a past batch must not overwrite the draft');
+
+    await runtime.current.handleMemoryArchiveExecute();
+    assert.deepEqual(runtime.current.selectedMemoryArchiveIds, []);
+    assert.equal(runtime.current.memoryArchiveSummary, '', 'the form is ready for the next archive');
+    assert.equal(runtime.current.memoryArchivePlan.coveredMemoryUpdates.length, 1);
   } finally {
     global.fetch = originalFetch;
   }

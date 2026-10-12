@@ -773,10 +773,26 @@ test('settings memory AI archive binds results to the initiating character', () 
     'const requestedCharacterId = characterId;',
     "body: JSON.stringify({ action: 'ai_archive', character_id: requestedCharacterId })",
     'isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)',
+  ]) {
+    assert.ok(handlerBlock.includes(snippet), `missing snippet: ${snippet}`);
+  }
+  // AI 只提出方案；真正归档（以及随后的列表刷新）发生在用户确认之后。
+  assert.equal(handlerBlock.includes("action: 'execute'"), false);
+
+  const executeStart = archiveHook.indexOf('const handleExecuteMemoryArchiveAiProposals = async (');
+  assert.notEqual(executeStart, -1, 'missing handleExecuteMemoryArchiveAiProposals');
+  const executeEnd = archiveHook.indexOf('const loadMemoryArchiveBatchDetail', executeStart);
+  assert.notEqual(executeEnd, -1, 'missing handleExecuteMemoryArchiveAiProposals end marker');
+  const executeBlock = archiveHook.slice(executeStart, executeEnd);
+
+  for (const snippet of [
+    'const requestedCharacterId = characterId;',
+    'character_id: requestedCharacterId,',
+    'isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)',
     'await loadMemoryArchiveMemories(requestedCharacterId);',
     'await loadMemoryArchiveBatches(requestedCharacterId);',
   ]) {
-    assert.ok(handlerBlock.includes(snippet), `missing snippet: ${snippet}`);
+    assert.ok(executeBlock.includes(snippet), `missing snippet: ${snippet}`);
   }
 });
 

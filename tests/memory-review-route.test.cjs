@@ -120,6 +120,8 @@ function createReviewDb() {
       emotional_weight REAL NOT NULL DEFAULT 0,
       memory_kind TEXT NOT NULL DEFAULT 'general',
       status TEXT NOT NULL DEFAULT 'active',
+      pinned INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL DEFAULT '{}',
       updated_at TEXT NOT NULL
     );
 
@@ -143,14 +145,16 @@ function insertReviewMemory(db, overrides = {}) {
     emotional_weight: 0,
     memory_kind: 'general',
     status: 'active',
+    pinned: 0,
+    metadata: {},
     updated_at: '2026-06-04T00:00:00.000Z',
     ...overrides,
   };
 
   db.prepare(`
     INSERT INTO memories (
-      id, character_id, category, content, tags, importance, emotional_weight, memory_kind, status, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, character_id, category, content, tags, importance, emotional_weight, memory_kind, status, pinned, metadata, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     memory.id,
     memory.character_id,
@@ -161,6 +165,8 @@ function insertReviewMemory(db, overrides = {}) {
     memory.emotional_weight,
     memory.memory_kind,
     memory.status,
+    memory.pinned,
+    JSON.stringify(memory.metadata),
     memory.updated_at,
   );
 }
@@ -178,6 +184,8 @@ function createEmptyReviewDb() {
       emotional_weight REAL NOT NULL DEFAULT 0,
       memory_kind TEXT NOT NULL DEFAULT 'general',
       status TEXT NOT NULL DEFAULT 'active',
+      pinned INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL DEFAULT '{}',
       updated_at TEXT NOT NULL
     );
   `);
@@ -279,6 +287,11 @@ test('/api/memory-review requeues and starts indexing after changing embedding-r
   assert.deepEqual(payload.changes, [{
     id: 'mem-a',
     fields: ['category→四季日常', 'tags→[午餐]', 'importance→0.4'],
+    diffs: [
+      { field: 'category', before: '重要事件', after: '四季日常' },
+      { field: 'tags', before: [], after: ['午餐'] },
+      { field: 'importance', before: 0.9, after: 0.4 },
+    ],
     content: '2026年6月4日，用户午饭吃了面。',
   }]);
   assert.deepEqual(row, {
@@ -563,6 +576,7 @@ test('/api/memory-review treats tags empty array as an explicit tag clear', asyn
   assert.deepEqual(payload.changes, [{
     id: 'mem-a',
     fields: ['tags→[]'],
+    diffs: [{ field: 'tags', before: ['午餐', '面条'], after: [] }],
     content: '2026年6月4日，用户午饭吃了面。',
   }]);
   assert.deepEqual(JSON.parse(row.tags), []);
@@ -1681,4 +1695,170 @@ test('/api/memory-review returns PLAN_NOT_FOUND for unknown plan_id', async () =
   assert.equal(response.status, 404);
   assert.equal(payload.code, 'PLAN_NOT_FOUND');
   assert.match(payload.error, /整理计划不存在|过期/);
+});
+
+function reviewRouteWithLlmResponse(db, respond) {
+  return requireFreshWithMocks('../src/app/api/memory-review/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+    '@/lib/settings': {
+      loadSettings: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'chat', max_tokens: 100 }),
+      resolveBackgroundConfig: () => ({ api_base: 'https://llm.example/v1', api_key: 'secret', model: 'bg-model' }),
+      buildBackgroundChatExtraBody: () => undefined,
+      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
+        ...base,
+        ...patch,
+        api_base: bg.api_base,
+        api_key: bg.api_key,
+        model: bg.model,
+        reasoning_effort: 'default',
+      }),
+    },
+    '@/lib/api-client': {
+      REASONING_SAFE_MAX_TOKENS: 4096,
+      chatCompletion: async (_settings, messages) => JSON.stringify(respond(messages[0].content)),
+    },
+    '@/lib/memory-embeddings': {
+      enqueueMemoryEmbeddingTask: () => false,
+      loadReadyMemoryEmbeddings: () => [],
+      blobToEmbedding: () => new Float32Array(0),
+    },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => false,
+    },
+  });
+}
+
+/** 与生产 schema 对齐的 memories 表：用于把审核路由返回的建议原样交给真实的 executeMemoryMerge。 */
+function createFullSchemaReviewDb() {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE memories (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.8,
+      tags TEXT NOT NULL DEFAULT '[]',
+      source_msg_ids TEXT NOT NULL DEFAULT '[]',
+      memory_kind TEXT NOT NULL DEFAULT 'general',
+      importance REAL NOT NULL DEFAULT 0.5,
+      emotional_weight REAL NOT NULL DEFAULT 0.0,
+      status TEXT NOT NULL DEFAULT 'active',
+      pinned INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      usage_count INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT '2026-06-04T00:00:00.000Z',
+      updated_at TEXT NOT NULL DEFAULT '2026-06-04T00:00:00.000Z'
+    );
+  `);
+  return db;
+}
+
+function insertFullSchemaMemory(db, id, overrides = {}) {
+  db.prepare(`
+    INSERT INTO memories (id, character_id, category, content, pinned, metadata)
+    VALUES (?, 'char-a', '偏好习惯', ?, ?, ?)
+  `).run(
+    id,
+    overrides.content ?? `用户喜欢美式咖啡，几乎每天都喝（${id}）。`,
+    overrides.pinned ?? 0,
+    JSON.stringify(overrides.metadata ?? {}),
+  );
+}
+
+test('/api/memory-review only returns merge suggestions that can all be executed one after another', async () => {
+  const db = createFullSchemaReviewDb();
+  insertFullSchemaMemory(db, 'mem-a');
+  insertFullSchemaMemory(db, 'mem-b');
+  insertFullSchemaMemory(db, 'mem-c');
+  insertFullSchemaMemory(db, 'mem-pinned', { pinned: 1 });
+  insertFullSchemaMemory(db, 'mem-merge-result', {
+    metadata: { mergeBatchId: 'old-batch', mergeRole: 'result', mergedFromIds: ['x', 'y'] },
+  });
+  insertFullSchemaMemory(db, 'mem-archive-summary', {
+    metadata: { archiveBatchId: 'archive-batch', archiveRole: 'summary', coveredMemoryIds: ['z'] },
+  });
+  let capturedPrompt = '';
+
+  const route = reviewRouteWithLlmResponse(db, prompt => {
+    capturedPrompt = prompt;
+    return {
+      corrections: [],
+      merge_suggestions: [
+        { source_ids: ['mem-a', 'mem-b'], merged_content: '合并 a+b', kind: 'merge' },
+        // 与上一条共享 mem-b：接受上一条后 mem-b 变为 superseded，这条必然执行失败
+        { source_ids: ['mem-b', 'mem-c'], merged_content: '合并 b+c', kind: 'merge' },
+        { source_ids: ['mem-c', 'mem-pinned'], merged_content: '合并置顶', kind: 'merge' },
+        { source_ids: ['mem-c', 'mem-merge-result'], merged_content: '合并结果再合并', kind: 'merge' },
+        { source_ids: ['mem-c', 'mem-archive-summary'], merged_content: '合并归档摘要', kind: 'merge' },
+        // conflict 只是提示、不可执行：允许引用置顶记忆，也允许与 merge 建议共享源
+        { source_ids: ['mem-a', 'mem-pinned'], merged_content: '两条互相矛盾', kind: 'conflict' },
+      ],
+    };
+  });
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    payload.merge_suggestions.map(suggestion => [suggestion.kind, suggestion.source_ids]),
+    [
+      ['merge', ['mem-a', 'mem-b']],
+      ['conflict', ['mem-a', 'mem-pinned']],
+    ],
+  );
+
+  // 用户报告的 bug：点「接受合并」后报 Only active memories can be merged。
+  // 这里按界面顺序把返回的每条 merge 建议都真的执行一遍，任何一条被守卫拒绝都会抛错。
+  const { executeMemoryMerge } = require('../src/lib/memory-merge');
+  const mergeSuggestions = payload.merge_suggestions.filter(suggestion => suggestion.kind === 'merge');
+  mergeSuggestions.forEach((suggestion, index) => {
+    executeMemoryMerge(db, {
+      batchId: `batch-${index}`,
+      characterId: 'char-a',
+      resultMemoryId: `result-${index}`,
+      sourceIds: suggestion.source_ids,
+      mergedContent: suggestion.merged_content,
+      now: '2026-06-05T00:00:00.000Z',
+    });
+  });
+  assert.equal(db.prepare("SELECT status FROM memories WHERE id = 'mem-b'").get().status, 'superseded');
+
+  // 不可合并的条目照常送审，但要在条目上标出来，模型才不会把它们写进 source_ids。
+  for (const id of ['mem-pinned', 'mem-merge-result', 'mem-archive-summary']) {
+    assert.match(capturedPrompt, new RegExp(`ID:${id} \|[^\n]*\| 不可合并\n`));
+  }
+  assert.doesNotMatch(capturedPrompt, /ID:mem-a \|[^\n]*不可合并/);
+  assert.match(capturedPrompt, /每个 ID 最多出现在一条 kind=merge 建议中/);
+  assert.match(capturedPrompt, /标注"不可合并"的条目/);
+});
+
+test('/api/memory-review keeps the widest merge suggestion when suggestions share sources', async () => {
+  const db = createEmptyReviewDb();
+  for (const id of ['mem-a', 'mem-b', 'mem-c', 'mem-d', 'mem-e']) {
+    insertReviewMemory(db, { id, content: `用户喜欢美式咖啡，几乎每天都喝（${id}）。` });
+  }
+
+  const route = reviewRouteWithLlmResponse(db, () => ({
+    corrections: [],
+    merge_suggestions: [
+      { source_ids: ['mem-a', 'mem-b'], merged_content: '只合并两条', kind: 'merge' },
+      { source_ids: ['mem-d', 'mem-e'], merged_content: '不重叠的一组', kind: 'merge' },
+      // 覆盖更全：合并结果之后不能再次参与合并，先合两条会把 mem-c 永久漏在外面
+      { source_ids: ['mem-a', 'mem-b', 'mem-c'], merged_content: '三条一起合并', kind: 'merge' },
+    ],
+  }));
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  // 保留项维持模型输出顺序
+  assert.deepEqual(payload.merge_suggestions.map(suggestion => suggestion.source_ids), [
+    ['mem-d', 'mem-e'],
+    ['mem-a', 'mem-b', 'mem-c'],
+  ]);
 });

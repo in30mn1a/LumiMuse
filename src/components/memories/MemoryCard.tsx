@@ -221,6 +221,9 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                     {t('memory.pin')}
                   </span>
                 )}
+                {memory.status !== 'active' && !editing && (
+                  <span className="chip text-[11px]">{t(`memory.status.${memory.status}`)}</span>
+                )}
 
                 <span className="text-[11px] text-text-muted">
                   {formatShortDate(memory.created_at)}

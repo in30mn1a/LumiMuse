@@ -324,3 +324,40 @@ test('/api/memory-merge validates action and source_ids', async () => {
   assert.equal(tooFewSources.status, 400);
   assert.match((await tooFewSources.json()).error, /source_ids/);
 });
+
+test('/api/memory-merge execute reports a machine-readable reason when a source is no longer mergeable', async () => {
+  const cases = [
+    { reason: 'not_active', overrides: { status: 'archived' }, message: 'Only active memories can be merged' },
+    { reason: 'pinned', overrides: { pinned: 1 }, message: 'Pinned memories cannot be merged' },
+    {
+      reason: 'reserved',
+      overrides: { metadata: { mergeBatchId: 'old-batch', mergeRole: 'result' } },
+      message: 'Memories already reserved by merge/archive cannot be re-merged',
+    },
+    { reason: 'not_found', overrides: null, message: 'Some source memories were not found' },
+  ];
+
+  for (const { reason, overrides, message } of cases) {
+    const db = createMergeRouteDb();
+    insertMemory(db, { id: 's1', content: '喜欢美式' });
+    if (overrides) insertMemory(db, { id: 's2', content: '喜欢美式咖啡', ...overrides });
+    const route = requireFreshWithMocks('../src/app/api/memory-merge/route.ts', {
+      'next/server': jsonResponseMock(),
+      '@/lib/db': { getDb: () => db },
+      '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
+      '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+    });
+
+    const response = await route.POST(jsonRequest({
+      action: 'execute',
+      character_id: 'char-a',
+      source_ids: ['s1', 's2'],
+      merged_content: '用户喜欢美式咖啡',
+    }));
+
+    assert.equal(response.status, 400, reason);
+    assert.deepEqual(await response.json(), { ok: false, error: message, reason }, reason);
+    assert.equal(db.prepare("SELECT status FROM memories WHERE id = 's1'").get().status, 'active', reason);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM memories').get().count, overrides ? 2 : 1, reason);
+  }
+});

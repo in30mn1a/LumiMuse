@@ -200,13 +200,8 @@ test('/api/memory-archive execute rejects overlong summary_content before writin
   ]);
 });
 
-test('/api/memory-archive ai_archive passes request signal to LLM call', async () => {
-  const db = createArchiveRouteDb();
-  insertMemory(db, 'mem-ai-a');
-  const controller = new AbortController();
-  let seenSignal = null;
-
-  const route = requireFreshWithMocks('../src/app/api/memory-archive/route.ts', {
+function archiveRouteWithLlm(db, chatCompletion, { settings = {}, enqueueCalls = [] } = {}) {
+  return requireFreshWithMocks('../src/app/api/memory-archive/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
     '@/lib/settings': {
@@ -215,6 +210,7 @@ test('/api/memory-archive ai_archive passes request signal to LLM call', async (
         api_key: 'llm-secret',
         model: 'chat-model',
         max_tokens: 1024,
+        ...settings,
       }),
       resolveBackgroundConfig: () => ({
         api_base: 'https://llm.example/v1',
@@ -233,178 +229,223 @@ test('/api/memory-archive ai_archive passes request signal to LLM call', async (
     },
     '@/lib/api-client': {
       REASONING_SAFE_MAX_TOKENS: 4096,
-      chatCompletion: async (_settings, _messages, signal) => {
-        seenSignal = signal;
-        return JSON.stringify({ archive_memory_ids: [], summary: '' });
-      },
-    },
-  });
-
-  const request = {
-    ...jsonRequest({
-      action: 'ai_archive',
-      character_id: 'char-a',
-    }),
-    signal: controller.signal,
-  };
-  const response = await route.POST(request);
-  const payload = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(payload.status, 'no_archive_needed');
-  assert.equal(seenSignal, controller.signal);
-});
-
-test('/api/memory-archive ai_archive deduplicates valid LLM archive IDs before execution', async () => {
-  const db = createArchiveRouteDb();
-  insertMemory(db, 'mem-a');
-  insertMemory(db, 'mem-b');
-  insertMemory(db, 'mem-c');
-  const queuedEmbeddingTasks = [];
-  let triggerCalls = 0;
-
-  db.prepare("UPDATE memories SET status = 'archived' WHERE id = 'mem-c'").run();
-
-  const route = requireFreshWithMocks('../src/app/api/memory-archive/route.ts', {
-    'next/server': jsonResponseMock(),
-    '@/lib/db': { getDb: () => db },
-    '@/lib/settings': {
-      loadSettings: () => ({
-        api_base: 'https://llm.example/v1',
-        api_key: 'llm-secret',
-        model: 'chat-model',
-        max_tokens: 1024,
-      }),
-      resolveBackgroundConfig: () => ({
-        api_base: 'https://llm.example/v1',
-        api_key: 'llm-secret',
-        model: 'chat-model',
-      }),
-      buildBackgroundChatExtraBody: () => undefined,
-      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
-        ...base,
-        ...patch,
-        api_base: bg.api_base,
-        api_key: bg.api_key,
-        model: bg.model,
-        reasoning_effort: 'default',
-      }),
-    },
-    '@/lib/api-client': {
-      REASONING_SAFE_MAX_TOKENS: 4096,
-      chatCompletion: async () => JSON.stringify({
-        archive_memory_ids: ['mem-a', 'mem-a', 'mem-c', 'mem-b', 'mem-b', 'mem-missing'],
-        summary: '去重后的 AI 归档摘要',
-      }),
+      chatCompletion,
     },
     '@/lib/memory-embeddings': {
       enqueueMemoryEmbeddingTask: (memoryId, characterId, reason) => {
-        queuedEmbeddingTasks.push({ memoryId, characterId, reason });
+        enqueueCalls.push({ memoryId, characterId, reason });
         return true;
       },
     },
     '@/lib/memory-index-trigger': {
-      triggerMemoryIndexProcessing: () => {
-        triggerCalls += 1;
-        return true;
-      },
+      triggerMemoryIndexProcessing: () => true,
     },
   });
+}
 
-  const response = await route.POST(jsonRequest({
-    action: 'ai_archive',
-    character_id: 'char-a',
-  }));
+function memoryStatuses(db) {
+  return Object.fromEntries(
+    db.prepare('SELECT id, status FROM memories ORDER BY id').all().map(row => [row.id, row.status]),
+  );
+}
+
+test('/api/memory-archive ai_archive cancels the LLM call when the request is aborted', async () => {
+  const db = createArchiveRouteDb();
+  insertMemory(db, 'mem-ai-a');
+  const controller = new AbortController();
+  let abortedDuringCall = null;
+
+  const route = archiveRouteWithLlm(db, async (_settings, _messages, signal) => {
+    controller.abort();
+    abortedDuringCall = signal.aborted;
+    throw signal.reason;
+  });
+
+  const response = await route.POST({
+    ...jsonRequest({ action: 'ai_archive', character_id: 'char-a' }),
+    signal: controller.signal,
+  });
+
+  assert.equal(abortedDuringCall, true, 'aborting the request must abort the signal handed to the LLM call');
+  assert.equal(response.status, 500);
+  assert.deepEqual(memoryStatuses(db), { 'mem-ai-a': 'active' });
+});
+
+test('/api/memory-archive ai_archive stops waiting once the background LLM deadline passes', async () => {
+  const db = createArchiveRouteDb();
+  insertMemory(db, 'mem-ai-a');
+
+  // 模拟挂死的上游：只有 deadline 触发的 abort 才能让这次调用结束。
+  const route = archiveRouteWithLlm(
+    db,
+    (_settings, _messages, signal) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason));
+    }),
+    { settings: { memory_background_timeout_ms: 5 } },
+  );
+
+  const response = await route.POST(jsonRequest({ action: 'ai_archive', character_id: 'char-a' }));
+  const payload = await response.json();
+
+  assert.equal(response.status, 504);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.code, 'UPSTREAM_TIMEOUT');
+});
+
+test('/api/memory-archive ai_archive only proposes groups, and every proposed group can then be executed', async () => {
+  const db = createArchiveRouteDb();
+  for (const id of ['mem-a', 'mem-b', 'mem-c', 'mem-d', 'mem-e', 'mem-f', 'mem-g', 'mem-h', 'mem-pinned']) {
+    insertMemory(db, id);
+  }
+  db.prepare("UPDATE memories SET status = 'archived' WHERE id = 'mem-c'").run();
+  db.prepare("UPDATE memories SET pinned = 1 WHERE id = 'mem-pinned'").run();
+  const enqueueCalls = [];
+  let prompt = '';
+
+  const route = archiveRouteWithLlm(db, async (_settings, messages) => {
+    prompt = messages.map(message => message.content).join('\n');
+    return JSON.stringify({
+      groups: [
+        // 重复 ID、已归档的 mem-c、不存在的 ID 都应被剔除。
+        { title: ' 日常闲聊 ', memory_ids: ['mem-a', 'mem-a', 'mem-c', 'mem-b', 'mem-missing'], summary: ' 第一组摘要 ' },
+        // mem-b 已被第一组占用：两组若都带着它，执行完第一组后第二组必然失败。
+        { title: '重叠', memory_ids: ['mem-b', 'mem-d', 'mem-e'], summary: '第二组摘要' },
+        // 去掉已占用的 mem-a 后只剩一条：没有可合并的内容，丢弃。
+        { title: '只剩一条', memory_ids: ['mem-a', 'mem-f'], summary: '第三组摘要' },
+        { title: '没有摘要', memory_ids: ['mem-g', 'mem-h'], summary: '   ' },
+        // 钉选记忆不在送审范围内。
+        { title: '含钉选', memory_ids: ['mem-pinned', 'mem-g'], summary: '第五组摘要' },
+      ],
+    });
+  }, { enqueueCalls });
+
+  const before = memoryStatuses(db);
+  const response = await route.POST(jsonRequest({ action: 'ai_archive', character_id: 'char-a' }));
   const payload = await response.json();
 
   assert.equal(response.status, 200);
   assert.equal(payload.ok, true);
-  assert.equal(payload.status, 'archived');
-  assert.equal(payload.archive_count, 2);
-  assert.equal(payload.indexing_queued, true);
-  assert.equal(payload.indexing_started, true);
-  assert.deepEqual(payload.plan.summaryMemory.metadata.coveredMemoryIds, ['mem-a', 'mem-b']);
-  assert.deepEqual(
-    payload.plan.coveredMemoryUpdates.map(update => update.id),
-    ['mem-a', 'mem-b'],
-  );
-  assert.deepEqual(queuedEmbeddingTasks, [{
-    memoryId: payload.plan.summaryMemory.id,
-    characterId: 'char-a',
-    reason: 'created',
-  }]);
-  assert.equal(triggerCalls, 1);
+  assert.equal(payload.status, 'proposed');
+  assert.equal(payload.candidate_count, 7);
+  assert.deepEqual(payload.groups, [
+    {
+      title: '日常闲聊',
+      summary: '第一组摘要',
+      memories: [
+        { id: 'mem-a', category: '话题历史', content: '待归档记忆 mem-a' },
+        { id: 'mem-b', category: '话题历史', content: '待归档记忆 mem-b' },
+      ],
+    },
+    {
+      title: '重叠',
+      summary: '第二组摘要',
+      memories: [
+        { id: 'mem-d', category: '话题历史', content: '待归档记忆 mem-d' },
+        { id: 'mem-e', category: '话题历史', content: '待归档记忆 mem-e' },
+      ],
+    },
+  ]);
+  assert.deepEqual(memoryStatuses(db), before, 'proposing must not archive anything');
+  assert.deepEqual(enqueueCalls, []);
+
+  assert.match(prompt, /ID:mem-a \| 日期:2026-06-04 \|/, 'the model needs dates to judge which memories are stale');
+  assert.match(prompt, /今天是 \d{4}-\d{2}-\d{2}。/);
+  assert.doesNotMatch(prompt, /\{today\}|\{memories\}/);
+  assert.doesNotMatch(prompt, /ID:mem-pinned|ID:mem-c /);
+
+  for (const group of payload.groups) {
+    const executed = await route.POST(jsonRequest({
+      action: 'execute',
+      character_id: 'char-a',
+      covered_memory_ids: group.memories.map(memory => memory.id),
+      summary_content: group.summary,
+    }));
+    assert.equal(executed.status, 200, `proposed group "${group.title}" should be executable`);
+  }
+  const after = memoryStatuses(db);
+  for (const id of ['mem-a', 'mem-b', 'mem-d', 'mem-e']) assert.equal(after[id], 'archived');
+  for (const id of ['mem-f', 'mem-g', 'mem-h', 'mem-pinned']) assert.equal(after[id], 'active');
+  assert.equal(enqueueCalls.length, 2, 'each executed group indexes its own summary memory');
+});
+
+test('/api/memory-archive ai_archive reports no_archive_needed when no usable group remains', async () => {
+  const db = createArchiveRouteDb();
+  insertMemory(db, 'mem-a');
+  insertMemory(db, 'mem-b');
+
+  for (const llmPayload of [
+    { groups: [] },
+    { archive_memory_ids: [], summary: '' },
+    { groups: [{ title: '全是无效 ID', memory_ids: ['mem-x', 'mem-y'], summary: '摘要' }] },
+  ]) {
+    const route = archiveRouteWithLlm(db, async () => JSON.stringify(llmPayload));
+    const response = await route.POST(jsonRequest({ action: 'ai_archive', character_id: 'char-a' }));
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, 'no_archive_needed');
+    assert.deepEqual(payload.groups, []);
+  }
+  assert.deepEqual(memoryStatuses(db), { 'mem-a': 'active', 'mem-b': 'active' });
 });
 
 test('/api/memory-archive ai_archive extracts one balanced object from prose with escaped delimiters and multiple JSON blocks', async () => {
   const db = createArchiveRouteDb();
-  insertMemory(db, 'mem-complex');
-  insertMemory(db, 'mem-ignored');
+  insertMemory(db, 'mem-complex-a');
+  insertMemory(db, 'mem-complex-b');
+  insertMemory(db, 'mem-ignored-a');
+  insertMemory(db, 'mem-ignored-b');
   const expectedSummary = '摘要含有 } ]、"引号" 与 C:\\tmp\\archive 路径';
 
-  const route = requireFreshWithMocks('../src/app/api/memory-archive/route.ts', {
-    'next/server': jsonResponseMock(),
-    '@/lib/db': { getDb: () => db },
-    '@/lib/settings': {
-      loadSettings: () => ({
-        api_base: 'https://llm.example/v1',
-        api_key: 'llm-secret',
-        model: 'chat-model',
-        max_tokens: 1024,
-      }),
-      resolveBackgroundConfig: () => ({
-        api_base: 'https://llm.example/v1',
-        api_key: 'llm-secret',
-        model: 'chat-model',
-      }),
-      buildBackgroundChatExtraBody: () => undefined,
-      mergeSettingsForBackgroundLlm: (base, bg, patch = {}) => ({
-        ...base,
-        ...patch,
-        api_base: bg.api_base,
-        api_key: bg.api_key,
-        model: bg.model,
-        reasoning_effort: 'default',
-      }),
-    },
-    '@/lib/api-client': {
-      REASONING_SAFE_MAX_TOKENS: 4096,
-      chatCompletion: async () => [
-        '归档计划如下：',
-        JSON.stringify({
-          archive_memory_ids: ['mem-complex'],
-          summary: expectedSummary,
-        }),
-        '以下是另一个不应合并进主对象的块：',
-        JSON.stringify({ archive_memory_ids: ['mem-ignored'], summary: '错误摘要' }),
-      ].join('\n'),
-    },
-    '@/lib/memory-embeddings': {
-      enqueueMemoryEmbeddingTask: () => false,
-    },
-    '@/lib/memory-index-trigger': {
-      triggerMemoryIndexProcessing: () => false,
-    },
-  });
+  // 旧版单组格式 { archive_memory_ids, summary } 仍被接受，按一个分组处理。
+  const route = archiveRouteWithLlm(db, async () => [
+    '归档计划如下：',
+    JSON.stringify({
+      archive_memory_ids: ['mem-complex-a', 'mem-complex-b'],
+      summary: expectedSummary,
+    }),
+    '以下是另一个不应合并进主对象的块：',
+    JSON.stringify({ archive_memory_ids: ['mem-ignored-a', 'mem-ignored-b'], summary: '错误摘要' }),
+  ].join('\n'));
 
   const response = await route.POST(jsonRequest({
     action: 'ai_archive',
     character_id: 'char-a',
   }));
   const payload = await response.json();
-  const rows = db.prepare(`
-    SELECT id, status
-    FROM memories
-    WHERE id IN ('mem-complex', 'mem-ignored')
-    ORDER BY id
-  `).all();
 
   assert.equal(response.status, 200);
-  assert.equal(payload.status, 'archived');
-  assert.equal(payload.summary, expectedSummary);
-  assert.deepEqual(payload.plan.summaryMemory.metadata.coveredMemoryIds, ['mem-complex']);
-  assert.deepEqual(rows, [
-    { id: 'mem-complex', status: 'archived' },
-    { id: 'mem-ignored', status: 'active' },
-  ]);
+  assert.equal(payload.status, 'proposed');
+  assert.equal(payload.groups.length, 1);
+  assert.equal(payload.groups[0].title, '');
+  assert.equal(payload.groups[0].summary, expectedSummary);
+  assert.deepEqual(payload.groups[0].memories.map(memory => memory.id), ['mem-complex-a', 'mem-complex-b']);
+});
+
+test('/api/memory-archive execute flags covered memories that can no longer be archived', async () => {
+  const db = createArchiveRouteDb();
+  insertMemory(db, 'mem-a');
+  insertMemory(db, 'mem-b');
+  db.prepare("UPDATE memories SET status = 'superseded' WHERE id = 'mem-b'").run();
+  const route = archiveRouteWithLlm(db, async () => '{}');
+
+  const notActive = await route.POST(jsonRequest({
+    action: 'execute',
+    character_id: 'char-a',
+    covered_memory_ids: ['mem-a', 'mem-b'],
+    summary_content: '摘要',
+  }));
+  assert.equal(notActive.status, 400);
+  assert.equal((await notActive.json()).code, 'COVERED_NOT_ARCHIVABLE');
+
+  const missing = await route.POST(jsonRequest({
+    action: 'execute',
+    character_id: 'char-a',
+    covered_memory_ids: ['mem-a', 'mem-deleted'],
+    summary_content: '摘要',
+  }));
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).code, 'COVERED_NOT_ARCHIVABLE');
+
+  assert.deepEqual(memoryStatuses(db), { 'mem-a': 'active', 'mem-b': 'superseded' });
 });

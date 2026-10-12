@@ -25,6 +25,7 @@ import {
   MEMORY_REVIEW_BATCH_SIZE,
   MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT,
 } from '@/lib/memory-review-cluster';
+import { getMergeSourceIssue } from '@/lib/memory-merge';
 
 const MEMORY_REVIEW_OUTPUT_MAX_TOKENS = REASONING_SAFE_MAX_TOKENS;
 const MEMORY_REVIEW_BATCH_CONCURRENCY = 3;
@@ -43,6 +44,8 @@ type MemoryReviewRow = {
   importance: number;
   emotional_weight: number;
   memory_kind: string;
+  pinned: number;
+  metadata: string;
 };
 
 type MemoryReviewCurrentRow = Pick<MemoryReviewRow, 'category' | 'tags' | 'importance'>;
@@ -53,6 +56,12 @@ type MemoryReviewCorrection = {
   tags?: string[];
   importance?: number;
 };
+
+/** 一次自动修正里某个字段的前后值；UI 据此展示「改之前 → 改之后」。 */
+export type MemoryReviewChangeDiff =
+  | { field: 'category'; before: string; after: string }
+  | { field: 'tags'; before: string[]; after: string[] }
+  | { field: 'importance'; before: number; after: number };
 
 export type MemoryMergeSuggestionSource = {
   id: string;
@@ -109,10 +118,39 @@ export function buildTagOverview(memories: MemoryReviewRow[]): string {
   return truncateForReview(text, MEMORY_REVIEW_TAG_OVERVIEW_CHAR_LIMIT);
 }
 
+/** 送审的记忆都是 active；置顶 / 合并结果 / 归档摘要仍会被 memory-merge 的执行守卫拒绝。 */
+function isMergeableReviewRow(memory: MemoryReviewRow): boolean {
+  return getMergeSourceIssue({ status: 'active', pinned: memory.pinned, metadata: memory.metadata }) === null;
+}
+
 function buildMemoryReviewEntry(memory: MemoryReviewRow, index: number): string {
   const tags = parseTags(memory.tags);
   const content = truncateForReview(memory.content, MEMORY_REVIEW_ENTRY_CONTENT_CHAR_LIMIT);
-  return `[${index + 1}] ID:${memory.id} | 分类:${memory.category} | 标签:${tags.join(',') || '无'} | 重要度:${memory.importance} | 种类:${memory.memory_kind}\n${content}`;
+  const mergeMarker = isMergeableReviewRow(memory) ? '' : ' | 不可合并';
+  return `[${index + 1}] ID:${memory.id} | 分类:${memory.category} | 标签:${tags.join(',') || '无'} | 重要度:${memory.importance} | 种类:${memory.memory_kind}${mergeMarker}\n${content}`;
+}
+
+/**
+ * 保证下发的 merge 建议两两不共享源记忆。
+ *
+ * 模型常把一组重复条目拆成 [A,B]、[B,C] 这样的成对建议：接受第一条后 B 即 superseded，
+ * 再点第二条就会被执行守卫以「Only active memories can be merged」拒绝。merged_content
+ * 是针对各自的源集合写的，无法机械拼接，只能取舍：源更多的优先（一次覆盖更多重复——
+ * 合并结果不能再次参与合并，漏下的条目之后也并不回来），数量相同保持模型输出顺序。
+ * conflict 建议不可执行、仅作提示，不参与取舍。
+ */
+function dropOverlappingMergeSuggestions(suggestions: MemoryMergeSuggestion[]): MemoryMergeSuggestion[] {
+  const claimedIds = new Set<string>();
+  const kept = new Set<MemoryMergeSuggestion>();
+  const mergeBySizeDesc = suggestions
+    .filter(suggestion => suggestion.kind === 'merge')
+    .sort((a, b) => b.source_ids.length - a.source_ids.length);
+  for (const suggestion of mergeBySizeDesc) {
+    if (suggestion.source_ids.some(id => claimedIds.has(id))) continue;
+    for (const id of suggestion.source_ids) claimedIds.add(id);
+    kept.add(suggestion);
+  }
+  return suggestions.filter(suggestion => suggestion.kind !== 'merge' || kept.has(suggestion));
 }
 
 type SettledResult<R> = { ok: true; value: R } | { ok: false; error: unknown };
@@ -183,6 +221,8 @@ ${TAG_SPEC_PROMPT_SECTION}
   2. 时序互相否定、无法无损合并的事实不得合并，输出 kind=conflict
   3. source_ids 至少 2 个，且必须都是本批 ID
   4. 人称视角铁律：沿用记忆第一人称约定——记忆是从 AI 角色视角记录的，角色自身用"我"，用户用"用户"；不得写成"用户和LumiMuse"之类的第三人称并列表述，LumiMuse 是系统名，不是角色名，禁止出现在 merged_content 中
+  5. 同一组重复条目只输出一条 kind=merge 建议，把该组全部重复条目的 ID 放进同一个 source_ids；每个 ID 最多出现在一条 kind=merge 建议中，不要拆成多条两两合并
+  6. 标注"不可合并"的条目（置顶 / 已是合并结果 / 归档摘要）照常审核 correction，但不得出现在任何 kind=merge 建议的 source_ids 中
 - 只输出 JSON 对象，不要解释
 
 ## 输出格式
@@ -319,10 +359,10 @@ function resolveOrCreatePlan(params: {
 
   // 新计划：读取全部 active，聚类冻结成员（修 OFFSET 漂移）
   const rows = params.db.prepare(`
-    SELECT id, category, content, tags, importance, emotional_weight, memory_kind
+    SELECT id, content, importance
     FROM memories
     WHERE character_id = ? AND status = 'active'
-  `).all(params.characterId) as MemoryReviewRow[];
+  `).all(params.characterId) as Array<Pick<MemoryReviewRow, 'id' | 'content' | 'importance'>>;
 
   const embeddingById = loadEmbeddingMap(params.characterId, params.db);
   const plan = createMemoryReviewPlan({
@@ -433,7 +473,7 @@ export async function POST(request: NextRequest) {
   // 仅取 active：归档/总结/superseded 的记忆不应被再次送审或纳入合并建议。
   const placeholders = memoryIds.map(() => '?').join(',');
   const loaded = db.prepare(`
-    SELECT id, category, content, tags, importance, emotional_weight, memory_kind
+    SELECT id, category, content, tags, importance, emotional_weight, memory_kind, pinned, metadata
     FROM memories
     WHERE character_id = ? AND status = 'active' AND id IN (${placeholders})
   `).all(characterId, ...memoryIds) as MemoryReviewRow[];
@@ -547,12 +587,15 @@ export async function POST(request: NextRequest) {
 
   // 合并建议：只保留本请求内 id，且全部仍在本批候选中
   const validIds = new Set(memories.map(m => m.id));
-  const rawSuggestionsFiltered = rawSuggestions.filter(suggestion => {
+  const unmergeableIds = new Set(memories.filter(m => !isMergeableReviewRow(m)).map(m => m.id));
+  // 下发的每条 merge 建议都必须点了就能执行：剔除含不可合并源的，再消除建议之间的源重叠。
+  const rawSuggestionsFiltered = dropOverlappingMergeSuggestions(rawSuggestions.filter(suggestion => {
     if (suggestion.source_ids.length < 2) return false;
     if (!suggestion.source_ids.every(id => validIds.has(id))) return false;
+    if (suggestion.kind === 'merge' && suggestion.source_ids.some(id => unmergeableIds.has(id))) return false;
     // 同一建议的源应来自同一 plan 批（模型本批可见范围）
     return batchIdSets.some(set => suggestion.source_ids.every(id => set.has(id)));
-  });
+  }));
 
   // 透出源记忆详情给 UI：接受合并前必须先能核对原记忆内容。
   const mergeSuggestions = rawSuggestionsFiltered.map(suggestion => ({
@@ -572,7 +615,7 @@ export async function POST(request: NextRequest) {
   })).filter(suggestion => suggestion.sources.length === suggestion.source_ids.length);
 
   const memoryContentById = new Map(memories.map(memory => [memory.id, memory.content]));
-  const changes: Array<{ id: string; fields: string[]; content: string }> = [];
+  const changes: Array<{ id: string; fields: string[]; diffs: MemoryReviewChangeDiff[]; content: string }> = [];
 
   const updateMemory = db.transaction(() => {
     const selectCurrentStmt = db.prepare(`
@@ -586,6 +629,7 @@ export async function POST(request: NextRequest) {
       if (!current) continue;
 
       const changedFields: string[] = [];
+      const diffs: MemoryReviewChangeDiff[] = [];
       const setClauses: string[] = [];
       const setValues: Array<string | number> = [];
 
@@ -594,15 +638,18 @@ export async function POST(request: NextRequest) {
           setClauses.push('category = ?');
           setValues.push(c.category);
           changedFields.push(`category→${c.category}`);
+          diffs.push({ field: 'category', before: current.category, after: c.category });
         }
       }
 
       if (Array.isArray(c.tags)) {
         const cleanTags = normalizeTags(c.tags);
-        if (!areStringArraysEqual(parseTags(current.tags), cleanTags)) {
+        const currentTags = parseTags(current.tags);
+        if (!areStringArraysEqual(currentTags, cleanTags)) {
           setClauses.push('tags = ?');
           setValues.push(JSON.stringify(cleanTags));
           changedFields.push(`tags→[${cleanTags.join(',')}]`);
+          diffs.push({ field: 'tags', before: currentTags, after: cleanTags });
         }
       }
 
@@ -611,6 +658,7 @@ export async function POST(request: NextRequest) {
           setClauses.push('importance = ?');
           setValues.push(c.importance);
           changedFields.push(`importance→${c.importance}`);
+          diffs.push({ field: 'importance', before: current.importance, after: c.importance });
         }
       }
 
@@ -622,7 +670,7 @@ export async function POST(request: NextRequest) {
           WHERE id = ? AND character_id = ? AND status = 'active'
         `).run(...setValues, c.id, characterId);
         if (result.changes > 0) {
-          changes.push({ id: c.id, fields: changedFields, content: memoryContentById.get(c.id) ?? '' });
+          changes.push({ id: c.id, fields: changedFields, diffs, content: memoryContentById.get(c.id) ?? '' });
         }
       }
     }

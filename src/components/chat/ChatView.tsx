@@ -49,6 +49,7 @@ import {
 import { loadCharacterImageList } from '@/lib/character-image-list-cache';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
 import { MenuIcon } from '@/components/ui/icons';
+import type { SidebarChat } from '@/components/sidebar/CharacterList';
 import { useToast } from '@/components/ui/Toast';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
 
@@ -70,6 +71,8 @@ interface Props {
   onSearchTargetConsumed?: (requestId: number) => void;
   onOpenSidebar?: () => void;
   onOpenSearch?: () => void;
+  /** 把当前角色的对话列表与操作交给侧栏展示；没有角色时回传 null。必须是稳定引用。 */
+  onSidebarChatChange?: (chat: SidebarChat | null) => void;
 }
 
 export default function ChatView({
@@ -81,6 +84,7 @@ export default function ChatView({
   onSearchTargetConsumed,
   onOpenSidebar,
   onOpenSearch,
+  onSidebarChatChange,
 }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -119,7 +123,6 @@ export default function ChatView({
   // 对话切换抽屉：全断点渲染（<lg 底部抽屉，lg+ 居中弹窗），跨断点仍可见，无需强制关闭
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
   // 移动/平板竖屏工具栏二级操作：默认展开，可手动收起
-  const [toolbarExpanded, setToolbarExpanded] = useState(true);
   // 图片管理弹窗（仅保留开关；列表/选中/分页等已下沉到 ImageManagerModal 内部）
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
 
@@ -229,6 +232,24 @@ export default function ChatView({
     showToast,
     t,
   });
+  // handleNewChat 每次渲染都是新函数；侧栏拿到的回调必须稳定，否则上报 → 父级重渲染 → 再上报会成环。
+  const handleNewChatRef = useRef(handleNewChat);
+  useEffect(() => {
+    handleNewChatRef.current = handleNewChat;
+  });
+  const requestNewChat = useCallback(() => { void handleNewChatRef.current(); }, []);
+  const openConvDrawer = useCallback(() => setConvDrawerOpen(true), []);
+  const sidebarCharacterId = character?.id ?? null;
+  useEffect(() => {
+    onSidebarChatChange?.(sidebarCharacterId ? {
+      characterId: sidebarCharacterId,
+      conversations,
+      activeConversationId: activeConvId,
+      onSelectConversation: selectUserConversation,
+      onNewChat: requestNewChat,
+      onShowAll: openConvDrawer,
+    } : null);
+  }, [activeConvId, conversations, onSidebarChatChange, openConvDrawer, requestNewChat, selectUserConversation, sidebarCharacterId]);
   // 用 useEffect 更新 ref 而非渲染期间直接赋值：React 19 禁止渲染期间更新 ref，
   // 否则可能导致渲染不一致（react-hooks/refs 规则）
   useEffect(() => {
@@ -754,10 +775,10 @@ export default function ChatView({
       <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center px-4 py-4">
         {/* 移动/平板竖屏侧边栏入口（lg 以下） */}
         {onOpenSidebar && (
-          <div className="absolute left-4 top-4 lg:hidden">
+          <div className="absolute left-1 top-1.5 lg:hidden">
             <button
               onClick={onOpenSidebar}
-              className="rounded-xl bg-surface/80 p-2.5 text-text-secondary shadow-sm ring-1 ring-border-light backdrop-blur-sm hover:bg-surface"
+              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-text-secondary hover:bg-surface-2"
               aria-label={t('chat.openCharacterList')}
             >
               <MenuIcon className="h-5 w-5" />
@@ -808,31 +829,16 @@ export default function ChatView({
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-2 px-2 py-2 md:gap-4 md:px-4 md:py-4">
+    <div className="flex h-full min-h-0 flex-1 flex-col">
       <ChatHeader
         character={activeCharacter}
         activeConversation={activeConversation}
-        conversationsCount={conversations.length}
         memoryCount={memoryCount}
         isStreamingHere={isStreamingHere}
         creating={creating}
         summarizing={summarizing}
         duplicating={duplicating}
-        toolbarExpanded={toolbarExpanded}
-        onToggleToolbar={() => setToolbarExpanded(!toolbarExpanded)}
-        onOpenSidebar={onOpenSidebar}
-        onOpenSearch={onOpenSearch}
-        onOpenConvDrawer={() => setConvDrawerOpen(true)}
-        onNewChat={handleNewChat}
-        onRename={() => openRename()}
-        onSummarize={() => handleSummarize()}
-        onDuplicate={() => setDuplicateOpen(true)}
-        onOpenImageManager={() => setImageManagerOpen(true)}
-        onRequestDelete={() => setDeleteOpen(true)}
-      />
-
-      <div className="flex min-h-0 flex-1 gap-2 md:gap-4">
-        <section className="surface-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        status={(
           <ChatToolbar
             activeConversation={activeConversation}
             unextractedCount={unextractedCount}
@@ -842,7 +848,20 @@ export default function ChatView({
             onOpenResetExtraction={() => setResetExtractionOpen(true)}
             onOpenTokenBreakdown={() => setTokenBreakdownOpen(true)}
           />
+        )}
+        onOpenSidebar={onOpenSidebar}
+        onOpenSearch={onOpenSearch}
+        onOpenConvDrawer={openConvDrawer}
+        onNewChat={handleNewChat}
+        onRename={() => openRename()}
+        onSummarize={() => handleSummarize()}
+        onDuplicate={() => setDuplicateOpen(true)}
+        onOpenImageManager={() => setImageManagerOpen(true)}
+        onRequestDelete={() => setDeleteOpen(true)}
+      />
 
+      <div className="flex min-h-0 flex-1">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {conversationLoadError && (
             <div className="mx-3 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {t('chat.conversationLoadFailed')}: {conversationLoadError}
@@ -1003,6 +1022,7 @@ export default function ChatView({
           conversations={conversations}
           activeConvId={activeConvId}
           onSelect={selectUserConversation}
+          onNewChat={requestNewChat}
           onClose={() => setConvDrawerOpen(false)}
         />
 

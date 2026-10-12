@@ -157,14 +157,11 @@ test('explicit mobile chat icon controls expose 44px touch targets', () => {
   const headerView = render(React.createElement(ChatHeader, {
     character: { id: 'char-a', name: 'Alice', avatar_url: null },
     activeConversation: { id: 'conv-a', title: 'Conversation' },
-    conversationsCount: 1,
     memoryCount: 1,
     isStreamingHere: false,
     creating: false,
     summarizing: false,
     duplicating: false,
-    toolbarExpanded: false,
-    onToggleToolbar() {},
     onOpenSidebar() {},
     onOpenSearch() {},
     onOpenConvDrawer() {},
@@ -176,36 +173,33 @@ test('explicit mobile chat icon controls expose 44px touch targets', () => {
     onRequestDelete() {},
   }));
 
-  // 桌面工具栏也有同名 aria-label 按钮（soft-button 自带 44px 高度），此处只查移动/平板竖屏紧凑栏
-  const mobileHeader = headerView.container.querySelector('section.lg\\:hidden');
-  assert.ok(mobileHeader, 'mobile/tablet-portrait compact header section should exist');
+  // 顶栏全断点共用一份 DOM；手机上常驻的图标按钮都要有 44px 触控面积
+  const header = headerView.container.querySelector('header');
+  assert.ok(header, 'chat header should render a single header element');
   for (const name of [
     'chat.openCharacterList',
-    'chat.switchConversation',
-    'chat.newConversation',
     'chat.searchMessages',
-    'chat.expandToolbar',
+    'common.more',
   ]) {
-    const button = within(mobileHeader).getByRole('button', { name });
+    const button = within(header).getByRole('button', { name });
     assert.match(button.className, /min-h-11/, `${name} needs a 44px minimum height`);
     assert.match(button.className, /min-w-11/, `${name} needs a 44px minimum width`);
   }
+  // 标题按钮是整行文字控件（min-w-0 以便截断），只约束高度
+  assert.match(within(header).getByRole('button', { name: 'chat.switchConversation' }).className, /min-h-11/);
 });
 
-test('mobile and desktop duplicate controls block linked snapshots while the conversation is streaming', () => {
+test('the duplicate menu item blocks linked snapshots while the conversation is streaming', () => {
   const ChatHeader = loadModule('../src/components/chat/ChatHeader.tsx').default;
   let duplicateCalls = 0;
   const props = {
     character: { id: 'char-a', name: 'Alice', avatar_url: null },
     activeConversation: { id: 'conv-a', title: 'Conversation' },
-    conversationsCount: 1,
     memoryCount: 1,
     isStreamingHere: true,
     creating: false,
     summarizing: false,
     duplicating: false,
-    toolbarExpanded: true,
-    onToggleToolbar() {},
     onOpenSidebar() {},
     onOpenSearch() {},
     onOpenConvDrawer() {},
@@ -218,19 +212,16 @@ test('mobile and desktop duplicate controls block linked snapshots while the con
   };
   const view = render(React.createElement(ChatHeader, props));
 
-  const streamingButtons = within(view.container).getAllByRole('button', { name: 'chat.duplicate' });
-  assert.equal(streamingButtons.length, 2, 'mobile and desktop duplicate controls should both render');
-  for (const button of streamingButtons) {
-    assert.equal(button.disabled, true);
-    fireEvent.click(button);
-  }
+  // 复制入口只剩 ⋯ 菜单里的一项
+  fireEvent.click(within(view.container).getByRole('button', { name: 'common.more' }));
+  const streamingItem = within(view.container).getByRole('menuitem', { name: 'chat.duplicate' });
+  assert.equal(streamingItem.disabled, true);
+  fireEvent.click(streamingItem);
   assert.equal(duplicateCalls, 0);
 
   view.rerender(React.createElement(ChatHeader, { ...props, isStreamingHere: false }));
-  const idleButtons = within(view.container).getAllByRole('button', { name: 'chat.duplicate' });
-  for (const button of idleButtons) {
-    assert.equal(button.disabled, false);
-    fireEvent.click(button);
-  }
-  assert.equal(duplicateCalls, 2);
+  const idleItem = within(view.container).getByRole('menuitem', { name: 'chat.duplicate' });
+  assert.equal(idleItem.disabled, false);
+  fireEvent.click(idleItem);
+  assert.equal(duplicateCalls, 1);
 });

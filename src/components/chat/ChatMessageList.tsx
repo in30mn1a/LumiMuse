@@ -224,13 +224,14 @@ function ChatMessageList(
       ref={scrollContainerRef}
       // overflow-anchor:none：禁用浏览器原生滚动锚定。虚拟列表流式期间行高持续变化，
       // 原生锚定会把视口钉在上一条稳定气泡上，与跟随滚底互相拉扯（移动端表现为回跳）。
-      className="[overflow-anchor:none] min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 md:px-5 md:py-5"
+      // lg+ 用内边距把消息列限宽 50rem 居中，不改虚拟列表的 DOM 结构。
+      className="[overflow-anchor:none] min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 md:px-5 md:py-5 lg:px-[max(1.5rem,calc((100%-50rem)/2))]"
     >
       {/* 对话切换加载骨架屏：消息为空但对话存在时显示 */}
       {isEmpty && activeConvId && (
         <div className="flex flex-col gap-5 py-2" aria-hidden="true">
           <div className="flex gap-3">
-            <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" />
+            <div className="hidden h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10 md:block" />
             <div className="flex flex-col gap-1.5">
               <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" />
               <div className="h-16 w-56 animate-pulse rounded-2xl border border-border-light bg-surface/80" style={{ animationDelay: '60ms' }} />
@@ -243,7 +244,7 @@ function ChatMessageList(
             </div>
           </div>
           <div className="flex gap-3">
-            <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" style={{ animationDelay: '180ms' }} />
+            <div className="hidden h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10 md:block" style={{ animationDelay: '180ms' }} />
             <div className="flex flex-col gap-1.5">
               <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '180ms' }} />
               <div className="h-20 w-72 animate-pulse rounded-2xl border border-border-light bg-surface/80" style={{ animationDelay: '180ms' }} />

@@ -1,12 +1,11 @@
 'use client';
 
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import {
   ChevronDownIcon,
   DuplicateIcon,
   ImageIcon,
-  ListIcon,
   MenuIcon,
   PencilIcon,
   PlusIcon,
@@ -19,14 +18,13 @@ import type { Character, Conversation } from '@/types';
 interface Props {
   character: Character;
   activeConversation: Conversation | null;
-  conversationsCount: number;
   memoryCount: number;
   isStreamingHere: boolean;
   creating: boolean;
   summarizing: boolean;
   duplicating: boolean;
-  toolbarExpanded: boolean;
-  onToggleToolbar: () => void;
+  /** 状态条（待提取 / token）：<lg 换行成顶栏下方的细条，lg+ 与标题同一行 */
+  status?: ReactNode;
   onOpenSidebar?: () => void;
   onOpenSearch?: () => void;
   onOpenConvDrawer: () => void;
@@ -38,24 +36,24 @@ interface Props {
   onRequestDelete: () => void;
 }
 
+const ICON_BUTTON = 'flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40';
+const MENU_ITEM = 'flex min-h-11 w-full items-center gap-3 px-4 text-left text-sm text-text-primary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50';
+
 /**
- * 聊天页顶部工具栏。
- * 移动/平板竖屏(<lg ≈1024)：紧凑栏 + 默认展开的二级操作（可手动收起） + 对话抽屉入口。
- * 桌面/平板横屏(lg+)：完整工具栏；按钮统一只留图标（说明走 title/aria-label），
- * 避免按钮组撑宽后把左侧角色信息挤成竖排；「最近对话」按钮打开对话切换抽屉（ConversationDrawer）。
- * 在紧凑/中等桌面宽度(<xl)下，次要操作（复制对话、删除对话）收敛到「更多」(⋯) 下拉菜单中，防止角色名被挤压截断。
+ * 聊天页顶栏（全断点同一份 DOM）。
+ * <lg：☰ + 头像 + 角色名/对话标题（点击切换对话）+ 搜索 + ⋯，状态条换行到下方。
+ * lg+：对话标题为主、角色名与记忆数为辅，状态条、搜索/总结/图片管理与 ⋯ 同排。
+ * 次要操作统一收进带文字的 ⋯ 菜单；总结与图片管理在 lg+ 已有常驻按钮，菜单里只在 <lg 出现。
  */
 function ChatHeaderImpl({
   character,
   activeConversation,
-  conversationsCount,
   memoryCount,
   isStreamingHere,
   creating,
   summarizing,
   duplicating,
-  toolbarExpanded,
-  onToggleToolbar,
+  status,
   onOpenSidebar,
   onOpenSearch,
   onOpenConvDrawer,
@@ -92,269 +90,147 @@ function ChatHeaderImpl({
     };
   }, [moreOpen]);
 
+  const conversationTitle = activeConversation?.title || t('chat.noConversationTitle');
+  const runMenuAction = (action: () => void) => {
+    // 菜单项即将卸载，先让弹窗记录仍存在的焦点恢复目标。
+    moreTriggerRef.current?.focus();
+    setMoreOpen(false);
+    action();
+  };
+
   return (
-    <>
-      {/* === 移动/平板竖屏：紧凑工具栏（可折叠展开） === */}
-      <section className="surface-hero px-3 py-2 lg:hidden">
-        <div className="flex items-center gap-2">
-          {onOpenSidebar && (
-            <button
-              onClick={onOpenSidebar}
-              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label={t('chat.openCharacterList')}
-            >
-              <MenuIcon className="h-4 w-4" />
-            </button>
-          )}
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
+    <header className="relative z-10 flex flex-none flex-wrap items-center border-b border-border-light bg-surface lg:gap-2 lg:pl-4 lg:pr-3">
+      <div className="order-1 flex h-14 min-w-0 flex-1 items-center pl-1 lg:h-[3.75rem] lg:pl-0">
+        {onOpenSidebar && (
+          <button onClick={onOpenSidebar} className={`${ICON_BUTTON} lg:hidden`} aria-label={t('chat.openCharacterList')}>
+            <MenuIcon className="h-5 w-5" />
+          </button>
+        )}
+        <button
+          onClick={onOpenConvDrawer}
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-xl px-1.5 text-left transition-colors hover:bg-surface-2 lg:flex-none lg:max-w-full lg:px-2"
+          aria-label={t('chat.switchConversation')}
+          title={t('chat.switchConversation')}
+        >
+          <span className="flex h-[2.125rem] w-[2.125rem] shrink-0 items-center justify-center overflow-hidden rounded-xl bg-accent/12 lg:hidden">
             {character.avatar_url ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" loading="lazy" />
+              <img src={character.avatar_url} alt="" className="h-full w-full object-cover" loading="lazy" />
             ) : (
-              <span className="text-xs font-semibold text-accent-dark">{character.name[0]}</span>
+              <span className="text-sm font-semibold text-accent-dark">{character.name[0]}</span>
             )}
-          </div>
-          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">{character.name}</h2>
-          <div className="flex shrink-0 items-center gap-0.5">
-            <button
-              onClick={onOpenConvDrawer}
-              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label={t('chat.switchConversation')}
-            >
-              <ListIcon className="h-4 w-4" />
-            </button>
-            <button
-              onClick={onNewChat}
-              disabled={creating}
-              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-accent-solid p-2 text-white shadow-sm disabled:opacity-50"
-              aria-label={t('chat.newConversation')}
-            >
-              {creating ? <span className="spinner-sm" aria-hidden="true" /> : <PlusIcon className="h-4 w-4" />}
-            </button>
-            {onOpenSearch && (
-              <button
-                onClick={onOpenSearch}
-                className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-                aria-label={t('chat.searchMessages')}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
-                  <circle cx="11" cy="11" r="6.5" /><path d="M16 16l5 5" />
-                </svg>
-              </button>
-            )}
-            <button
-              onClick={onToggleToolbar}
-              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-              aria-label={toolbarExpanded ? t('chat.collapseToolbar') : t('chat.expandToolbar')}
-              aria-expanded={toolbarExpanded}
-            >
-              <ChevronDownIcon className={`h-4 w-4 transition-transform duration-200 ${toolbarExpanded ? 'rotate-180' : ''}`} />
-            </button>
-          </div>
-        </div>
-        {/* 展开区：高度过渡动画，避免突兀显隐 */}
-        <div
-          className={`grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-out ${
-            toolbarExpanded ? 'mt-1.5 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
-          }`}
-        >
-          <div className="min-h-0">
-            <div className="border-t border-border-light/60 pt-1.5">
-              <div className="flex items-center gap-1.5">
-                <span className="chip whitespace-nowrap text-xs">{conversationsCount} {t('chat.quickResume')}</span>
-                <span className="chip whitespace-nowrap text-xs">{memoryCount} {t('memory.count')}</span>
-                <div className="flex-1" />
-                <button
-                  onClick={onRename}
-                  disabled={!activeConversation}
-                  className="rounded-xl p-2 text-text-secondary hover:bg-warm-100 disabled:opacity-40"
-                  aria-label={t('common.edit')}
-                >
-                  <PencilIcon className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={onSummarize}
-                  disabled={!activeConversation || isStreamingHere || summarizing}
-                  className="rounded-xl p-2 text-text-secondary hover:bg-warm-100 disabled:opacity-40"
-                  aria-label={t('chat.summarize')}
-                >
-                  {summarizing ? <span className="spinner-sm" aria-hidden="true" /> : <SummaryIcon className="h-4 w-4" />}
-                </button>
-                <button
-                  onClick={onDuplicate}
-                  disabled={!activeConversation || isStreamingHere || duplicating}
-                  className="rounded-xl p-2 text-text-secondary hover:bg-warm-100 disabled:opacity-40"
-                  aria-label={t('chat.duplicate')}
-                >
-                  {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
-                </button>
-                <button
-                  onClick={onOpenImageManager}
-                  className="rounded-xl p-2 text-text-secondary hover:bg-warm-100"
-                  aria-label={t('chat.imageManagerTitle')}
-                >
-                  <ImageIcon className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={onRequestDelete}
-                  disabled={!activeConversation}
-                  className="rounded-xl p-2 text-red-400 hover:bg-red-50 disabled:opacity-40"
-                  aria-label={t('common.delete')}
-                >
-                  <TrashIcon className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+          </span>
+          <span className="min-w-0 lg:hidden">
+            <span className="block truncate text-base font-semibold leading-tight text-text-primary">{character.name}</span>
+            <span className="flex items-center gap-0.5 text-xs leading-snug text-text-muted">
+              <span className="truncate">{conversationTitle}</span>
+              <ChevronDownIcon className="h-3 w-3 shrink-0" />
+            </span>
+          </span>
+          <span className="hidden min-w-0 lg:block">
+            <span className="flex items-center gap-1 text-base font-semibold leading-tight text-text-primary">
+              <span className="truncate">{conversationTitle}</span>
+              <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            </span>
+            <span className="block truncate text-xs leading-snug text-text-muted">
+              {character.name} · {memoryCount} {t('memory.count')}
+            </span>
+          </span>
+        </button>
+      </div>
 
-      {/* === 桌面/平板横屏(lg+)：完整工具栏 === */}
-      <section className="surface-hero relative z-10 hidden px-5 py-5 lg:block">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
-              {character.avatar_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" loading="lazy" />
-              ) : (
-                <span className="text-xl font-semibold text-accent-dark">{character.name[0]}</span>
-              )}
-            </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-xl font-semibold text-text-primary">{character.name}</h2>
-                <span className="chip chip-active text-xs">{t('chat.profile')}</span>
-                <span className="chip text-xs">{memoryCount} {t('memory.count')}</span>
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <button
-              onClick={onOpenConvDrawer}
-              className="soft-button soft-button-secondary px-3 py-2 text-sm"
-              title={`${t('chat.quickResume')} (${conversationsCount})`}
-              aria-label={`${t('chat.quickResume')} (${conversationsCount})`}
+      {status && <div className="order-3 basis-full lg:order-2 lg:basis-auto">{status}</div>}
+
+      <div className="order-2 flex shrink-0 items-center pr-1 lg:order-3 lg:pr-0">
+        <span className="mx-1 hidden h-5 w-px bg-border-light lg:block" aria-hidden="true" />
+        {onOpenSearch && (
+          <button onClick={onOpenSearch} className={ICON_BUTTON} title={t('chat.searchMessages')} aria-label={t('chat.searchMessages')}>
+            <SearchIcon className="h-5 w-5" />
+          </button>
+        )}
+        <button
+          onClick={onSummarize}
+          disabled={!activeConversation || isStreamingHere || summarizing}
+          className={`${ICON_BUTTON} hidden lg:flex`}
+          title={t('chat.summarizeTitle')}
+          aria-label={summarizing ? t('chat.summarizing') : t('chat.summarize')}
+        >
+          {summarizing ? <span className="spinner-sm" aria-hidden="true" /> : <SummaryIcon className="h-5 w-5" />}
+        </button>
+        <button
+          onClick={onOpenImageManager}
+          className={`${ICON_BUTTON} hidden lg:flex`}
+          title={t('chat.imageManagerTitleHint')}
+          aria-label={t('chat.imageManagerTitle')}
+        >
+          <ImageIcon className="h-5 w-5" />
+        </button>
+        <div className="relative" ref={moreMenuRef}>
+          <button
+            ref={moreTriggerRef}
+            type="button"
+            onClick={() => setMoreOpen(prev => !prev)}
+            className={ICON_BUTTON}
+            title={t('common.more')}
+            aria-label={t('common.more')}
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+          >
+            <span aria-hidden="true" className="text-xl leading-none">⋯</span>
+          </button>
+          {moreOpen && (
+            <div
+              role="menu"
+              className="absolute right-0 top-full z-50 mt-1 min-w-[12rem] overflow-hidden rounded-2xl border border-border-light bg-surface py-1 shadow-lg"
             >
-              <ListIcon className="h-4 w-4" />
-            </button>
-            <button
-              onClick={onNewChat}
-              disabled={creating}
-              className="soft-button soft-button-primary px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title={t('chat.newChat')}
-              aria-label={t('chat.newChat')}
-            >
-              {creating ? <span className="spinner-sm" aria-hidden="true" /> : <PlusIcon className="h-4 w-4" />}
-            </button>
-            {onOpenSearch && (
-              <button
-                onClick={onOpenSearch}
-                className="soft-button soft-button-secondary px-3 py-2 text-sm"
-                title={t('chat.searchMessages')}
-                aria-label={t('chat.searchMessages')}
-              >
-                <SearchIcon className="h-4 w-4" />
+              <button type="button" role="menuitem" onClick={() => runMenuAction(onNewChat)} disabled={creating} className={MENU_ITEM}>
+                {creating ? <span className="spinner-sm" aria-hidden="true" /> : <PlusIcon className="h-4 w-4 text-text-muted" />}
+                <span>{t('chat.newChat')}</span>
               </button>
-            )}
-            <button
-              onClick={onRename}
-              disabled={!activeConversation}
-              className="soft-button soft-button-secondary px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title={t('common.edit')}
-              aria-label={t('common.edit')}
-            >
-              <PencilIcon className="h-4 w-4" />
-            </button>
-            <button
-              onClick={onSummarize}
-              disabled={!activeConversation || isStreamingHere || summarizing}
-              className="soft-button soft-button-secondary px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-              title={t('chat.summarizeTitle')}
-              aria-label={summarizing ? t('chat.summarizing') : t('chat.summarize')}
-            >
-              {summarizing ? <span className="spinner-sm" aria-hidden="true" /> : <SummaryIcon className="h-4 w-4" />}
-            </button>
-            <button
-              onClick={onOpenImageManager}
-              className="soft-button soft-button-secondary px-3 py-2 text-sm"
-              title={t('chat.imageManagerTitleHint')}
-              aria-label={t('chat.imageManagerTitle')}
-            >
-              <ImageIcon className="h-4 w-4" />
-            </button>
-            <button
-              onClick={onDuplicate}
-              disabled={!activeConversation || isStreamingHere || duplicating}
-              className="soft-button soft-button-secondary hidden px-3 py-2 text-sm xl:inline-flex disabled:cursor-not-allowed disabled:opacity-50"
-              title={t('chat.duplicateTitle')}
-              aria-label={duplicating ? t('chat.duplicating') : t('chat.duplicate')}
-            >
-              {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
-            </button>
-            <button
-              onClick={onRequestDelete}
-              disabled={!activeConversation}
-              className="soft-button soft-button-danger hidden px-3 py-2 text-sm xl:inline-flex disabled:cursor-not-allowed disabled:opacity-50"
-              title={t('common.delete')}
-              aria-label={t('common.delete')}
-            >
-              <TrashIcon className="h-4 w-4" />
-            </button>
-            <div className="relative xl:hidden" ref={moreMenuRef}>
+              <button type="button" role="menuitem" onClick={() => runMenuAction(onRename)} disabled={!activeConversation} className={MENU_ITEM}>
+                <PencilIcon className="h-4 w-4 text-text-muted" />
+                <span>{t('chat.renameTitle')}</span>
+              </button>
               <button
-                ref={moreTriggerRef}
                 type="button"
-                onClick={() => setMoreOpen(prev => !prev)}
-                className="soft-button soft-button-secondary px-3 py-2 text-sm"
-                title={t('common.more')}
-                aria-label={t('common.more')}
-                aria-haspopup="menu"
-                aria-expanded={moreOpen}
+                role="menuitem"
+                onClick={() => runMenuAction(onSummarize)}
+                disabled={!activeConversation || isStreamingHere || summarizing}
+                className={`${MENU_ITEM} lg:hidden`}
               >
-                <span aria-hidden="true" className="text-base leading-none">⋯</span>
+                {summarizing ? <span className="spinner-sm" aria-hidden="true" /> : <SummaryIcon className="h-4 w-4 text-text-muted" />}
+                <span>{summarizing ? t('chat.summarizing') : t('chat.summarize')}</span>
               </button>
-              {moreOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 top-full z-50 mt-1 min-w-[10rem] rounded-xl border border-border-light bg-surface/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      // 菜单项即将卸载，先让弹窗记录仍存在的焦点恢复目标。
-                      moreTriggerRef.current?.focus();
-                      setMoreOpen(false);
-                      onDuplicate();
-                    }}
-                    disabled={!activeConversation || isStreamingHere || duplicating}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4" />}
-                    <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      moreTriggerRef.current?.focus();
-                      setMoreOpen(false);
-                      onRequestDelete();
-                    }}
-                    disabled={!activeConversation}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-500 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-950/30"
-                  >
-                    <TrashIcon className="h-4 w-4" />
-                    <span>{t('common.delete')}</span>
-                  </button>
-                </div>
-              )}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => runMenuAction(onDuplicate)}
+                disabled={!activeConversation || isStreamingHere || duplicating}
+                className={MENU_ITEM}
+              >
+                {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4 text-text-muted" />}
+                <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => runMenuAction(onOpenImageManager)} className={`${MENU_ITEM} lg:hidden`}>
+                <ImageIcon className="h-4 w-4 text-text-muted" />
+                <span>{t('chat.imageManagerTitle')}</span>
+              </button>
+              <div className="my-1 h-px bg-border-light" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => runMenuAction(onRequestDelete)}
+                disabled={!activeConversation}
+                className={`${MENU_ITEM} !text-danger`}
+              >
+                <TrashIcon className="h-4 w-4" />
+                <span>{t('common.delete')}</span>
+              </button>
             </div>
-          </div>
+          )}
         </div>
-      </section>
-    </>
+      </div>
+    </header>
   );
 }
 

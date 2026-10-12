@@ -40,23 +40,22 @@ const ChatToolbar = require('../../src/components/chat/ChatToolbar.tsx').default
 const noop = () => {};
 const conversation = { id: 'fixture-conversation', title: 'Conversation' };
 const markup = renderToStaticMarkup(React.createElement('div', {
-  className: 'flex h-full min-h-0 flex-1 flex-col gap-2 px-2 py-2 md:gap-4 md:px-4 md:py-4',
+  className: 'flex h-full min-h-0 flex-1 flex-col',
 },
 React.createElement(ChatHeader, {
   character: { id: 'fixture-character', name: 'Alice', avatar_url: null },
-  activeConversation: conversation, conversationsCount: 1, memoryCount: 0,
+  activeConversation: conversation, memoryCount: 0,
   isStreamingHere: false, creating: false, summarizing: false, duplicating: false,
-  toolbarExpanded: false, onToggleToolbar: noop, onOpenConvDrawer: noop,
+  status: React.createElement(ChatToolbar, {
+    activeConversation: conversation, unextractedCount: 0, memoryExtractStatus: 'idle', tokenCount: 12,
+    onOpenResetExtraction: noop, onOpenTokenBreakdown: noop,
+  }),
+  onOpenConvDrawer: noop,
   onNewChat: noop, onRename: noop, onSummarize: noop, onDuplicate: noop,
   onOpenImageManager: noop, onRequestDelete: noop,
 }),
-React.createElement('div', { className: 'flex min-h-0 flex-1 gap-2 md:gap-4' },
-  React.createElement('section', { className: 'surface-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden' },
-    React.createElement(ChatToolbar, {
-      activeConversation: conversation, unextractedCount: 0, memoryExtractStatus: 'idle', tokenCount: 12,
-      onOpenResetExtraction: noop, onOpenTokenBreakdown: noop,
-    }),
-  ),
+React.createElement('div', { className: 'flex min-h-0 flex-1' },
+  React.createElement('section', { className: 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden' }),
 )));
 const chunks = path.join(root, '.next/static/chunks');
 const css = fs.readdirSync(chunks).filter(file => file.endsWith('.css'))

@@ -385,7 +385,7 @@
     min-width: 20rem;
   }
 
-  /* 移动端气泡更宽，充分利用屏幕 */
+  /* 移动端气泡更宽，充分利用屏幕；助手消息不带头像，图片与编辑态不再让出头像列 */
   @media (max-width: 767px) {
     .message-card {
       min-width: min(100%, 14.5rem);
@@ -393,8 +393,8 @@
     }
 
     .generated-image-list {
-      margin-left: 2.75rem;
-      max-width: calc(100% - 3.5rem);
+      margin-left: 0;
+      max-width: 100%;
     }
 
     .generated-image-card {
@@ -412,8 +412,8 @@
     }
 
     .message-assistant.message-card-editing {
-      width: calc(100% - 3.25rem);
-      max-width: calc(100% - 3.25rem);
+      width: 100%;
+      max-width: 100%;
     }
 
     .editor-surface-wide {

@@ -59,6 +59,8 @@ function renderTokenCount(messages, serverTotalTokens = null) {
     if (request === '@/components/ui/Toast') return { useToast: () => ({ showToast: noop }) };
     if (request === './ChatToolbar') return { __esModule: true,
       default: props => React.createElement('output', null, props.tokenCount) };
+    // 状态条经 ChatHeader 的 status 插槽渲染
+    if (request === './ChatHeader') return { __esModule: true, default: props => props.status ?? null };
     if (request.startsWith('@/hooks/chat/')) {
       const name = request.split('/').at(-1);
       if (hooks[name]) return { [name]: hooks[name] };

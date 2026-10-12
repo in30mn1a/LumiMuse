@@ -3,7 +3,7 @@
 import type { Conversation } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatDateTime, formatShortDate } from '@/lib/chat-view-utils';
-import { ClockIcon } from '@/components/ui/icons';
+import { ClockIcon, PlusIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
 
 interface ConversationItemProps {
@@ -39,14 +39,15 @@ interface DrawerProps {
   conversations: Conversation[];
   activeConvId: string | null;
   onSelect: (id: string) => void;
+  onNewChat?: () => void;
   onClose: () => void;
 }
 
 /**
  * 对话切换抽屉（全断点）：
- * <lg 从底部滑出的抽屉；lg+ 居中弹窗（入口在 ChatHeader 的「最近对话」按钮）。
+ * <lg 从底部滑出的抽屉；lg+ 居中弹窗（入口是 ChatHeader 的标题与侧栏的「全部 N 个对话」）。
  */
-export function ConversationDrawer({ open, conversations, activeConvId, onSelect, onClose }: DrawerProps) {
+export function ConversationDrawer({ open, conversations, activeConvId, onSelect, onNewChat, onClose }: DrawerProps) {
   const { t } = useTranslation();
   return (
     <Modal
@@ -75,6 +76,19 @@ export function ConversationDrawer({ open, conversations, activeConvId, onSelect
           </button>
         </div>
         <div className="max-h-[55dvh] space-y-2 overflow-y-auto pb-1">
+          {onNewChat && (
+            <button
+              type="button"
+              onClick={() => {
+                onNewChat();
+                onClose();
+              }}
+              className="flex min-h-11 w-full items-center gap-2 rounded-2xl border border-dashed border-accent/30 px-3 text-sm font-medium text-accent-dark transition-colors hover:bg-accent/10"
+            >
+              <PlusIcon className="h-4 w-4" />
+              {t('chat.newChat')}
+            </button>
+          )}
           {conversations.map(c => (
             <ConversationItem
               key={c.id}

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import Link from 'next/link';
-import CharacterList from './CharacterList';
+import CharacterList, { type SidebarChat } from './CharacterList';
 import { useTranslation } from '@/lib/i18n-context';
 import { MemoryIcon, SearchIcon, SettingsIcon, SparkIcon, ClockIcon } from '@/components/ui/icons';
 import { useMessageSearch, type MessageSearchResult } from '@/hooks/use-message-search';
@@ -15,9 +15,10 @@ interface Props {
   selectedCharacterId: string | null;
   onCharacterSelect: (id: string, character: Character) => void;
   onConversationSelect?: (characterId: string, conversationId: string, messageId: string, highlightRanges?: readonly TextHighlightRange[]) => void;
+  chat?: SidebarChat | null;
 }
 
-export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConversationSelect }: Props) {
+export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConversationSelect, chat }: Props) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
@@ -61,27 +62,23 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
 
   const showPanel = focused && (query.trim().length > 0);
 
-  // 高度跟父级 h-full（= 视口 - 外层 py-4），避免再写 100dvh 与主栏 100vh 错位；
-  // 宽度：抽屉 72vw；lg 起常驻侧栏用 18rem 保证角色卡编辑按钮可见，xl 回到 21rem
+  // 贴边的平面侧栏，高度跟父级 h-full，避免再写 100dvh 与主栏 100vh 错位；
+  // 宽度：抽屉 80vw；lg 起常驻 18rem
   return (
-    <aside className="surface-panel flex h-full min-h-0 w-[72vw] max-w-[21rem] flex-col overflow-hidden overscroll-contain lg:w-[18rem] xl:w-[21rem]">
-      <div className="border-b border-border-light p-4">
-        <div className="surface-hero p-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent to-accent-dark text-white shadow-sm">
-              <SparkIcon className="h-5 w-5" />
-            </div>
-            <h1 className="text-[1.5rem] font-semibold tracking-tight text-text-primary" style={{ fontFamily: 'var(--font-display)' }}>
-              LumiMuse
-            </h1>
-          </div>
+    <aside className="flex h-full min-h-0 w-[80vw] max-w-[20rem] flex-col overflow-hidden overscroll-contain border-r border-border-light bg-surface lg:w-[18rem]">
+      <div className="flex items-center gap-2.5 px-5 pb-2 pt-4">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent-solid text-white">
+          <SparkIcon className="h-4 w-4" />
         </div>
+        <h1 className="text-lg font-semibold tracking-tight text-text-primary" style={{ fontFamily: 'var(--font-display)' }}>
+          LumiMuse
+        </h1>
       </div>
 
       {/* 对话内容搜索框 */}
-      <div className="relative border-b border-border-light px-4 py-3">
-        <div className={`flex items-center gap-2 rounded-2xl border bg-surface/60 px-3 py-2 text-sm transition-all dark:bg-white/5 ${
-          focused ? 'border-accent/30 bg-surface shadow-sm dark:bg-white/10' : 'border-border-light hover:border-accent/20 hover:bg-surface dark:hover:bg-white/10'
+      <div className="relative px-3 pb-3 pt-1">
+        <div className={`flex min-h-10 items-center gap-2 rounded-xl border px-3 text-sm transition-colors ${
+          focused ? 'border-accent/40 bg-surface' : 'border-transparent bg-surface-2'
         }`}>
           <SearchIcon className="h-3.5 w-3.5 shrink-0 text-text-muted" />
           <input
@@ -107,7 +104,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
 
         {/* 搜索结果下拉面板 */}
         {showPanel && (
-          <div className="absolute left-4 right-4 top-full z-50 mt-1 overflow-hidden rounded-2xl border border-border-light bg-surface shadow-lg dark:bg-[rgba(33,26,48,0.96)]">
+          <div className="absolute left-3 right-3 top-full z-50 -mt-2 overflow-hidden rounded-2xl border border-border-light bg-surface shadow-lg">
             {loading && (
               <div className="px-4 py-3 text-center text-xs text-text-muted">{t('common.loading')}</div>
             )}
@@ -155,21 +152,21 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden pt-1">
-        <CharacterList selectedId={selectedCharacterId} onSelect={onCharacterSelect} />
+        <CharacterList selectedId={selectedCharacterId} onSelect={onCharacterSelect} chat={chat} />
       </div>
 
-      <div className="border-t border-border-light p-4">
-        <div className="grid gap-2">
+      <div className="border-t border-border-light p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div className="grid gap-0.5">
           <Link
             href="/memories"
-            className="flex items-center gap-3 rounded-2xl border border-transparent bg-surface/70 px-4 py-3 text-sm text-text-secondary transition-all duration-200 hover:border-border-light hover:bg-surface hover:text-text-primary dark:bg-white/5 dark:hover:bg-white/10"
+            className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
           >
             <MemoryIcon className="h-4 w-4 shrink-0 text-accent-dark" />
             <span className="flex-1">{t('sidebar.memories')}</span>
           </Link>
           <Link
             href="/settings"
-            className="flex items-center gap-3 rounded-2xl border border-transparent bg-surface/70 px-4 py-3 text-sm text-text-secondary transition-all duration-200 hover:border-border-light hover:bg-surface hover:text-text-primary dark:bg-white/5 dark:hover:bg-white/10"
+            className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
           >
             <SettingsIcon className="h-4 w-4 shrink-0 text-accent-dark" />
             <span className="flex-1">{t('sidebar.settings')}</span>

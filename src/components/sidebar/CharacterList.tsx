@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -22,8 +22,10 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Character } from '@/types';
+import { Character, Conversation } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
+import { formatTemplate } from '@/lib/i18n';
+import { formatShortDate } from '@/lib/chat-view-utils';
 import { parseJsonResponse } from '@/lib/http';
 import {
   getCharacterListCache,
@@ -39,9 +41,62 @@ import { PencilIcon, PlusIcon, SparkIcon } from '@/components/ui/icons';
  */
 let savedScrollTop = 0;
 
+/** 选中角色卡下方直接列出的最近对话条数；其余走「全部 N 个对话」打开对话抽屉 */
+const SIDEBAR_CONVERSATION_PREVIEW = 5;
+
+/** 选中角色的对话列表；数据与操作都来自 ChatView，侧栏只负责展示 */
+export interface SidebarChat {
+  characterId: string;
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  onSelectConversation: (id: string) => void;
+  onNewChat: () => void;
+  onShowAll: () => void;
+}
+
 interface Props {
   selectedId: string | null;
   onSelect: (id: string, character: Character) => void;
+  chat?: SidebarChat | null;
+}
+
+const CONVERSATION_ROW = 'flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-colors';
+
+function ConversationRows({ chat }: { chat: SidebarChat }) {
+  const { t } = useTranslation();
+  const preview = chat.conversations.slice(0, SIDEBAR_CONVERSATION_PREVIEW);
+  // 当前对话不在前几条里时也要看得到选中态
+  const active = chat.conversations.find(item => item.id === chat.activeConversationId);
+  const rows = active && !preview.includes(active) ? [...preview.slice(0, -1), active] : preview;
+  return (
+    <div className="ml-7 space-y-0.5 border-l border-border-light pl-2">
+      <button type="button" onClick={chat.onNewChat} className={`${CONVERSATION_ROW} font-medium text-accent-dark hover:bg-accent/10`}>
+        <PlusIcon className="h-4 w-4 shrink-0" />
+        {t('chat.newChat')}
+      </button>
+      {rows.map(conversation => (
+        <button
+          key={conversation.id}
+          type="button"
+          onClick={() => chat.onSelectConversation(conversation.id)}
+          aria-current={conversation.id === chat.activeConversationId ? 'true' : undefined}
+          className={`${CONVERSATION_ROW} ${
+            conversation.id === chat.activeConversationId
+              ? 'bg-accent/12 font-medium text-accent-dark'
+              : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+          }`}
+        >
+          <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
+          <time className="shrink-0 text-xs font-normal text-text-muted">{formatShortDate(conversation.updated_at)}</time>
+        </button>
+      ))}
+      {chat.conversations.length > rows.length && (
+        <button type="button" onClick={chat.onShowAll} className={`${CONVERSATION_ROW} text-text-muted hover:bg-surface-2 hover:text-text-primary`}>
+          {formatTemplate(t('sidebar.allConversations'), { count: chat.conversations.length })}
+        </button>
+      )}
+    </div>
+  );
 }
 
 interface CardProps {
@@ -75,11 +130,9 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
     <div
       ref={setNodeRef}
       style={style}
-      className={`group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-colors duration-200 ${
-        selected
-          ? 'border-accent/26 bg-accent/10 shadow-sm'
-          : 'border-transparent bg-surface/48 hover:border-border-light hover:bg-surface/78'
-      } ${isDragging ? 'cursor-grabbing shadow-lg' : 'cursor-grab'}`}
+      className={`group flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition-colors duration-200 ${
+        selected ? 'bg-accent/10' : 'hover:bg-surface-2'
+      } ${isDragging ? 'cursor-grabbing bg-surface shadow-lg' : 'cursor-grab'}`}
       // 拖拽 listeners 只挂在卡片本体，编辑按钮自行 stopPropagation 即可豁免
       {...attributes}
       {...listeners}
@@ -101,10 +154,8 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
       tabIndex={0}
     >
       <div
-        className={`flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl ring-1 transition-all duration-200 ${
-          selected
-            ? 'bg-gradient-to-br from-accent to-accent-dark text-white ring-accent/20'
-            : 'bg-warm-100 text-text-secondary ring-border-light'
+        className={`flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl ${
+          selected ? 'bg-accent-solid text-white' : 'bg-surface-2 text-text-secondary'
         }`}
       >
         {character.avatar_url ? (
@@ -121,7 +172,7 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
       </div>
 
       <div className="min-w-0 flex-1">
-        <span className="truncate text-sm font-medium text-text-primary">{character.name}</span>
+        <span className={`block truncate text-[0.9375rem] text-text-primary ${selected ? 'font-semibold' : ''}`}>{character.name}</span>
       </div>
 
       <Link
@@ -141,7 +192,7 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
   );
 }
 
-export default function CharacterList({ selectedId, onSelect }: Props) {
+export default function CharacterList({ selectedId, onSelect, chat }: Props) {
   const router = useRouter();
   // 优先用模块缓存做首屏，避免移动端 Modal 重挂载时空白闪一下
   const [characters, setCharacters] = useState<Character[]>(() => getCharacterListCache() ?? []);
@@ -232,13 +283,17 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="px-4 pb-4">
-        <button onClick={handleCreate} className="soft-button soft-button-primary w-full justify-center">
+      <div className="flex items-center justify-between pb-1 pl-5 pr-3">
+        <span className="text-xs font-medium text-text-muted">{t('sidebar.characters')}</span>
+        <button
+          onClick={handleCreate}
+          className="flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium text-accent-dark transition-colors hover:bg-accent/10"
+        >
           <PlusIcon className="h-4 w-4" />
           {t('sidebar.create')}
         </button>
-        {listError && <p className="mt-2 text-xs text-red-500">{listError}</p>}
       </div>
+      {listError && <p className="px-5 pb-2 text-xs text-red-500">{listError}</p>}
 
       <div
         ref={scrollRef}
@@ -257,15 +312,19 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
 
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={characters.map(c => c.id)} strategy={verticalListSortingStrategy}>
-            <div className="space-y-2">
+            <div className="space-y-1">
               {characters.map(character => (
-                <SortableCharacterCard
-                  key={character.id}
-                  character={character}
-                  selected={selectedId === character.id}
-                  onSelect={onSelect}
-                  editLabel={t('char.edit')}
-                />
+                <Fragment key={character.id}>
+                  <SortableCharacterCard
+                    character={character}
+                    selected={selectedId === character.id}
+                    onSelect={onSelect}
+                    editLabel={t('char.edit')}
+                  />
+                  {chat && chat.characterId === character.id && selectedId === character.id && (
+                    <ConversationRows chat={chat} />
+                  )}
+                </Fragment>
               ))}
             </div>
           </SortableContext>

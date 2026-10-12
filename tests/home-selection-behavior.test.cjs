@@ -433,6 +433,95 @@ test('reselecting the same search result creates a distinct jump request that ca
   }
 });
 
+async function withLastChatStorage(run) {
+  const fetchHarness = createFetchHarness();
+  const originalFetch = global.fetch;
+  const previousLocalStorage = Object.getOwnPropertyDescriptor(global, 'localStorage');
+  global.fetch = fetchHarness.fetch;
+  Object.defineProperty(global, 'localStorage', { configurable: true, writable: true, value: window.localStorage });
+  window.localStorage.clear();
+  try {
+    await run(fetchHarness);
+  } finally {
+    cleanup();
+    window.localStorage.clear();
+    global.fetch = originalFetch;
+    if (previousLocalStorage) Object.defineProperty(global, 'localStorage', previousLocalStorage);
+    else delete global.localStorage;
+  }
+}
+
+test('home reopens the last chat and keeps it updated from the chat view', async () => {
+  await withLastChatStorage(async fetchHarness => {
+    window.localStorage.setItem('lumimuse_last_chat', JSON.stringify({ characterId: 'A', conversationId: 'conv-A' }));
+    const { Home, getChatViewProps } = loadHome();
+    const view = render(React.createElement(Home));
+    assert.equal(readSelection(view).characterId, null, 'nothing is selected until the character loads');
+
+    await fetchHarness.resolve('A');
+    assertSelection(view, {
+      selectedCharacterId: 'A',
+      characterId: 'A',
+      conversationId: 'conv-A',
+      targetMessageId: null,
+    });
+
+    act(() => {
+      getChatViewProps().onSidebarChatChange({
+        characterId: 'A',
+        conversations: [],
+        activeConversationId: 'conv-other',
+        onSelectConversation() {},
+        onNewChat() {},
+        onShowAll() {},
+      });
+    });
+    assert.deepEqual(JSON.parse(window.localStorage.getItem('lumimuse_last_chat')), {
+      characterId: 'A',
+      conversationId: 'conv-other',
+    });
+  });
+});
+
+test('a selection made while the last chat is still loading wins over the restore', async () => {
+  await withLastChatStorage(async fetchHarness => {
+    window.localStorage.setItem('lumimuse_last_chat', JSON.stringify({ characterId: 'A', conversationId: 'conv-A' }));
+    const { Home, getSidebarProps } = loadHome();
+    const view = render(React.createElement(Home));
+    const restoreRequest = fetchHarness.pending('A');
+
+    act(() => {
+      getSidebarProps().onCharacterSelect('B', character('B', ' snapshot'));
+    });
+    await fetchHarness.resolve('B');
+    restoreRequest.settled = true;
+    await act(async () => {
+      restoreRequest.deferred.resolve(jsonResponse(character('A', ' full')));
+      await new Promise(resolveImmediate => setImmediate(resolveImmediate));
+    });
+
+    assertSelection(view, {
+      selectedCharacterId: 'B',
+      characterId: 'B',
+      conversationId: null,
+      targetMessageId: null,
+    });
+  });
+});
+
+test('a missing or malformed last chat leaves the home screen empty without fetching', async () => {
+  await withLastChatStorage(async fetchHarness => {
+    window.localStorage.setItem('lumimuse_last_chat', '{"characterId":42}');
+    const { Home } = loadHome();
+    const view = render(React.createElement(Home));
+    await act(async () => {
+      await new Promise(resolveImmediate => setImmediate(resolveImmediate));
+    });
+    assert.equal(fetchHarness.requests.length, 0);
+    assert.equal(readSelection(view).characterId, null);
+  });
+});
+
 test.after(() => {
   cleanup();
   restoreDom();

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Character } from '@/types';
 import Sidebar from '@/components/sidebar/Sidebar';
+import type { SidebarChat } from '@/components/sidebar/CharacterList';
 import ChatView from '@/components/chat/ChatView';
 import GlobalSearch from '@/components/search/GlobalSearch';
 import Modal from '@/components/ui/Modal';
@@ -20,6 +21,21 @@ interface HomeSelection {
   searchHighlightRanges: readonly TextHighlightRange[];
 }
 
+/** 上次打开的角色与对话（只存 id）：启动时直接回到那段对话，而不是空白首页 */
+const LAST_CHAT_KEY = 'lumimuse_last_chat';
+
+function readLastChat(): { characterId: string; conversationId: string | null } | null {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(LAST_CHAT_KEY) ?? 'null');
+    if (!saved || typeof saved !== 'object') return null;
+    const { characterId, conversationId } = saved as { characterId?: unknown; conversationId?: unknown };
+    if (typeof characterId !== 'string' || !characterId) return null;
+    return { characterId, conversationId: typeof conversationId === 'string' ? conversationId : null };
+  } catch {
+    return null;
+  }
+}
+
 export default function Home() {
   const [selection, setSelection] = useState<HomeSelection>({
     characterId: null,
@@ -34,6 +50,7 @@ export default function Home() {
   // null = 全局搜索（侧栏 / Ctrl+K）；非空 = 只搜该角色（聊天页顶部搜索）
   const [searchCharacterId, setSearchCharacterId] = useState<string | null>(null);
   const selectionGenerationRef = useRef(0);
+  const [sidebarChat, setSidebarChat] = useState<SidebarChat | null>(null);
   const {
     characterId: selectedCharacterId,
     character: selectedCharacter,
@@ -49,6 +66,57 @@ export default function Home() {
     window.history.replaceState(null, '', window.location.pathname);
     requestAnimationFrame(() => setSidebarOpen(true));
   }, []);
+
+  useEffect(() => {
+    const last = readLastChat();
+    if (!last) return;
+    const generation = ++selectionGenerationRef.current;
+    fetch(`/api/characters/${last.characterId}`)
+      .then(response => parseJsonResponse<Character>(response))
+      .then((full: Character) => {
+        // 恢复期间用户已经自己选了别的：以用户的选择为准
+        if (selectionGenerationRef.current !== generation) return;
+        setSelection({
+          characterId: full.id,
+          character: full,
+          conversationId: last.conversationId,
+          targetMessageId: null,
+          targetRequestId: null,
+          searchHighlightRanges: [],
+        });
+      })
+      .catch(() => {/* 角色已删除或离线：留在首页 */});
+  }, []);
+
+  const handleSidebarChatChange = useCallback((chat: SidebarChat | null) => {
+    setSidebarChat(chat);
+    if (!chat) return;
+    try {
+      localStorage.setItem(LAST_CHAT_KEY, JSON.stringify({
+        characterId: chat.characterId,
+        conversationId: chat.activeConversationId,
+      }));
+    } catch {
+      /* 隐私模式等写不进去时只是下次不恢复 */
+    }
+  }, []);
+
+  // 侧栏里的对话操作在移动端抽屉内触发，执行前先收起抽屉
+  const sidebarChatProps: SidebarChat | null = sidebarChat && {
+    ...sidebarChat,
+    onSelectConversation: id => {
+      setSidebarOpen(false);
+      sidebarChat.onSelectConversation(id);
+    },
+    onNewChat: () => {
+      setSidebarOpen(false);
+      sidebarChat.onNewChat();
+    },
+    onShowAll: () => {
+      setSidebarOpen(false);
+      sidebarChat.onShowAll();
+    },
+  };
 
   const handleCharacterSelect = (id: string, characterSnapshot?: Character) => {
     const generation = ++selectionGenerationRef.current;
@@ -217,11 +285,12 @@ export default function Home() {
   return (
     <div className="app-shell flex h-dvh">
       {/* 桌面 lg+：static 侧栏。移动/平板竖屏抽屉仅在 sidebarOpen 时挂载，避免双 Sidebar 常驻分叉。 */}
-      <div className="hidden h-full min-h-0 py-4 pl-4 lg:block lg:static">
+      <div className="hidden h-full min-h-0 lg:block lg:static">
         <Sidebar
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
           onConversationSelect={handleConversationSelect}
+          chat={sidebarChatProps}
         />
       </div>
 
@@ -231,16 +300,17 @@ export default function Home() {
         ariaLabel="角色列表"
         padded={false}
         overlayClassName="fixed inset-0 z-30 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
-        dialogClassName="fixed z-40 h-full min-h-0 py-4 pl-4 outline-none lg:hidden"
+        dialogClassName="fixed left-0 top-0 z-40 h-full min-h-0 outline-none lg:hidden"
       >
         <Sidebar
           selectedCharacterId={selectedCharacterId}
           onCharacterSelect={handleCharacterSelect}
           onConversationSelect={handleConversationSelect}
+          chat={sidebarChatProps}
         />
       </Modal>
 
-      {/* 与侧栏同用父级 h-dvh + py-4 内边距由 ChatView 自管，避免 100vh/100dvh 混用导致底边错位 */}
+      {/* 与侧栏同用父级 h-dvh，避免 100vh/100dvh 混用导致底边错位 */}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <ChatView
           character={selectedCharacter}
@@ -251,6 +321,7 @@ export default function Home() {
           onSearchTargetConsumed={handleSearchTargetConsumed}
           onOpenSidebar={() => setSidebarOpen(true)}
           onOpenSearch={() => openSearch(selectedCharacterId)}
+          onSidebarChatChange={handleSidebarChatChange}
         />
       </main>
 

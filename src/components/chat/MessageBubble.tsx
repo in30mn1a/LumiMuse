@@ -331,9 +331,9 @@ function MessageBubbleInner({
     <div className={`message-appear ${isUser ? 'flex justify-end' : 'flex flex-col items-start'}`}>
       {/* 头像 + 气泡 行 */}
       <div className={`flex w-full gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
-        {/* 角色头像 */}
+        {/* 角色头像：<md 一对一对话里角色已在顶栏，不逐条重复 */}
         {!isUser && (
-          <div className="mt-1 h-10 w-10 shrink-0 overflow-hidden rounded-2xl bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
+          <div className="mt-1 hidden h-10 w-10 shrink-0 overflow-hidden rounded-2xl bg-accent/12 md:block">
             {avatarUrl ? (
               <img src={avatarUrl} alt={characterName} className="h-full w-full object-cover" loading="lazy" />
             ) : (
@@ -583,7 +583,7 @@ function MessageBubbleInner({
         const images = sanitizeGeneratedImages(meta.generatedImages);
         if (images.length === 0) return null;
         return (
-          <div className="generated-image-list ml-13 mt-2 flex flex-col items-start gap-2 self-stretch">
+          <div className="generated-image-list mt-2 flex md:ml-13 flex-col items-start gap-2 self-stretch">
             {images.map((img) => (
               <ImageGenCard
                 key={img.id}

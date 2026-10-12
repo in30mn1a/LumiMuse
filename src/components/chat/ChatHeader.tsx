@@ -126,7 +126,7 @@ function ChatHeaderImpl({
             <button
               onClick={onNewChat}
               disabled={creating}
-              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-accent p-2 text-white shadow-sm disabled:opacity-50"
+              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-accent-solid p-2 text-white shadow-sm disabled:opacity-50"
               aria-label={t('chat.newConversation')}
             >
               {creating ? <span className="spinner-sm" aria-hidden="true" /> : <PlusIcon className="h-4 w-4" />}
@@ -161,8 +161,8 @@ function ChatHeaderImpl({
           <div className="min-h-0">
             <div className="border-t border-border-light/60 pt-1.5">
               <div className="flex items-center gap-1.5">
-                <span className="chip whitespace-nowrap text-[10px]">{conversationsCount} {t('chat.quickResume')}</span>
-                <span className="chip whitespace-nowrap text-[10px]">{memoryCount} {t('memory.count')}</span>
+                <span className="chip whitespace-nowrap text-xs">{conversationsCount} {t('chat.quickResume')}</span>
+                <span className="chip whitespace-nowrap text-xs">{memoryCount} {t('memory.count')}</span>
                 <div className="flex-1" />
                 <button
                   onClick={onRename}
@@ -213,7 +213,7 @@ function ChatHeaderImpl({
       <section className="surface-hero relative z-10 hidden px-5 py-5 lg:block">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-accent/18 to-accent-light/28 ring-1 ring-accent/10">
               {character.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" loading="lazy" />
@@ -224,8 +224,8 @@ function ChatHeaderImpl({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="truncate text-xl font-semibold text-text-primary">{character.name}</h2>
-                <span className="chip chip-active text-[11px]">{t('chat.profile')}</span>
-                <span className="chip text-[11px]">{memoryCount} {t('memory.count')}</span>
+                <span className="chip chip-active text-xs">{t('chat.profile')}</span>
+                <span className="chip text-xs">{memoryCount} {t('memory.count')}</span>
               </div>
             </div>
           </div>
@@ -317,7 +317,7 @@ function ChatHeaderImpl({
               {moreOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full z-50 mt-1 min-w-[10rem] rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+                  className="absolute right-0 top-full z-50 mt-1 min-w-[10rem] rounded-xl border border-border-light bg-surface/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
                 >
                   <button
                     type="button"

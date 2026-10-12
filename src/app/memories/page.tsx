@@ -346,7 +346,7 @@ export default function MemoriesPage() {
                 <ArrowLeftIcon className="h-4 w-4" />
                 {t('memories.back')}
               </Link>
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[rgba(155,124,240,0.12)] text-accent-dark">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
                 <MemoryIcon className="h-5 w-5" />
               </div>
               <div>
@@ -454,7 +454,7 @@ export default function MemoriesPage() {
                   {visibleMerges.map(suggestion => (
                     <div
                       key={suggestion.key}
-                      className={`rounded-xl border border-border-light bg-white/60 px-3 py-2 dark:bg-white/5 ${suggestion.status === 'stale' ? 'opacity-70' : ''}`}
+                      className={`rounded-xl border border-border-light bg-surface/60 px-3 py-2 dark:bg-white/5 ${suggestion.status === 'stale' ? 'opacity-70' : ''}`}
                     >
                       <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
                         <span className="chip">
@@ -548,7 +548,7 @@ export default function MemoriesPage() {
                 </h2>
                 <div className="max-h-[32rem] space-y-2 overflow-y-auto">
                   {lastMemoryAiReviewResult.changes.map(change => (
-                    <div key={change.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-2 dark:bg-white/5">
+                    <div key={change.id} className="rounded-xl border border-border-light bg-surface/60 px-3 py-2 dark:bg-white/5">
                       <details className="group">
                         <summary className="flex cursor-pointer list-none items-center gap-2 text-sm text-text-primary marker:hidden">
                           <ChevronDownIcon className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
@@ -568,7 +568,7 @@ export default function MemoriesPage() {
                           </span>
                         ))}
                       </div>
-                      <div className="mt-1 break-all font-mono text-[11px] text-text-muted">{change.id}</div>
+                      <div className="mt-1 break-all font-mono text-xs text-text-muted">{change.id}</div>
                     </div>
                   ))}
                 </div>
@@ -584,7 +584,7 @@ export default function MemoriesPage() {
             <MemoryList characterId={selectedCharId} refreshNonce={memoryRefreshNonce} />
           ) : (
             <div className="surface-panel px-6 py-20 text-center">
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[1.4rem] bg-[rgba(155,124,240,0.12)] text-accent-dark">
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
                 <MemoryIcon className="h-6 w-6" />
               </div>
               <p className="text-sm font-medium text-text-primary">{t('memories.noCharacter')}</p>
@@ -599,11 +599,11 @@ export default function MemoriesPage() {
         title={mergeSourcesModal?.title}
         maxWidth="max-w-2xl"
         padded={false}
-        dialogClassName="flex w-full max-w-2xl max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-white shadow-xl outline-none dark:bg-zinc-900"
+        dialogClassName="flex w-full max-w-2xl max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-surface shadow-xl outline-none dark:bg-zinc-900"
       >
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {mergeSourcesModal?.sources.map(source => (
-            <div key={source.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-2 dark:bg-white/5">
+            <div key={source.id} className="rounded-xl border border-border-light bg-surface/60 px-3 py-2 dark:bg-white/5">
               <div className="text-xs text-text-muted">
                 {source.category}
                 {source.tags.length > 0 ? ` · ${source.tags.join(',')}` : ''}
@@ -611,7 +611,7 @@ export default function MemoriesPage() {
               <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
                 {source.content}
               </p>
-              <div className="mt-1 break-all font-mono text-[11px] text-text-muted">{source.id}</div>
+              <div className="mt-1 break-all font-mono text-xs text-text-muted">{source.id}</div>
             </div>
           ))}
         </div>

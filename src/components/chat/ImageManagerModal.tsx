@@ -403,7 +403,7 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
                         <div className="pointer-events-none absolute inset-0 rounded-xl ring-2 ring-accent ring-offset-1" />
                       )}
                       <div className="pointer-events-none absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-2 pb-1.5 pt-4 opacity-0 transition-opacity group-hover:opacity-100">
-                        <p className="truncate text-[10px] text-white/90">
+                        <p className="truncate text-xs text-white/90">
                           {img.conversationTitle}{img.referenceCount > 1 ? ` ×${img.referenceCount}` : ''}
                         </p>
                       </div>

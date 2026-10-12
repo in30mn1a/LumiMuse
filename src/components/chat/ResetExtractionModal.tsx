@@ -126,7 +126,7 @@ function ResetExtractionModalInner({
                 }`}
               >
                 <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
-                  selected ? 'border-accent bg-accent text-white' : 'border-border-light bg-white'
+                  selected ? 'border-accent bg-accent-solid text-white' : 'border-border-light bg-surface'
                 }`}>
                   {selected && (
                     <svg viewBox="0 0 10 8" fill="none" className="h-2.5 w-2.5" aria-hidden="true">

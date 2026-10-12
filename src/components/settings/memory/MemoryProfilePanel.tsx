@@ -24,7 +24,7 @@ export function MemoryProfilePanel({
   const setEditingProfileDraft = profile.setEditingProfileDraft;
 
   return (
-    <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+    <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
       <div className="mb-3">
         <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryProfileTitle')}</h3>
         <p className="mt-1 text-xs text-text-muted">{t('settings.memoryProfileHint')}</p>
@@ -76,7 +76,7 @@ export function MemoryProfilePanel({
       )}
       {memoryProfile && !profile.editingProfile && (
         <div className="mt-3 grid gap-3 md:grid-cols-3">
-          <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2 text-xs text-text-secondary md:col-span-2">
+          <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2 text-xs text-text-secondary md:col-span-2">
             <div className="flex items-center justify-between">
               <div>
                 <span className="font-medium text-text-primary">{t('settings.memoryProfileCurrent')}</span>
@@ -104,7 +104,7 @@ export function MemoryProfilePanel({
               ].filter(Boolean).join('\n') || t('settings.memoryProfileEmpty')}
             </p>
           </div>
-          <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2 text-xs text-text-secondary">
+          <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2 text-xs text-text-secondary">
             <div className="space-y-1">
               {memoryProfile.versions.map(version => {
                 const versionName = version.snapshot?.profile_name?.trim();
@@ -112,7 +112,7 @@ export function MemoryProfilePanel({
                 return (
                   <div
                     key={version.id}
-                    className="flex items-stretch gap-1 rounded-lg border border-border-light bg-white/70"
+                    className="flex items-stretch gap-1 rounded-lg border border-border-light bg-surface/70"
                   >
                     <button
                       type="button"
@@ -121,7 +121,7 @@ export function MemoryProfilePanel({
                       className="min-w-0 flex-1 px-2 py-1 text-left text-xs text-text-secondary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <span className="block truncate">{t('settings.memoryProfileRollback')} {versionLabel}</span>
-                      <span className="block truncate text-[11px] text-text-muted">
+                      <span className="block truncate text-xs text-text-muted">
                         {versionName ? `v${version.version_number} · ${version.reason}` : version.reason}
                       </span>
                     </button>
@@ -143,7 +143,7 @@ export function MemoryProfilePanel({
         </div>
       )}
       {memoryProfile && profile.editingProfile && (
-        <div className="mt-3 rounded-xl border border-border-light bg-white/60 px-3 py-2 text-xs text-text-secondary">
+        <div className="mt-3 rounded-xl border border-border-light bg-surface/60 px-3 py-2 text-xs text-text-secondary">
           <div className="mb-2 flex items-center justify-between">
             <span className="font-medium text-text-primary">{t('settings.memoryProfileEditTitle')}</span>
             <div className="flex gap-2">
@@ -181,14 +181,14 @@ export function MemoryProfilePanel({
                   <input
                     value={editingProfileDraft[key] ?? ''}
                     onChange={e => setEditingProfileDraft(prev => ({ ...prev, [key]: e.target.value }))}
-                    className="input-rich w-full rounded-lg border border-border-light bg-white/80 px-2 py-1.5 text-xs"
+                    className="input-rich w-full rounded-lg border border-border-light bg-surface/80 px-2 py-1.5 text-xs"
                   />
                 ) : (
                   <textarea
                     value={editingProfileDraft[key] ?? ''}
                     onChange={e => setEditingProfileDraft(prev => ({ ...prev, [key]: e.target.value }))}
                     rows={rows ?? 2}
-                    className="textarea-rich w-full resize-none rounded-lg border border-border-light bg-white/80 px-2 py-1.5 text-xs"
+                    className="textarea-rich w-full resize-none rounded-lg border border-border-light bg-surface/80 px-2 py-1.5 text-xs"
                   />
                 )}
               </div>

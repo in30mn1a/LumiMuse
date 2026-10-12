@@ -44,7 +44,7 @@ function ChatToolbarImpl({
         {activeConversation?.ignore_memory ? (
           <button
             onClick={onOpenResetExtraction}
-            className="chip cursor-pointer text-[10px] md:text-xs text-text-muted border-border-light opacity-60 hover:opacity-90"
+            className="chip cursor-pointer text-xs md:text-xs text-text-muted border-border-light opacity-60 hover:opacity-90"
             title={t('chat.ignoredHintTitle')}
           >
             {t('chat.ignoredHint')}
@@ -52,7 +52,7 @@ function ChatToolbarImpl({
         ) : unextractedCount > 0 ? (
           <button
             onClick={onOpenResetExtraction}
-            className="chip cursor-pointer text-amber-600 border-amber-200 bg-amber-50/80 hover:bg-amber-100/80 text-[10px] md:text-xs"
+            className="chip cursor-pointer text-amber-600 border-amber-200 bg-amber-50/80 hover:bg-amber-100/80 text-xs md:text-xs"
             title={t('chat.resetExtraction')}
           >
             {unextractedCount} {t('chat.unextracted')}
@@ -60,14 +60,14 @@ function ChatToolbarImpl({
         ) : (
           <button
             onClick={onOpenResetExtraction}
-            className="chip cursor-pointer text-[10px] md:text-xs opacity-50 hover:opacity-80"
+            className="chip cursor-pointer text-xs md:text-xs opacity-50 hover:opacity-80"
             title={t('chat.resetExtraction')}
           >
             {t('chat.manageExtraction')}
           </button>
         )}
         {memoryExtractStatus !== 'idle' && (
-          <span role="status" aria-live="polite" aria-atomic="true" className={`chip text-[10px] md:text-xs transition-opacity ${
+          <span role="status" aria-live="polite" aria-atomic="true" className={`chip text-xs md:text-xs transition-opacity ${
             memoryExtractStatus === 'extracting'
               ? 'text-purple-600 border-purple-200 bg-purple-50/80 animate-pulse'
               : memoryExtractStatus === 'done'
@@ -82,7 +82,7 @@ function ChatToolbarImpl({
         <button
           type="button"
           onClick={onOpenTokenBreakdown}
-          className="chip cursor-pointer text-[10px] md:text-xs hover:bg-white/80"
+          className="chip cursor-pointer text-xs md:text-xs hover:bg-surface/80"
           title={t('token.breakdownTitle')}
         >
           {isRealTokenCount ? '' : '≈'}{tokenCount} {t('status.tokens')}

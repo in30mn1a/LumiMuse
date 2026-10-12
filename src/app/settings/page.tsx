@@ -392,7 +392,7 @@ export default function SettingsPage() {
                 <ArrowLeftIcon className="h-4 w-4" />
                 {t('settings.back')}
               </button>
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[rgba(155,124,240,0.12)] text-accent-dark">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
                 <SettingsIcon className="h-5 w-5" />
               </div>
               <h1 className="section-title text-2xl">{t('settings.title')}</h1>
@@ -606,7 +606,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="space-y-3">
-                <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+                <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
                   <input
                     type="checkbox"
                     checked={settings.streaming}
@@ -615,7 +615,7 @@ export default function SettingsPage() {
                   {t('settings.streaming')}
                 </label>
 
-                <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+                <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
                   <input
                     type="checkbox"
                     checked={settings.example_dialogue}
@@ -624,7 +624,7 @@ export default function SettingsPage() {
                   {t('settings.exampleDialogue')}
                 </label>
 
-                <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+                <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
                   <input
                     type="checkbox"
                     checked={settings.show_timestamps}
@@ -762,7 +762,7 @@ function SamplingParamRow({ id, label, value, defaultValue, min, max, step, onCh
     <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
       enabled
         ? 'border-accent/30 bg-accent/5'
-        : 'border-border-light bg-white/70'
+        : 'border-border-light bg-surface/70'
     }`}>
       <input
         type="checkbox"

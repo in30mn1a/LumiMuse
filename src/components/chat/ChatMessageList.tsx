@@ -233,7 +233,7 @@ function ChatMessageList(
             <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" />
             <div className="flex flex-col gap-1.5">
               <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" />
-              <div className="h-16 w-56 animate-pulse rounded-2xl border border-border-light bg-white/80" style={{ animationDelay: '60ms' }} />
+              <div className="h-16 w-56 animate-pulse rounded-2xl border border-border-light bg-surface/80" style={{ animationDelay: '60ms' }} />
             </div>
           </div>
           <div className="flex flex-row-reverse gap-3">
@@ -246,7 +246,7 @@ function ChatMessageList(
             <div className="h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10" style={{ animationDelay: '180ms' }} />
             <div className="flex flex-col gap-1.5">
               <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '180ms' }} />
-              <div className="h-20 w-72 animate-pulse rounded-2xl border border-border-light bg-white/80" style={{ animationDelay: '180ms' }} />
+              <div className="h-20 w-72 animate-pulse rounded-2xl border border-border-light bg-surface/80" style={{ animationDelay: '180ms' }} />
             </div>
           </div>
         </div>
@@ -255,7 +255,7 @@ function ChatMessageList(
       {isEmpty && !activeConvId && (
         <div className="flex h-full min-h-[18rem] items-center justify-center">
           <div className="max-w-md text-center">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[1.4rem] bg-gradient-to-br from-accent/15 to-accent-light/25 text-accent-dark empty-breathe">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-accent/15 to-accent-light/25 text-accent-dark empty-breathe">
               <MemoryIcon className="h-6 w-6" />
             </div>
             <p className="text-base font-medium text-text-primary">{t('chat.emptyConversation')}</p>
@@ -320,7 +320,7 @@ function ChatMessageList(
                   {showDateDivider && (
                     <div className="mb-4 flex items-center gap-3">
                       <div className="h-px flex-1 bg-border-light" />
-                      <span className="text-[11px] text-text-muted">{formatDateLabel(message.created_at)}</span>
+                      <span className="text-xs text-text-muted">{formatDateLabel(message.created_at)}</span>
                       <div className="h-px flex-1 bg-border-light" />
                     </div>
                   )}

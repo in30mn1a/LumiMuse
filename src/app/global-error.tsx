@@ -11,7 +11,7 @@ export default function GlobalError({
     <html lang="zh-CN">
       <body>
         <main className="flex min-h-screen items-center justify-center bg-[var(--background)] px-6 text-[var(--foreground)]">
-          <section className="w-full max-w-md rounded-lg border border-border-light bg-white/80 px-6 py-5 shadow-sm">
+          <section className="w-full max-w-md rounded-lg border border-border-light bg-surface/80 px-6 py-5 shadow-sm">
             <h1 className="text-lg font-semibold text-text-primary">应用遇到错误</h1>
             <p className="mt-2 text-sm leading-relaxed text-text-secondary">
               页面初始化失败，请重试。若问题持续出现，请查看服务端日志。
@@ -22,7 +22,7 @@ export default function GlobalError({
             <button
               type="button"
               onClick={reset}
-              className="mt-4 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-dark"
+              className="mt-4 rounded-md bg-accent-solid px-4 py-2 text-sm font-medium text-white hover:bg-accent-dark"
             >
               重试
             </button>

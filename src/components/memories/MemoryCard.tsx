@@ -153,7 +153,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
 
   return (
     <Root
-      className={`group border-b border-border-light px-4 py-3 transition-colors last:border-b-0 ${selectMode ? 'cursor-pointer' : 'hover:bg-white/70 dark:hover:bg-white/10'} ${editing ? 'bg-white/70 dark:bg-white/10' : ''} ${selectMode && selected ? 'bg-[rgba(155,124,240,0.06)] dark:bg-[rgba(155,124,240,0.15)]' : ''}`}
+      className={`group border-b border-border-light px-4 py-3 transition-colors last:border-b-0 ${selectMode ? 'cursor-pointer' : 'hover:bg-surface/70 dark:hover:bg-white/10'} ${editing ? 'bg-surface/70 dark:bg-white/10' : ''} ${selectMode && selected ? 'bg-[rgba(155,124,240,0.06)] dark:bg-[rgba(155,124,240,0.15)]' : ''}`}
     >
       <div className="flex gap-3">
         {selectMode && (
@@ -211,21 +211,21 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                     </label>
                   </div>
                 ) : (
-                  <span className="chip chip-active text-[11px]">
+                  <span className="chip chip-active text-xs">
                     {memory.category}
                   </span>
                 )}
                 {memory.pinned && !editing && (
-                  <span className="chip chip-pinned text-[11px]" title={t('memory.pin')}>
+                  <span className="chip chip-pinned text-xs" title={t('memory.pin')}>
                     <PinIcon className="mr-0.5 inline h-3 w-3" />
                     {t('memory.pin')}
                   </span>
                 )}
                 {memory.status !== 'active' && !editing && (
-                  <span className="chip text-[11px]">{t(`memory.status.${memory.status}`)}</span>
+                  <span className="chip text-xs">{t(`memory.status.${memory.status}`)}</span>
                 )}
 
-                <span className="text-[11px] text-text-muted">
+                <span className="text-xs text-text-muted">
                   {formatShortDate(memory.created_at)}
                 </span>
               </div>
@@ -247,7 +247,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       <button
                         type="button"
                         onClick={e => { e.preventDefault(); e.stopPropagation(); setExpanded(prev => !prev); }}
-                        className="mt-1 text-[11px] text-accent-dark/70 hover:text-accent-dark transition-colors"
+                        className="mt-1 text-xs text-accent-dark/70 hover:text-accent-dark transition-colors"
                       >
                         {expanded ? t('memory.collapse') : t('memory.expand')}
                       </button>
@@ -265,7 +265,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       placeholder={t('memory.tagsPlaceholder')}
                       className="input-rich min-h-0 rounded-full px-3 py-2 text-xs"
                     />
-                    <label className="text-[11px] text-text-muted">
+                    <label className="text-xs text-text-muted">
                       <span className="mb-1 block">{t('memory.importance')}</span>
                       <input
                         type="number"
@@ -277,7 +277,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                         className="input-rich min-h-0 px-2 py-2 text-xs"
                       />
                     </label>
-                    <label className="text-[11px] text-text-muted">
+                    <label className="text-xs text-text-muted">
                       <span className="mb-1 block">{t('memory.emotionalWeight')}</span>
                       <input
                         type="number"
@@ -289,7 +289,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                         className="input-rich min-h-0 px-2 py-2 text-xs"
                       />
                     </label>
-                    <label className="text-[11px] text-text-muted">
+                    <label className="text-xs text-text-muted">
                       <span className="mb-1 block">{t('memory.confidence')}</span>
                       <input
                         type="number"
@@ -310,7 +310,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                         type="button"
                         onClick={e => { e.preventDefault(); e.stopPropagation(); onTagClick?.(tag); }}
                         title={t('memory.filterByTag').replace('{tag}', tag)}
-                        className="chip px-2 py-1 text-[11px] transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
+                        className="chip px-2 py-1 text-xs transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
                       >
                         #{tag}
                       </button>

@@ -87,13 +87,13 @@ export default function TokenBreakdownModal({ open, onClose, items, lastRealUsag
                   <span className="text-text-primary">
                     {t(item.labelKey)}
                     {item.detail && (
-                      <span className="ml-1.5 text-[11px] text-text-muted">({item.detail})</span>
+                      <span className="ml-1.5 text-xs text-text-muted">({item.detail})</span>
                     )}
                   </span>
                   <span className="shrink-0 tabular-nums text-text-secondary">
                     {/* 有真实值时各项已按比例缩放到真实合计，不带 ≈；无真实值时是纯估算，带 ≈ */}
-                    {useRealTotal ? '' : '≈'}{item.tokens} <span className="text-[11px] text-text-muted">{t('status.tokens')}</span>
-                    <span className="ml-2 text-[11px] text-text-muted tabular-nums">{percent.toFixed(1)}%</span>
+                    {useRealTotal ? '' : '≈'}{item.tokens} <span className="text-xs text-text-muted">{t('status.tokens')}</span>
+                    <span className="ml-2 text-xs text-text-muted tabular-nums">{percent.toFixed(1)}%</span>
                   </span>
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
@@ -104,7 +104,7 @@ export default function TokenBreakdownModal({ open, onClose, items, lastRealUsag
                 </div>
                 {/* 记忆条目行：展示上一轮实际注入的条数和 token 数 */}
                 {item.labelKey === 'token.memories' && lastMemoryInjection && (
-                  <div className="pl-2 text-[11px] text-text-muted">
+                  <div className="pl-2 text-xs text-text-muted">
                     {formatTemplate(t('token.lastInjection'), {
                       count: lastMemoryInjection.count,
                       tokens: lastMemoryInjection.tokens > 0 ? lastMemoryInjection.tokens : '—',
@@ -130,7 +130,7 @@ export default function TokenBreakdownModal({ open, onClose, items, lastRealUsag
         <div className="flex items-baseline justify-between border-t border-border-light pt-3 text-sm">
           <span className="font-medium text-text-primary">{t('token.total')}</span>
           <span className="tabular-nums text-text-primary">
-            {useRealTotal ? '' : '≈'}{displayTotal} <span className="text-[11px] text-text-muted">{t('status.tokens')}</span>
+            {useRealTotal ? '' : '≈'}{displayTotal} <span className="text-xs text-text-muted">{t('status.tokens')}</span>
           </span>
         </div>
 
@@ -138,18 +138,18 @@ export default function TokenBreakdownModal({ open, onClose, items, lastRealUsag
         {lastRealUsage && (
           <div className="rounded-lg border border-border-light bg-black/[0.02] p-3 dark:bg-white/[0.03]">
             <div className="mb-1.5 text-xs font-medium text-text-primary">{t('token.realUsageTitle')}</div>
-            <p className="mb-2 text-[11px] text-text-muted">{t('token.realUsageHint')}</p>
+            <p className="mb-2 text-xs text-text-muted">{t('token.realUsageHint')}</p>
             <div className="grid grid-cols-3 gap-2 text-center">
               <div>
-                <div className="text-[11px] text-text-muted">{t('token.realUsageInput')}</div>
+                <div className="text-xs text-text-muted">{t('token.realUsageInput')}</div>
                 <div className="tabular-nums text-sm font-medium text-text-primary">{lastRealUsage.prompt_tokens}</div>
               </div>
               <div>
-                <div className="text-[11px] text-text-muted">{t('token.realUsageOutput')}</div>
+                <div className="text-xs text-text-muted">{t('token.realUsageOutput')}</div>
                 <div className="tabular-nums text-sm font-medium text-text-primary">{lastRealUsage.completion_tokens}</div>
               </div>
               <div>
-                <div className="text-[11px] text-text-muted">{t('token.realUsageTotal')}</div>
+                <div className="text-xs text-text-muted">{t('token.realUsageTotal')}</div>
                 <div className="tabular-nums text-sm font-medium text-text-primary">{lastRealUsage.total_tokens}</div>
               </div>
             </div>

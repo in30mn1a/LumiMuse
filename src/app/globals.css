@@ -1,31 +1,42 @@
 @import "tailwindcss";
 
+/* dark: 变体跟随应用内主题开关（html.dark），而不是操作系统的配色偏好 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-warm-50: #faf7ff;
   --color-warm-100: #f2ebff;
   --color-warm-200: #e4d7ff;
   --color-warm-300: #c7b0ff;
-  --color-accent: #9b7cf0;
+  --color-accent: #7354d8;
   --color-accent-light: #c4b0ff;
-  --color-accent-dark: #6f52c5;
+  --color-accent-dark: #5a3fbf;
+  /* 实心强调底色：亮暗两套都保证白字对比度 ≥ 4.5:1 */
+  --color-accent-solid: #7354d8;
   --color-surface: #ffffff;
   --color-surface-raised: #fcfbff;
+  /* 层级底色：surface 为卡片，surface-2 为卡片上的色块（次按钮/标签），surface-3 为其悬停态 */
+  --color-surface-2: #f2ecfb;
+  --color-surface-3: #e8dff8;
+  --color-page: #f6f2fc;
   --color-text-primary: #221b33;
-  --color-text-secondary: #5c5670;
-  --color-text-muted: #887f9c;
+  --color-text-secondary: #5a5370;
+  --color-text-muted: #7d7597;
   --color-border: #ddd1f2;
-  --color-border-light: #ece5fb;
+  --color-border-light: #e8e0f5;
+  --color-danger: #b3366f;
   --font-sans: 'LXGW WenKai Screen', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
   --font-display: 'Quicksand', 'LXGW WenKai Screen', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
 
   /* 语义化颜色：用于消息气泡 / 浮层 / 分隔等场景 */
-  --bubble-user-bg: linear-gradient(135deg, #9b7cf0 0%, #6f52c5 100%);
-  --bubble-assistant-bg: rgba(255, 255, 255, 0.88);
+  --bubble-user-bg: #7354d8;
+  --bubble-assistant-bg: #ffffff;
   --overlay-light: rgba(255, 255, 255, 0.7);
   --overlay-strong: rgba(255, 255, 255, 0.9);
   --soft-divider: rgba(0, 0, 0, 0.06);
   --code-inline-bg: rgba(0, 0, 0, 0.06);
   --code-block-bg: rgba(0, 0, 0, 0.04);
+  --shadow-soft: 0 8px 24px rgba(60, 40, 110, 0.07);
 }
 
 .dark {
@@ -35,34 +46,94 @@
   --color-warm-300: #3b3251;
   --color-accent: #c4b0ff;
   --color-accent-light: #dacfff;
-  --color-accent-dark: #9b7cf0;
-  --color-surface: #1f192d;
+  --color-accent-dark: #b49cff;
+  --color-accent-solid: #7658dc;
+  --color-surface: #1d172d;
   --color-surface-raised: #29203a;
+  --color-surface-2: #282139;
+  --color-surface-3: #352c4f;
+  --color-page: #141020;
   --color-text-primary: #f3effc;
   --color-text-secondary: #bbb2cf;
-  --color-text-muted: #8f86a4;
+  --color-text-muted: #9189a8;
   --color-border: #3a304f;
-  --color-border-light: #2f2643;
+  --color-border-light: #2f2745;
+  --color-danger: #f08db5;
 
-  /* 暗色：消息气泡背景比 light 更亮一些以保证可读 */
-  --bubble-user-bg: linear-gradient(135deg, #8a6ee0 0%, #5d44b3 100%);
-  --bubble-assistant-bg: rgba(41, 32, 58, 0.86);
+  --bubble-user-bg: #6a4fc9;
+  --bubble-assistant-bg: #231c35;
   --overlay-light: rgba(41, 32, 58, 0.6);
   --overlay-strong: rgba(41, 32, 58, 0.9);
   --soft-divider: rgba(255, 255, 255, 0.08);
   --code-inline-bg: rgba(255, 255, 255, 0.1);
   --code-block-bg: rgba(255, 255, 255, 0.06);
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+  /* 状态色（Tailwind 调色板）在暗色下整体换成「深底 + 浅字」，
+     这样散落在组件里的 bg-red-50 / text-amber-700 等不必逐个补 dark: 变体。
+     只重映射浅底（50–200）与深字（500–800），300/400/900/950 保持原值。 */
+  --color-red-50: #3a1a22;
+  --color-red-100: #4a1f29;
+  --color-red-200: #6b2a37;
+  --color-red-500: #f87171;
+  --color-red-600: #fb8a8a;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-rose-50: #3a1a26;
+  --color-rose-100: #4a1f30;
+  --color-rose-200: #6b2a42;
+  --color-rose-500: #fb7185;
+  --color-rose-600: #fd8a9b;
+  --color-rose-700: #fda4af;
+  --color-amber-50: #33270f;
+  --color-amber-100: #423113;
+  --color-amber-200: #5e4518;
+  --color-amber-500: #f5b83d;
+  --color-amber-600: #f7c35a;
+  --color-amber-700: #fad27f;
+  --color-amber-800: #fde2a7;
+  --color-yellow-50: #33290f;
+  --color-yellow-100: #423513;
+  --color-yellow-200: #5e4b18;
+  --color-yellow-600: #f2cf52;
+  --color-yellow-700: #f6dc7c;
+  --color-yellow-800: #fae8a4;
+  --color-green-50: #122c1e;
+  --color-green-100: #173826;
+  --color-green-200: #1f4f35;
+  --color-green-500: #4ade80;
+  --color-green-600: #5fe391;
+  --color-green-700: #86efac;
+  --color-green-800: #bbf7d0;
+  --color-emerald-50: #0f2c24;
+  --color-emerald-100: #14382d;
+  --color-emerald-200: #1b4f3f;
+  --color-emerald-500: #34d399;
+  --color-emerald-600: #4fdcaa;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-800: #a7f3d0;
+  --color-blue-50: #14233f;
+  --color-blue-100: #1a2c50;
+  --color-blue-200: #243d6e;
+  --color-blue-500: #60a5fa;
+  --color-blue-600: #7ab4fb;
+  --color-blue-700: #93c5fd;
+  --color-blue-800: #bfdbfe;
+  --color-purple-50: #261a3f;
+  --color-purple-100: #30204f;
+  --color-purple-200: #432c6e;
+  --color-purple-600: #c39bfb;
+  --color-purple-700: #d2b4fc;
 }
 
 @layer base {
   html {
     color-scheme: light;
-    background: #f6f1ff;
+    background: var(--color-page);
   }
 
   html.dark {
     color-scheme: dark;
-    background: #171321;
   }
 
   /* 字体变量默认值（霞鹜文楷） — 通过 JS 动态修改 --font-sans 来切换字体；
@@ -74,21 +145,10 @@
 
   body {
     min-height: 100vh;
-    background:
-      linear-gradient(180deg, rgba(250, 247, 255, 0.98) 0%, rgba(244, 238, 255, 1) 100%),
-      linear-gradient(90deg, rgba(155, 124, 240, 0.08) 1px, transparent 1px),
-      linear-gradient(rgba(155, 124, 240, 0.08) 1px, transparent 1px);
-    background-size: auto, 72px 72px, 72px 72px;
+    background: var(--color-page);
     color: var(--color-text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-  }
-
-  .dark body {
-    background:
-      linear-gradient(180deg, rgba(23, 19, 33, 0.98) 0%, rgba(17, 14, 25, 1) 100%),
-      linear-gradient(90deg, rgba(196, 176, 255, 0.06) 1px, transparent 1px),
-      linear-gradient(rgba(196, 176, 255, 0.06) 1px, transparent 1px);
   }
 
   * {
@@ -116,7 +176,7 @@
   }
 
   ::selection {
-    background: rgba(155, 124, 240, 0.24);
+    background: color-mix(in srgb, var(--color-accent) 24%, transparent);
   }
 }
 
@@ -127,69 +187,30 @@
     overflow: clip;
   }
 
-  .app-shell::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    background:
-      linear-gradient(135deg, rgba(255, 255, 255, 0.42) 0%, transparent 28%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.1) 0%, transparent 24%);
-    opacity: 0.95;
-  }
-
-  .app-shell::after {
-    content: '';
-    position: fixed;
-    inset: 1rem;
-    pointer-events: none;
-    border: 1px solid rgba(155, 124, 240, 0.14);
-    border-radius: 28px;
-  }
-
   .surface-panel {
-    background: rgba(255, 255, 255, 0.82);
+    background: var(--color-surface);
     border: 1px solid var(--color-border-light);
-    border-radius: 24px;
-    box-shadow: 0 22px 54px rgba(92, 74, 139, 0.08);
-    backdrop-filter: blur(18px);
-  }
-
-  .dark .surface-panel {
-    background: rgba(36, 28, 52, 0.82);
-    box-shadow: 0 22px 54px rgba(0, 0, 0, 0.45);
+    border-radius: 20px;
+    box-shadow: var(--shadow-soft);
   }
 
   .surface-panel-quiet {
-    background: rgba(247, 243, 255, 0.84);
-    border: 1px solid rgba(155, 124, 240, 0.12);
-    border-radius: 22px;
-    backdrop-filter: blur(16px);
-  }
-
-  .dark .surface-panel-quiet {
-    background: rgba(33, 26, 48, 0.78);
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border-light);
+    border-radius: 16px;
   }
 
   .surface-card {
-    background: rgba(255, 255, 255, 0.9);
+    background: var(--color-surface);
     border: 1px solid var(--color-border-light);
-    border-radius: 20px;
-    box-shadow: 0 14px 28px rgba(92, 74, 139, 0.06);
-  }
-
-  .dark .surface-card {
-    background: rgba(38, 30, 56, 0.9);
-    box-shadow: 0 14px 28px rgba(0, 0, 0, 0.4);
+    border-radius: 16px;
   }
 
   .surface-hero {
-    background:
-      linear-gradient(135deg, rgba(155, 124, 240, 0.16) 0%, rgba(255, 255, 255, 0.88) 58%, rgba(198, 177, 255, 0.1) 100%);
-    border: 1px solid rgba(155, 124, 240, 0.16);
-    border-radius: 28px;
-    box-shadow: 0 24px 58px rgba(92, 74, 139, 0.1);
-    backdrop-filter: blur(18px);
+    background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+    border: 1px solid var(--color-border-light);
+    border-radius: 20px;
+    box-shadow: var(--shadow-soft);
   }
 
   .section-title {
@@ -220,54 +241,66 @@
     justify-content: center;
     gap: 0.5rem;
     white-space: nowrap;
-    min-height: 2.8rem;
-    padding: 0.72rem 1rem;
-    border-radius: 16px;
+    min-height: 2.75rem;
+    padding: 0.625rem 1rem;
+    border: 1px solid transparent;
+    border-radius: 12px;
     font-size: 0.92rem;
     font-weight: 600;
     transition:
-      transform 150ms ease,
-      box-shadow 150ms ease,
       background-color 150ms ease,
       color 150ms ease,
       border-color 150ms ease;
   }
 
-  .soft-button:hover {
-    transform: translateY(-1px);
+  .soft-button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .soft-button-primary {
-    background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-dark) 100%);
+    background: var(--color-accent-solid);
     color: white;
-    box-shadow: 0 14px 30px rgba(111, 82, 197, 0.22);
+  }
+
+  .soft-button-primary:hover {
+    background: color-mix(in srgb, var(--color-accent-solid) 88%, black);
   }
 
   .soft-button-secondary {
-    background: rgba(255, 255, 255, 0.72);
+    background: var(--color-surface-2);
     color: var(--color-text-primary);
-    border: 1px solid var(--color-border-light);
+  }
+
+  .soft-button-secondary:hover {
+    background: var(--color-surface-3);
   }
 
   .soft-button-ghost {
-    background: rgba(255, 255, 255, 0.4);
+    background: transparent;
     color: var(--color-text-secondary);
-    border: 1px solid transparent;
+  }
+
+  .soft-button-ghost:hover {
+    background: var(--color-surface-2);
   }
 
   .soft-button-danger {
-    background: rgba(182, 79, 138, 0.08);
-    color: #a33375;
-    border: 1px solid rgba(182, 79, 138, 0.16);
+    background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+    color: var(--color-danger);
+  }
+
+  .soft-button-danger:hover {
+    background: color-mix(in srgb, var(--color-danger) 16%, transparent);
   }
 
   .input-rich,
   .select-rich,
   .textarea-rich {
     width: 100%;
-    border: 1px solid var(--color-border-light);
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.86);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--color-surface);
     color: var(--color-text-primary);
     font-size: 0.95rem;
     line-height: 1.5;
@@ -277,16 +310,10 @@
       background-color 150ms ease;
   }
 
-  .dark .input-rich,
-  .dark .select-rich,
-  .dark .textarea-rich {
-    background: rgba(36, 28, 52, 0.7);
-  }
-
   .input-rich,
   .select-rich {
-    min-height: 2.8rem;
-    padding: 0.75rem 0.95rem;
+    min-height: 2.75rem;
+    padding: 0.625rem 0.875rem;
   }
 
   .textarea-rich {
@@ -298,36 +325,34 @@
   .select-rich:focus,
   .textarea-rich:focus {
     outline: none;
-    border-color: rgba(155, 124, 240, 0.46);
-    box-shadow: 0 0 0 4px rgba(155, 124, 240, 0.12);
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
   }
 
   .chip {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
-    min-height: 2rem;
-    padding: 0.35rem 0.75rem;
+    min-height: 1.75rem;
+    padding: 0.3rem 0.7rem;
     border-radius: 999px;
-    border: 1px solid var(--color-border-light);
-    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid transparent;
+    background: var(--color-surface-2);
     color: var(--color-text-secondary);
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     line-height: 1;
   }
 
   .chip-active {
-    background: rgba(155, 124, 240, 0.12);
-    border-color: rgba(155, 124, 240, 0.26);
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
     color: var(--color-accent-dark);
   }
 
   .stat-tile {
-    border-radius: 20px;
+    border-radius: 16px;
     border: 1px solid var(--color-border-light);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(247, 243, 255, 0.9) 100%);
+    background: var(--color-surface);
     padding: 1rem;
-    box-shadow: 0 10px 24px rgba(92, 74, 139, 0.04);
   }
 
   .message-card {
@@ -335,8 +360,8 @@
     width: fit-content;
     min-width: min(100%, 17rem);
     max-width: 72%;
-    border-radius: 22px;
-    padding: 0.98rem 1rem;
+    border-radius: 20px;
+    padding: 0.8rem 1rem;
     line-height: 1.75;
     white-space: pre-wrap;
     word-break: break-word;
@@ -399,35 +424,24 @@
 
     /* 移动端顶部区域更紧凑 */
     .surface-hero {
-      border-radius: 18px;
+      border-radius: 16px;
       padding: 0.6rem 0.75rem;
     }
 
     .surface-panel {
-      border-radius: 18px;
-    }
-
-    .app-shell::after {
-      inset: 0.5rem;
-      border-radius: 20px;
+      border-radius: 16px;
     }
   }
 
   .message-user {
-    background: linear-gradient(135deg, #9b7cf0 0%, #6f52c5 100%);
+    background: var(--bubble-user-bg);
     color: white;
-    box-shadow: 0 14px 30px rgba(111, 82, 197, 0.22);
   }
 
   .message-assistant {
     background: var(--bubble-assistant-bg);
     color: var(--color-text-primary);
     border: 1px solid var(--color-border-light);
-    box-shadow: 0 12px 24px rgba(92, 74, 139, 0.06);
-  }
-
-  .dark .message-assistant {
-    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
   }
 
   /* 搜索跳转命中词：黄底 + 深色字，在白色助手气泡与紫色用户气泡上都可读 */
@@ -512,7 +526,7 @@
     width: 320px;
     height: 320px;
     border-radius: 50%;
-    background: radial-gradient(circle, rgba(155, 124, 240, 0.18) 0%, transparent 70%);
+    background: radial-gradient(circle, color-mix(in srgb, var(--color-accent) 18%, transparent) 0%, transparent 70%);
     pointer-events: none;
     animation: glowPulse 4s ease-in-out infinite;
   }

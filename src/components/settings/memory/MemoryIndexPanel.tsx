@@ -56,7 +56,7 @@ export function MemoryIndexPanel({
     : null;
 
   return (
-    <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+    <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryIndexStatus')}</h3>
@@ -146,27 +146,27 @@ export function MemoryIndexPanel({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
-        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+        <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryIndexIndexed')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : status?.indexed ?? 0}</span>
         </div>
-        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+        <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryIndexTotal')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : status?.total ?? 0}</span>
         </div>
-        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+        <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryIndexFailed')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : status?.failed ?? 0}</span>
         </div>
-        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+        <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryIndexQueued')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : status?.queued ?? 0}</span>
         </div>
-        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+        <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryIndexProcessing')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : status?.processing ?? 0}</span>
         </div>
-        <div className="rounded-xl border border-border-light bg-white/60 px-3 py-2">
+        <div className="rounded-xl border border-border-light bg-surface/60 px-3 py-2">
           <span className="block text-text-muted">{t('settings.memoryIndexOtherTarget')}</span>
           <span className="text-sm font-medium text-text-primary">{loading ? '...' : otherTargetReady}</span>
         </div>

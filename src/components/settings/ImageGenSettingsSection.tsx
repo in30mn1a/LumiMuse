@@ -117,7 +117,7 @@ export function ImageGenSettingsSection({
 
       <div className="space-y-3">
         {/* 启用开关 */}
-        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             type="checkbox"
             checked={imgGen.enabled}
@@ -129,7 +129,7 @@ export function ImageGenSettingsSection({
         {imgGen.enabled && (
           <>
             {/* 引擎选择 */}
-            <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+            <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
               <label htmlFor="settings-image-engine" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.imageGenEngine')}</label>
               <select
                 id="settings-image-engine"
@@ -146,7 +146,7 @@ export function ImageGenSettingsSection({
 
             {/* SD WebUI 配置 */}
             {imgGen.engine === 'sd' && (
-              <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+              <div className="space-y-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
                 <div>
                   <label htmlFor="settings-image-sd-url" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDUrl')}</label>
                   <input id="settings-image-sd-url" value={imgGen.sd_url} onChange={e => updateImg('sd_url', e.target.value)} className="input-rich" placeholder="http://127.0.0.1:7860" />
@@ -177,14 +177,14 @@ export function ImageGenSettingsSection({
                 </div>
                 <div>
                   <label htmlFor="settings-image-sd-negative" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDNeg')}</label>
-                  <textarea id="settings-image-sd-negative" value={imgGen.sd_negative_prompt} onChange={e => updateImg('sd_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm" />
+                  <textarea id="settings-image-sd-negative" value={imgGen.sd_negative_prompt} onChange={e => updateImg('sd_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-surface/70 px-3 py-2 text-sm" />
                 </div>
               </div>
             )}
 
             {/* NovelAI 配置 */}
             {imgGen.engine === 'nai' && (
-              <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+              <div className="space-y-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
                 <div>
                   <label htmlFor="settings-image-nai-key" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIKey')}</label>
                   <input id="settings-image-nai-key" type="password" value={imgGen.nai_api_key} onChange={e => updateImg('nai_api_key', e.target.value)} className="input-rich" />
@@ -270,7 +270,7 @@ export function ImageGenSettingsSection({
                       value={imgGen.nai_artist_tags}
                       onChange={e => handleArtistTagsChange(e.target.value)}
                       rows={2}
-                      className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm"
+                      className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-surface/70 px-3 py-2 text-sm"
                     />
                     <div className="flex items-center gap-2">
                       <div className="flex items-center gap-1 flex-1">
@@ -313,14 +313,14 @@ export function ImageGenSettingsSection({
                 </div>
                 <div>
                   <label htmlFor="settings-image-nai-negative" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAINeg')}</label>
-                  <textarea id="settings-image-nai-negative" value={imgGen.nai_negative_prompt} onChange={e => updateImg('nai_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 text-sm" />
+                  <textarea id="settings-image-nai-negative" value={imgGen.nai_negative_prompt} onChange={e => updateImg('nai_negative_prompt', e.target.value)} rows={2} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-surface/70 px-3 py-2 text-sm" />
                 </div>
               </div>
             )}
 
             {/* ComfyUI 配置 */}
             {imgGen.engine === 'comfyui' && (
-              <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+              <div className="space-y-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
                 <div>
                   <label htmlFor="settings-image-comfy-url" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenComfyUrl')}</label>
                   <input id="settings-image-comfy-url" value={imgGen.comfyui_url} onChange={e => updateImg('comfyui_url', e.target.value)} className="input-rich" placeholder="http://127.0.0.1:8188" />
@@ -328,14 +328,14 @@ export function ImageGenSettingsSection({
                 <div>
                   <label htmlFor="settings-image-comfy-workflow" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenComfyWorkflow')}</label>
                   <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenComfyWorkflowHint')}</p>
-                  <textarea id="settings-image-comfy-workflow" value={imgGen.comfyui_workflow} onChange={e => updateImg('comfyui_workflow', e.target.value)} rows={4} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/70 px-3 py-2 font-mono text-xs" />
+                  <textarea id="settings-image-comfy-workflow" value={imgGen.comfyui_workflow} onChange={e => updateImg('comfyui_workflow', e.target.value)} rows={4} className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-surface/70 px-3 py-2 font-mono text-xs" />
                 </div>
               </div>
             )}
 
             {/* 自定义 API 配置 */}
             {imgGen.engine === 'custom' && (
-              <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+              <div className="space-y-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
                 <div>
                   <label htmlFor="settings-image-custom-url" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenCustomUrl')}</label>
                   <input id="settings-image-custom-url" value={imgGen.custom_url} onChange={e => updateImg('custom_url', e.target.value)} className="input-rich" placeholder="https://api.openai.com/v1/images/generations" />
@@ -358,13 +358,13 @@ export function ImageGenSettingsSection({
             )}
 
             {/* 通用设置 */}
-            <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+            <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
               <label htmlFor="settings-image-quality" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenQuality')}</label>
               <input id="settings-image-quality" value={imgGen.quality_tags} onChange={e => updateImg('quality_tags', e.target.value)} className="input-rich" />
             </div>
 
             {/* 出图总时限：适用于所有引擎的提交、等待与下载阶段 */}
-            <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+            <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
               <label htmlFor="settings-image-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenTimeout')}</label>
               <input
                 id="settings-image-timeout"
@@ -380,7 +380,7 @@ export function ImageGenSettingsSection({
             </div>
 
             {/* 内联提示词：聊天回复附带生图提示词 */}
-            <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
               <input
                 type="checkbox"
                 checked={imgGen.inline_prompt}
@@ -391,7 +391,7 @@ export function ImageGenSettingsSection({
             <p className="px-4 text-xs leading-relaxed text-text-muted">{t('settings.imageGenInlinePromptHint')}</p>
 
             {imgGen.inline_prompt && (
-              <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+              <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
                 <label htmlFor="settings-image-inline-prompt-position" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenInlinePromptPosition')}</label>
                 <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenInlinePromptPositionHint')}</p>
                 <select
@@ -407,7 +407,7 @@ export function ImageGenSettingsSection({
             )}
 
             {/* 自动生图 */}
-            <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+            <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
               <input
                 type="checkbox"
                 checked={imgGen.auto_generate}
@@ -418,7 +418,7 @@ export function ImageGenSettingsSection({
             <p className="px-4 text-xs leading-relaxed text-text-muted">{t('settings.imageGenAutoHint')}</p>
 
             {imgGen.auto_generate && (
-              <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+              <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
                 <label htmlFor="settings-image-auto-keywords" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenAutoKeywords')}</label>
                 <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.imageGenAutoKeywordsHint')}</p>
                 <input

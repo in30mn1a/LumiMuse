@@ -253,7 +253,7 @@ function ModelEffortField({
   };
 
   return (
-    <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+    <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
       <label htmlFor={`${idPrefix}-model`} className="mb-1.5 block text-sm font-medium text-text-secondary">
         {label}
       </label>

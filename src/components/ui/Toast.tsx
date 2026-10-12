@@ -87,7 +87,7 @@ function ToastViewport({
               ? 'border-red-200/60 bg-red-50/90 text-red-700'
               : item.type === 'success'
                 ? 'border-green-200/60 bg-green-50/90 text-green-700'
-                : 'border-accent/20 bg-white/90 text-text-primary'
+                : 'border-accent/20 bg-surface/90 text-text-primary'
           }`}
         >
           <span className="break-words">{item.message}</span>

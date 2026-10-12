@@ -43,23 +43,23 @@ export function CharacterExportDialog({
     <Modal open onClose={onClose} title={t('export.characterTitle')} maxWidth="max-w-sm">
       <p className="mb-4 text-sm text-text-muted">{t('export.characterHint')}</p>
       <div className="space-y-2">
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
           {t('export.includeCharacters')}
         </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
           {t('export.includeMemories')}
         </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
           {t('export.includeConversations')}
         </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeProfiles} onChange={e => setIncludeProfiles(e.target.checked)} />
           {t('export.includeProfiles')}
         </label>
-        <label className={`flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm ${includeMemories ? 'cursor-pointer text-text-secondary' : 'cursor-not-allowed opacity-50'}`}>
+        <label className={`flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm ${includeMemories ? 'cursor-pointer text-text-secondary' : 'cursor-not-allowed opacity-50'}`}>
           <input
             type="checkbox"
             checked={includeMemories && includeEmbeddings}

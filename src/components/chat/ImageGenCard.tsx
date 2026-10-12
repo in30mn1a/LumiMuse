@@ -44,13 +44,13 @@ export function ImageGenCard({
   // 编辑模式：图片消失，显示 prompt 编辑框
   if (editingPrompt) {
     return (
-      <div className="editor-surface-wide rounded-xl border border-border-light bg-white/90 p-3 shadow-sm dark:bg-[rgba(30,25,45,0.9)]">
+      <div className="editor-surface-wide rounded-xl border border-border-light bg-surface/90 p-3 shadow-sm dark:bg-[rgba(30,25,45,0.9)]">
         <div className="mb-2 text-xs font-medium text-text-secondary">{t('message.promptEditTitle')}</div>
         <textarea
           value={promptValue}
           onChange={e => setPromptValue(e.target.value)}
           rows={4}
-          className="w-full resize-none rounded-lg border border-border-light bg-white/70 px-3 py-2 text-xs leading-relaxed text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/30 dark:bg-white/5"
+          className="w-full resize-none rounded-lg border border-border-light bg-surface/70 px-3 py-2 text-xs leading-relaxed text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/30 dark:bg-white/5"
         />
         <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
           <button onClick={() => setEditingPrompt(false)} className="rounded-lg px-3 py-1.5 text-xs text-text-muted hover:bg-black/5 dark:hover:bg-white/10">{t('message.promptEditCancel')}</button>
@@ -68,7 +68,7 @@ export function ImageGenCard({
 
   if ((isPending || (isFailed && !hasFallbackUrl)) && !img.url) {
     return (
-      <div className="generated-image-card group/img relative w-full max-w-[20rem] rounded-xl border border-border-light bg-white/82 p-3 shadow-sm backdrop-blur-sm dark:bg-white/8">
+      <div className="generated-image-card group/img relative w-full max-w-[20rem] rounded-xl border border-border-light bg-surface/82 p-3 shadow-sm backdrop-blur-sm dark:bg-white/8">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="text-xs font-medium text-text-secondary">

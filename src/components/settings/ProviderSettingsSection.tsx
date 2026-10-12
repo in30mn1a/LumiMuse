@@ -62,14 +62,14 @@ export function ProviderSettingsSection({
               className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
                 provider.id === activeProviderId
                   ? 'border-accent/30 bg-accent/8'
-                  : 'border-border-light bg-white/70 hover:border-accent/20'
+                  : 'border-border-light bg-surface/70 hover:border-accent/20'
               }`}
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-text-primary">{provider.name}</span>
                   {provider.id === activeProviderId && (
-                    <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-medium text-accent-dark">
+                    <span className="rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent-dark">
                       {t('settings.providerActive')}
                     </span>
                   )}
@@ -106,7 +106,7 @@ export function ProviderSettingsSection({
       )}
 
       {editingProvider && (
-        <div className="mt-4 space-y-3 rounded-2xl border border-accent/20 bg-white/80 px-4 py-4">
+        <div className="mt-4 space-y-3 rounded-2xl border border-accent/20 bg-surface/80 px-4 py-4">
           <h3 className="text-sm font-medium text-text-primary">
             {editingProvider.id ? t('settings.providerEdit') : t('settings.providerNew')}
           </h3>

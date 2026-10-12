@@ -757,7 +757,7 @@ export default function ChatView({
           <div className="absolute left-4 top-4 lg:hidden">
             <button
               onClick={onOpenSidebar}
-              className="rounded-xl bg-white/80 p-2.5 text-text-secondary shadow-sm ring-1 ring-border-light backdrop-blur-sm hover:bg-white"
+              className="rounded-xl bg-surface/80 p-2.5 text-text-secondary shadow-sm ring-1 ring-border-light backdrop-blur-sm hover:bg-surface"
               aria-label={t('chat.openCharacterList')}
             >
               <MenuIcon className="h-5 w-5" />

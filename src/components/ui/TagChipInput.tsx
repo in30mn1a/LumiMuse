@@ -139,7 +139,7 @@ export default function TagChipInput({
 
   return (
     <div className="space-y-2">
-      <div className="flex min-h-[2.75rem] flex-wrap items-center gap-1.5 rounded-2xl border border-border-light bg-white/80 px-3 py-2 transition-colors focus-within:border-accent">
+      <div className="flex min-h-[2.75rem] flex-wrap items-center gap-1.5 rounded-2xl border border-border-light bg-surface/80 px-3 py-2 transition-colors focus-within:border-accent">
         {tags.map((tag, index) => (
           <span
             key={`${tag}-${index}`}

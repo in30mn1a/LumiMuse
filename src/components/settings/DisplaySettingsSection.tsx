@@ -23,7 +23,7 @@ export function DisplaySettingsSection({
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <label className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary">
+        <label className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4 text-sm text-text-secondary">
           <span className="mb-2 block">{t('settings.theme')}</span>
           <select
             value={settings.theme}
@@ -35,7 +35,7 @@ export function DisplaySettingsSection({
           </select>
         </label>
 
-        <label className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary">
+        <label className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4 text-sm text-text-secondary">
           <span className="mb-2 block">{t('settings.language')}</span>
           <select
             value={settings.language}
@@ -47,7 +47,7 @@ export function DisplaySettingsSection({
           </select>
         </label>
 
-        <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
+        <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
           <span className="mb-2 block">{t('settings.font')}</span>
           <div className="grid grid-cols-3 gap-2">
             {(['wenkai', 'system', 'serif'] as const).map((f: FontStyle) => (
@@ -61,7 +61,7 @@ export function DisplaySettingsSection({
                 className={`rounded-xl border px-3 py-2.5 text-center text-sm transition-colors ${
                   (settings.font_style || 'wenkai') === f
                     ? 'border-accent bg-accent/10 text-accent-dark font-medium'
-                    : 'border-border-light bg-white/50 text-text-secondary hover:border-accent/40 hover:bg-accent/5'
+                    : 'border-border-light bg-surface/50 text-text-secondary hover:border-accent/40 hover:bg-accent/5'
                 }`}
               >
                 <span
@@ -89,7 +89,7 @@ export function DisplaySettingsSection({
           </div>
         </div>
 
-        <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
+        <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4 text-sm text-text-secondary md:col-span-2">
           <span className="mb-2 block">{t('settings.fontSize')}</span>
           <div className="grid grid-cols-3 gap-2">
             {([
@@ -107,7 +107,7 @@ export function DisplaySettingsSection({
                 className={`rounded-xl border px-3 py-2.5 text-center text-sm transition-colors ${
                   (settings.font_size || 'medium') === option.id
                     ? 'border-accent bg-accent/10 text-accent-dark font-medium'
-                    : 'border-border-light bg-white/50 text-text-secondary hover:border-accent/40 hover:bg-accent/5'
+                    : 'border-border-light bg-surface/50 text-text-secondary hover:border-accent/40 hover:bg-accent/5'
                 }`}
               >
                 <span

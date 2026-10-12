@@ -66,25 +66,25 @@ function ImportDialog({
       <p className="mb-3 rounded-2xl border border-amber-200/70 bg-amber-50/70 px-4 py-3 text-xs leading-relaxed text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200">
         {t('import.characterMemoryRisk')}
       </p>
-      <p className="mb-5 truncate rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-xs text-text-muted">{fileName}</p>
+      <p className="mb-5 truncate rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-xs text-text-muted">{fileName}</p>
       <div className="space-y-2">
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
           {t('export.includeCharacters')}
         </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeMemories} onChange={e => setIncludeMemories(e.target.checked)} />
           {t('export.includeMemories')}
         </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeConversations} onChange={e => setIncludeConversations(e.target.checked)} />
           {t('export.includeConversations')}
         </label>
-        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeProfiles} onChange={e => setIncludeProfiles(e.target.checked)} />
           {t('export.includeProfiles')}
         </label>
-        <label className={`flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm ${includeMemories ? 'cursor-pointer text-text-secondary' : 'cursor-not-allowed opacity-50'}`}>
+        <label className={`flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm ${includeMemories ? 'cursor-pointer text-text-secondary' : 'cursor-not-allowed opacity-50'}`}>
           <input
             type="checkbox"
             checked={includeMemories && includeEmbeddings}
@@ -552,7 +552,7 @@ export default function CharacterEditor({ params }: Props) {
                 <ArrowLeftIcon className="h-4 w-4" />
                 {t('editor.cancel')}
               </button>
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[rgba(155,124,240,0.12)] text-accent-dark">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
                 <PencilIcon className="h-5 w-5" />
               </div>
               <div>

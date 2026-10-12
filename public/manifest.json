@@ -4,8 +4,8 @@
   "description": "轻量化的角色陪伴空间",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f8f4ff",
-  "theme_color": "#9b7cf0",
+  "background_color": "#f6f2fc",
+  "theme_color": "#7354d8",
   "icons": [
     {
       "src": "/icons/icon-192x192.png",

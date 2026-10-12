@@ -49,7 +49,7 @@ export function MemoryEngineSection({
       </div>
 
       <div className="space-y-3">
-        <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             id="settings-memory-index-enabled"
             type="checkbox"
@@ -63,7 +63,7 @@ export function MemoryEngineSection({
           </span>
         </label>
 
-        <div className="space-y-4 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+        <div className="space-y-4 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
           <div>
             <label htmlFor="settings-memory-background-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundTimeout')}</label>
             <input
@@ -99,7 +99,7 @@ export function MemoryEngineSection({
           </div>
         </div>
 
-        <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+        <div className="space-y-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryEmbedding')}</h3>
           <div className="grid gap-3 md:grid-cols-2">
             <div>
@@ -173,7 +173,7 @@ export function MemoryEngineSection({
           </div>
         </div>
 
-        <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+        <div className="space-y-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryReranker')}</h3>
           <p className="text-xs leading-relaxed text-text-muted">{t('settings.memoryRerankerHint')}</p>
           <label className="flex items-center gap-3 text-sm text-text-secondary">
@@ -245,7 +245,7 @@ export function MemoryEngineSection({
           )}
         </div>
 
-        <div className="space-y-3 rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+        <div className="space-y-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryPrivacy')}</h3>
           <label className="flex items-center gap-3 text-sm text-text-secondary">
             <input
@@ -268,7 +268,7 @@ export function MemoryEngineSection({
 
         <div className="border-t border-border-light pt-3" />
 
-        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             type="checkbox"
             checked={settings.memory_trigger_interval_enabled}
@@ -278,7 +278,7 @@ export function MemoryEngineSection({
         </label>
 
         {settings.memory_trigger_interval_enabled && (
-          <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+          <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
             <label htmlFor="settings-memory-extraction-interval" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.extractionInterval')}</label>
             <input
               id="settings-memory-extraction-interval"
@@ -292,7 +292,7 @@ export function MemoryEngineSection({
           </div>
         )}
 
-        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             type="checkbox"
             checked={settings.memory_trigger_time_enabled}
@@ -302,7 +302,7 @@ export function MemoryEngineSection({
         </label>
 
         {settings.memory_trigger_time_enabled && (
-          <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+          <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
             <label htmlFor="settings-memory-trigger-time" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerTimeHours')}</label>
             <input
               id="settings-memory-trigger-time"
@@ -316,7 +316,7 @@ export function MemoryEngineSection({
           </div>
         )}
 
-        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             type="checkbox"
             checked={settings.memory_trigger_keyword_enabled}
@@ -326,7 +326,7 @@ export function MemoryEngineSection({
         </label>
 
         {settings.memory_trigger_keyword_enabled && (
-          <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+          <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
             <label htmlFor="settings-memory-trigger-keywords" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerKeywords')}</label>
             <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('settings.triggerKeywordsHint')}</p>
             <input
@@ -340,7 +340,7 @@ export function MemoryEngineSection({
           </div>
         )}
 
-        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             type="checkbox"
             checked={settings.memory_inject}
@@ -349,7 +349,7 @@ export function MemoryEngineSection({
           {t('settings.memoryInject')}
         </label>
 
-        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-white/70 px-4 py-3 text-sm text-text-secondary">
+        <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             type="checkbox"
             checked={settings.limit_inject}
@@ -359,7 +359,7 @@ export function MemoryEngineSection({
         </label>
 
         {settings.limit_inject && (
-          <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+          <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
             <label htmlFor="settings-memory-max-inject" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.maxMemoriesInject')}</label>
             <p className="mb-3 text-xs leading-relaxed text-text-muted">{t('settings.limitInjectHint')}</p>
             <input

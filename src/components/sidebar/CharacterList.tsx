@@ -75,10 +75,10 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
     <div
       ref={setNodeRef}
       style={style}
-      className={`group flex w-full items-center gap-3 rounded-[1.25rem] border px-3 py-3 text-left transition-colors duration-200 ${
+      className={`group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-colors duration-200 ${
         selected
-          ? 'border-accent/26 bg-[rgba(155,124,240,0.10)] shadow-sm'
-          : 'border-transparent bg-white/48 hover:border-border-light hover:bg-white/78'
+          ? 'border-accent/26 bg-accent/10 shadow-sm'
+          : 'border-transparent bg-surface/48 hover:border-border-light hover:bg-surface/78'
       } ${isDragging ? 'cursor-grabbing shadow-lg' : 'cursor-grab'}`}
       // 拖拽 listeners 只挂在卡片本体，编辑按钮自行 stopPropagation 即可豁免
       {...attributes}
@@ -248,7 +248,7 @@ export default function CharacterList({ selectedId, onSelect }: Props) {
       >
         {characters.length === 0 && (
           <div className="surface-panel-quiet mx-1 px-4 py-8 text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/80 text-accent-dark shadow-sm">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-surface/80 text-accent-dark shadow-sm">
               <SparkIcon className="h-5 w-5" />
             </div>
             <p className="text-sm font-medium text-text-primary">{t('sidebar.empty')}</p>

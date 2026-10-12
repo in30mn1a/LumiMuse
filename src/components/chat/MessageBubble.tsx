@@ -145,7 +145,7 @@ function SummaryCard({
       <div className="flex items-center gap-3">
         <div className="h-px flex-1 bg-gradient-to-r from-transparent via-accent/30 to-transparent" />
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 rounded-full border border-accent/20 bg-accent/6 px-3 py-1 text-[11px] font-medium text-accent-dark">
+          <div className="flex items-center gap-1.5 rounded-full border border-accent/20 bg-accent/6 px-3 py-1 text-xs font-medium text-accent-dark">
             <SummaryIcon className="h-3.5 w-3.5" />
             {t('chat.summaryLabel')}
           </div>
@@ -173,7 +173,7 @@ function SummaryCard({
 
       {/* 总结内容卡片 */}
       <div className="mt-3 rounded-2xl border border-accent/15 bg-gradient-to-br from-accent/5 to-accent-light/8 px-5 py-4">
-        <p className="mb-3 text-[11px] text-text-muted">{t('chat.summaryHint')}</p>
+        <p className="mb-3 text-xs text-text-muted">{t('chat.summaryHint')}</p>
         {editing ? (
           <div className="flex flex-col gap-2">
             <textarea
@@ -187,7 +187,7 @@ function SummaryCard({
               className="textarea-rich text-sm"
               autoFocus
             />
-            <div className="flex items-center gap-2 text-[11px] text-text-muted">
+            <div className="flex items-center gap-2 text-xs text-text-muted">
               <span>{t('message.editKeyHint')}</span>
             </div>
             <div className="flex gap-2">
@@ -210,7 +210,7 @@ function SummaryCard({
           </div>
         )}
         {showTimestamps && message.created_at && !editing && (
-          <div className="mt-3 flex items-center gap-1 text-[11px] text-text-muted">
+          <div className="mt-3 flex items-center gap-1 text-xs text-text-muted">
             <ClockIcon className="h-3 w-3" />
             {formatTime(message.created_at)}
           </div>
@@ -478,19 +478,19 @@ function MessageBubbleInner({
               className={`max-h-[60vh] min-h-[3.25rem] w-full resize-none overflow-y-auto rounded-xl border p-2 text-sm outline-none ${
                 isUser
                   ? 'border-white/30 bg-white/20 text-white placeholder-white/50 focus:border-white/60'
-                  : 'border-border-light bg-white/90 text-text-primary focus:border-accent/40 dark:bg-white/10'
+                  : 'border-border-light bg-surface/90 text-text-primary focus:border-accent/40 dark:bg-white/10'
               }`}
               rows={3}
               autoFocus
             />
             <div className="mt-2 flex items-center justify-end gap-2">
-              <span className={`text-[10px] ${isUser ? 'text-white/40' : 'text-text-muted/60'}`}>
+              <span className={`text-xs ${isUser ? 'text-white/40' : 'text-text-muted/60'}`}>
                 {t('message.editKeyHint')}
               </span>
               <button
                 onClick={() => setEditing(false)}
                 className={`rounded-lg px-3 py-1 text-xs transition-colors ${
-                  isUser ? 'text-white/70 hover:bg-white/20' : 'text-text-muted hover:bg-white/60 dark:hover:bg-white/10'
+                  isUser ? 'text-white/70 hover:bg-white/20' : 'text-text-muted hover:bg-surface/60 dark:hover:bg-white/10'
                 }`}
               >
                 {t('common.cancel')}
@@ -498,7 +498,7 @@ function MessageBubbleInner({
               <button
                 onClick={handleEditSave}
                 className={`rounded-lg px-3 py-1 text-xs transition-colors ${
-                  isUser ? 'bg-white/25 text-white hover:bg-white/35' : 'bg-accent text-white hover:bg-accent-dark'
+                  isUser ? 'bg-white/25 text-white hover:bg-white/35' : 'bg-accent-solid text-white hover:bg-accent-dark'
                 }`}
               >
                 {t('common.save')}

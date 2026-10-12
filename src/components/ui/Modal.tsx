@@ -19,7 +19,7 @@ interface ModalProps {
    */
   padded?: boolean;
   /**
-   * 自定义 dialog 容器额外类名，用于覆盖默认 rounded-2xl + bg-white，
+   * 自定义 dialog 容器额外类名，用于覆盖默认 rounded-2xl + bg-surface，
    * 或追加诸如 flex flex-col、max-h-* 等布局类。
    */
   dialogClassName?: string;
@@ -161,7 +161,7 @@ export default function Modal({
         tabIndex={-1}
         className={
           dialogClassName ??
-          `w-full ${maxWidth} rounded-2xl bg-white shadow-xl outline-none dark:bg-zinc-900`
+          `w-full ${maxWidth} rounded-2xl bg-surface shadow-xl outline-none dark:bg-zinc-900`
         }
         onClick={(e) => e.stopPropagation()}
       >

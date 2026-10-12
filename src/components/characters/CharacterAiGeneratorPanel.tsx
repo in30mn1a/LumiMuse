@@ -22,7 +22,7 @@ export function CharacterAiGeneratorPanel({
   return (
     <div
       data-role="aiGeneratorPanel"
-      className="mt-4 flex w-full flex-col gap-2 rounded-2xl border border-border-light bg-white/70 p-3 shadow-sm lg:ml-auto lg:max-w-[38rem] lg:self-end"
+      className="mt-4 flex w-full flex-col gap-2 rounded-2xl border border-border-light bg-surface/70 p-3 shadow-sm lg:ml-auto lg:max-w-[38rem] lg:self-end"
     >
       <div className="flex flex-col gap-2 sm:flex-row">
         <input

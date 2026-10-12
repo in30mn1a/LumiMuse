@@ -373,7 +373,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
                   key={tag}
                   type="button"
                   onClick={() => clearTagFilter(tag)}
-                  className="chip cursor-pointer px-2 py-1 text-[11px] transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
+                  className="chip cursor-pointer px-2 py-1 text-xs transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
                   aria-label={t('memory.clearTagFilter').replace('{tag}', tag)}
                   title={t('memory.clearTagFilter').replace('{tag}', tag)}
                 >
@@ -456,7 +456,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
           </div>
         ) : (
           <div className="px-6 py-12 text-center">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[1.4rem] bg-[rgba(155,124,240,0.12)] text-accent-dark">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
               <SparkIcon className="h-6 w-6" />
             </div>
             <p className="text-sm font-medium text-text-primary">{t('memory.emptyFiltered')}</p>

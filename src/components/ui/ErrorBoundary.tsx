@@ -21,7 +21,7 @@ function DefaultFallback({ message, onReset, onReload }: { message: string; onRe
   return (
     <div className="flex min-h-[60vh] items-center justify-center px-4 py-8">
       <div className="surface-panel w-full max-w-md p-6 text-center">
-        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[1.4rem] bg-gradient-to-br from-accent/15 to-accent-light/25 text-accent-dark">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-accent/15 to-accent-light/25 text-accent-dark">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true">
             <circle cx="12" cy="12" r="10" />
             <path d="M12 8v4" />
@@ -30,7 +30,7 @@ function DefaultFallback({ message, onReset, onReload }: { message: string; onRe
         </div>
         <h2 className="text-lg font-semibold text-text-primary">{t('errorBoundary.title')}</h2>
         <p className="mt-2 text-sm text-text-muted">{t('errorBoundary.body')}</p>
-        <pre className="mt-3 max-h-32 overflow-auto rounded-xl border border-border-light bg-warm-50 px-3 py-2 text-left text-[11px] leading-relaxed text-text-secondary">
+        <pre className="mt-3 max-h-32 overflow-auto rounded-xl border border-border-light bg-warm-50 px-3 py-2 text-left text-xs leading-relaxed text-text-secondary">
           {displayMessage}
         </pre>
         <div className="mt-5 flex justify-center gap-2">

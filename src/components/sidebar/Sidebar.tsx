@@ -68,7 +68,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
       <div className="border-b border-border-light p-4">
         <div className="surface-hero p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[1.1rem] bg-gradient-to-br from-accent to-accent-dark text-white shadow-sm">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent to-accent-dark text-white shadow-sm">
               <SparkIcon className="h-5 w-5" />
             </div>
             <h1 className="text-[1.5rem] font-semibold tracking-tight text-text-primary" style={{ fontFamily: 'var(--font-display)' }}>
@@ -80,8 +80,8 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
 
       {/* 对话内容搜索框 */}
       <div className="relative border-b border-border-light px-4 py-3">
-        <div className={`flex items-center gap-2 rounded-2xl border bg-white/60 px-3 py-2 text-sm transition-all dark:bg-white/5 ${
-          focused ? 'border-accent/30 bg-white shadow-sm dark:bg-white/10' : 'border-border-light hover:border-accent/20 hover:bg-white dark:hover:bg-white/10'
+        <div className={`flex items-center gap-2 rounded-2xl border bg-surface/60 px-3 py-2 text-sm transition-all dark:bg-white/5 ${
+          focused ? 'border-accent/30 bg-surface shadow-sm dark:bg-white/10' : 'border-border-light hover:border-accent/20 hover:bg-surface dark:hover:bg-white/10'
         }`}>
           <SearchIcon className="h-3.5 w-3.5 shrink-0 text-text-muted" />
           <input
@@ -107,7 +107,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
 
         {/* 搜索结果下拉面板 */}
         {showPanel && (
-          <div className="absolute left-4 right-4 top-full z-50 mt-1 overflow-hidden rounded-2xl border border-border-light bg-white shadow-lg dark:bg-[rgba(33,26,48,0.96)]">
+          <div className="absolute left-4 right-4 top-full z-50 mt-1 overflow-hidden rounded-2xl border border-border-light bg-surface shadow-lg dark:bg-[rgba(33,26,48,0.96)]">
             {loading && (
               <div className="px-4 py-3 text-center text-xs text-text-muted">{t('common.loading')}</div>
             )}
@@ -124,7 +124,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
                     className="flex w-full flex-col gap-1 border-b border-border-light px-4 py-3 text-left last:border-0 hover:bg-accent/5 transition-colors"
                   >
                     {/* 对话标题 + 角色名 */}
-                    <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+                    <div className="flex items-center gap-1.5 text-xs text-text-muted">
                       <ClockIcon className="h-3 w-3 shrink-0" />
                       <span className="truncate font-medium text-accent-dark">{r.characterName}</span>
                       <span className="shrink-0">·</span>
@@ -162,14 +162,14 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
         <div className="grid gap-2">
           <Link
             href="/memories"
-            className="flex items-center gap-3 rounded-2xl border border-transparent bg-white/70 px-4 py-3 text-sm text-text-secondary transition-all duration-200 hover:border-border-light hover:bg-white hover:text-text-primary dark:bg-white/5 dark:hover:bg-white/10"
+            className="flex items-center gap-3 rounded-2xl border border-transparent bg-surface/70 px-4 py-3 text-sm text-text-secondary transition-all duration-200 hover:border-border-light hover:bg-surface hover:text-text-primary dark:bg-white/5 dark:hover:bg-white/10"
           >
             <MemoryIcon className="h-4 w-4 shrink-0 text-accent-dark" />
             <span className="flex-1">{t('sidebar.memories')}</span>
           </Link>
           <Link
             href="/settings"
-            className="flex items-center gap-3 rounded-2xl border border-transparent bg-white/70 px-4 py-3 text-sm text-text-secondary transition-all duration-200 hover:border-border-light hover:bg-white hover:text-text-primary dark:bg-white/5 dark:hover:bg-white/10"
+            className="flex items-center gap-3 rounded-2xl border border-transparent bg-surface/70 px-4 py-3 text-sm text-text-secondary transition-all duration-200 hover:border-border-light hover:bg-surface hover:text-text-primary dark:bg-white/5 dark:hover:bg-white/10"
           >
             <SettingsIcon className="h-4 w-4 shrink-0 text-accent-dark" />
             <span className="flex-1">{t('sidebar.settings')}</span>

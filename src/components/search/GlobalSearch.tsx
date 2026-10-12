@@ -95,7 +95,7 @@ export default function GlobalSearch({ open, onClose, characterId = null, onConv
             placeholder={t('search.placeholder')}
             className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
           />
-          <kbd className="hidden rounded border border-border-light px-1.5 py-0.5 text-[10px] text-text-muted sm:block">Esc</kbd>
+          <kbd className="hidden rounded border border-border-light px-1.5 py-0.5 text-xs text-text-muted sm:block">Esc</kbd>
         </div>
 
         {/* 结果列表 */}
@@ -125,7 +125,7 @@ export default function GlobalSearch({ open, onClose, characterId = null, onConv
               }`}
             >
               {/* 角色名 · 对话标题 */}
-              <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+              <div className="flex items-center gap-1.5 text-xs text-text-muted">
                 <ClockIcon className="h-3 w-3 shrink-0" />
                 <span className="truncate font-medium text-accent-dark">{result.subtitle?.split(' · ')[0]}</span>
                 <span className="shrink-0">·</span>

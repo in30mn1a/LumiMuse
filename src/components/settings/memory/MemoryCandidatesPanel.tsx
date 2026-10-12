@@ -26,7 +26,7 @@ export function MemoryCandidatesPanel({
   const handleMemoryCandidateAction = candidates.handleMemoryCandidateAction;
 
   return (
-    <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+    <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryCandidatesTitle')}</h3>
@@ -66,7 +66,7 @@ export function MemoryCandidatesPanel({
             const tags = getCandidateTags(candidate);
 
             return (
-              <div key={candidate.id} className="rounded-xl border border-border-light bg-white/60 px-3 py-3">
+              <div key={candidate.id} className="rounded-xl border border-border-light bg-surface/60 px-3 py-3">
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-text-muted">
                   <span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent-dark">{category}</span>
                   <span>{t('settings.memoryCandidatesRole')}: {role}</span>
@@ -80,7 +80,7 @@ export function MemoryCandidatesPanel({
                     value={memoryCandidateEdits[candidate.id] ?? content}
                     onChange={e => setMemoryCandidateEdits(prev => ({ ...prev, [candidate.id]: e.target.value }))}
                     rows={3}
-                    className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-white/80 px-3 py-2 text-sm"
+                    className="textarea-rich w-full resize-none rounded-xl border border-border-light bg-surface/80 px-3 py-2 text-sm"
                   />
                 ) : (
                   <p className="whitespace-pre-wrap text-sm leading-relaxed text-text-primary">{content || t('common.empty')}</p>

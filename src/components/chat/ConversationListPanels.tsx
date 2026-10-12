@@ -18,13 +18,13 @@ function ConversationItem({ conversation, active, onClick }: ConversationItemPro
       onClick={onClick}
       className={`w-full rounded-2xl border px-3 py-3 text-left transition-all duration-200 ${
         active
-          ? 'border-accent/25 bg-[rgba(155,124,240,0.10)]'
-          : 'border-border-light bg-white/75 hover:bg-white'
+          ? 'border-accent/25 bg-accent/10'
+          : 'border-border-light bg-surface/75 hover:bg-surface'
       }`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium text-text-primary">{conversation.title}</span>
-        <span className="shrink-0 text-[11px] text-text-muted">{formatShortDate(conversation.updated_at)}</span>
+        <span className="shrink-0 text-xs text-text-muted">{formatShortDate(conversation.updated_at)}</span>
       </div>
       <div className="mt-1 flex items-center gap-1.5 text-xs text-text-muted">
         <ClockIcon className="h-3.5 w-3.5" />
@@ -57,7 +57,7 @@ export function ConversationDrawer({ open, conversations, activeConvId, onSelect
       overlayClassName="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px] animate-fadeIn"
       dialogClassName="fixed inset-x-0 bottom-0 z-50 animate-slideUp outline-none lg:bottom-auto lg:left-1/2 lg:right-auto lg:top-[16dvh] lg:w-[26rem] lg:max-w-[calc(100vw-3rem)] lg:-translate-x-1/2 lg:animate-fadeIn"
     >
-      <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4 lg:rounded-[28px] lg:pb-5">
+      <div className="surface-panel rounded-b-none rounded-t-[28px] px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-4 lg:rounded-3xl lg:pb-5">
         <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-border-light lg:hidden" />
         <div className="mb-3 flex items-center justify-between">
           <p className="text-sm font-semibold text-text-primary">

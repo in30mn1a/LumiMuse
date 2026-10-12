@@ -71,7 +71,7 @@ function MemoryArchivePanelContent({
   const manualArchiveReady = archive.selectedMemoryArchiveIds.length > 0 && archive.memoryArchiveSummary.trim().length > 0;
 
   return (
-    <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-4">
+    <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
       <div className="mb-3">
         <h3 className="text-sm font-medium text-text-primary">{t('settings.memoryArchiveTitle')}</h3>
         <p className="mt-1 text-xs text-text-muted">{t('settings.memoryArchiveHint')}</p>
@@ -127,17 +127,17 @@ function MemoryArchivePanelContent({
               return (
                 <li
                   key={proposal.key}
-                  className={`rounded-xl border border-border-light bg-white/60 p-3 ${settled ? 'opacity-70' : ''}`}
+                  className={`rounded-xl border border-border-light bg-surface/60 p-3 ${settled ? 'opacity-70' : ''}`}
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-text-primary">
                       {proposal.title || t('settings.memoryArchiveAiGroup').replace('{index}', String(index + 1))}
                     </span>
                     {proposal.status === 'archived' && (
-                      <span className="chip chip-active text-[11px]">{t('settings.memoryArchiveAiArchivedBadge')}</span>
+                      <span className="chip chip-active text-xs">{t('settings.memoryArchiveAiArchivedBadge')}</span>
                     )}
                     {proposal.status === 'stale' && (
-                      <span className="chip text-[11px]">{t('settings.memoryArchiveAiStaleBadge')}</span>
+                      <span className="chip text-xs">{t('settings.memoryArchiveAiStaleBadge')}</span>
                     )}
                   </div>
                   {settled ? (
@@ -153,7 +153,7 @@ function MemoryArchivePanelContent({
                         onChange={e => archive.setMemoryArchiveAiProposalSummary(proposal.key, e.target.value)}
                         disabled={archive.memoryArchiveLoading}
                         rows={4}
-                        className="textarea-rich mt-1 w-full rounded-xl border border-border-light bg-white/80 px-3 py-2 text-sm disabled:opacity-70"
+                        className="textarea-rich mt-1 w-full rounded-xl border border-border-light bg-surface/80 px-3 py-2 text-sm disabled:opacity-70"
                       />
                       <div className="mt-2 text-xs font-medium text-text-secondary">
                         {t('settings.memoryArchiveAiCovered')
@@ -164,7 +164,7 @@ function MemoryArchivePanelContent({
                         {proposal.memories.map(memory => (
                           <label
                             key={memory.id}
-                            className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-xs text-text-secondary hover:bg-white/70"
+                            className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-xs text-text-secondary hover:bg-surface/70"
                           >
                             <input
                               type="checkbox"
@@ -223,7 +223,7 @@ function MemoryArchivePanelContent({
             .replace('{total}', String(archive.memoryArchiveTotal))}
         </p>
         {archive.memoryArchiveMemories.length === 0 ? (
-          <p className="rounded-xl border border-border-light bg-white/60 px-3 py-2 text-xs text-text-muted">
+          <p className="rounded-xl border border-border-light bg-surface/60 px-3 py-2 text-xs text-text-muted">
             {memoryManagementCharacterId ? t('settings.memoryArchiveNoMemories') : t('settings.memoryManagementChooseCharacter')}
           </p>
         ) : (
@@ -235,14 +235,14 @@ function MemoryArchivePanelContent({
                 onChange={e => setFilterKeyword(e.target.value)}
                 placeholder={t('settings.memoryArchiveFilterPlaceholder')}
                 aria-label={t('settings.memoryArchiveFilterPlaceholder')}
-                className="input-rich min-w-[12rem] flex-1 rounded-xl border border-border-light bg-white/80 px-3 py-1.5 text-xs"
+                className="input-rich min-w-[12rem] flex-1 rounded-xl border border-border-light bg-surface/80 px-3 py-1.5 text-xs"
               />
               {categories.length > 0 && (
                 <select
                   value={filterCategory}
                   onChange={e => setFilterCategory(e.target.value)}
                   aria-label={t('settings.memoryArchiveAllCategories')}
-                  className="select-rich w-auto rounded-xl border border-border-light bg-white/80 px-2.5 py-1.5 text-xs"
+                  className="select-rich w-auto rounded-xl border border-border-light bg-surface/80 px-2.5 py-1.5 text-xs"
                 >
                   <option value="">{t('settings.memoryArchiveAllCategories')}</option>
                   {categories.map(cat => (
@@ -268,11 +268,11 @@ function MemoryArchivePanelContent({
                 </button>
               )}
             </div>
-            <div className="max-h-64 space-y-2 overflow-auto rounded-xl border border-border-light bg-white/60 p-2">
+            <div className="max-h-64 space-y-2 overflow-auto rounded-xl border border-border-light bg-surface/60 p-2">
               {filteredMemories.map(memory => (
                 <label
                   key={memory.id}
-                  className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs text-text-secondary hover:bg-white/70"
+                  className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs text-text-secondary hover:bg-surface/70"
                 >
                   <input
                     type="checkbox"
@@ -314,7 +314,7 @@ function MemoryArchivePanelContent({
           value={archive.memoryArchiveSummary}
           onChange={e => archive.setMemoryArchiveSummary(e.target.value)}
           rows={3}
-          className="textarea-rich mt-1 w-full resize-none rounded-xl border border-border-light bg-white/80 px-3 py-2 text-sm"
+          className="textarea-rich mt-1 w-full resize-none rounded-xl border border-border-light bg-surface/80 px-3 py-2 text-sm"
           placeholder={t('settings.memoryArchiveSummaryPlaceholder')}
         />
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -388,11 +388,11 @@ function MemoryArchivePanelContent({
               </button>
             </div>
             {archive.memoryArchiveBatchDetail && (
-              <div className="mt-2 max-h-64 overflow-auto rounded-lg border border-border-light bg-white/60 p-2 text-xs">
+              <div className="mt-2 max-h-64 overflow-auto rounded-lg border border-border-light bg-surface/60 p-2 text-xs">
                 {archive.memoryArchiveBatchDetail.summary && (
                   <>
                     <div className="px-2 font-medium text-text-secondary">{t('settings.memoryArchiveSummary')}</div>
-                    <p className="mb-2 mt-1 whitespace-pre-wrap break-words rounded bg-white/70 px-2 py-1 text-text-primary">
+                    <p className="mb-2 mt-1 whitespace-pre-wrap break-words rounded bg-surface/70 px-2 py-1 text-text-primary">
                       {archive.memoryArchiveBatchDetail.summary.content}
                     </p>
                   </>

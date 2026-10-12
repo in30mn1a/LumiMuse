@@ -92,7 +92,7 @@ export function ApiSettingsSection({
           {modelError && <p className="mt-2 text-xs text-red-500">{modelError}</p>}
         </div>
 
-        <div className="rounded-2xl border border-border-light bg-white/70 px-4 py-3">
+        <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-3">
           <label className="flex items-center gap-3 text-sm text-text-secondary">
             <input
               type="checkbox"

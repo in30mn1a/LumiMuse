@@ -310,12 +310,12 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             {attachments.map(att => (
               <div
                 key={att.id}
-                className="group relative flex items-center gap-2 rounded-xl border border-border-light bg-white/80 px-3 py-1.5 text-xs text-text-secondary shadow-sm dark:bg-white/10"
+                className="group relative flex items-center gap-2 rounded-xl border border-border-light bg-surface/80 px-3 py-1.5 text-xs text-text-secondary shadow-sm dark:bg-white/10"
               >
                 {att.type === 'image' ? (
                   <img src={att.url || att.data} alt={att.name} className="h-8 w-8 rounded-lg object-cover" loading="lazy" />
                 ) : (
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/10 text-accent-dark text-[10px] font-medium">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/10 text-accent-dark text-xs font-medium">
                     {att.name.split('.').pop()?.toUpperCase().slice(0, 4)}
                   </span>
                 )}
@@ -336,7 +336,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           <p className="mb-2 text-xs text-red-500">{attachError}</p>
         )}
 
-        <div className="flex items-center gap-2 rounded-[1.25rem] border border-border-light bg-white/70 px-3 py-2 shadow-[0_8px_22px_rgba(92,74,139,0.04)] dark:bg-white/5">
+        <div className="flex items-center gap-2 rounded-2xl border border-border-light bg-surface/70 px-3 py-2 shadow-[0_8px_22px_rgba(92,74,139,0.04)] dark:bg-white/5">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -401,7 +401,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             <button
               ref={modelTriggerRef}
               onClick={handleOpenModelPicker}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
               aria-haspopup="listbox"
               aria-expanded={modelPickerOpen}
             >
@@ -415,9 +415,9 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 tabIndex={-1}
                 aria-label={t('input.modelSelect')}
                 aria-activedescendant={currentModel ? `model-option-${currentModel}` : undefined}
-                className="absolute bottom-full left-0 z-50 mb-1 w-72 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl md:max-h-60 dark:bg-[rgba(25,20,37,0.95)]"
+                className="absolute bottom-full left-0 z-50 mb-1 w-72 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-surface/95 py-1 shadow-lg backdrop-blur-xl md:max-h-60 dark:bg-[rgba(25,20,37,0.95)]"
               >
-                <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                <div className="border-b border-border-light px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-text-muted">
                   {modelLoading ? t('common.loading') : t('input.modelSelect')}
                 </div>
                 {modelList.length === 0 && !modelLoading && (
@@ -458,7 +458,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             <button
               ref={effortTriggerRef}
               onClick={() => setEffortPickerOpen(open => !open)}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark"
               title={t('input.reasoningEffortHint')}
               aria-haspopup="listbox"
               aria-expanded={effortPickerOpen}
@@ -475,9 +475,9 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 tabIndex={-1}
                 aria-label={t('input.reasoningEffort')}
                 aria-activedescendant={`effort-option-${reasoningEffort}`}
-                className="absolute bottom-full left-0 z-50 mb-1 w-44 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-white/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+                className="absolute bottom-full left-0 z-50 mb-1 w-44 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-surface/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
               >
-                <div className="border-b border-border-light px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                <div className="border-b border-border-light px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-text-muted">
                   {t('input.reasoningEffort')}
                 </div>
                 {REASONING_EFFORT_OPTIONS.map((effort, index) => {

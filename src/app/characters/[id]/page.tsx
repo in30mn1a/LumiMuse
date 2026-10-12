@@ -5,7 +5,7 @@ import { Character } from '@/types';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
-import { ArrowLeftIcon, CameraIcon, PencilIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
+import { ArrowLeftIcon, CameraIcon } from '@/components/ui/icons';
 import Modal from '@/components/ui/Modal';
 import ConfirmModal from '@/components/ui/ConfirmModal';
 import TagChipInput from '@/components/ui/TagChipInput';
@@ -23,6 +23,21 @@ import { dismissVirtualKeyboard } from '@/lib/virtual-keyboard';
 interface Props {
   params: Promise<{ id: string }>;
 }
+
+type EditorTab = 'identity' | 'world' | 'prompt' | 'models' | 'image';
+
+const EDITOR_TABS: Array<{ id: EditorTab; label: string }> = [
+  { id: 'identity', label: 'editor.tabIdentity' },
+  { id: 'world', label: 'editor.tabWorld' },
+  { id: 'prompt', label: 'editor.tabPrompt' },
+  { id: 'models', label: 'editor.tabModels' },
+  { id: 'image', label: 'editor.tabImage' },
+];
+
+const ICON_BUTTON = 'flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50';
+const MENU_ITEM = 'flex min-h-11 w-full items-center px-4 text-left text-sm text-text-primary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50';
+const FIELD_LABEL = 'mb-2 block text-sm font-medium text-text-secondary';
+const PANEL = 'surface-panel space-y-5 p-4 sm:p-5';
 
 interface ImportResponse {
   ok?: boolean;
@@ -143,6 +158,10 @@ export default function CharacterEditor({ params }: Props) {
   // 用于：取消按钮二次确认 + beforeunload 浏览器关闭/刷新拦截
   const [dirty, setDirty] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'discard' | 'delete' | 'duplicate' | null>(null);
+  const [tab, setTab] = useState<EditorTab>('identity');
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
   const hasUnsavedChanges = dirty || Boolean(tagDrafts.image_tags || tagDrafts.user_image_tags);
 
   useEffect(() => {
@@ -178,6 +197,25 @@ export default function CharacterEditor({ params }: Props) {
       cancelled = true;
     };
   }, [id, showToast, t]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) setMoreOpen(false);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMoreOpen(false);
+        moreTriggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [moreOpen]);
 
   // beforeunload：dirty 时拦截浏览器关闭/刷新/前进后退，避免误丢修改。
   // 注意：现代浏览器会忽略我们设置的提示文案，统一显示其原生提示，但仍需调用以触发拦截。
@@ -248,11 +286,13 @@ export default function CharacterEditor({ params }: Props) {
     const snapshot = characterRef.current;
     const bindings = snapshot.model_preset_bindings ?? [];
     if (bindings.some(row => !row.model.trim())) {
+      setTab('prompt');
       showToast(t('preset.modelBindEmptyModel'), 'error');
       return;
     }
     const models = bindings.map(row => row.model.trim());
     if (new Set(models).size !== models.length) {
+      setTab('prompt');
       showToast(t('preset.modelBindDuplicate'), 'error');
       return;
     }
@@ -499,7 +539,7 @@ export default function CharacterEditor({ params }: Props) {
   }[memoryChatInjectionMode];
 
   return (
-    <div className="app-shell min-h-screen px-4 py-4">
+    <div className="app-shell flex min-h-dvh flex-col">
       {exportOpen && <CharacterExportDialog characterId={id} onClose={() => setExportOpen(false)} />}
       {pendingImport && (
         <ImportDialog
@@ -544,63 +584,92 @@ export default function CharacterEditor({ params }: Props) {
         }}
         onCancel={() => setConfirmAction(null)}
       />
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="surface-hero px-5 py-5">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-4">
-              <button onClick={handleCancel} disabled={saving || deleting || duplicating || leaving} className="soft-button soft-button-secondary shrink-0 whitespace-nowrap px-3 py-2">
-                <ArrowLeftIcon className="h-4 w-4" />
-                {t('editor.cancel')}
-              </button>
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
-                <PencilIcon className="h-5 w-5" />
-              </div>
-              <div>
-                <h1 className="section-title text-2xl">{t('editor.title')}</h1>
-                <p className="mt-1 section-copy">{t('editor.previewSubtitle')}</p>
-              </div>
-            </div>
-
-            <div data-role="headerActions" className="flex flex-wrap items-center gap-2 lg:justify-end">
-              <button
-                type="button"
-                onClick={() => setShowAiGenerator(value => !value)}
-                className="soft-button soft-button-secondary"
-              >
-                <SparkIcon className="h-4 w-4" />
-                {t('editor.aiGenerate')}
-              </button>
-              <button onClick={handleDuplicate} disabled={duplicating} className="soft-button soft-button-secondary disabled:cursor-not-allowed disabled:opacity-50">
-                <SparkIcon className="h-4 w-4" />
-                {duplicating ? t('editor.duplicating') : t('editor.duplicate')}
-              </button>
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
-                className="soft-button soft-button-danger disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <TrashIcon className="h-4 w-4" />
-                {deleting ? t('editor.deleting') : t('editor.delete')}
-              </button>
-              <button type="button" onClick={() => characterImportRef.current?.click()} className="soft-button soft-button-secondary">
-                {t('editor.importTitle')}
-              </button>
-              <input ref={characterImportRef} type="file" accept=".json,application/json" onChange={handleImportCharacterCard} className="hidden" />
-              <button type="button" onClick={() => setExportOpen(true)} className="soft-button soft-button-secondary">
-                {t('editor.export')}
-              </button>
-              <button onClick={handleSave} disabled={saving || deleting || duplicating || leaving} className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-50">
-                <SparkIcon className="h-4 w-4" />
-                {saving ? t('editor.saving') : t('editor.save')}
-              </button>
-            </div>
+      <header className="sticky top-0 z-20 border-b border-border-light bg-surface">
+        <div className="mx-auto flex h-14 max-w-3xl items-center gap-1 px-1 sm:px-3">
+          <button
+            onClick={handleCancel}
+            disabled={saving || deleting || duplicating || leaving}
+            className={`${ICON_BUTTON} gap-1.5 sm:px-2.5`}
+          >
+            <ArrowLeftIcon className="h-5 w-5 sm:h-4 sm:w-4" />
+            <span className="sr-only text-sm sm:not-sr-only">{t('editor.cancel')}</span>
+          </button>
+          <div className="min-w-0 flex-1 px-1">
+            <h1 className="truncate text-base font-semibold leading-tight text-text-primary">{t('editor.title')}</h1>
+            <p className="truncate text-xs text-text-muted">{character.name}</p>
           </div>
-          {importMsg && (
-            <div className={`mt-4 rounded-2xl px-4 py-3 text-sm ${importMsg.type === 'ok' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-              {importMsg.text}
-            </div>
-          )}
-          {showAiGenerator && (
+          <input ref={characterImportRef} type="file" accept=".json,application/json" onChange={handleImportCharacterCard} className="hidden" />
+          <div ref={moreMenuRef} data-role="headerActions" className="relative">
+            <button
+              ref={moreTriggerRef}
+              type="button"
+              onClick={() => setMoreOpen(prev => !prev)}
+              className={ICON_BUTTON}
+              title={t('common.more')}
+              aria-label={t('common.more')}
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+            >
+              <span aria-hidden="true" className="text-xl leading-none">⋯</span>
+            </button>
+            {moreOpen && (
+              <div
+                role="menu"
+                // 菜单项点完即卸载：先把焦点交还触发按钮，随后打开的弹窗才有可恢复的焦点目标。
+                onClickCapture={() => moreTriggerRef.current?.focus()}
+                onClick={() => setMoreOpen(false)}
+                className="absolute right-0 top-full z-50 mt-1 min-w-[12rem] overflow-hidden rounded-2xl border border-border-light bg-surface py-1 shadow-lg"
+              >
+                <button type="button" role="menuitem" onClick={() => setShowAiGenerator(value => !value)} className={MENU_ITEM}>
+                  {t('editor.aiGenerate')}
+                </button>
+                <button type="button" role="menuitem" onClick={handleDuplicate} disabled={duplicating} className={MENU_ITEM}>
+                  {duplicating ? t('editor.duplicating') : t('editor.duplicate')}
+                </button>
+                <button type="button" role="menuitem" onClick={() => characterImportRef.current?.click()} className={MENU_ITEM}>
+                  {t('editor.importTitle')}
+                </button>
+                <button type="button" role="menuitem" onClick={() => setExportOpen(true)} className={MENU_ITEM}>
+                  {t('editor.export')}
+                </button>
+                <div role="separator" className="my-1 border-t border-border-light" />
+                <button type="button" role="menuitem" onClick={handleDelete} disabled={deleting} className={`${MENU_ITEM} !text-danger`}>
+                  {deleting ? t('editor.deleting') : t('editor.delete')}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <div role="tablist" className="mx-auto flex max-w-3xl gap-1 overflow-x-auto px-2 sm:px-4">
+          {EDITOR_TABS.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              id={`editor-tab-${item.id}`}
+              aria-selected={tab === item.id}
+              aria-controls={`editor-panel-${item.id}`}
+              onClick={() => setTab(item.id)}
+              className={`min-h-11 shrink-0 border-b-2 px-3 text-sm transition-colors ${
+                tab === item.id
+                  ? 'border-accent font-medium text-accent-dark'
+                  : 'border-transparent text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              {t(item.label)}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      <main className="mx-auto w-full max-w-3xl flex-1 px-3 py-4 sm:px-4 sm:py-5">
+        {importMsg && (
+          <div className={`mb-4 rounded-2xl px-4 py-3 text-sm ${importMsg.type === 'ok' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            {importMsg.text}
+          </div>
+        )}
+        {showAiGenerator && (
+          <div className="mb-4">
             <CharacterAiGeneratorPanel
               aiRequirement={aiRequirement}
               aiGenerating={aiGenerating}
@@ -608,223 +677,227 @@ export default function CharacterEditor({ params }: Props) {
               onChangeRequirement={setAiRequirement}
               onGenerate={handleGenerateCharacter}
             />
-          )}
-        </header>
+          </div>
+        )}
 
-        <div className="grid gap-4 xl:grid-cols-2">
-          <main className="contents">
-            <section className="surface-panel p-5">
-              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.identityInfo')}</h2>
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-3xl bg-gradient-to-br from-accent/15 to-accent-light/25 shadow-inner">
-                  {character.avatar_url ? (
-                    <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-3xl font-semibold text-accent-dark">
-                      {character.name[0]}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="absolute inset-0 flex items-center justify-center bg-black/20 text-white opacity-0 transition hover:opacity-100"
-                    title={t('editor.changeAvatar')}
-                  >
-                    <CameraIcon className="h-6 w-6" />
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleAvatarUpload}
-                    className="hidden"
-                  />
+        {/* 非当前页签只隐藏不卸载：标签输入框的草稿、预设下拉的加载状态都留在原处 */}
+        <section role="tabpanel" id="editor-panel-identity" aria-labelledby="editor-tab-identity" hidden={tab !== 'identity'} className={PANEL}>
+          <div className="flex items-center gap-4">
+            <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-3xl bg-accent/12">
+              {character.avatar_url ? (
+                <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-3xl font-semibold text-accent-dark">
+                  {character.name[0]}
                 </div>
+              )}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="absolute inset-0 flex items-center justify-center bg-black/20 text-white opacity-0 transition hover:opacity-100 focus-visible:opacity-100"
+                title={t('editor.changeAvatar')}
+                aria-label={t('editor.changeAvatar')}
+              >
+                <CameraIcon className="h-6 w-6" />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleAvatarUpload}
+                className="hidden"
+              />
+            </div>
 
-                <div className="flex-1">
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.name')}</label>
-                  <input
-                    value={character.name}
-                    onChange={e => update('name', e.target.value)}
-                    className="input-rich"
-                    placeholder={t('editor.namePlaceholder')}
-                  />
-                </div>
-              </div>
-            </section>
+            <div className="min-w-0 flex-1">
+              <label className={FIELD_LABEL}>{t('editor.name')}</label>
+              <input
+                value={character.name}
+                onChange={e => update('name', e.target.value)}
+                className="input-rich"
+                placeholder={t('editor.namePlaceholder')}
+              />
+            </div>
+          </div>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.basicInfo')}</label>
+            <textarea
+              value={character.basic_info || ''}
+              onChange={e => update('basic_info', e.target.value)}
+              rows={6}
+              placeholder={t('editor.basicInfoPlaceholder')}
+              className="textarea-rich"
+            />
+          </div>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.personality')}</label>
+            <textarea
+              value={character.personality}
+              onChange={e => update('personality', e.target.value)}
+              rows={6}
+              placeholder={t('editor.personalityPlaceholder')}
+              className="textarea-rich"
+            />
+          </div>
+        </section>
 
-            <section className="surface-panel p-5">
-              <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
-                <PresetSelectField
-                  value={character.active_preset_id ?? null}
-                  refreshKey={presetRefreshKey}
-                  onChange={(v) => {
-                    if (!character) return;
-                    setDirty(true);
-                    setCharacter({ ...character, active_preset_id: v });
-                  }}
-                />
-                <div>
-                  <label htmlFor="character-memory-chat-injection-mode" className="mb-2 block text-sm font-medium text-text-secondary">
-                    {t('editor.memoryChatInjectionMode')}
-                  </label>
-                  <p className="mb-2 text-xs leading-relaxed text-text-muted">
-                    {t('editor.memoryChatInjectionModeHint')}
-                  </p>
-                  <select
-                    id="character-memory-chat-injection-mode"
-                    className="select-rich w-full"
-                    value={memoryChatInjectionMode}
-                    onChange={(event) => {
-                      setDirty(true);
-                      setCharacter({
-                        ...character,
-                        memory_chat_injection_mode: event.target.value as Character['memory_chat_injection_mode'],
-                      });
-                    }}
-                  >
-                    <option value="full">{t('editor.memoryChatInjectionModeFull')}</option>
-                    <option value="local">{t('editor.memoryChatInjectionModeLocal')}</option>
-                    <option value="hybrid">{t('editor.memoryChatInjectionModeHybrid')}</option>
-                    <option value="vector">{t('editor.memoryChatInjectionModeVector')}</option>
-                  </select>
-                  <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
-                    {memoryChatInjectionModeHint}
-                  </p>
-                </div>
-              </div>
-              <ModelPresetBindingsField
-                value={character.model_preset_bindings ?? []}
-                refreshKey={presetRefreshKey}
-                onChange={(bindings) => {
-                  if (!character) return;
+        <section role="tabpanel" id="editor-panel-world" aria-labelledby="editor-tab-world" hidden={tab !== 'world'} className={PANEL}>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.scenario')}</label>
+            <textarea
+              value={character.scenario}
+              onChange={e => update('scenario', e.target.value)}
+              rows={6}
+              placeholder={t('editor.scenarioPlaceholder')}
+              className="textarea-rich"
+            />
+          </div>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.greeting')}</label>
+            <textarea
+              value={character.greeting}
+              onChange={e => update('greeting', e.target.value)}
+              rows={5}
+              placeholder={t('editor.greetingPlaceholder')}
+              className="textarea-rich"
+            />
+          </div>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.other')}</label>
+            <textarea
+              value={character.other_info || ''}
+              onChange={e => update('other_info', e.target.value)}
+              rows={6}
+              placeholder={t('editor.otherPlaceholder')}
+              className="textarea-rich"
+            />
+          </div>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.exampleDialogue')}</label>
+            <textarea
+              value={character.example_dialogue}
+              onChange={e => update('example_dialogue', e.target.value)}
+              rows={8}
+              placeholder={t('editor.dialoguePlaceholder')}
+              className="textarea-rich font-mono"
+            />
+          </div>
+        </section>
+
+        <section role="tabpanel" id="editor-panel-prompt" aria-labelledby="editor-tab-prompt" hidden={tab !== 'prompt'} className={PANEL}>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.systemPrompt')}</label>
+            <textarea
+              value={character.system_prompt}
+              onChange={e => update('system_prompt', e.target.value)}
+              rows={8}
+              placeholder={t('editor.systemPromptPlaceholder')}
+              className="textarea-rich font-mono"
+            />
+          </div>
+          <div className="grid gap-5 sm:grid-cols-2 sm:items-start">
+            <PresetSelectField
+              value={character.active_preset_id ?? null}
+              refreshKey={presetRefreshKey}
+              onChange={(v) => {
+                if (!character) return;
+                setDirty(true);
+                setCharacter({ ...character, active_preset_id: v });
+              }}
+            />
+            <div>
+              <label htmlFor="character-memory-chat-injection-mode" className={FIELD_LABEL}>
+                {t('editor.memoryChatInjectionMode')}
+              </label>
+              <p className="mb-2 text-xs leading-relaxed text-text-muted">
+                {t('editor.memoryChatInjectionModeHint')}
+              </p>
+              <select
+                id="character-memory-chat-injection-mode"
+                className="select-rich w-full"
+                value={memoryChatInjectionMode}
+                onChange={(event) => {
                   setDirty(true);
-                  setCharacter({ ...character, model_preset_bindings: bindings });
+                  setCharacter({
+                    ...character,
+                    memory_chat_injection_mode: event.target.value as Character['memory_chat_injection_mode'],
+                  });
                 }}
-              />
-            </section>
+              >
+                <option value="full">{t('editor.memoryChatInjectionModeFull')}</option>
+                <option value="local">{t('editor.memoryChatInjectionModeLocal')}</option>
+                <option value="hybrid">{t('editor.memoryChatInjectionModeHybrid')}</option>
+                <option value="vector">{t('editor.memoryChatInjectionModeVector')}</option>
+              </select>
+              <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
+                {memoryChatInjectionModeHint}
+              </p>
+            </div>
+          </div>
+          <ModelPresetBindingsField
+            value={character.model_preset_bindings ?? []}
+            refreshKey={presetRefreshKey}
+            onChange={(bindings) => {
+              if (!character) return;
+              setDirty(true);
+              setCharacter({ ...character, model_preset_bindings: bindings });
+            }}
+          />
+        </section>
 
-            <section className="surface-panel p-5 xl:col-span-2">
-              <CharacterTaskModelsField
-                value={{
-                  background_provider_id: character.background_provider_id ?? '',
-                  background_model: character.background_model ?? '',
-                  image_prompt_model: character.image_prompt_model ?? '',
-                  background_reasoning_by_model: character.background_reasoning_by_model ?? {},
-                  image_prompt_reasoning_by_model: character.image_prompt_reasoning_by_model ?? {},
-                  background_system_prompt_by_model: character.background_system_prompt_by_model ?? {},
-                  image_prompt_system_prompt_by_model: character.image_prompt_system_prompt_by_model ?? {},
-                }}
-                onChange={(next) => {
-                  setDirty(true);
-                  setCharacter({ ...character, ...next });
-                }}
-              />
-            </section>
+        <section role="tabpanel" id="editor-panel-models" aria-labelledby="editor-tab-models" hidden={tab !== 'models'} className={PANEL}>
+          <CharacterTaskModelsField
+            value={{
+              background_provider_id: character.background_provider_id ?? '',
+              background_model: character.background_model ?? '',
+              image_prompt_model: character.image_prompt_model ?? '',
+              background_reasoning_by_model: character.background_reasoning_by_model ?? {},
+              image_prompt_reasoning_by_model: character.image_prompt_reasoning_by_model ?? {},
+              background_system_prompt_by_model: character.background_system_prompt_by_model ?? {},
+              image_prompt_system_prompt_by_model: character.image_prompt_system_prompt_by_model ?? {},
+            }}
+            onChange={(next) => {
+              setDirty(true);
+              setCharacter({ ...character, ...next });
+            }}
+          />
+        </section>
 
-            <section className="surface-panel p-5 xl:col-span-2">
-              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.basicInfo')}</h2>
-              <textarea
-                value={character.basic_info || ''}
-                onChange={e => update('basic_info', e.target.value)}
-                rows={6}
-                placeholder={t('editor.basicInfoPlaceholder')}
-                className="textarea-rich"
-              />
-            </section>
+        <section role="tabpanel" id="editor-panel-image" aria-labelledby="editor-tab-image" hidden={tab !== 'image'} className={PANEL}>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.imageTags')}</label>
+            <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.imageTagsHint')}</p>
+            <TagChipInput
+              value={character.image_tags || ''}
+              onChange={val => update('image_tags', val)}
+              onDraftChange={value => setTagDrafts(prev => ({ ...prev, image_tags: value }))}
+              placeholder="1girl, silver hair, short hair, orange eyes, slender..."
+            />
+          </div>
+          <div>
+            <label className={FIELD_LABEL}>{t('editor.userImageTags')}</label>
+            <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.userImageTagsHint')}</p>
+            <TagChipInput
+              value={character.user_image_tags || ''}
+              onChange={val => update('user_image_tags', val)}
+              onDraftChange={value => setTagDrafts(prev => ({ ...prev, user_image_tags: value }))}
+              placeholder="1boy, black hair, brown eyes, glasses..."
+            />
+          </div>
+        </section>
+      </main>
 
-            <section className="surface-panel p-5">
-              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.personality')}</h2>
-              <textarea
-                value={character.personality}
-                onChange={e => update('personality', e.target.value)}
-                rows={6}
-                placeholder={t('editor.personalityPlaceholder')}
-                className="textarea-rich"
-              />
-            </section>
-
-            <section className="surface-panel p-5">
-              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.scenario')}</h2>
-              <textarea
-                value={character.scenario}
-                onChange={e => update('scenario', e.target.value)}
-                rows={6}
-                placeholder={t('editor.scenarioPlaceholder')}
-                className="textarea-rich"
-              />
-            </section>
-
-            <section className="surface-panel p-5">
-              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.greeting')}</h2>
-              <textarea
-                value={character.greeting}
-                onChange={e => update('greeting', e.target.value)}
-                rows={5}
-                placeholder={t('editor.greetingPlaceholder')}
-                className="textarea-rich"
-              />
-            </section>
-
-            <section className="surface-panel p-5">
-              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.other')}</h2>
-              <textarea
-                value={character.other_info || ''}
-                onChange={e => update('other_info', e.target.value)}
-                rows={6}
-                placeholder={t('editor.otherPlaceholder')}
-                className="textarea-rich"
-              />
-            </section>
-
-            <section className="surface-panel p-5 xl:col-span-2">
-              <h2 className="mb-4 text-base font-semibold text-text-primary">{t('editor.exampleDialogue')}</h2>
-              <textarea
-                value={character.example_dialogue}
-                onChange={e => update('example_dialogue', e.target.value)}
-                rows={8}
-                placeholder={t('editor.dialoguePlaceholder')}
-                className="textarea-rich font-mono"
-              />
-            </section>
-            <details open className="surface-panel overflow-hidden xl:col-span-2">
-              <summary className="cursor-pointer px-5 py-4 text-sm font-medium text-text-primary">
-                {t('editor.advanced')}
-              </summary>
-              <div className="border-t border-border-light px-5 pb-5 pt-4 space-y-4">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.systemPrompt')}</label>
-                  <textarea
-                    value={character.system_prompt}
-                    onChange={e => update('system_prompt', e.target.value)}
-                    rows={8}
-                    placeholder={t('editor.systemPromptPlaceholder')}
-                    className="textarea-rich font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.imageTags')}</label>
-                  <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.imageTagsHint')}</p>
-                  <TagChipInput
-                    value={character.image_tags || ''}
-                    onChange={val => update('image_tags', val)}
-                    onDraftChange={value => setTagDrafts(prev => ({ ...prev, image_tags: value }))}
-                    placeholder="1girl, silver hair, short hair, orange eyes, slender..."
-                  />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-text-secondary">{t('editor.userImageTags')}</label>
-                  <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.userImageTagsHint')}</p>
-                  <TagChipInput
-                    value={character.user_image_tags || ''}
-                    onChange={val => update('user_image_tags', val)}
-                    onDraftChange={value => setTagDrafts(prev => ({ ...prev, user_image_tags: value }))}
-                    placeholder="1boy, black hair, brown eyes, glasses..."
-                  />
-                </div>
-              </div>
-            </details>
-          </main>
+      <div className="sticky bottom-0 z-20 border-t border-border-light bg-surface">
+        <div className="mx-auto flex max-w-3xl items-center gap-3 px-4 pb-[max(0.625rem,env(safe-area-inset-bottom))] pt-2.5">
+          <p className="flex min-w-0 flex-1 items-center gap-2 text-sm text-text-secondary" aria-live="polite">
+            {hasUnsavedChanges && <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-accent" />}
+            <span className={`truncate ${hasUnsavedChanges ? '' : 'text-text-muted'}`}>
+              {hasUnsavedChanges ? t('common.unsavedChanges') : t('common.noUnsavedChanges')}
+            </span>
+          </p>
+          <button onClick={handleSave} disabled={saving || deleting || duplicating || leaving} className="soft-button soft-button-primary shrink-0 disabled:cursor-not-allowed disabled:opacity-50">
+            {saving ? t('editor.saving') : t('editor.save')}
+          </button>
         </div>
       </div>
     </div>

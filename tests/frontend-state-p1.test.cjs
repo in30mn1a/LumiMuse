@@ -280,7 +280,7 @@ test('architecture contract: settings and auth initialization stay isolated from
   );
   assert.match(
     settingsLoadBlock,
-    /\},\s*\[\s*showToast\s*\]\);/,
+    /\},\s*\[\s*applyServerSettings,\s*showToast\s*\]\);/,
     'first load should still run once and keep a stable visible error callback dependency',
   );
 

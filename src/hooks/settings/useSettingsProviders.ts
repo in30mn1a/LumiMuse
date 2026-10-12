@@ -115,7 +115,7 @@ export function useSettingsProviders<TSettings extends Settings>({
         }),
       }));
       void loadProviders();
-      showToast(t('settings.saveSuccess'), 'success');
+      if (!id) showToast(t('settings.saveSuccess'), 'success');
     } catch (err) {
       showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
     }

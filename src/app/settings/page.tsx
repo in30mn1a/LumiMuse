@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, type Dispatch, type SetStateAction } from 'react';
 import Link from 'next/link';
 import {
   DEFAULT_MEMORY_ENGINE_SETTINGS,
@@ -18,7 +18,7 @@ import { formatTemplate } from '@/lib/i18n';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
-import { ArrowLeftIcon, SparkIcon, SettingsIcon } from '@/components/ui/icons';
+import { ArrowLeftIcon } from '@/components/ui/icons';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
 import { useMemoryIndexPanel } from '@/hooks/settings/useMemoryIndexPanel';
 import { useMemoryManagementCharacters } from '@/hooks/settings/useMemoryManagementCharacters';
@@ -66,9 +66,39 @@ function mergeSettingsWithMemoryEngine(settings: Partial<SettingsWithMemoryEngin
   };
 }
 
+type SettingsTab = 'api' | 'generation' | 'memory' | 'appearance' | 'advanced';
+
+const SETTINGS_TABS: Array<{ key: SettingsTab; label: string }> = [
+  { key: 'api', label: 'settings.tabApi' },
+  { key: 'generation', label: 'settings.tabGeneration' },
+  { key: 'memory', label: 'settings.tabMemory' },
+  { key: 'appearance', label: 'settings.tabAppearance' },
+  { key: 'advanced', label: 'settings.tabAdvanced' },
+];
+
+/** 记忆页很长：顶部给一排跳转入口，id 对应下方各面板的包裹元素 */
+const MEMORY_ANCHORS = [
+  { id: 'settings-memory-index', label: 'settings.memoryIndexStatus' },
+  { id: 'settings-memory-diagnostics', label: 'settings.memoryDiagnosticsTitle' },
+  { id: 'settings-memory-profile', label: 'settings.memoryProfileTitle' },
+  { id: 'settings-memory-archive', label: 'settings.memoryArchiveTitle' },
+  { id: 'settings-memory-candidates', label: 'settings.memoryCandidatesTitle' },
+];
+const MEMORY_ANCHOR_TARGET = 'scroll-mt-28 lg:scroll-mt-20';
+
 export default function SettingsPage() {
   const router = useRouter();
   const [settings, setSettings] = useState<SettingsWithMemoryEngine>(DEFAULT_SETTINGS_WITH_MEMORY_ENGINE);
+  // 与服务端一致的那份设置；settings 与它不同即「有未保存的修改」
+  const [savedSettings, setSavedSettings] = useState<SettingsWithMemoryEngine>(DEFAULT_SETTINGS_WITH_MEMORY_ENGINE);
+  const applyServerSettings: Dispatch<SetStateAction<SettingsWithMemoryEngine>> = useCallback(action => {
+    setSettings(action);
+    setSavedSettings(action);
+  }, []);
+  const hasUnsavedChanges = useMemo(
+    () => JSON.stringify(settings) !== JSON.stringify(savedSettings),
+    [savedSettings, settings],
+  );
   const [saving, setSaving] = useState<'idle' | 'saving'>('idle');
   const [modelList, setModelList] = useState<string[]>([]);
   const [modelLoading, setModelLoading] = useState(false);
@@ -79,7 +109,7 @@ export default function SettingsPage() {
   const [rerankerModelList, setRerankerModelList] = useState<string[]>([]);
   const [rerankerModelLoading, setRerankerModelLoading] = useState(false);
   const [rerankerModelError, setRerankerModelError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'api' | 'generation' | 'memory' | 'appearance' | 'advanced'>('api');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('api');
   const [pendingCharacterId, setPendingCharacterId] = useState<string | null>(null);
   const { t, setLang } = useTranslation();
   const tRef = useRef(t);
@@ -105,7 +135,7 @@ export default function SettingsPage() {
     handleUpdateCurrentProvider,
   } = useSettingsProviders({
     settings,
-    setSettings,
+    setSettings: applyServerSettings,
     mergeSettings: mergeSettingsWithMemoryEngine,
     t,
     showToast,
@@ -254,6 +284,7 @@ export default function SettingsPage() {
     // 用 toast 替代旧的 1.2s setTimeout 状态切换：主人离开页面也能后续看到结果。
     // saving 状态仅保留用于按钮 loading 反馈。
     setSaving('saving');
+    const snapshot = settings;
     try {
       const response = await fetch('/api/settings', {
         method: 'PUT',
@@ -267,6 +298,9 @@ export default function SettingsPage() {
           reason?: string | null;
         };
       }>(response);
+      setSavedSettings(snapshot);
+      // 接口字段改了就一并写回当前供应商，否则切走再切回会被旧配置覆盖
+      if (activeProviderId) await handleUpdateCurrentProvider();
       setLang(settings.language);
       document.documentElement.classList.toggle('dark', settings.theme === 'dark');
       writeThemeStorage(settings.theme);
@@ -339,7 +373,7 @@ export default function SettingsPage() {
       .then(r => parseJsonResponse<Partial<SettingsWithMemoryEngine>>(r))
       .then(s => {
         const merged = mergeSettingsWithMemoryEngine(s);
-        setSettings(merged);
+        applyServerSettings(merged);
         document.documentElement.classList.toggle('dark', s.theme === 'dark');
         writeThemeStorage(merged.theme);
         applyFontStyle((merged.font_style || 'wenkai') as FontStyle);
@@ -348,7 +382,7 @@ export default function SettingsPage() {
       .catch(err => {
         showToast(`${tRef.current('settings.loadFailed')}: ${getErrorMessage(err)}`, 'error');
     });
-  }, [showToast]);
+  }, [applyServerSettings, showToast]);
 
   const loadMemoryPanelState = useCallback(async () => {
     void loadMemoryIndexStatus();
@@ -382,74 +416,60 @@ export default function SettingsPage() {
     loadMemoryPanelState,
   ]);
 
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasUnsavedChanges]);
+
   return (
-    <div className="app-shell min-h-screen px-4 py-4">
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="surface-hero px-5 py-5">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-4">
-              <button onClick={() => router.push('/')} className="soft-button soft-button-secondary px-3 py-2">
-                <ArrowLeftIcon className="h-4 w-4" />
-                {t('settings.back')}
-              </button>
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
-                <SettingsIcon className="h-5 w-5" />
-              </div>
-              <h1 className="section-title text-2xl">{t('settings.title')}</h1>
-            </div>
+    <div className="app-shell flex min-h-dvh flex-col">
+      <header className="sticky top-0 z-20 border-b border-border-light bg-surface">
+        <div className="mx-auto flex h-14 max-w-5xl items-center gap-1 px-1 sm:px-3">
+          <button
+            onClick={() => router.push('/')}
+            className="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary sm:px-2.5"
+          >
+            <ArrowLeftIcon className="h-5 w-5 sm:h-4 sm:w-4" />
+            <span className="sr-only text-sm sm:not-sr-only">{t('settings.back')}</span>
+          </button>
+          <h1 className="min-w-0 flex-1 truncate px-1 text-base font-semibold text-text-primary">{t('settings.title')}</h1>
+          {authEnabled && (
+            <button onClick={handleLogout} className="soft-button soft-button-danger mr-2 text-sm">
+              {t('auth.logout')}
+            </button>
+          )}
+        </div>
+      </header>
 
-            <div className="flex items-center gap-2">
-              {authEnabled && (
-                <button
-                  onClick={handleLogout}
-                  className="soft-button soft-button-danger"
-                >
-                  {t('auth.logout')}
-                </button>
-              )}
-              <button
-                onClick={handleSave}
-                disabled={saving !== 'idle'}
-                className="soft-button soft-button-primary disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {saving === 'saving' ? (
-                  <span className="spinner-sm" aria-hidden="true" />
-                ) : (
-                  <SparkIcon className="h-4 w-4" />
-                )}
-                {saving === 'saving' ? t('settings.saving') : t('settings.save')}
-              </button>
-            </div>
-          </div>
-        </header>
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col lg:flex-row lg:gap-8 lg:px-4 lg:py-6">
+        {/* 同一份导航：<lg 是吸顶的横向页签，lg+ 是左侧竖排 */}
+        <nav
+          className="sticky top-14 z-10 flex gap-1 overflow-x-auto border-b border-border-light bg-surface px-2 lg:top-20 lg:w-44 lg:shrink-0 lg:flex-col lg:self-start lg:overflow-visible lg:border-0 lg:bg-transparent lg:px-0"
+          aria-label={t('settings.title')}
+        >
+          {SETTINGS_TABS.map(tab => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={`min-h-11 shrink-0 whitespace-nowrap border-b-2 px-3 text-sm transition-colors lg:min-h-10 lg:rounded-xl lg:border-b-0 lg:text-left ${
+                activeTab === tab.key
+                  ? 'border-accent font-medium text-accent-dark lg:bg-accent/12'
+                  : 'border-transparent text-text-secondary hover:text-text-primary lg:hover:bg-surface-2'
+              }`}
+              aria-pressed={activeTab === tab.key}
+            >
+              {t(tab.label)}
+            </button>
+          ))}
+        </nav>
 
-        <div className="space-y-4">
-          {/* 分组导航 Tab */}
-          <nav className="surface-panel flex gap-1 overflow-x-auto p-1.5" aria-label={t('settings.title')}>
-            {([
-              { key: 'api', label: t('settings.tabApi') },
-              { key: 'generation', label: t('settings.tabGeneration') },
-              { key: 'memory', label: t('settings.tabMemory') },
-              { key: 'appearance', label: t('settings.tabAppearance') },
-              { key: 'advanced', label: t('settings.tabAdvanced') },
-            ] as const).map(tab => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`flex-1 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-medium transition-all ${
-                  activeTab === tab.key
-                    ? 'bg-accent/15 text-accent-dark shadow-sm'
-                    : 'text-text-secondary hover:bg-warm-100 hover:text-text-primary'
-                }`}
-                aria-pressed={activeTab === tab.key}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </nav>
-
-          <main className="space-y-4">
+        <main className="min-w-0 flex-1 space-y-4 px-3 py-4 sm:px-4 lg:max-w-[45rem] lg:p-0">
             {activeTab === 'api' && (<>
             <ProviderSettingsSection
               providers={providers}
@@ -460,7 +480,6 @@ export default function SettingsPage() {
               onDeleteProvider={handleDeleteProvider}
               onSaveProvider={handleSaveProvider}
               onSaveCurrentAsProvider={handleSaveCurrentAsProvider}
-              onUpdateCurrentProvider={handleUpdateCurrentProvider}
               parseNumber={parseNumber}
               t={t}
             />
@@ -637,6 +656,18 @@ export default function SettingsPage() {
             </>)}
 
             {activeTab === 'memory' && (<>
+            <nav className="flex flex-wrap gap-2" aria-label={t('settings.tabMemory')}>
+              {MEMORY_ANCHORS.map(anchor => (
+                <button
+                  key={anchor.id}
+                  type="button"
+                  onClick={() => document.getElementById(anchor.id)?.scrollIntoView({ block: 'start' })}
+                  className="chip cursor-pointer hover:bg-surface-3"
+                >
+                  {t(anchor.label)}
+                </button>
+              ))}
+            </nav>
             <MemoryEngineSection
               settings={settings}
               embeddingModelList={embeddingModelList}
@@ -654,6 +685,7 @@ export default function SettingsPage() {
               parseNumber={parseNumber}
               t={t}
             >
+              <div id="settings-memory-index" className={MEMORY_ANCHOR_TARGET}>
               <MemoryIndexPanel
                 t={t}
                 status={memoryIndexPanel.status}
@@ -675,7 +707,9 @@ export default function SettingsPage() {
                 onClearOtherTargets={memoryIndexPanel.handleClearOtherTargetMemoryIndex}
                 onStopCurrent={memoryIndexPanel.handleStopCurrentMemoryTask}
               />
+              </div>
 
+              <div id="settings-memory-diagnostics" className={MEMORY_ANCHOR_TARGET}>
               <MemoryDiagnosticsPanel
                 t={t}
                 diagnostics={memoryIndexPanel.diagnostics}
@@ -683,24 +717,31 @@ export default function SettingsPage() {
                 error={memoryIndexPanel.diagnosticsError}
                 onRefresh={() => void memoryIndexPanel.loadMemoryDiagnostics()}
               />
+              </div>
 
+              <div id="settings-memory-profile" className={MEMORY_ANCHOR_TARGET}>
               <MemoryProfilePanel
                 t={t}
                 management={memoryManagementPanel}
                 profile={memoryProfilePanel}
                 onCharacterChange={handleMemoryManagementCharacterChange}
               />
+              </div>
 
+              <div id="settings-memory-archive" className={MEMORY_ANCHOR_TARGET}>
               <MemoryArchivePanel
                 t={t}
                 archive={memoryArchivePanel}
                 memoryManagementCharacterId={memoryManagementPanel.memoryManagementCharacterId}
               />
+              </div>
 
+              <div id="settings-memory-candidates" className={MEMORY_ANCHOR_TARGET}>
               <MemoryCandidatesPanel
                 t={t}
                 candidates={memoryCandidatesPanel}
               />
+              </div>
             </MemoryEngineSection>
             </>)}
 
@@ -721,7 +762,25 @@ export default function SettingsPage() {
 
             <MaintenanceSection t={t} />
             </>)}
-          </main>
+        </main>
+      </div>
+
+      <div className="sticky bottom-0 z-20 border-t border-border-light bg-surface">
+        <div className="mx-auto flex max-w-5xl items-center gap-3 px-4 pb-[max(0.625rem,env(safe-area-inset-bottom))] pt-2.5">
+          <p className="flex min-w-0 flex-1 items-center gap-2 text-sm text-text-secondary" aria-live="polite">
+            {hasUnsavedChanges && <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-accent" />}
+            <span className={`truncate ${hasUnsavedChanges ? '' : 'text-text-muted'}`}>
+              {hasUnsavedChanges ? t('common.unsavedChanges') : t('common.noUnsavedChanges')}
+            </span>
+          </p>
+          <button
+            onClick={handleSave}
+            disabled={saving !== 'idle'}
+            className="soft-button soft-button-primary shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving === 'saving' && <span className="spinner-sm" aria-hidden="true" />}
+            {saving === 'saving' ? t('settings.saving') : t('settings.save')}
+          </button>
         </div>
       </div>
 

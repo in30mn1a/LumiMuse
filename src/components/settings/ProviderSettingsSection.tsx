@@ -12,7 +12,6 @@ interface ProviderSettingsSectionProps {
   onDeleteProvider: (id: string) => void;
   onSaveProvider: () => void;
   onSaveCurrentAsProvider: () => void;
-  onUpdateCurrentProvider: () => void;
   parseNumber: (value: string) => number;
   t: (key: string) => string;
 }
@@ -26,7 +25,6 @@ export function ProviderSettingsSection({
   onDeleteProvider,
   onSaveProvider,
   onSaveCurrentAsProvider,
-  onUpdateCurrentProvider,
   parseNumber,
   t,
 }: ProviderSettingsSectionProps) {
@@ -34,22 +32,12 @@ export function ProviderSettingsSection({
     <section className="surface-panel p-5">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="section-title text-lg">{t('settings.providerManage')}</h2>
-        <div className="flex gap-2">
-          {activeProviderId && (
-            <button
-              onClick={onUpdateCurrentProvider}
-              className="soft-button soft-button-secondary text-xs"
-            >
-              {t('settings.providerUpdateCurrent')}
-            </button>
-          )}
-          <button
-            onClick={onSaveCurrentAsProvider}
-            className="soft-button soft-button-primary text-xs"
-          >
-            {t('settings.providerSaveCurrent')}
-          </button>
-        </div>
+        <button
+          onClick={onSaveCurrentAsProvider}
+          className="soft-button soft-button-secondary text-xs"
+        >
+          {t('settings.providerSaveCurrent')}
+        </button>
       </div>
 
       {providers.length === 0 ? (

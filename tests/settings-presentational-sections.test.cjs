@@ -264,7 +264,6 @@ test('provider presentation forwards list, editor, and persistence callbacks', a
   const view = render(React.createElement(harness.SettingsPage));
   await waitFor(() => assert.equal(view.container.querySelector('#settings-api-base').value, 'https://initial.example/v1'));
 
-  fireEvent.click(view.getByRole('button', { name: 'settings.providerUpdateCurrent' }));
   fireEvent.click(view.getByRole('button', { name: 'settings.providerSaveCurrent' }));
   fireEvent.click(view.getByRole('button', { name: 'settings.providerSwitch' }));
   fireEvent.click(view.getAllByRole('button', { name: 'common.edit' })[1]);
@@ -273,7 +272,8 @@ test('provider presentation forwards list, editor, and persistence callbacks', a
   fireEvent.click(view.getByRole('button', { name: 'common.save' }));
   fireEvent.click(view.getByRole('button', { name: 'common.cancel' }));
 
-  assert.equal(harness.providerCalls.updateCurrent.calls.length, 1);
+  assert.equal(view.queryByRole('button', { name: 'settings.providerUpdateCurrent' }), null);
+  assert.equal(harness.providerCalls.updateCurrent.calls.length, 0, 'the active provider only syncs through the unified save');
   assert.equal(harness.providerCalls.saveCurrent.calls.length, 1);
   assert.deepEqual(harness.providerCalls.activate.calls, [['provider-b']]);
   assert.deepEqual(harness.providerCalls.delete.calls, [['provider-b']]);
@@ -338,6 +338,7 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   assert.equal(saveRequest.body.model, 'fetched-model');
   assert.equal(saveRequest.body.json_mode, true);
   assert.equal(saveRequest.body.temperature, 1.25);
+  await waitFor(() => assert.equal(harness.providerCalls.updateCurrent.calls.length, 1, 'saving settings also updates the active provider'));
   assert.equal(saveRequest.body.max_tokens, 9000);
   assert.equal(saveRequest.body.context_window, 200000);
   assert.equal(saveRequest.body.top_p, 0.75);

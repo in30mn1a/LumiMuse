@@ -41,9 +41,9 @@ const MENU_ITEM = 'flex min-h-11 w-full items-center gap-3 px-4 text-left text-s
 
 /**
  * 聊天页顶栏（全断点同一份 DOM）。
- * <lg：☰ + 头像 + 角色名/对话标题（点击切换对话）+ 搜索 + ⋯，状态条换行到下方。
+ * <lg：☰ + 头像 + 角色名/对话标题（点击切换对话）+ 搜索 + 图片管理 + ⋯，状态条换行到下方。
  * lg+：对话标题为主、角色名与记忆数为辅，状态条、搜索/总结/图片管理与 ⋯ 同排。
- * 次要操作统一收进带文字的 ⋯ 菜单；总结与图片管理在 lg+ 已有常驻按钮，菜单里只在 <lg 出现。
+ * 次要操作统一收进带文字的 ⋯ 菜单；总结在 lg+ 已有常驻按钮，菜单里只在 <lg 出现。
  */
 function ChatHeaderImpl({
   character,
@@ -159,7 +159,7 @@ function ChatHeaderImpl({
         </button>
         <button
           onClick={onOpenImageManager}
-          className={`${ICON_BUTTON} hidden lg:flex`}
+          className={ICON_BUTTON}
           title={t('chat.imageManagerTitleHint')}
           aria-label={t('chat.imageManagerTitle')}
         >
@@ -210,10 +210,6 @@ function ChatHeaderImpl({
               >
                 {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4 text-text-muted" />}
                 <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
-              </button>
-              <button type="button" role="menuitem" onClick={() => runMenuAction(onOpenImageManager)} className={`${MENU_ITEM} lg:hidden`}>
-                <ImageIcon className="h-4 w-4 text-text-muted" />
-                <span>{t('chat.imageManagerTitle')}</span>
               </button>
               <div className="my-1 h-px bg-border-light" role="separator" />
               <button

@@ -181,7 +181,7 @@ test('model and reasoning pickers retain keyboard selection and trigger focus', 
   fireEvent.keyDown(nextModel, { key: 'Enter' });
   assert.deepEqual(models, ['model-b']);
   assert.ok(document.activeElement === modelTrigger, 'selection returns focus to the model trigger');
-  const effortTrigger = view.getByRole('button', { name: /^input.reasoningEffort / });
+  const effortTrigger = view.getByRole('button', { name: /^input.reasoningEffort: / });
   fireEvent.click(effortTrigger);
   fireEvent.keyDown(view.getByRole('option', { name: 'high' }), { key: 'Enter' });
   assert.deepEqual(efforts, ['high']);

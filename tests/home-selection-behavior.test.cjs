@@ -433,12 +433,24 @@ test('reselecting the same search result creates a distinct jump request that ca
   }
 });
 
-async function withLastChatStorage(run) {
+async function withLastChatStorage(run, { desktop = true } = {}) {
   const fetchHarness = createFetchHarness();
   const originalFetch = global.fetch;
   const previousLocalStorage = Object.getOwnPropertyDescriptor(global, 'localStorage');
+  const previousMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
   global.fetch = fetchHarness.fetch;
   Object.defineProperty(global, 'localStorage', { configurable: true, writable: true, value: window.localStorage });
+  // 只有侧栏常驻的 lg+ 布局才恢复上次对话
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: query => ({
+      matches: desktop && query === '(min-width: 1024px)',
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    }),
+  });
   window.localStorage.clear();
   try {
     await run(fetchHarness);
@@ -448,10 +460,12 @@ async function withLastChatStorage(run) {
     global.fetch = originalFetch;
     if (previousLocalStorage) Object.defineProperty(global, 'localStorage', previousLocalStorage);
     else delete global.localStorage;
+    if (previousMatchMedia) Object.defineProperty(window, 'matchMedia', previousMatchMedia);
+    else delete window.matchMedia;
   }
 }
 
-test('home reopens the last chat and keeps it updated from the chat view', async () => {
+test('home reopens the last chat on the desktop layout and keeps it updated from the chat view', async () => {
   await withLastChatStorage(async fetchHarness => {
     window.localStorage.setItem('lumimuse_last_chat', JSON.stringify({ characterId: 'A', conversationId: 'conv-A' }));
     const { Home, getChatViewProps } = loadHome();
@@ -507,6 +521,19 @@ test('a selection made while the last chat is still loading wins over the restor
       targetMessageId: null,
     });
   });
+});
+
+test('the drawer layout stays on the home screen instead of reopening the last chat', async () => {
+  await withLastChatStorage(async fetchHarness => {
+    window.localStorage.setItem('lumimuse_last_chat', JSON.stringify({ characterId: 'A', conversationId: 'conv-A' }));
+    const { Home } = loadHome();
+    const view = render(React.createElement(Home));
+    await act(async () => {
+      await new Promise(resolveImmediate => setImmediate(resolveImmediate));
+    });
+    assert.equal(fetchHarness.requests.length, 0);
+    assert.equal(readSelection(view).characterId, null);
+  }, { desktop: false });
 });
 
 test('a missing or malformed last chat leaves the home screen empty without fetching', async () => {

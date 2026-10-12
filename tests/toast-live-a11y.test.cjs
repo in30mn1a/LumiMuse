@@ -179,6 +179,7 @@ test('explicit mobile chat icon controls expose 44px touch targets', () => {
   for (const name of [
     'chat.openCharacterList',
     'chat.searchMessages',
+    'chat.imageManagerTitle',
     'common.more',
   ]) {
     const button = within(header).getByRole('button', { name });

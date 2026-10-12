@@ -228,7 +228,8 @@ function ChatMessageList(
       // overflow-anchor:none：禁用浏览器原生滚动锚定。虚拟列表流式期间行高持续变化，
       // 原生锚定会把视口钉在上一条稳定气泡上，与跟随滚底互相拉扯（移动端表现为回跳）。
       // lg+ 用内边距把消息列限宽 50rem 居中，不改虚拟列表的 DOM 结构。
-      className="[overflow-anchor:none] min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 md:px-5 md:py-5 lg:px-[max(1.5rem,calc((100%-50rem)/2))]"
+      // 手机底部不加内边距：最后一条消息自带 mb-4，与输入框的间距和消息之间一致。
+      className="[overflow-anchor:none] min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-4 md:px-5 md:py-5 lg:px-[max(1.5rem,calc((100%-50rem)/2))]"
     >
       {isEmpty && loadingThread && (
         <ContentState mode="loading" title={t('common.loading')} className="py-6" />

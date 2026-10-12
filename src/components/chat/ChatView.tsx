@@ -797,11 +797,6 @@ export default function ChatView({
           <p className="mt-5 text-base leading-relaxed text-text-muted md:text-lg">
             {t('chat.homeTagline')}
           </p>
-          {onOpenSidebar && (
-            <button type="button" onClick={onOpenSidebar} className="soft-button soft-button-primary mt-6 lg:hidden">
-              {t('chat.openCharacterList')}
-            </button>
-          )}
         </div>
       </div>
     );

@@ -21,8 +21,15 @@ interface HomeSelection {
   searchHighlightRanges: readonly TextHighlightRange[];
 }
 
-/** 上次打开的角色与对话（只存 id）：启动时直接回到那段对话，而不是空白首页 */
+/** 上次打开的角色与对话（只存 id）：桌面端启动时直接回到那段对话，而不是空白首页 */
 const LAST_CHAT_KEY = 'lumimuse_last_chat';
+
+/** 侧栏常驻断点（lg）。以下走抽屉：iPad 竖屏 ~768–834 走抽屉，横屏 ≥1024 常驻 */
+const DESKTOP_LAYOUT_QUERY = '(min-width: 1024px)';
+
+function isDesktopLayout(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(DESKTOP_LAYOUT_QUERY).matches;
+}
 
 function readLastChat(): { characterId: string; conversationId: string | null } | null {
   try {
@@ -68,6 +75,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    // 抽屉布局（手机/平板竖屏）启动停在首页，由用户从角色列表自己挑；
+    // 桌面侧栏常驻，回到上次对话不会挡住选择别的角色。
+    if (!isDesktopLayout()) return;
     const last = readLastChat();
     if (!last) return;
     const generation = ++selectionGenerationRef.current;
@@ -221,7 +231,6 @@ export default function Home() {
 
   // Modal 的焦点陷阱/Escape 只看 open，不看 CSS 断点。
   // 移动/平板竖屏打开侧栏后扩到 lg+ 时必须关掉，否则会「看不见 dialog 却困住 Tab」。
-  // 断点用 1024（lg）：iPad 竖屏 ~768–834 走抽屉；横屏 ≥1024 走常驻侧栏。
   // 文档级滚动锁只在移动端抽屉打开期间生效。抽屉关着时不能锁：iOS Safari 上
   // 页面会比可视区略高，用户要靠拖动整页把顶栏拉回来；常驻 overflow:hidden 会把顶栏钉死在状态栏后面。
   // 桌面常驻侧栏也不走这里，保留触控板左右滑动返回等浏览器手势。
@@ -239,30 +248,19 @@ export default function Home() {
     body.style.overflow = 'hidden';
     html.style.overscrollBehavior = 'none';
     body.style.overscrollBehavior = 'none';
-    let startY = 0;
-    const onStart = (event: TouchEvent) => {
-      startY = event.touches[0]?.clientY ?? 0;
-    };
     const onMove = (event: TouchEvent) => {
-      const currentY = event.touches[0]?.clientY ?? startY;
-      const fingerDelta = startY - currentY;
       const element = event.target instanceof Element ? event.target : null;
       // 输入框保留原生触摸行为（选字、光标定位）
       if (element?.closest('input, textarea, [contenteditable="true"]')) return;
+      // 真能滚动的列表整段手势都交给原生滚动，到边界由 overscroll-behavior: contain 截住、不串到页面。
+      // 不在手势中途按「到顶/到底」preventDefault：打断 iOS 的惯性或回弹会让列表卡住拖不动。
       const scroller = element?.closest('[data-sidebar-scroll]');
-      if (!(scroller instanceof HTMLElement)) {
-        if (event.cancelable) event.preventDefault();
-        return;
-      }
-      const atTop = scroller.scrollTop <= 0;
-      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
-      const blocked = (fingerDelta > 0 && atBottom) || (fingerDelta < 0 && atTop);
-      if (blocked && event.cancelable) event.preventDefault();
+      if (scroller instanceof HTMLElement && scroller.scrollHeight > scroller.clientHeight + 1) return;
+      // 抽屉里其余不可滚动的区域（标题、底部入口、内容不满一屏的列表）不让页面跟着动
+      if (event.cancelable) event.preventDefault();
     };
-    document.addEventListener('touchstart', onStart, { passive: true });
     document.addEventListener('touchmove', onMove, { passive: false });
     return () => {
-      document.removeEventListener('touchstart', onStart);
       document.removeEventListener('touchmove', onMove);
       html.style.overflow = previous.htmlOverflow;
       body.style.overflow = previous.bodyOverflow;
@@ -273,7 +271,7 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(min-width: 1024px)');
+    const mq = window.matchMedia(DESKTOP_LAYOUT_QUERY);
     const closeIfDesktop = () => {
       if (mq.matches) setSidebarOpen(false);
     };
@@ -294,12 +292,15 @@ export default function Home() {
         />
       </div>
 
+      {/* 打开时焦点落在抽屉本身而不是搜索框：触屏上程序化聚焦输入框会让搜索框一打开就处于激活态。
+          遮罩不加 backdrop-filter，抽屉里的滚动列表不落进滤镜合成层。 */}
       <Modal
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         ariaLabel="角色列表"
         padded={false}
-        overlayClassName="fixed inset-0 z-30 bg-black/35 backdrop-blur-[2px] animate-fadeIn lg:hidden"
+        initialFocus="dialog"
+        overlayClassName="fixed inset-0 z-30 bg-black/35 animate-fadeIn lg:hidden"
         dialogClassName="fixed left-0 top-0 z-40 h-full min-h-0 outline-none lg:hidden"
       >
         <Sidebar

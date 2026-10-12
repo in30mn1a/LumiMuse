@@ -62,6 +62,26 @@ function getActiveImageIndex(img: GeneratedImage): number {
   return currentIndex >= 0 ? currentIndex : Math.max(versions.length - 1, 0);
 }
 
+/** 角色头像；无图时显示名字首字。alt 为空表示纯装饰，整块对读屏隐藏 */
+function CharacterAvatar({ avatarUrl, characterName, alt, className }: {
+  avatarUrl: string | null;
+  characterName: string;
+  alt: string;
+  className: string;
+}) {
+  return (
+    <div className={`shrink-0 overflow-hidden bg-accent/12 ${className}`} aria-hidden={alt ? undefined : true}>
+      {avatarUrl ? (
+        <img src={avatarUrl} alt={alt} className="h-full w-full object-cover" loading="lazy" />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-sm font-semibold text-accent-dark">
+          {characterName[0]}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 根据气泡颜色（用户/助手）返回对应的 markdown 组件样式映射（模块级缓存） */
 const MD_COMPONENTS_ASSISTANT = buildMarkdownComponents(false);
 
@@ -329,19 +349,15 @@ function MessageBubbleInner({
 
   return (
     <div className={`message-appear ${isUser ? 'flex justify-end' : 'flex flex-col items-start'}`}>
+      {/* <md：角色头像放在气泡上方，气泡保持满宽；名字已在气泡 meta 行，这里只作装饰 */}
+      {!isUser && (
+        <CharacterAvatar avatarUrl={avatarUrl} characterName={characterName} alt="" className="mb-1.5 h-8 w-8 rounded-xl md:hidden" />
+      )}
       {/* 头像 + 气泡 行 */}
       <div className={`flex w-full gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
-        {/* 角色头像：<md 一对一对话里角色已在顶栏，不逐条重复 */}
+        {/* md+：角色头像在气泡左侧 */}
         {!isUser && (
-          <div className="mt-1 hidden h-10 w-10 shrink-0 overflow-hidden rounded-2xl bg-accent/12 md:block">
-            {avatarUrl ? (
-              <img src={avatarUrl} alt={characterName} className="h-full w-full object-cover" loading="lazy" />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center text-sm font-semibold text-accent-dark">
-                {characterName[0]}
-              </div>
-            )}
-          </div>
+          <CharacterAvatar avatarUrl={avatarUrl} characterName={characterName} alt={characterName} className="mt-1 hidden h-10 w-10 rounded-2xl md:block" />
         )}
 
       <div className={`message-card group ${editing ? 'message-card-editing' : ''} ${isUser ? 'message-user' : 'message-assistant'}`}

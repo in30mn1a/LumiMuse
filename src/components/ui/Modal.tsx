@@ -32,6 +32,11 @@ interface ModalProps {
    * 当前层仍保持挂载，以保留界面状态并让顶层关闭后恢复原触发点焦点。
    */
   suspended?: boolean;
+  /**
+   * 打开时焦点落点：'first'（默认）聚焦第一个可聚焦元素；
+   * 'dialog' 聚焦 dialog 容器本身，适合首个可聚焦元素是输入框的导航抽屉。
+   */
+  initialFocus?: 'first' | 'dialog';
 }
 
 /**
@@ -57,6 +62,7 @@ export default function Modal({
   ariaLabel,
   overlayClassName,
   suspended = false,
+  initialFocus = 'first',
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // 保存打开 modal 之前的焦点元素，用于关闭后恢复
@@ -76,7 +82,7 @@ export default function Modal({
 
     // 等 DOM 渲染完成再聚焦
     const raf = requestAnimationFrame(() => {
-      const focusable = getFocusableElements(dialogRef.current);
+      const focusable = initialFocus === 'first' ? getFocusableElements(dialogRef.current) : [];
       if (focusable.length > 0) {
         focusable[0].focus();
       } else {
@@ -90,7 +96,7 @@ export default function Modal({
       // 关闭后恢复焦点
       previousFocusRef.current?.focus?.();
     };
-  }, [open]);
+  }, [open, initialFocus]);
 
   // ESC 关闭 + Tab 焦点陷阱
   useEffect(() => {
@@ -117,8 +123,8 @@ export default function Modal({
       const active = document.activeElement as HTMLElement | null;
 
       if (event.shiftKey) {
-        // Shift+Tab：从首个跳到末尾
-        if (active === first || !dialogRef.current?.contains(active)) {
+        // Shift+Tab：从首个（或 dialog 容器本身）跳到末尾
+        if (active === first || active === dialogRef.current || !dialogRef.current?.contains(active)) {
           event.preventDefault();
           last.focus();
         }

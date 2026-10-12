@@ -17,6 +17,9 @@ const ACCEPTED_TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'csv', 'json', 'xml
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_TEXT_SIZE = 200 * 1024;
 
+/** 模型 / 思考强度触发按钮：轻量文字按钮，不抢输入区的视觉重量 */
+const PICKER_TRIGGER = 'flex max-w-full cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark';
+
 interface Props {
   onSend: (content: string, attachments?: AttachmentItem[]) => void;
   onStop?: () => void;
@@ -312,7 +315,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const canSend = (text.trim().length > 0 || attachments.length > 0) && !disabled;
 
   return (
-    <div className="px-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] pt-1 md:px-5 md:pb-4 lg:px-6">
+    // 手机底边只让出 home indicator 本身（安全区减 1rem，无安全区保底 0.5rem）；上方与消息的间距由最后一条消息的 mb-4 提供
+    <div className="px-2.5 pb-[max(0.5rem,calc(env(safe-area-inset-bottom)_-_1rem))] md:px-5 md:pb-4 md:pt-1 lg:px-6">
       <div className="mx-auto max-w-[50rem]">
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
@@ -345,7 +349,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           <p className="mb-2 text-xs text-red-500">{attachError}</p>
         )}
 
-        <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-1 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[2.75rem_minmax(0,1fr)_auto]">
+        <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[2.75rem_minmax(0,1fr)_auto] md:gap-y-1">
           <div className="col-start-2 row-start-1 min-w-0 md:col-span-3 md:col-start-1 md:px-2 md:pt-1">
             <textarea
               ref={textareaRef}
@@ -380,16 +384,16 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             className="hidden"
           />
 
-          <div className="col-span-3 col-start-1 row-start-2 flex min-w-0 items-center gap-1 px-2 md:col-span-1 md:col-start-2 md:px-0">
+          <div className="col-span-3 col-start-1 row-start-2 flex min-w-0 items-center gap-1 px-1 md:col-span-1 md:col-start-2 md:px-0">
             <div className="relative min-w-0" ref={modelPickerRef}>
               <button
                 ref={modelTriggerRef}
                 onClick={handleOpenModelPicker}
-                className="chip min-h-11 max-w-full cursor-pointer text-xs hover:bg-surface-3"
+                className={PICKER_TRIGGER}
                 aria-haspopup="listbox"
                 aria-expanded={modelPickerOpen}
               >
-                <span className="min-w-0 max-w-[9rem] truncate sm:max-w-[14rem]">{currentModel || t('settings.modelPlaceholder')}</span>
+                <span className="min-w-0 max-w-[12rem] truncate">{currentModel || t('settings.modelPlaceholder')}</span>
                 <ChevronDownIcon className="h-3 w-3 shrink-0" />
               </button>
 
@@ -442,15 +446,15 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
               <button
                 ref={effortTriggerRef}
                 onClick={() => setEffortPickerOpen(open => !open)}
-                className="chip min-h-11 cursor-pointer text-xs hover:bg-surface-3"
+                className={PICKER_TRIGGER}
                 title={t('input.reasoningEffortHint')}
                 aria-haspopup="listbox"
                 aria-expanded={effortPickerOpen}
               >
                 <span className="truncate">
-                  {t('input.reasoningEffort')} {reasoningEffort === 'default' ? t('input.reasoningEffortDefault') : reasoningEffort}
+                  {t('input.reasoningEffort')}: {reasoningEffort === 'default' ? t('input.reasoningEffortDefault') : reasoningEffort}
                 </span>
-                <ChevronDownIcon className="h-3 w-3" />
+                <ChevronDownIcon className="h-3 w-3 shrink-0" />
               </button>
 
               {effortPickerOpen && (

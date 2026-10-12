@@ -197,6 +197,8 @@ export default function ChatView({
     visibleMessages,
     hasOlderMessages,
     loadingOlderMessages,
+    initialMessagesLoading,
+    initialMessagesError,
     serverUnextractedCount,
     serverUnextractedCountRef,
     serverTotalTokens,
@@ -785,13 +787,9 @@ export default function ChatView({
             </button>
           </div>
         )}
-        {/* glow 用 absolute + -translate-x/y-1/2 保证真正居中 */}
-        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-          <div className="home-glow" />
-        </div>
         <div className="relative flex -translate-y-16 flex-col items-center md:translate-y-0">
           <h1
-            className="home-title bg-gradient-to-br from-accent-dark via-accent to-accent-light bg-clip-text text-5xl font-semibold tracking-tight text-transparent md:text-6xl"
+            className="home-title text-4xl font-semibold tracking-tight text-accent-dark md:text-5xl"
             style={{ fontFamily: 'var(--font-display)' }}
           >
             LumiMuse
@@ -799,6 +797,11 @@ export default function ChatView({
           <p className="mt-5 text-base leading-relaxed text-text-muted md:text-lg">
             {t('chat.homeTagline')}
           </p>
+          {onOpenSidebar && (
+            <button type="button" onClick={onOpenSidebar} className="soft-button soft-button-primary mt-6 lg:hidden">
+              {t('chat.openCharacterList')}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -863,8 +866,13 @@ export default function ChatView({
       <div className="flex min-h-0 flex-1">
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {conversationLoadError && (
-            <div className="mx-3 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div role="alert" className="mx-3 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {t('chat.conversationLoadFailed')}: {conversationLoadError}
+            </div>
+          )}
+          {initialMessagesError && (
+            <div role="alert" className="mx-3 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {t('chat.messageLoadFailed')}: {initialMessagesError}
             </div>
           )}
 
@@ -881,7 +889,8 @@ export default function ChatView({
               hasOlderMessages={hasOlderMessages}
               loadingOlderMessages={loadingOlderMessages}
               showTimestamps={showTimestamps}
-              activeConvId={activeConvId}
+              loadingThread={loadingThread || initialMessagesLoading || creating}
+              loadFailed={Boolean(conversationLoadError || initialMessagesError)}
               streamingText={streamingText}
               character={activeCharacter}
               streamingBubble={streamingBubble}

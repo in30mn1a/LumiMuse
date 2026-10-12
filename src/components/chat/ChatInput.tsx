@@ -5,7 +5,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { parseJsonResponse } from '@/lib/http';
 import { prepareAttachmentPayload } from '@/lib/attachment-payload';
-import { SparkIcon, StopIcon } from '@/components/ui/icons';
+import { StopIcon } from '@/components/ui/icons';
 import type { AttachmentItem } from '@/lib/chat-engine';
 import type { ReasoningEffort } from '@/types';
 
@@ -49,6 +49,15 @@ function ChevronDownIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
       <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+function SendIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="m22 2-7 20-4-9-9-4Z" />
+      <path d="M22 2 11 13" />
     </svg>
   );
 }
@@ -336,8 +345,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           <p className="mb-2 text-xs text-red-500">{attachError}</p>
         )}
 
-        <div className="rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40">
-          <div className="min-w-0 px-2 pt-1">
+        <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-1 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[2.75rem_minmax(0,1fr)_auto]">
+          <div className="col-start-2 row-start-1 min-w-0 md:col-span-3 md:col-start-1 md:px-2 md:pt-1">
             <textarea
               ref={textareaRef}
               value={text}
@@ -346,42 +355,42 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
               onCompositionEnd={() => { composingRef.current = false; }}
               onKeyDown={handleKeyDown}
               rows={1}
-              className="textarea-rich min-h-[2.75rem] max-h-44 resize-none border-none bg-transparent px-1 py-1 shadow-none focus:ring-0"
+              className="textarea-rich block min-h-[2.75rem] max-h-[min(11rem,30dvh)] resize-none border-none bg-transparent px-1 py-2 shadow-none focus:ring-0"
               disabled={disabled}
             />
           </div>
 
-          {/* 工具行：附件 + 模型 + 思考强度在左，发送在右 */}
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={disabled}
-              className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40"
-              title={t('input.attachFileTitle')}
-              aria-label={t('input.attachFileLabel')}
-            >
-              <PaperclipIcon className="h-4 w-4" />
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".jpg,.jpeg,.png,.txt,.md,.markdown,.csv,.json,.xml,.html,.htm,.log,.yaml,.yml,.toml,.ini,.env"
-              onChange={handleFileChange}
-              className="hidden"
-            />
+          {/* 手机首行保留输入和发送，模型工具在下一行；桌面维持独立工具行。 */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled}
+            className="col-start-1 row-start-1 flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40 md:row-start-2 md:rounded-xl"
+            title={t('input.attachFileTitle')}
+            aria-label={t('input.attachFileLabel')}
+          >
+            <PaperclipIcon className="h-4 w-4" />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".jpg,.jpeg,.png,.txt,.md,.markdown,.csv,.json,.xml,.html,.htm,.log,.yaml,.yml,.toml,.ini,.env"
+            onChange={handleFileChange}
+            className="hidden"
+          />
 
-            <div className="relative" ref={modelPickerRef}>
+          <div className="col-span-3 col-start-1 row-start-2 flex min-w-0 items-center gap-1 px-2 md:col-span-1 md:col-start-2 md:px-0">
+            <div className="relative min-w-0" ref={modelPickerRef}>
               <button
                 ref={modelTriggerRef}
                 onClick={handleOpenModelPicker}
-                className="chip cursor-pointer text-xs hover:bg-surface-3"
+                className="chip min-h-11 max-w-full cursor-pointer text-xs hover:bg-surface-3"
                 aria-haspopup="listbox"
                 aria-expanded={modelPickerOpen}
               >
-                <span className="max-w-[9rem] truncate sm:max-w-[14rem]">{currentModel || t('settings.modelPlaceholder')}</span>
-                <ChevronDownIcon className="h-3 w-3" />
+                <span className="min-w-0 max-w-[9rem] truncate sm:max-w-[14rem]">{currentModel || t('settings.modelPlaceholder')}</span>
+                <ChevronDownIcon className="h-3 w-3 shrink-0" />
               </button>
 
               {modelPickerOpen && (
@@ -429,11 +438,11 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             </div>
 
             {/* 思考强度选择：default 不发送 reasoning_effort 字段 */}
-            <div className="relative" ref={effortPickerRef}>
+            <div className="relative shrink-0" ref={effortPickerRef}>
               <button
                 ref={effortTriggerRef}
                 onClick={() => setEffortPickerOpen(open => !open)}
-                className="chip cursor-pointer text-xs hover:bg-surface-3"
+                className="chip min-h-11 cursor-pointer text-xs hover:bg-surface-3"
                 title={t('input.reasoningEffortHint')}
                 aria-haspopup="listbox"
                 aria-expanded={effortPickerOpen}
@@ -450,7 +459,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                   tabIndex={-1}
                   aria-label={t('input.reasoningEffort')}
                   aria-activedescendant={`effort-option-${reasoningEffort}`}
-                  className="absolute bottom-full left-0 z-50 mb-1 w-44 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-surface/95 py-1 shadow-lg backdrop-blur-xl dark:bg-[rgba(25,20,37,0.95)]"
+                  className="absolute bottom-full right-0 z-50 mb-1 w-44 max-h-[40dvh] overflow-y-auto rounded-xl border border-border-light bg-surface/95 py-1 shadow-lg backdrop-blur-xl md:left-0 md:right-auto dark:bg-[rgba(25,20,37,0.95)]"
                 >
                   <div className="border-b border-border-light px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-text-muted">
                     {t('input.reasoningEffort')}
@@ -482,30 +491,30 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 </div>
               )}
             </div>
-            {isGenerating ? (
-              <>
-                <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{t('status.streaming')}</span>
-                <button
-                  onClick={onStop}
-                  aria-label={t('input.stop')}
-                  className="soft-button soft-button-secondary ml-auto shrink-0 border-accent/20 px-3 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:min-w-[6.6rem] md:px-4"
-                >
-                  <StopIcon className="h-4 w-4" />
-                  <span className="hidden md:inline">{t('input.stop')}</span>
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={handleSubmit}
-                aria-label={t('input.send')}
-                disabled={!canSend}
-                className="soft-button soft-button-primary ml-auto shrink-0 px-3 md:min-w-[6.6rem] md:px-4"
-              >
-                <SparkIcon className="h-4 w-4" />
-                <span className="hidden md:inline">{t('input.send')}</span>
-              </button>
-            )}
           </div>
+          {isGenerating ? (
+            <>
+              <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{t('status.streaming')}</span>
+              <button
+                onClick={onStop}
+                aria-label={t('input.stop')}
+                className="soft-button soft-button-secondary col-start-3 row-start-1 h-11 w-11 shrink-0 rounded-full border-accent/20 p-0 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:row-start-2 md:h-auto md:w-auto md:min-w-[6.6rem] md:rounded-xl md:px-4 md:py-2.5"
+              >
+                <StopIcon className="h-4 w-4" />
+                <span className="hidden md:inline">{t('input.stop')}</span>
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={handleSubmit}
+              aria-label={t('input.send')}
+              disabled={!canSend}
+              className="soft-button soft-button-primary col-start-3 row-start-1 h-11 w-11 shrink-0 rounded-full p-0 md:row-start-2 md:h-auto md:w-auto md:min-w-[6.6rem] md:rounded-xl md:px-4 md:py-2.5"
+            >
+              <SendIcon className="h-5 w-5 md:h-4 md:w-4" />
+              <span className="hidden md:inline">{t('input.send')}</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

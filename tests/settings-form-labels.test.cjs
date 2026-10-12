@@ -159,6 +159,8 @@ function loadSettingsPage() {
           handleSaveProvider: noop,
           handleSaveCurrentAsProvider: noop,
           handleUpdateCurrentProvider: noop,
+          runProviderOperation: operation => operation(),
+          isProviderOperationPending: () => false,
         }),
       };
     }
@@ -220,7 +222,7 @@ test('settings page visible labels resolve to API and generation controls', () =
       'settings.repetitionPenalty',
       'settings.seed',
     ]) {
-      assert.ok(view.getByLabelText(label));
+      assert.equal(view.getAllByLabelText(label).filter(element => !element.closest('[hidden]')).length, 1);
     }
     assertNoOrphanLabels(view.container);
   } finally {

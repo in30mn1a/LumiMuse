@@ -569,6 +569,7 @@ export type ProviderCreate = z.infer<typeof providerCreateSchema>;
 export const providerUpdateSchema = z.object({
   id: z.string().min(1).max(64),
   ...providerCommonFields,
+  sync_from_settings: z.boolean().optional(),
 });
 export type ProviderUpdate = z.infer<typeof providerUpdateSchema>;
 

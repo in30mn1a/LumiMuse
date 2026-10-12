@@ -9,6 +9,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { getErrorMessage, HttpResponseError, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, ChevronDownIcon, MemoryIcon, SparkIcon, StopIcon } from '@/components/ui/icons';
+import ContentState from '@/components/ui/ContentState';
 
 interface MemoryMergeSuggestionSource {
   id: string;
@@ -78,6 +79,8 @@ interface MergeSourcesModalState {
 
 export default function MemoriesPage() {
   const [characters, setCharacters] = useState<Character[]>([]);
+  const [charactersLoading, setCharactersLoading] = useState(true);
+  const [charactersLoadError, setCharactersLoadError] = useState('');
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
   const [memoryAiReviewRunning, setMemoryAiReviewRunning] = useState(false);
   const [memoryAiReviewProgress, setMemoryAiReviewProgress] = useState<{ reviewed: number; total: number } | null>(null);
@@ -99,14 +102,18 @@ export default function MemoriesPage() {
         const chars = await parseJsonArrayResponse<Character>(await fetch('/api/characters'));
         if (cancelled) return;
         setCharacters(chars);
+        setCharactersLoadError('');
         if (chars.length > 0) {
           selectedCharIdRef.current = chars[0].id;
           setSelectedCharId(chars[0].id);
         }
       } catch (error) {
         if (!cancelled) {
+          setCharactersLoadError(t('common.loadFailed'));
           showToast(`${t('common.loadFailed')}: ${getErrorMessage(error)}`, 'error');
         }
+      } finally {
+        if (!cancelled) setCharactersLoading(false);
       }
     })();
     return () => {
@@ -339,7 +346,7 @@ export default function MemoriesPage() {
   return (
     <div className="app-shell min-h-dvh px-4 py-4">
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="surface-hero px-5 py-5">
+        <header className="border-b border-border-light pb-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-4">
               <Link href="/" className="soft-button soft-button-secondary px-3 py-2">
@@ -449,7 +456,7 @@ export default function MemoriesPage() {
                   {visibleMerges.map(suggestion => (
                     <div
                       key={suggestion.key}
-                      className={`rounded-xl border border-border-light bg-surface/60 px-3 py-2 dark:bg-white/5 ${suggestion.status === 'stale' ? 'opacity-70' : ''}`}
+                      className={`rounded-xl border border-border-light bg-surface-2 px-3 py-2 ${suggestion.status === 'stale' ? 'border-dashed' : ''}`}
                     >
                       <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
                         <span className="chip">
@@ -543,7 +550,7 @@ export default function MemoriesPage() {
                 </h2>
                 <div className="max-h-[32rem] space-y-2 overflow-y-auto">
                   {lastMemoryAiReviewResult.changes.map(change => (
-                    <div key={change.id} className="rounded-xl border border-border-light bg-surface/60 px-3 py-2 dark:bg-white/5">
+                    <div key={change.id} className="rounded-xl border border-border-light bg-surface-2 px-3 py-2">
                       <details className="group">
                         <summary className="flex cursor-pointer list-none items-center gap-2 text-sm text-text-primary marker:hidden">
                           <ChevronDownIcon className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
@@ -574,15 +581,16 @@ export default function MemoriesPage() {
           </section>
         )}
 
-        <main className="min-h-0">
-          {selectedCharId ? (
+        <main className="min-h-0" aria-busy={charactersLoading}>
+          {charactersLoading ? (
+            <div className="surface-panel"><ContentState mode="loading" title={t('common.loading')} /></div>
+          ) : charactersLoadError ? (
+            <div className="surface-panel"><ContentState mode="error" title={charactersLoadError} /></div>
+          ) : selectedCharId ? (
             <MemoryList characterId={selectedCharId} refreshNonce={memoryRefreshNonce} />
           ) : (
-            <div className="surface-panel px-6 py-20 text-center">
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
-                <MemoryIcon className="h-6 w-6" />
-              </div>
-              <p className="text-sm font-medium text-text-primary">{t('memories.noCharacter')}</p>
+            <div className="surface-panel">
+              <ContentState mode="empty" title={t('memories.noCharacter')} icon={<MemoryIcon className="h-5 w-5" />} />
             </div>
           )}
         </main>
@@ -594,11 +602,11 @@ export default function MemoriesPage() {
         title={mergeSourcesModal?.title}
         maxWidth="max-w-2xl"
         padded={false}
-        dialogClassName="flex w-full max-w-2xl max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-surface shadow-xl outline-none dark:bg-zinc-900"
+        dialogClassName="flex w-full max-w-2xl max-h-[80vh] flex-col overflow-hidden rounded-2xl bg-surface shadow-xl outline-none"
       >
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {mergeSourcesModal?.sources.map(source => (
-            <div key={source.id} className="rounded-xl border border-border-light bg-surface/60 px-3 py-2 dark:bg-white/5">
+            <div key={source.id} className="rounded-xl border border-border-light bg-surface-2 px-3 py-2">
               <div className="text-xs text-text-muted">
                 {source.category}
                 {source.tags.length > 0 ? ` · ${source.tags.join(',')}` : ''}

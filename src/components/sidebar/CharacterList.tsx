@@ -34,6 +34,7 @@ import {
   subscribeCharacterList,
 } from '@/lib/character-list-cache';
 import { PencilIcon, PlusIcon, SparkIcon } from '@/components/ui/icons';
+import ContentState from '@/components/ui/ContentState';
 
 /**
  * 列表滚动位置（模块级）：移动端抽屉每次打开都会重新挂载 CharacterList，
@@ -60,7 +61,7 @@ interface Props {
   chat?: SidebarChat | null;
 }
 
-const CONVERSATION_ROW = 'flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-colors';
+const CONVERSATION_ROW = 'flex min-h-11 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-colors';
 
 function ConversationRows({ chat }: { chat: SidebarChat }) {
   const { t } = useTranslation();
@@ -183,7 +184,7 @@ function SortableCharacterCard({ character, selected, onSelect, editLabel }: Car
         onTouchStart={e => e.stopPropagation()}
         onClick={e => e.stopPropagation()}
         // 触控设备没有可靠 hover：始终显示编辑按钮，避免平板侧栏变窄后「消失」
-        className="shrink-0 rounded-full p-2 text-text-muted opacity-80 transition-all duration-200 hover:bg-warm-100 hover:text-accent hover:opacity-100"
+        className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full p-2 text-text-muted transition-colors hover:bg-surface-2 hover:text-accent"
         aria-label={editLabel}
       >
         <PencilIcon className="h-4 w-4" />
@@ -197,6 +198,8 @@ export default function CharacterList({ selectedId, onSelect, chat }: Props) {
   // 优先用模块缓存做首屏，避免移动端 Modal 重挂载时空白闪一下
   const [characters, setCharacters] = useState<Character[]>(() => getCharacterListCache() ?? []);
   const [listError, setListError] = useState('');
+  const [loading, setLoading] = useState(() => getCharacterListCache() === null);
+  const [retryRevision, setRetryRevision] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
 
@@ -230,11 +233,14 @@ export default function CharacterList({ selectedId, onSelect, chat }: Props) {
       })
       .catch(() => {
         if (!cancelled) setListError(t('common.loadFailed'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [retryRevision, t]);
 
   const handleCreate = async () => {
     setListError('');
@@ -287,13 +293,22 @@ export default function CharacterList({ selectedId, onSelect, chat }: Props) {
         <span className="text-xs font-medium text-text-muted">{t('sidebar.characters')}</span>
         <button
           onClick={handleCreate}
-          className="flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium text-accent-dark transition-colors hover:bg-accent/10"
+          className="flex min-h-11 items-center gap-1 rounded-lg px-2 text-xs font-medium text-accent-dark transition-colors hover:bg-accent/10"
         >
           <PlusIcon className="h-4 w-4" />
           {t('sidebar.create')}
         </button>
       </div>
-      {listError && <p className="px-5 pb-2 text-xs text-red-500">{listError}</p>}
+      {listError && (
+        <div role="alert" className="flex items-center gap-2 px-5 pb-2 text-xs text-danger">
+          <span className="flex-1">{listError}</span>
+          <button type="button" className="soft-button soft-button-ghost" onClick={() => {
+            setListError('');
+            setLoading(characters.length === 0);
+            setRetryRevision(current => current + 1);
+          }}>{t('common.retry')}</button>
+        </div>
+      )}
 
       <div
         ref={scrollRef}
@@ -301,13 +316,11 @@ export default function CharacterList({ selectedId, onSelect, chat }: Props) {
         onScroll={e => { savedScrollTop = e.currentTarget.scrollTop; }}
         className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-3 pb-4"
       >
-        {characters.length === 0 && (
-          <div className="surface-panel-quiet mx-1 px-4 py-8 text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-surface/80 text-accent-dark shadow-sm">
-              <SparkIcon className="h-5 w-5" />
-            </div>
-            <p className="text-sm font-medium text-text-primary">{t('sidebar.empty')}</p>
-          </div>
+        {loading && characters.length === 0 && (
+          <ContentState mode="loading" title={t('common.loading')} className="px-2 py-6" />
+        )}
+        {!loading && !listError && characters.length === 0 && (
+          <ContentState mode="empty" title={t('sidebar.empty')} icon={<SparkIcon className="h-5 w-5" />} className="px-2 py-6" />
         )}
 
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>

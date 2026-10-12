@@ -99,6 +99,27 @@ test.after(() => {
   restoreDom();
 });
 
+test('/memories waits for the character request before showing the no-character state', async () => {
+  let resolve;
+  global.fetch = () => new Promise(done => { resolve = done; });
+  const MemoriesPage = loadMemoriesPage();
+  const view = render(React.createElement(MemoriesPage));
+  assert.ok(view.getByRole('status', { name: 'common.loading' }));
+  assert.equal(view.queryByText('memories.noCharacter'), null);
+  resolve(jsonResponse([]));
+  await view.findByText('memories.noCharacter');
+  assert.equal(view.queryByRole('status'), null);
+});
+
+test('/memories renders a character load failure, not a no-character empty state', async () => {
+  global.fetch = async () => jsonResponse({}, 503);
+  const MemoriesPage = loadMemoriesPage();
+  const view = render(React.createElement(MemoriesPage));
+  assert.match((await view.findByRole('alert')).textContent, /common.loadFailed/);
+  assert.equal(view.queryByText('memories.noCharacter'), null);
+  assert.equal(view.queryByRole('status'), null);
+});
+
 function readProjectFile(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
@@ -313,7 +334,8 @@ test('/memories page opens source details and closes them with an explicit butto
   assert.ok(dialogQueries.getByText(/咖啡,饮品/));
 
   const sourceCard = dialogQueries.getByText('第一条源记忆全文').parentElement;
-  assert.ok(sourceCard?.className.includes('dark:bg-white/5'));
+  assert.ok(sourceCard?.className.includes('bg-surface-2'));
+  assert.ok(!sourceCard?.className.includes('dark:bg-white/5'));
 
   const closeButton = dialogQueries.getByRole('button', { name: 'common.close' });
   assert.equal(closeButton.tagName, 'BUTTON');

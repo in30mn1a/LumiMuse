@@ -166,3 +166,132 @@ test('useSettingsProviders reports load errors and preserves provider save paylo
   });
   assert.equal(currentSettings.model, 'saved-model');
 });
+
+function createProviderOptions() {
+  const { DEFAULT_SETTINGS } = require('../src/types/index.ts');
+  let settings = { ...DEFAULT_SETTINGS, active_provider_id: 'a' };
+  return {
+    settings,
+    setSettings: value => { settings = typeof value === 'function' ? value(settings) : value; },
+    mergeSettings: next => ({ ...DEFAULT_SETTINGS, ...next }),
+    t,
+    showToast() {},
+    resetModels() {},
+    readSettings: () => settings,
+  };
+}
+
+test('older provider refreshes cannot overwrite a newer list or selection', async () => {
+  let count = 0;
+  let releaseOlder;
+  global.fetch = async () => {
+    count += 1;
+    if (count === 2) return new Promise(resolve => { releaseOlder = () => resolve(okJson({ providers: [{ id: 'old', name: 'Old' }], active_provider_id: 'old' })); });
+    return okJson({ providers: [{ id: count === 1 ? 'initial' : 'new', name: 'Provider' }], active_provider_id: count === 1 ? 'initial' : 'new' });
+  };
+  const { useSettingsProviders } = require('../src/hooks/settings/useSettingsProviders.ts');
+  const options = createProviderOptions();
+  const { result } = renderHook(() => useSettingsProviders(options));
+  await waitFor(() => assert.equal(result.current.activeProviderId, 'initial'));
+  let older;
+  act(() => { older = result.current.loadProviders(); });
+  await waitFor(() => assert.equal(typeof releaseOlder, 'function'));
+  await act(() => result.current.loadProviders());
+  await act(async () => { releaseOlder(); await older; });
+  assert.equal(result.current.activeProviderId, 'new');
+  assert.equal(result.current.providers[0].id, 'new');
+  assert.equal(result.current.providersLoading, false);
+});
+
+test('a provider refresh started before activation cannot overwrite the activated provider', async () => {
+  let count = 0;
+  let releaseOlder;
+  let active = 'a';
+  global.fetch = async (url, init) => {
+    if (url === '/api/providers/activate') { active = JSON.parse(init.body).id; return okJson({ ok: true }); }
+    if (url === '/api/settings') return okJson({ active_provider_id: active, model: `${active}-model` });
+    count += 1;
+    if (count === 2) return new Promise(resolve => { releaseOlder = () => resolve(okJson({ providers: [{ id: 'a', name: 'A' }], active_provider_id: 'a' })); });
+    return okJson({ providers: [{ id: active, name: active }], active_provider_id: active });
+  };
+  const { useSettingsProviders } = require('../src/hooks/settings/useSettingsProviders.ts');
+  const options = createProviderOptions();
+  const { result } = renderHook(() => useSettingsProviders(options));
+  await waitFor(() => assert.equal(result.current.activeProviderId, 'a'));
+  let older;
+  act(() => { older = result.current.loadProviders(); });
+  await act(() => result.current.handleActivateProvider('b'));
+  await act(async () => { releaseOlder(); await older; });
+  assert.equal(result.current.activeProviderId, 'b');
+  assert.equal(result.current.providers[0].id, 'b');
+  assert.equal(options.readSettings().model, 'b-model');
+});
+
+test('unified settings and provider synchronization execute together before queued activation', async () => {
+  const writes = [];
+  let releaseSettings;
+  let active = 'a';
+  global.fetch = async (url, init) => {
+    if (url === '/api/settings' && init?.method === 'PUT') {
+      writes.push('settings');
+      await new Promise(resolve => { releaseSettings = resolve; });
+      return okJson({ ok: true });
+    }
+    if (url === '/api/providers' && init?.method === 'PUT') {
+      const body = JSON.parse(init.body);
+      writes.push(`sync:${body.id}`);
+      // 接口字段与密钥只由服务端从已保存设置读取，前端不再随请求重发。
+      assert.deepEqual(body, { id: 'a', sync_from_settings: true });
+      return okJson({ ok: true });
+    }
+    if (url === '/api/providers/activate') {
+      active = JSON.parse(init.body).id;
+      writes.push(`activate:${active}`);
+      return okJson({ ok: true });
+    }
+    if (url === '/api/settings') return okJson({ active_provider_id: active, model: `${active}-model` });
+    return okJson({ providers: [{ id: active, name: active }], active_provider_id: active });
+  };
+  const { useSettingsProviders } = require('../src/hooks/settings/useSettingsProviders.ts');
+  const options = createProviderOptions();
+  const { result } = renderHook(() => useSettingsProviders(options));
+  await waitFor(() => assert.equal(result.current.activeProviderId, 'a'));
+  let saving;
+  let activating;
+  act(() => {
+    saving = result.current.runProviderOperation(async () => {
+      await fetch('/api/settings', { method: 'PUT' });
+      await result.current.handleUpdateCurrentProvider('a');
+    });
+    activating = result.current.handleActivateProvider('b');
+  });
+  await waitFor(() => assert.deepEqual(writes, ['settings']));
+  assert.equal(result.current.providerBusy, true);
+  await act(async () => { releaseSettings(); await Promise.all([saving, activating]); });
+  assert.deepEqual(writes, ['settings', 'sync:a', 'activate:b']);
+  assert.equal(result.current.activeProviderId, 'b');
+  assert.equal(result.current.providerBusy, false);
+  assert.equal(options.readSettings().model, 'b-model');
+});
+
+test('current-provider synchronization propagates failures for the unified save to handle', async () => {
+  global.fetch = async (url, init) => init?.method === 'PUT' ? new Response('sync failed', { status: 500 }) : okJson({ providers: [], active_provider_id: 'a' });
+  const { useSettingsProviders } = require('../src/hooks/settings/useSettingsProviders.ts');
+  const options = createProviderOptions();
+  const { result } = renderHook(() => useSettingsProviders(options));
+  await waitFor(() => assert.equal(result.current.activeProviderId, 'a'));
+  await assert.rejects(() => result.current.handleUpdateCurrentProvider('a'), /HTTP 500/);
+});
+
+test('translation changes do not reload providers or overwrite the active selection', async () => {
+  let loads = 0;
+  global.fetch = async () => { loads += 1; return okJson({ providers: [], active_provider_id: 'a' }); };
+  const { useSettingsProviders } = require('../src/hooks/settings/useSettingsProviders.ts');
+  const options = createProviderOptions();
+  const { result, rerender } = renderHook(({ translate }) => useSettingsProviders({ ...options, t: translate }), { initialProps: { translate: t } });
+  await waitFor(() => assert.equal(result.current.activeProviderId, 'a'));
+  rerender({ translate: key => `translated:${key}` });
+  await act(async () => {});
+  assert.equal(loads, 1);
+  assert.equal(result.current.activeProviderId, 'a');
+});

@@ -149,3 +149,33 @@ test('creating a character resets the remembered position so the new one is visi
   const second = render(React.createElement(CharacterList, { selectedId: null, onSelect() {} }));
   assert.equal(scroller(second.container).scrollTop, 0);
 });
+
+test('cold list shows loading until the request completes, then shows the empty state', async () => {
+  let finish;
+  global.fetch = () => new Promise(resolve => { finish = resolve; });
+  const { CharacterList } = loadModules();
+  const view = render(React.createElement(CharacterList, { selectedId: null, onSelect() {} }));
+  assert.ok(view.getByRole('status', { name: 'common.loading' }));
+  assert.equal(view.queryByText('sidebar.empty'), null);
+  await act(async () => { finish(jsonResponse([])); });
+  assert.equal(view.queryByRole('status', { name: 'common.loading' }), null);
+  assert.ok(view.getByText('sidebar.empty'));
+});
+
+test('failed cold load shows a retry action, not an empty list, and retry can succeed', async () => {
+  let requests = 0;
+  global.fetch = async () => {
+    requests += 1;
+    if (requests === 1) throw new Error('offline');
+    return jsonResponse([{ id: 'retry', name: 'Recovered character', avatar_url: null }]);
+  };
+  const { CharacterList } = loadModules();
+  const view = render(React.createElement(CharacterList, { selectedId: null, onSelect() {} }));
+  await act(async () => {});
+  assert.ok(view.getByRole('alert'));
+  assert.equal(view.queryByText('sidebar.empty'), null);
+  await act(async () => { fireEvent.click(view.getByRole('button', { name: 'common.retry' })); });
+  assert.equal(requests, 2);
+  assert.equal(view.queryByRole('alert'), null);
+  assert.ok(view.getByText('Recovered character'));
+});

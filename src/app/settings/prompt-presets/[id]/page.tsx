@@ -1,5 +1,7 @@
 'use client';
 
+import ContentState from '@/components/ui/ContentState';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { use } from 'react';
@@ -61,7 +63,7 @@ function EntryRow({ entry, pending, t, onToggle, onEdit, onDelete }: EntryRowPro
       className={`flex flex-col gap-3 rounded-xl border px-4 py-3 sm:flex-row sm:items-start sm:justify-between ${
         entry.enabled
           ? 'border-border-light bg-surface'
-          : 'border-border-light/50 bg-surface/50 opacity-60'
+          : 'border-border-light bg-surface-2'
       }`}
     >
       <div className="min-w-0 flex-1">
@@ -102,7 +104,7 @@ function EntryRow({ entry, pending, t, onToggle, onEdit, onDelete }: EntryRowPro
           className={`${iconButtonClassName} ${
             entry.enabled
               ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300'
-              : 'bg-zinc-200 text-zinc-600 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-400'
+              : 'bg-surface-2 text-text-secondary hover:bg-surface-3'
           }`}
           disabled={pending}
           aria-label={toggleLabel}
@@ -397,7 +399,13 @@ export default function PresetDetailPage({ params }: Props) {
     });
   };
 
-  if (loading) return <div className="px-6 py-10 text-text-muted">{t('preset.loading')}</div>;
+  if (loading) return (
+    <div className="app-shell min-h-dvh px-4 py-4" aria-busy="true">
+      <div className="surface-panel mx-auto max-w-5xl">
+        <ContentState mode="loading" title={t('preset.loading')} />
+      </div>
+    </div>
+  );
   if (loadError && !preset) {
     return (
       <div role="alert" className="m-6 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
@@ -405,7 +413,13 @@ export default function PresetDetailPage({ params }: Props) {
       </div>
     );
   }
-  if (!preset) return <div className="px-6 py-10 text-text-muted">{t('preset.notFound')}</div>;
+  if (!preset) return (
+    <div className="app-shell min-h-dvh px-4 py-4">
+      <ContentState mode="empty" title={t('preset.notFound')} action={(
+        <Link href="/settings/prompt-presets" className="soft-button soft-button-secondary">{t('preset.backList')}</Link>
+      )} />
+    </div>
+  );
 
   const legacyStoryPlotMode = usesLegacyStoryPlotRules(preset.strip_tags);
   const relativeEntries = entries.filter(e => e.injection_position === 0);
@@ -414,13 +428,13 @@ export default function PresetDetailPage({ params }: Props) {
   return (
     <div className="app-shell min-h-dvh px-4 py-4">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
-        <header className="surface-hero min-w-0 px-5 py-5">
+        <header className="min-w-0 border-b border-border-light pb-4">
           <div className="flex min-w-0 flex-col gap-4">
             <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0 flex-1">
-                <h1 className="section-title text-2xl break-words">{preset.name}</h1>
+                <h1 className="section-title text-xl break-words">{preset.name}</h1>
                 {preset.description && (
-                  <p className="mt-1 section-copy break-words">{preset.description}</p>
+                  <p className="mt-1 break-words text-sm leading-relaxed text-text-secondary">{preset.description}</p>
                 )}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
@@ -445,7 +459,7 @@ export default function PresetDetailPage({ params }: Props) {
               </div>
             </div>
             <div className="flex min-w-0 flex-col gap-2">
-              <label className="flex min-w-0 items-start gap-2 text-xs text-text-muted">
+              <label className="flex min-h-11 min-w-0 items-start gap-2 text-xs text-text-muted">
                 <input
                   type="checkbox"
                   checked={preset.story_plot_strip}
@@ -459,7 +473,7 @@ export default function PresetDetailPage({ params }: Props) {
                 <div className="flex min-w-0 flex-col gap-1.5">
                   <p className="min-w-0 break-words text-xs text-text-muted">{t('preset.stripTagsHint')}</p>
                   {legacyStoryPlotMode && (
-                    <p className="min-w-0 break-words text-xs text-amber-600 dark:text-amber-400">{t('preset.stripTagsLegacyHint')}</p>
+                    <p className="min-w-0 break-words text-xs text-amber-700">{t('preset.stripTagsLegacyHint')}</p>
                   )}
                   <div className="flex min-w-0 flex-wrap gap-1.5">
                     {preset.strip_tags.map(tag => {
@@ -469,7 +483,7 @@ export default function PresetDetailPage({ params }: Props) {
                           key={tag}
                           title={effective ? undefined : t('preset.stripTagInactiveToast')}
                           className={`inline-flex max-w-full min-w-0 items-center gap-1 rounded bg-surface-2 px-2 py-0.5 text-xs ${
-                            effective ? 'text-text-secondary' : 'text-text-muted line-through opacity-60'
+                            effective ? 'text-text-secondary' : 'text-text-muted line-through'
                           }`}
                         >
                           <code className="min-w-0 break-all">{tag}</code>
@@ -477,7 +491,7 @@ export default function PresetDetailPage({ params }: Props) {
                             type="button"
                             onClick={() => void removeStripTag(tag)}
                             disabled={pendingAction !== null}
-                            className="shrink-0 text-text-muted hover:text-red-400 disabled:opacity-40"
+                            className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-text-muted hover:bg-surface-3 hover:text-danger disabled:opacity-40"
                             aria-label={`remove ${tag}`}
                           >
                             ×
@@ -494,7 +508,8 @@ export default function PresetDetailPage({ params }: Props) {
                       onKeyDown={e => { if (e.key === 'Enter') void addStripTag(); }}
                       placeholder={t('preset.stripTagPlaceholder')}
                       disabled={pendingAction !== null}
-                      className="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-xs"
+                      aria-label={t('preset.stripTagPlaceholder')}
+                      className="input-rich min-w-0 flex-1 text-xs"
                     />
                     <button
                       type="button"
@@ -518,11 +533,11 @@ export default function PresetDetailPage({ params }: Props) {
         )}
 
         <section className="surface-panel p-5">
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <h2 className="min-w-0 flex-1 break-words text-base font-semibold text-text-primary">{t('preset.relativeEntries')}</h2>
             <button
               onClick={handleAddEntry}
-              className="soft-button soft-button-secondary shrink-0 text-xs"
+              className="soft-button soft-button-secondary shrink-0 self-start text-xs"
               disabled={pendingAction !== null}
             >
               {t('preset.addEntry')}
@@ -530,7 +545,7 @@ export default function PresetDetailPage({ params }: Props) {
           </div>
           <p className="mt-1 text-xs text-text-muted">{t('preset.relativeHint')}</p>
           <ul className="mt-3 space-y-2">
-            {relativeEntries.length === 0 && <li className="text-sm text-text-muted">{t('preset.noEntries')}</li>}
+            {relativeEntries.length === 0 && <li><ContentState mode="empty" title={t('preset.noEntries')} /></li>}
             {relativeEntries.map(e => (
               <EntryRow
                 key={e.id}
@@ -549,7 +564,7 @@ export default function PresetDetailPage({ params }: Props) {
           <h2 className="min-w-0 break-words text-base font-semibold text-text-primary">{t('preset.inChatEntries')}</h2>
           <p className="mt-1 text-xs text-text-muted">{t('preset.inChatHint2')}</p>
           <ul className="mt-3 space-y-2">
-            {inChatEntries.length === 0 && <li className="text-sm text-text-muted">{t('preset.noEntries')}</li>}
+            {inChatEntries.length === 0 && <li><ContentState mode="empty" title={t('preset.noEntries')} /></li>}
             {inChatEntries.map(e => (
               <EntryRow
                 key={e.id}

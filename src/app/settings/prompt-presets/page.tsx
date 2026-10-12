@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { useToast } from '@/components/ui/Toast';
-import { ArrowLeftIcon, TrashIcon } from '@/components/ui/icons';
+import { ArrowLeftIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
+import ContentState from '@/components/ui/ContentState';
 
 interface PresetSummary {
   id: string;
@@ -163,11 +164,11 @@ export default function PromptPresetsPage() {
   return (
     <div className="app-shell min-h-dvh px-4 py-4">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
-        <header className="surface-hero px-5 py-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="section-title text-2xl">{t('preset.pageTitle')}</h1>
-              <p className="mt-1 section-copy">{t('preset.pageSubtitle')}</p>
+        <header className="border-b border-border-light pb-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <h1 className="section-title text-xl">{t('preset.pageTitle')}</h1>
+              <p className="mt-1 text-sm leading-relaxed text-text-secondary">{t('preset.pageSubtitle')}</p>
             </div>
             <Link href="/settings" className="soft-button soft-button-secondary shrink-0 px-3 py-2">
               <ArrowLeftIcon className="h-4 w-4" />
@@ -182,6 +183,7 @@ export default function PromptPresetsPage() {
             <input
               className="input-rich flex-1"
               placeholder={t('preset.newNamePlaceholder')}
+              aria-label={t('preset.newNamePlaceholder')}
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />
@@ -192,20 +194,20 @@ export default function PromptPresetsPage() {
             >
               {t('preset.create')}
             </button>
-            <label className={`soft-button soft-button-secondary ${pendingAction ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+            <label className={`soft-button soft-button-secondary focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent ${pendingAction ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
               {pendingAction === 'import' ? t('preset.importing') : t('preset.importFromSt')}
               <input
                 type="file"
                 accept="application/json,.json"
                 onChange={handleImport}
                 disabled={pendingAction !== null}
-                className="hidden"
+                className="sr-only"
               />
             </label>
           </div>
         </section>
 
-        <section className="surface-panel p-5">
+        <section className="surface-panel p-5" aria-busy={loading}>
           <h2 className="mb-3 text-base font-semibold text-text-primary">{t('preset.list')}</h2>
           {loadError && (
             <p role="alert" className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
@@ -213,15 +215,15 @@ export default function PromptPresetsPage() {
             </p>
           )}
           {loadError ? null : loading ? (
-            <p className="text-sm text-text-muted">{t('preset.loading')}</p>
+            <ContentState mode="loading" title={t('preset.loading')} />
           ) : presets.length === 0 ? (
-            <p className="text-sm text-text-muted">{t('preset.empty')}</p>
+            <ContentState mode="empty" title={t('preset.empty')} icon={<SparkIcon className="h-5 w-5" />} />
           ) : (
             <ul className="space-y-2">
               {presets.map(p => (
                 <li
                   key={p.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border-light bg-surface px-4 py-3"
+                  className="flex flex-col gap-2 rounded-xl border border-border-light bg-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -231,7 +233,7 @@ export default function PromptPresetsPage() {
                       {formatTemplate(t('preset.entryCount'), { total: p.entry_count, enabled: p.enabled_count })}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 self-end sm:self-auto">
                     <Link href={`/settings/prompt-presets/${p.id}`} className="soft-button soft-button-primary text-xs">
                       {t('preset.manage')}
                     </Link>
@@ -239,6 +241,7 @@ export default function PromptPresetsPage() {
                       onClick={() => handleDelete(p)}
                       className="soft-button soft-button-danger text-xs"
                       title={t('preset.delete')}
+                      aria-label={t('preset.delete')}
                       disabled={pendingAction !== null}
                     >
                       <TrashIcon className="h-3.5 w-3.5" />

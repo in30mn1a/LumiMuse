@@ -7,6 +7,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { expectOkResponse, parseJsonResponse } from '@/lib/http';
 import { PlusIcon, SearchIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 import ConfirmModal from '@/components/ui/ConfirmModal';
+import ContentState from '@/components/ui/ContentState';
 
 interface Props {
   characterId: string | null;
@@ -40,8 +41,12 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false);
   const [listError, setListError] = useState('');
+  const [listLoading, setListLoading] = useState(true);
+  const [loadedPageKey, setLoadedPageKey] = useState('');
   const [mutationError, setMutationError] = useState('');
   const queryKey = JSON.stringify([characterId, categoryFilter, tagFilters, keyword, sortOrder, showArchived]);
+  const pageKey = JSON.stringify([queryKey, page]);
+  const hasVisibleMemories = loadedPageKey === pageKey && memories.length > 0;
   const [previousQueryKey, setPreviousQueryKey] = useState(queryKey);
   if (previousQueryKey !== queryKey) {
     setPreviousQueryKey(queryKey);
@@ -51,6 +56,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
     setEditingMemoryId(null);
     setMutationError('');
     setBatchDeleteError('');
+    setListLoading(true);
   }
   const requestSeqRef = useRef(0);
   const scopeRef = useRef(0);
@@ -137,6 +143,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
     if (queryKeyRef.current !== queryKey) return;
     const scope = scopeRef.current;
     setListError('');
+    setListLoading(true);
     const requestSeq = ++requestSeqRef.current;
     const params = new URLSearchParams();
     if (characterId) params.set('character_id', characterId);
@@ -154,6 +161,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
       const data = await parseJsonResponse<MemoriesResponse>(await fetch(`/api/memories?${params}`, { signal }));
       if (scope !== scopeRef.current || signal?.aborted || requestSeq !== requestSeqRef.current) return;
       setMemories(data.memories);
+      setLoadedPageKey(JSON.stringify([queryKey, targetPage]));
       setTotalMemories(data.total);
       setHasMore(data.hasMore);
       if (data.memories.length === 0 && targetPage > 1) setPage(1);
@@ -166,6 +174,10 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
         return;
       }
       setListError(t('common.loadFailed'));
+    } finally {
+      if (scope === scopeRef.current && !signal?.aborted && requestSeq === requestSeqRef.current) {
+        setListLoading(false);
+      }
     }
   }, [characterId, categoryFilter, tagFilters, keyword, page, sortOrder, showArchived, t, queryKey]);
 
@@ -265,6 +277,14 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
     }
   };
 
+  const loadErrorState = (
+    <ContentState mode="error" title={listError} action={(
+      <button type="button" onClick={() => void fetchMemories(page)} className="soft-button soft-button-secondary">
+        {t('common.retry')}
+      </button>
+    )} />
+  );
+
   return (
     <div className="space-y-4">
       <div className="surface-panel px-4 py-4 md:px-5">
@@ -280,11 +300,13 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
                   exitSelectMode();
                 }}
                 placeholder={t('memory.search')}
+                aria-label={t('memory.search')}
                 className="w-full border-none bg-transparent p-0 text-sm text-text-primary outline-none placeholder:text-text-muted"
               />
             </label>
 
             <select
+              aria-label={t('memory.allCategories')}
               value={categoryFilter}
               onChange={e => {
                 setCategoryFilter(e.target.value);
@@ -300,6 +322,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
             </select>
 
             <select
+              aria-label={t('memory.sortNewest')}
               value={sortOrder}
               onChange={e => {
                 setSortOrder(e.target.value as SortOrder);
@@ -312,7 +335,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
               <option value="oldest">{t('memory.sortOldest')}</option>
             </select>
 
-            <label className="flex items-center gap-1.5 text-xs text-text-muted whitespace-nowrap">
+            <label className="flex min-h-11 items-center gap-1.5 text-xs text-text-muted whitespace-nowrap">
               <input
                 type="checkbox"
                 checked={showArchived}
@@ -347,7 +370,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
 
           {selectMode && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <button onClick={allSelected ? deselectAll : selectAll} className="chip chip-active cursor-pointer">
+              <button onClick={allSelected ? deselectAll : selectAll} className="chip chip-active min-h-11 cursor-pointer">
                 {allSelected ? t('memory.deselectAll') : t('memory.selectAll')}
               </button>
               {validSelectedIds.size > 0 && (
@@ -373,7 +396,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
                   key={tag}
                   type="button"
                   onClick={() => clearTagFilter(tag)}
-                  className="chip cursor-pointer px-2 py-1 text-xs transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
+                  className="chip min-h-11 cursor-pointer px-2 py-1 text-xs transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
                   aria-label={t('memory.clearTagFilter').replace('{tag}', tag)}
                   title={t('memory.clearTagFilter').replace('{tag}', tag)}
                 >
@@ -384,19 +407,28 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
             </div>
           )}
 
-          {(listError || mutationError) && (
-            <p className="text-xs text-red-500">{mutationError || listError}</p>
+          {mutationError && (
+            <p role="alert" className="text-xs text-danger">{mutationError}</p>
           )}
         </div>
       </div>
 
-      <div className="surface-panel overflow-hidden">
+      <div className="surface-panel overflow-hidden" aria-busy={listLoading}>
         <div className="flex items-center justify-between border-b border-border-light px-4 py-3 text-xs text-text-muted">
           <span>{t('memory.title')}</span>
           <span>{totalMemories} {t('memory.count')}</span>
         </div>
 
-        {memories.length > 0 ? (
+        {hasVisibleMemories && listLoading && (
+          <p role="status" aria-label={t('common.loading')} className="px-4 py-3 text-sm text-text-muted">{t('common.loading')}</p>
+        )}
+        {hasVisibleMemories && listError && loadErrorState}
+
+        {listLoading && !hasVisibleMemories ? (
+          <ContentState mode="loading" title={t('common.loading')} />
+        ) : listError && !hasVisibleMemories ? (
+          loadErrorState
+        ) : hasVisibleMemories ? (
           <div>
             {memories.map(memory => (
               <MemoryCard
@@ -455,13 +487,7 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
             </div>
           </div>
         ) : (
-          <div className="px-6 py-12 text-center">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
-              <SparkIcon className="h-6 w-6" />
-            </div>
-            <p className="text-sm font-medium text-text-primary">{t('memory.emptyFiltered')}</p>
-            <p className="mt-2 text-sm text-text-muted">{t('memory.subtitle')}</p>
-          </div>
+          <ContentState mode="empty" title={t('memory.emptyFiltered')} description={t('memory.subtitle')} icon={<SparkIcon className="h-5 w-5" />} />
         )}
       </div>
 

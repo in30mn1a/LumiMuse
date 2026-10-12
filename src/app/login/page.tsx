@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import Image from 'next/image';
 import { useTranslation } from '@/lib/i18n-context';
+import ContentState from '@/components/ui/ContentState';
 
 // 限制登录后跳转地址只能是站内相对路径，避免开放重定向
 function safeReturnTo(from: string | null): string {
@@ -69,57 +70,31 @@ function LoginForm() {
   };
 
   return (
-    <div className="app-shell flex h-dvh items-center justify-center px-4">
-      {/* 背景光晕 */}
-      <div
-        className="pointer-events-none fixed"
-        style={{
-          left: '50%',
-          top: '50%',
-          transform: 'translate(-50%, -50%)',
-          width: 480,
-          height: 480,
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(155,124,240,0.16) 0%, transparent 70%)',
-          animation: 'glowPulse 4s ease-in-out infinite',
-        }}
-      />
-
+    <div className="app-shell flex min-h-dvh items-center justify-center px-4 py-6">
       <div className="relative z-10 w-full max-w-sm">
         {/* 卡片 */}
-        <div className="surface-hero px-8 py-10">
+        <div className="surface-panel px-6 py-6">
           {/* Logo 区域 */}
-          <div className="mb-8 flex flex-col items-center gap-3">
+          <div className="mb-6 flex items-center gap-3 border-b border-border-light pb-5">
             <Image
               src="/icons/icon-180x180.png"
               alt="LumiMuse Logo"
-              width={56}
-              height={56}
+              width={48}
+              height={48}
               unoptimized
-              className="h-14 w-14 rounded-2xl object-cover shadow-lg"
+              className="h-12 w-12 rounded-xl object-cover"
             />
-            <div className="text-center">
-              <h1
-                className="section-title text-2xl"
-                style={{
-                  background: 'linear-gradient(135deg, var(--color-accent-dark) 0%, var(--color-accent) 50%, var(--color-accent-light) 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}
-              >
-                LumiMuse
-              </h1>
-              <p className="mt-1 text-sm" style={{ color: 'var(--color-text-muted)' }}>
-                {t('login.passwordPrompt')}
-              </p>
-            </div>
+            <h1 className="section-title text-xl">LumiMuse</h1>
           </div>
 
           {/* 表单 */}
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
+              <label htmlFor="login-password" className="text-sm font-medium text-text-secondary">
+                {t('login.passwordPrompt')}
+              </label>
               <input
+                id="login-password"
                 ref={inputRef}
                 type="password"
                 value={password}
@@ -131,15 +106,16 @@ function LoginForm() {
                 className="input-rich text-center tracking-widest"
                 style={{ fontSize: '1.1rem', letterSpacing: '0.2em' }}
                 autoComplete="current-password"
+                aria-invalid={!!error}
+                aria-describedby={error ? 'login-error' : undefined}
                 disabled={loading}
               />
               {/* 错误提示 */}
               <div
-                className="min-h-[1.4rem] text-center text-sm transition-opacity duration-200"
-                style={{
-                  color: '#a33375',
-                  opacity: error ? 1 : 0,
-                }}
+                id="login-error"
+                role={error ? 'alert' : undefined}
+                aria-hidden={!error}
+                className="min-h-[1.4rem] text-center text-sm text-danger"
               >
                 {error || '　'}
               </div>
@@ -148,14 +124,14 @@ function LoginForm() {
             <button
               type="submit"
               disabled={loading || !password.trim()}
+              aria-busy={loading}
               className="soft-button soft-button-primary w-full"
               style={{ opacity: loading || !password.trim() ? 0.6 : 1 }}
             >
               {loading ? (
                 <span className="flex items-center gap-2">
-                  <span className="typing-dot" style={{ animationDelay: '0ms' }} />
-                  <span className="typing-dot" style={{ animationDelay: '160ms' }} />
-                  <span className="typing-dot" style={{ animationDelay: '320ms' }} />
+                  <span className="spinner-sm" aria-hidden="true" />
+                  {t('common.loading')}
                 </span>
               ) : (
                 t('login.submit')
@@ -175,8 +151,9 @@ function LoginForm() {
 
 // useSearchParams 需要包在 Suspense 里
 export default function LoginPage() {
+  const { t } = useTranslation();
   return (
-    <Suspense>
+    <Suspense fallback={<ContentState mode="loading" title={t('common.loading')} />}>
       <LoginForm />
     </Suspense>
   );

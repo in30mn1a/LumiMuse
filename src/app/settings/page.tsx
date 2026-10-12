@@ -76,21 +76,36 @@ const SETTINGS_TABS: Array<{ key: SettingsTab; label: string }> = [
   { key: 'advanced', label: 'settings.tabAdvanced' },
 ];
 
-/** 记忆页很长：顶部给一排跳转入口，id 对应下方各面板的包裹元素 */
-const MEMORY_ANCHORS = [
-  { id: 'settings-memory-index', label: 'settings.memoryIndexStatus' },
-  { id: 'settings-memory-diagnostics', label: 'settings.memoryDiagnosticsTitle' },
-  { id: 'settings-memory-profile', label: 'settings.memoryProfileTitle' },
-  { id: 'settings-memory-archive', label: 'settings.memoryArchiveTitle' },
-  { id: 'settings-memory-candidates', label: 'settings.memoryCandidatesTitle' },
-];
-const MEMORY_ANCHOR_TARGET = 'scroll-mt-28 lg:scroll-mt-20';
+const MEMORY_PAGES = [
+  { key: 'engine', label: 'settings.memoryEngineParameters' },
+  { key: 'profile', label: 'settings.memoryProfileTitle' },
+  { key: 'candidates', label: 'settings.memoryCandidatesTitle' },
+  { key: 'archive', label: 'settings.memoryArchiveTitle' },
+  { key: 'index', label: 'settings.memoryIndexAndDiagnostics' },
+] as const;
+type MemoryPage = typeof MEMORY_PAGES[number]['key'];
+
+// 只回填保存期间未再次编辑的字段，包括嵌套密钥的脱敏/清空结果。
+function reconcileSavedValues(current: unknown, snapshot: unknown, saved: unknown): unknown {
+  if (JSON.stringify(current) === JSON.stringify(snapshot)) return saved;
+  if (current && snapshot && saved && typeof current === 'object' && typeof snapshot === 'object' && typeof saved === 'object' && !Array.isArray(current)) {
+    const currentRecord = current as Record<string, unknown>;
+    const snapshotRecord = snapshot as Record<string, unknown>;
+    const savedRecord = saved as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(currentRecord).map(([key, value]) => [key, reconcileSavedValues(value, snapshotRecord[key], savedRecord[key])]));
+  }
+  return current;
+}
 
 export default function SettingsPage() {
   const router = useRouter();
   const [settings, setSettings] = useState<SettingsWithMemoryEngine>(DEFAULT_SETTINGS_WITH_MEMORY_ENGINE);
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
   // 与服务端一致的那份设置；settings 与它不同即「有未保存的修改」
   const [savedSettings, setSavedSettings] = useState<SettingsWithMemoryEngine>(DEFAULT_SETTINGS_WITH_MEMORY_ENGINE);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const applyServerSettings: Dispatch<SetStateAction<SettingsWithMemoryEngine>> = useCallback(action => {
     setSettings(action);
     setSavedSettings(action);
@@ -100,6 +115,9 @@ export default function SettingsPage() {
     [savedSettings, settings],
   );
   const [saving, setSaving] = useState<'idle' | 'saving'>('idle');
+  const savingRef = useRef(false);
+  const [providerSyncPending, setProviderSyncPending] = useState(false);
+  const partialSavedSettingsRef = useRef<SettingsWithMemoryEngine | null>(null);
   const [modelList, setModelList] = useState<string[]>([]);
   const [modelLoading, setModelLoading] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
@@ -110,6 +128,9 @@ export default function SettingsPage() {
   const [rerankerModelLoading, setRerankerModelLoading] = useState(false);
   const [rerankerModelError, setRerankerModelError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>('api');
+  const [memoryPage, setMemoryPage] = useState<MemoryPage>('engine');
+  const [mobileDetail, setMobileDetail] = useState(false);
+  const [pendingSettingsAction, setPendingSettingsAction] = useState<{ message: string; run: () => void; discard?: boolean } | null>(null);
   const [pendingCharacterId, setPendingCharacterId] = useState<string | null>(null);
   const { t, setLang } = useTranslation();
   const tRef = useRef(t);
@@ -133,6 +154,12 @@ export default function SettingsPage() {
     handleSaveProvider,
     handleSaveCurrentAsProvider,
     handleUpdateCurrentProvider,
+    providerBusy,
+    providersLoading,
+    providersError,
+    loadProviders,
+    runProviderOperation,
+    isProviderOperationPending,
   } = useSettingsProviders({
     settings,
     setSettings: applyServerSettings,
@@ -177,6 +204,60 @@ export default function SettingsPage() {
   });
   const { loadMemoryManagementCharacters } = memoryManagementPanel;
   const { loadMemoryCandidates } = memoryCandidatesPanel;
+  const providerDraftDirty = Boolean(editingProvider && JSON.stringify(editingProvider) !== JSON.stringify(providers.find(provider => provider.id === editingProvider.id)));
+  const hasUnsavedDrafts = hasUnsavedChanges || providerSyncPending || providerDraftDirty || memoryProfilePanel.isProfileDraftDirty;
+
+  const discardDrafts = () => {
+    const baseline = partialSavedSettingsRef.current ?? savedSettings;
+    applyServerSettings(baseline);
+    partialSavedSettingsRef.current = null;
+    setProviderSyncPending(false);
+    setEditingProvider(null);
+    memoryProfilePanel.cancelEditingProfile?.();
+    applyFontStyle((baseline.font_style || 'wenkai') as FontStyle);
+    applyFontSize((baseline.font_size || 'medium') as FontSize);
+    document.documentElement.classList.toggle('dark', baseline.theme === 'dark');
+    writeThemeStorage(baseline.theme);
+  };
+  const guardDrafts = (run: () => void, message = t('settings.leaveUnsavedConfirm'), options: { ignoreProviderDraft?: boolean; discardBeforeRun?: boolean } = {}) => {
+    if (savingRef.current || isProviderOperationPending()) return;
+    if (hasUnsavedChanges || providerSyncPending || memoryProfilePanel.isProfileDraftDirty || (!options.ignoreProviderDraft && providerDraftDirty)) setPendingSettingsAction({ message, run, discard: options.discardBeforeRun !== false });
+    else run();
+  };
+  const selectSection = (tab: SettingsTab, panel: MemoryPage = memoryPage) => {
+    setActiveTab(tab);
+    setMemoryPage(panel);
+    setMobileDetail(true);
+    const url = new URL(window.location.href);
+    url.searchParams.set('section', tab);
+    if (tab === 'memory') url.searchParams.set('panel', panel);
+    else url.searchParams.delete('panel');
+    window.history.replaceState(window.history.state, '', url);
+  };
+  const backToList = () => {
+    setMobileDetail(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('section');
+    url.searchParams.delete('panel');
+    window.history.replaceState(window.history.state, '', url);
+  };
+  useEffect(() => {
+    const readSection = () => {
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get('section');
+      if (!SETTINGS_TABS.some(item => item.key === tab)) {
+        setMobileDetail(false);
+        return;
+      }
+      setActiveTab(tab as SettingsTab);
+      const panel = params.get('panel');
+      setMemoryPage(MEMORY_PAGES.some(item => item.key === panel) ? panel as MemoryPage : 'engine');
+      setMobileDetail(true);
+    };
+    readSection();
+    window.addEventListener('popstate', readSection);
+    return () => window.removeEventListener('popstate', readSection);
+  }, []);
 
   useEffect(() => {
     tRef.current = t;
@@ -281,31 +362,44 @@ export default function SettingsPage() {
   };
 
   const handleSave = async () => {
-    // 用 toast 替代旧的 1.2s setTimeout 状态切换：主人离开页面也能后续看到结果。
-    // saving 状态仅保留用于按钮 loading 反馈。
+    if (savingRef.current || isProviderOperationPending() || settingsLoading || settingsError || providersLoading || providersError) return;
+    savingRef.current = true;
     setSaving('saving');
     const snapshot = settings;
     try {
-      const response = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+      const { saved, persisted } = await runProviderOperation(async () => {
+        const response = await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(snapshot),
+        });
+        const saved = await parseJsonResponse<Partial<SettingsWithMemoryEngine> & {
+          memory_index_backfill?: { queued?: number; processing_started?: boolean; reason?: string | null };
+        }>(response);
+        const normalized = { ...saved };
+        delete normalized.memory_index_backfill;
+        const persisted = mergeSettingsWithMemoryEngine({ ...snapshot, ...normalized });
+        partialSavedSettingsRef.current = persisted;
+        if (activeProviderId) {
+          try {
+            await handleUpdateCurrentProvider(activeProviderId);
+          } catch (error) {
+            setProviderSyncPending(true);
+            throw new Error(`${t('settings.providerSyncFailed')}: ${getErrorMessage(error)}`);
+          }
+        }
+        return { saved, persisted };
       });
-      const saved = await parseJsonResponse<{
-        memory_index_backfill?: {
-          queued?: number;
-          processing_started?: boolean;
-          reason?: string | null;
-        };
-      }>(response);
-      setSavedSettings(snapshot);
-      // 接口字段改了就一并写回当前供应商，否则切走再切回会被旧配置覆盖
-      if (activeProviderId) await handleUpdateCurrentProvider();
-      setLang(settings.language);
-      document.documentElement.classList.toggle('dark', settings.theme === 'dark');
-      writeThemeStorage(settings.theme);
-      applyFontStyle((settings.font_style || 'wenkai') as FontStyle);
-      applyFontSize((settings.font_size || 'medium') as FontSize);
+      setSavedSettings(persisted);
+      partialSavedSettingsRef.current = null;
+      setProviderSyncPending(false);
+      const current = reconcileSavedValues(settingsRef.current, snapshot, persisted) as SettingsWithMemoryEngine;
+      setSettings(current);
+      setLang(persisted.language);
+      document.documentElement.classList.toggle('dark', current.theme === 'dark');
+      writeThemeStorage(current.theme);
+      applyFontStyle((current.font_style || 'wenkai') as FontStyle);
+      applyFontSize((current.font_size || 'medium') as FontSize);
       showToast(t('settings.saveSuccess'), 'success');
       const backfillReason = saved.memory_index_backfill?.reason ?? null;
       const backfillQueued = Number(saved.memory_index_backfill?.queued || 0);
@@ -341,6 +435,7 @@ export default function SettingsPage() {
     } catch (err) {
       showToast(`${t('settings.saveFailed')}: ${getErrorMessage(err)}`, 'error');
     } finally {
+      savingRef.current = false;
       setSaving('idle');
     }
   };
@@ -380,8 +475,10 @@ export default function SettingsPage() {
         applyFontSize((merged.font_size || 'medium') as FontSize);
       })
       .catch(err => {
+        setSettingsError(getErrorMessage(err));
         showToast(`${tRef.current('settings.loadFailed')}: ${getErrorMessage(err)}`, 'error');
-    });
+      })
+      .finally(() => setSettingsLoading(false));
   }, [applyServerSettings, showToast]);
 
   const loadMemoryPanelState = useCallback(async () => {
@@ -417,21 +514,21 @@ export default function SettingsPage() {
   ]);
 
   useEffect(() => {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedDrafts) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [hasUnsavedChanges]);
+  }, [hasUnsavedDrafts]);
 
   return (
     <div className="app-shell flex min-h-dvh flex-col">
       <header className="sticky top-0 z-20 border-b border-border-light bg-surface">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-1 px-1 sm:px-3">
           <button
-            onClick={() => router.push('/')}
+            onClick={() => guardDrafts(() => router.push('/'))}
             className="flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-xl text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary sm:px-2.5"
           >
             <ArrowLeftIcon className="h-5 w-5 sm:h-4 sm:w-4" />
@@ -439,7 +536,7 @@ export default function SettingsPage() {
           </button>
           <h1 className="min-w-0 flex-1 truncate px-1 text-base font-semibold text-text-primary">{t('settings.title')}</h1>
           {authEnabled && (
-            <button onClick={handleLogout} className="soft-button soft-button-danger mr-2 text-sm">
+            <button onClick={() => guardDrafts(() => void handleLogout())} className="soft-button soft-button-danger mr-2 text-sm">
               {t('auth.logout')}
             </button>
           )}
@@ -447,39 +544,60 @@ export default function SettingsPage() {
       </header>
 
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col lg:flex-row lg:gap-8 lg:px-4 lg:py-6">
-        {/* 同一份导航：<lg 是吸顶的横向页签，lg+ 是左侧竖排 */}
+        {/* 同一份导航：手机分类列表/详情，桌面左栏。 */}
         <nav
-          className="sticky top-14 z-10 flex gap-1 overflow-x-auto border-b border-border-light bg-surface px-2 lg:top-20 lg:w-44 lg:shrink-0 lg:flex-col lg:self-start lg:overflow-visible lg:border-0 lg:bg-transparent lg:px-0"
+          className={`${mobileDetail ? 'hidden' : 'flex'} flex-col gap-2 bg-surface p-3 lg:sticky lg:top-20 lg:flex lg:w-48 lg:shrink-0 lg:self-start lg:bg-transparent lg:p-0`}
           aria-label={t('settings.title')}
         >
           {SETTINGS_TABS.map(tab => (
+            <div key={tab.key}>
             <button
-              key={tab.key}
               type="button"
-              onClick={() => setActiveTab(tab.key)}
-              className={`min-h-11 shrink-0 whitespace-nowrap border-b-2 px-3 text-sm transition-colors lg:min-h-10 lg:rounded-xl lg:border-b-0 lg:text-left ${
+              onClick={() => selectSection(tab.key, 'engine')}
+              className={`flex min-h-11 w-full items-center justify-between rounded-xl border px-3 py-3 text-left text-sm transition-colors lg:py-2 ${
                 activeTab === tab.key
-                  ? 'border-accent font-medium text-accent-dark lg:bg-accent/12'
-                  : 'border-transparent text-text-secondary hover:text-text-primary lg:hover:bg-surface-2'
+                  ? 'border-accent/30 bg-accent/12 font-medium text-accent-dark'
+                  : 'border-border-light text-text-secondary hover:bg-surface-2 hover:text-text-primary lg:border-transparent'
               }`}
               aria-pressed={activeTab === tab.key}
             >
-              {t(tab.label)}
+              <span>{t(tab.label)}</span><ArrowLeftIcon className="h-4 w-4 rotate-180 lg:hidden" />
             </button>
+            {tab.key === 'memory' && <div className="mt-1 space-y-1 pl-4">
+              {MEMORY_PAGES.map(panel => <button key={panel.key} type="button" onClick={() => selectSection('memory', panel.key)} aria-pressed={activeTab === 'memory' && memoryPage === panel.key} className={`min-h-11 w-full rounded-xl px-3 text-left text-sm transition-colors ${activeTab === 'memory' && memoryPage === panel.key ? 'bg-accent/10 font-medium text-accent-dark' : 'text-text-secondary hover:bg-surface-2'}`}>{t(panel.label)}</button>)}
+            </div>}
+            </div>
           ))}
         </nav>
 
-        <main className="min-w-0 flex-1 space-y-4 px-3 py-4 sm:px-4 lg:max-w-[45rem] lg:p-0">
-            {activeTab === 'api' && (<>
+        <main className={`${mobileDetail ? 'block' : 'hidden'} min-w-0 flex-1 space-y-4 px-3 py-4 sm:px-4 lg:block lg:max-w-[45rem] lg:p-0`}>
+            <div className="flex items-center gap-2 lg:hidden">
+              <button type="button" onClick={backToList} aria-label={t('settings.backToList')} className="flex min-h-11 min-w-11 items-center justify-center rounded-xl text-text-secondary hover:bg-surface-2"><ArrowLeftIcon className="h-5 w-5" /></button>
+              <h2 className="text-base font-semibold text-text-primary">{t(activeTab === 'memory' ? MEMORY_PAGES.find(panel => panel.key === memoryPage)!.label : SETTINGS_TABS.find(tab => tab.key === activeTab)!.label)}</h2>
+            </div>
+            {settingsLoading && <p role="status" className="flex items-center gap-2 text-sm text-text-secondary"><span className="spinner-sm" aria-hidden="true" />{t('common.loading')}</p>}
+            {settingsError && <div role="alert" className="space-y-2 text-sm text-danger"><p>{t('settings.loadFailed')}: {settingsError}</p><button type="button" onClick={() => { setSettingsLoading(true); setSettingsError(null); loadInitialSettingsAndAuth(); }} className="soft-button soft-button-secondary">{t('common.retry')}</button></div>}
+            <fieldset disabled={settingsLoading || Boolean(settingsError)} className="min-w-0 space-y-4">
+            <div hidden={activeTab !== 'api'} className="space-y-4">
+            {/* 切换导航只重置菜单；供应商编辑内容仍由上层 hook 保留。 */}
             <ProviderSettingsSection
+              key={`${activeTab}-${mobileDetail}`}
               providers={providers}
               activeProviderId={activeProviderId}
               editingProvider={editingProvider}
-              setEditingProvider={setEditingProvider}
-              onActivateProvider={handleActivateProvider}
+              setEditingProvider={action => {
+                if (typeof action !== 'function' && action && providerDraftDirty) {
+                  setPendingSettingsAction({ message: t('settings.discardConfirm'), run: () => setEditingProvider(action), discard: false });
+                } else setEditingProvider(action);
+              }}
+              onActivateProvider={id => guardDrafts(() => void handleActivateProvider(id), t('settings.providerSwitchUnsavedConfirm'))}
               onDeleteProvider={handleDeleteProvider}
-              onSaveProvider={handleSaveProvider}
-              onSaveCurrentAsProvider={handleSaveCurrentAsProvider}
+              onSaveProvider={() => guardDrafts(() => void handleSaveProvider(), t('settings.providerSwitchUnsavedConfirm'), { ignoreProviderDraft: true })}
+              onSaveCurrentAsProvider={() => guardDrafts(() => void handleSaveCurrentAsProvider(), t('settings.providerSwitchUnsavedConfirm'))}
+              busy={providerBusy || saving !== 'idle' || settingsLoading || Boolean(settingsError) || providersLoading || Boolean(providersError)}
+              loading={providersLoading}
+              error={providersError}
+              onRetry={() => void loadProviders()}
               parseNumber={parseNumber}
               t={t}
             />
@@ -493,11 +611,16 @@ export default function SettingsPage() {
               onFetchModels={() => void fetchModels()}
               t={t}
             />
-            </>)}
+            </div>
 
-            {activeTab === 'generation' && (<>
+            <div hidden={activeTab !== 'generation'} className="space-y-4">
             <Link
               href="/settings/prompt-presets"
+              onClick={event => {
+                if (!hasUnsavedDrafts && !savingRef.current && !isProviderOperationPending()) return;
+                event.preventDefault();
+                guardDrafts(() => router.push('/settings/prompt-presets'));
+              }}
               className="surface-panel flex items-center justify-between gap-4 px-5 py-4 transition-shadow hover:shadow-md"
             >
               <div>
@@ -653,22 +776,11 @@ export default function SettingsPage() {
                 </label>
               </div>
             </section>
-            </>)}
+            </div>
 
-            {activeTab === 'memory' && (<>
-            <nav className="flex flex-wrap gap-2" aria-label={t('settings.tabMemory')}>
-              {MEMORY_ANCHORS.map(anchor => (
-                <button
-                  key={anchor.id}
-                  type="button"
-                  onClick={() => document.getElementById(anchor.id)?.scrollIntoView({ block: 'start' })}
-                  className="chip cursor-pointer hover:bg-surface-3"
-                >
-                  {t(anchor.label)}
-                </button>
-              ))}
-            </nav>
+            <div hidden={activeTab !== 'memory'} className="space-y-4">
             <MemoryEngineSection
+              showEngineParameters={memoryPage === 'engine'}
               settings={settings}
               embeddingModelList={embeddingModelList}
               embeddingModelLoading={embeddingModelLoading}
@@ -685,7 +797,7 @@ export default function SettingsPage() {
               parseNumber={parseNumber}
               t={t}
             >
-              <div id="settings-memory-index" className={MEMORY_ANCHOR_TARGET}>
+              <div hidden={memoryPage !== 'index'}>
               <MemoryIndexPanel
                 t={t}
                 status={memoryIndexPanel.status}
@@ -709,7 +821,7 @@ export default function SettingsPage() {
               />
               </div>
 
-              <div id="settings-memory-diagnostics" className={MEMORY_ANCHOR_TARGET}>
+              <div hidden={memoryPage !== 'index'}>
               <MemoryDiagnosticsPanel
                 t={t}
                 diagnostics={memoryIndexPanel.diagnostics}
@@ -719,7 +831,7 @@ export default function SettingsPage() {
               />
               </div>
 
-              <div id="settings-memory-profile" className={MEMORY_ANCHOR_TARGET}>
+              <div hidden={memoryPage !== 'profile'}>
               <MemoryProfilePanel
                 t={t}
                 management={memoryManagementPanel}
@@ -728,7 +840,7 @@ export default function SettingsPage() {
               />
               </div>
 
-              <div id="settings-memory-archive" className={MEMORY_ANCHOR_TARGET}>
+              <div hidden={memoryPage !== 'archive'}>
               <MemoryArchivePanel
                 t={t}
                 archive={memoryArchivePanel}
@@ -736,16 +848,16 @@ export default function SettingsPage() {
               />
               </div>
 
-              <div id="settings-memory-candidates" className={MEMORY_ANCHOR_TARGET}>
+              <div hidden={memoryPage !== 'candidates'}>
               <MemoryCandidatesPanel
                 t={t}
                 candidates={memoryCandidatesPanel}
               />
               </div>
             </MemoryEngineSection>
-            </>)}
+            </div>
 
-            {activeTab === 'appearance' && (
+            <div hidden={activeTab !== 'appearance'} className="space-y-4">
               <DisplaySettingsSection
                 settings={settings}
                 update={update}
@@ -753,29 +865,31 @@ export default function SettingsPage() {
                 applyFontStyle={applyFontStyle}
                 applyFontSize={applyFontSize}
               />
-            )}
+            </div>
 
-            {activeTab === 'advanced' && (<>
+            <div hidden={activeTab !== 'advanced'} className="space-y-4">
             <ErrorBoundary>
               <ImageGenSettingsSection settings={settings} update={update} parseNumber={parseNumber} t={t} />
             </ErrorBoundary>
 
             <MaintenanceSection t={t} />
-            </>)}
+            </div>
+            </fieldset>
         </main>
       </div>
 
-      <div className="sticky bottom-0 z-20 border-t border-border-light bg-surface">
+      <div className={`${mobileDetail || hasUnsavedDrafts ? 'block' : 'hidden'} sticky bottom-0 z-20 border-t border-border-light bg-surface lg:block`}>
         <div className="mx-auto flex max-w-5xl items-center gap-3 px-4 pb-[max(0.625rem,env(safe-area-inset-bottom))] pt-2.5">
           <p className="flex min-w-0 flex-1 items-center gap-2 text-sm text-text-secondary" aria-live="polite">
-            {hasUnsavedChanges && <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-accent" />}
-            <span className={`truncate ${hasUnsavedChanges ? '' : 'text-text-muted'}`}>
-              {hasUnsavedChanges ? t('common.unsavedChanges') : t('common.noUnsavedChanges')}
+            {hasUnsavedDrafts && <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-accent" />}
+            <span className={`truncate ${hasUnsavedDrafts ? '' : 'text-text-muted'}`}>
+              {hasUnsavedDrafts ? t('common.unsavedChanges') : t('common.noUnsavedChanges')}
             </span>
           </p>
+          <button type="button" onClick={() => guardDrafts(discardDrafts, t('settings.discardConfirm'), { discardBeforeRun: false })} disabled={!hasUnsavedDrafts || saving !== 'idle' || providerBusy} className="soft-button soft-button-secondary shrink-0 disabled:cursor-not-allowed disabled:opacity-50">{t('settings.discard')}</button>
           <button
             onClick={handleSave}
-            disabled={saving !== 'idle'}
+            disabled={saving !== 'idle' || providerBusy || settingsLoading || Boolean(settingsError) || providersLoading || Boolean(providersError)}
             className="soft-button soft-button-primary shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving === 'saving' && <span className="spinner-sm" aria-hidden="true" />}
@@ -783,6 +897,21 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+
+      <ConfirmModal
+        open={pendingSettingsAction !== null}
+        title={t('common.unsavedChanges')}
+        message={pendingSettingsAction?.message || ''}
+        danger
+        confirmLabel={t('settings.discard')}
+        onConfirm={() => {
+          const action = pendingSettingsAction;
+          setPendingSettingsAction(null);
+          if (action?.discard !== false) discardDrafts();
+          action?.run();
+        }}
+        onCancel={() => setPendingSettingsAction(null)}
+      />
 
       <ConfirmModal
         open={pendingCharacterId !== null}

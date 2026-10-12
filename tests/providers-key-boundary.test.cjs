@@ -231,3 +231,62 @@ test('/api/providers keeps masked api_key when api_base is unchanged', async () 
   assert.equal(response.status, 200);
   assert.equal(provider.api_key, 'old-provider-key');
 });
+
+test('/api/providers can retry masked synchronization from server settings after a refresh', async () => {
+  const db = createProviderDb();
+  try {
+    const existing = insertProvider(db);
+    const persisted = {
+      active_provider_id: existing.id,
+      api_base: 'https://saved-provider.example/v1',
+      api_key: 'new-saved-settings-key',
+      model: 'saved-model', temperature: 0.9, max_tokens: 8192,
+      context_window: 65536, json_mode: true,
+    };
+    for (const [key, value] of Object.entries(persisted)) upsertSetting(db, key, value);
+    const route = loadRoute(db);
+    const response = await route.PUT(jsonRequest({
+      id: existing.id, sync_from_settings: true, api_key: API_KEY_MASK,
+      api_base: existing.api_base, model: 'stale-browser-model', save_as_current: true,
+    }));
+    assert.equal(response.status, 200);
+    const provider = db.prepare('SELECT * FROM api_providers WHERE id = ?').get(existing.id);
+    for (const key of ['api_base', 'api_key', 'model', 'temperature', 'max_tokens', 'context_window']) {
+      assert.equal(provider[key], persisted[key], key);
+      assert.equal(getSetting(db, key), persisted[key], `global ${key} stays authoritative`);
+    }
+    assert.equal(provider.json_mode, 1);
+    assert.equal(getSetting(db, 'json_mode'), true);
+    assert.equal(JSON.stringify(await response.json()).includes(persisted.api_key), false);
+    const publicList = await route.GET(jsonRequest({}));
+    assert.equal((await publicList.json()).providers[0].api_key, API_KEY_MASK);
+  } finally { db.close(); }
+});
+
+test('/api/providers synchronization copies an explicitly cleared server key', async () => {
+  const db = createProviderDb();
+  try {
+    const existing = insertProvider(db);
+    upsertSetting(db, 'active_provider_id', existing.id);
+    upsertSetting(db, 'api_base', 'https://new-provider.example/v1');
+    upsertSetting(db, 'api_key', '');
+    const route = loadRoute(db);
+    const response = await route.PUT(jsonRequest({ id: existing.id, sync_from_settings: true, api_key: API_KEY_MASK }));
+    assert.equal(response.status, 200);
+    assert.equal(db.prepare('SELECT api_key FROM api_providers WHERE id = ?').get(existing.id).api_key, '');
+  } finally { db.close(); }
+});
+
+test('/api/providers refuses synchronization when another provider became active', async () => {
+  const db = createProviderDb();
+  try {
+    const existing = insertProvider(db);
+    upsertSetting(db, 'active_provider_id', '22222222-2222-4222-8222-222222222222');
+    upsertSetting(db, 'api_key', 'other-provider-key');
+    const route = loadRoute(db);
+    const response = await route.PUT(jsonRequest({ id: existing.id, sync_from_settings: true }));
+    assert.equal(response.status, 409);
+    assert.equal(db.prepare('SELECT api_key FROM api_providers WHERE id = ?').get(existing.id).api_key, 'old-provider-key');
+    assert.equal(getSetting(db, 'api_key'), 'other-provider-key');
+  } finally { db.close(); }
+});

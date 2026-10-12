@@ -247,6 +247,66 @@ function loadMemoryList() {
   };
   try { return require('../src/components/memories/MemoryList.tsx').default; } finally { Module._load = loadOriginal; }
 }
+test('memory list does not display an empty result before a slow load completes', async () => {
+  const request = deferred();
+  global.fetch = () => request.promise;
+  const MemoryList = loadMemoryList();
+  const view = render(React.createElement(MemoryList, { characterId: 'a' }));
+  assert.ok(view.getByRole('status', { name: 'common.loading' }));
+  assert.equal(view.queryByText('memory.emptyFiltered'), null);
+  await act(async () => { request.resolve(json({ memories: [], total: 0, hasMore: false })); });
+  await view.findByText('memory.emptyFiltered');
+  assert.equal(view.queryByRole('status'), null);
+});
+
+test('memory list keeps a newer character load busy when an old request finishes', async () => {
+  const oldRequest = deferred(), newRequest = deferred();
+  global.fetch = url => new URL(url, 'http://test').searchParams.get('character_id') === 'a'
+    ? oldRequest.promise : newRequest.promise;
+  const MemoryList = loadMemoryList();
+  const view = render(React.createElement(MemoryList, { characterId: 'a' }));
+  view.rerender(React.createElement(MemoryList, { characterId: 'b' }));
+  await act(async () => { oldRequest.resolve(json({ memories: [{ id: 'a', content: 'old memory', tags: [] }], total: 1, hasMore: false })); });
+  assert.ok(view.getByRole('status', { name: 'common.loading' }));
+  assert.equal(view.queryByText('old memory'), null);
+  assert.equal(view.queryByText('memory.emptyFiltered'), null);
+  await act(async () => { newRequest.resolve(json({ memories: [{ id: 'b', content: 'new memory', tags: [] }], total: 1, hasMore: false })); });
+  await view.findByText('new memory');
+  assert.equal(view.queryByRole('status'), null);
+});
+
+test('memory list renders a retryable load error instead of an empty result', async () => {
+  let calls = 0;
+  global.fetch = async () => ++calls === 1
+    ? new Response('{}', { status: 503 })
+    : json({ memories: [], total: 0, hasMore: false });
+  const MemoryList = loadMemoryList();
+  const view = render(React.createElement(MemoryList, { characterId: 'a' }));
+  assert.match((await view.findByRole('alert')).textContent, /common.loadFailed/);
+  assert.equal(view.queryByText('memory.emptyFiltered'), null);
+  fireEvent.click(view.getByRole('button', { name: 'common.retry' }));
+  await view.findByText('memory.emptyFiltered');
+  assert.equal(view.queryByRole('alert'), null);
+  assert.equal(calls, 2);
+});
+
+test('memory list keeps existing cards mounted while refreshing the same query and on refresh failure', async () => {
+  const request = deferred();
+  let calls = 0;
+  global.fetch = () => ++calls === 1
+    ? Promise.resolve(json({ memories: [{ id: 'a', content: 'memory a', tags: [] }], total: 1, hasMore: false }))
+    : request.promise;
+  const MemoryList = loadMemoryList();
+  const view = render(React.createElement(MemoryList, { characterId: 'a' }));
+  const card = await view.findByText('memory a');
+  view.rerender(React.createElement(MemoryList, { characterId: 'a', refreshNonce: 1 }));
+  assert.equal(view.getByText('memory a'), card, 'background refresh must not unmount an editor');
+  assert.ok(view.getByRole('status', { name: 'common.loading' }));
+  await act(async () => { request.resolve(new Response('{}', { status: 503 })); });
+  await view.findByRole('alert');
+  assert.equal(view.getByText('memory a'), card, 'a refresh failure must preserve the editor and its draft');
+  assert.equal(view.queryByRole('status'), null);
+});
 test('a late memory deletion cannot replace the newly selected character list or refresh A', async () => {
   const deletion = deferred(); const gets = [];
   global.fetch = (url, init) => {

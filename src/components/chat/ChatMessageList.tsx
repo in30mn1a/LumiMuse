@@ -10,6 +10,7 @@ import { sanitizeGeneratedImages } from '@/lib/generated-image-assets';
 import { warmImageBlobs } from '@/lib/image-blob-cache';
 import type { TextHighlightRange } from '@/lib/text-highlight';
 import { MemoryIcon } from '@/components/ui/icons';
+import ContentState from '@/components/ui/ContentState';
 import MessageBubble from './MessageBubble';
 
 interface VersionInfo {
@@ -35,7 +36,8 @@ interface Props {
   hasOlderMessages: boolean;
   loadingOlderMessages: boolean;
   showTimestamps: boolean;
-  activeConvId: string | null;
+  loadingThread?: boolean;
+  loadFailed?: boolean;
   streamingText: string;
   character: Character;
   streamingBubble: React.ReactNode;
@@ -86,7 +88,8 @@ function ChatMessageList(
     hasOlderMessages,
     loadingOlderMessages,
     showTimestamps,
-    activeConvId,
+    loadingThread = false,
+    loadFailed = false,
     streamingText,
     character,
     streamingBubble,
@@ -227,41 +230,13 @@ function ChatMessageList(
       // lg+ 用内边距把消息列限宽 50rem 居中，不改虚拟列表的 DOM 结构。
       className="[overflow-anchor:none] min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 md:px-5 md:py-5 lg:px-[max(1.5rem,calc((100%-50rem)/2))]"
     >
-      {/* 对话切换加载骨架屏：消息为空但对话存在时显示 */}
-      {isEmpty && activeConvId && (
-        <div className="flex flex-col gap-5 py-2" aria-hidden="true">
-          <div className="flex gap-3">
-            <div className="hidden h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10 md:block" />
-            <div className="flex flex-col gap-1.5">
-              <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" />
-              <div className="h-16 w-56 animate-pulse rounded-2xl border border-border-light bg-surface/80" style={{ animationDelay: '60ms' }} />
-            </div>
-          </div>
-          <div className="flex flex-row-reverse gap-3">
-            <div className="flex flex-col items-end gap-1.5">
-              <div className="h-3 w-10 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '120ms' }} />
-              <div className="h-10 w-44 animate-pulse rounded-2xl bg-accent/15" style={{ animationDelay: '120ms' }} />
-            </div>
-          </div>
-          <div className="flex gap-3">
-            <div className="hidden h-10 w-10 shrink-0 animate-pulse rounded-2xl bg-accent/10 md:block" style={{ animationDelay: '180ms' }} />
-            <div className="flex flex-col gap-1.5">
-              <div className="h-3 w-16 animate-pulse rounded-full bg-border-light" style={{ animationDelay: '180ms' }} />
-              <div className="h-20 w-72 animate-pulse rounded-2xl border border-border-light bg-surface/80" style={{ animationDelay: '180ms' }} />
-            </div>
-          </div>
-        </div>
+      {isEmpty && loadingThread && (
+        <ContentState mode="loading" title={t('common.loading')} className="py-6" />
       )}
 
-      {isEmpty && !activeConvId && (
+      {isEmpty && !loadingThread && !loadFailed && (
         <div className="flex h-full min-h-[18rem] items-center justify-center">
-          <div className="max-w-md text-center">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-accent/15 to-accent-light/25 text-accent-dark empty-breathe">
-              <MemoryIcon className="h-6 w-6" />
-            </div>
-            <p className="text-base font-medium text-text-primary">{t('chat.emptyConversation')}</p>
-            <p className="mt-2 text-sm text-text-muted">{t('chat.emptyConversationBody')}</p>
-          </div>
+          <ContentState mode="empty" title={t('chat.emptyConversation')} description={t('chat.emptyConversationBody')} icon={<MemoryIcon className="h-6 w-6" />} className="max-w-md" />
         </div>
       )}
 
@@ -274,7 +249,7 @@ function ChatMessageList(
           <button
             onClick={onLoadOlder}
             disabled={loadingOlderMessages}
-            className="chip cursor-pointer text-xs hover:border-accent/30 hover:bg-accent/8 hover:text-accent-dark"
+            className="chip min-h-11 cursor-pointer text-xs hover:border-accent/30 hover:bg-accent/8 hover:text-accent-dark"
           >
             {loadingOlderMessages ? t('chat.loadingOlder') : t('chat.loadOlder')}
           </button>

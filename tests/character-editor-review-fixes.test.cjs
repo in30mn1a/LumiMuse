@@ -65,7 +65,6 @@ async function mount({ strict = false, marker = true } = {}) {
     '@/lib/image-blob-cache': { forgetImageBlobs: async () => {} },
     ...Object.fromEntries(['PresetSelectField', 'ModelPresetBindingsField', 'CharacterTaskModelsField'].map(name => [`@/components/ui/${name}`, { __esModule: true, default: () => null }])),
     '@/components/characters/CharacterExportDialog': { CharacterExportDialog: () => null },
-    '@/components/characters/CharacterAiGeneratorPanel': { CharacterAiGeneratorPanel: () => null },
   }).default;
   const element = React.createElement(Editor, { params: params() });
   const view = render(strict ? React.createElement(React.StrictMode, null, element) : element);
@@ -173,6 +172,9 @@ test('save and cancel are mutually exclusive while PUT is pending', async () => 
   fireEvent.change(view.getByPlaceholderText('editor.namePlaceholder'), { target: { value: 'Saved name' } });
   fireEvent.click(view.getByText('editor.save'));
   fireEvent.click(view.getByText('editor.cancel'));
+  assert.equal(view.getByRole('button', { name: 'common.discardChanges' }).disabled, true);
+  fireEvent.click(view.getByRole('button', { name: 'common.discardChanges' }));
+  assert.ok(!view.queryByText('common.discardChangesConfirm'));
   assert.ok(!view.queryByText('editor.confirmDiscard'));
   assert.equal(calls.filter(call => call.method === 'DELETE').length, 0);
   await act(async () => { resolve(); });
@@ -231,6 +233,139 @@ test('unblurred user tag drafts also trigger discard protection', async () => {
   assert.equal(event.defaultPrevented, true);
   fireEvent.click(view.getByText('editor.cancel'));
   assert.ok(view.queryByText('editor.confirmDiscard'));
+  assert.equal(pushes.length, 0);
+});
+
+test('discard restores the saved form and both tag drafts without leaving or deleting a new character', async () => {
+  const view = await mount();
+  const discard = view.getByRole('button', { name: 'common.discardChanges' });
+  assert.equal(discard.disabled, true);
+  const name = view.getByPlaceholderText('editor.namePlaceholder');
+  fireEvent.change(name, { target: { value: 'Unsaved name' } });
+  fireEvent.click(view.getByRole('tab', { name: 'editor.tabImage' }));
+  const imageTags = view.container.querySelector('input[placeholder^="1girl"]');
+  const userTags = view.container.querySelector('input[placeholder^="1boy"]');
+  fireEvent.change(imageTags, { target: { value: 'unsaved image tag' } });
+  fireEvent.change(userTags, { target: { value: 'unsaved user tag' } });
+  fireEvent.click(discard);
+  assert.ok(view.getByText('common.discardChangesConfirm'));
+  fireEvent.click(view.getByRole('button', { name: 'common.cancel' }));
+  assert.equal(name.value, 'Unsaved name');
+  assert.equal(imageTags.value, 'unsaved image tag');
+  fireEvent.click(discard);
+  fireEvent.click(view.getByRole('button', { name: 'common.confirm' }));
+  await waitFor(() => assert.equal(name.value, 'New Character'));
+  assert.equal(view.container.querySelector('input[placeholder^="1girl"]').value, '');
+  assert.equal(view.container.querySelector('input[placeholder^="1boy"]').value, '');
+  assert.equal(view.getByRole('tab', { name: 'editor.tabImage' }).getAttribute('aria-selected'), 'true');
+  assert.equal(discard.disabled, true);
+  assert.equal(view.getAllByText('editor.save').length, 1);
+  assert.equal(view.getAllByText('editor.cancel').length, 1);
+  const beforeUnload = new window.Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(beforeUnload);
+  assert.equal(beforeUnload.defaultPrevented, false);
+  assert.equal(pushes.length, 0);
+  assert.equal(calls.filter(call => call.method === 'PUT' || call.method === 'DELETE').length, 0);
+  assert.ok(db.prepare('SELECT id FROM characters WHERE id = ?').get(character.id));
+  fireEvent.click(view.getByText('editor.cancel'));
+  await waitFor(() => assert.equal(pushes.length, 1));
+  assert.equal(db.prepare('SELECT id FROM characters WHERE id = ?').get(character.id), undefined);
+});
+
+test('discard rejects a late avatar response without deleting the uploaded file', async () => {
+  const view = await mount();
+  const originalFetch = global.fetch;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  global.fetch = async (url, init) => {
+    if (url !== '/api/upload') return originalFetch(url, init);
+    await pending;
+    return json({ url: '/avatars/late-upload.png' });
+  };
+  fireEvent.change(view.getByPlaceholderText('editor.namePlaceholder'), { target: { value: 'Draft' } });
+  fireEvent.change(view.container.querySelector('input[accept="image/*"]'), {
+    target: { files: [new File(['fixture'], 'avatar.png', { type: 'image/png' })] },
+  });
+  fireEvent.click(view.getByRole('button', { name: 'common.discardChanges' }));
+  fireEvent.click(view.getByRole('button', { name: 'common.confirm' }));
+  await act(async () => { release(); });
+  assert.equal(view.getByPlaceholderText('editor.namePlaceholder').value, 'New Character');
+  assert.equal(view.container.querySelector('img[src="/avatars/late-upload.png"]'), null);
+  assert.equal(view.getByRole('button', { name: 'common.discardChanges' }).disabled, true);
+  assert.equal(calls.filter(call => call.method === 'DELETE').length, 0);
+});
+
+test('discard preserves saved image tags while removing newly committed tags', async () => {
+  db.prepare('UPDATE characters SET image_tags = ?, user_image_tags = ? WHERE id = ?')
+    .run('saved image tag', 'saved user tag', character.id);
+  const view = await mount();
+  fireEvent.click(view.getByRole('tab', { name: 'editor.tabImage' }));
+  const imageTags = view.container.querySelector('#editor-panel-image input');
+  fireEvent.change(imageTags, { target: { value: 'new image tag' } });
+  fireEvent.keyDown(imageTags, { key: 'Enter' });
+  assert.ok(view.getByText('new image tag'));
+  fireEvent.click(view.getByRole('button', { name: 'common.discardChanges' }));
+  fireEvent.click(view.getByRole('button', { name: 'common.confirm' }));
+  assert.ok(view.getByText('saved image tag', { selector: 'span' }));
+  assert.ok(view.getByText('saved user tag', { selector: 'span' }));
+  assert.equal(view.queryByText('new image tag'), null);
+  assert.equal(view.getByRole('button', { name: 'common.discardChanges' }).disabled, true);
+});
+
+test('discard rejects a late imported form while preserving the completed import notification', async context => {
+  const originalSetTimeout = global.setTimeout;
+  context.mock.method(global, 'setTimeout', (callback, delay, ...args) => {
+    const timer = originalSetTimeout(callback, delay, ...args);
+    if (delay === 5000) timer.unref();
+    return timer;
+  });
+  const view = await mount();
+  const originalFetch = global.fetch;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  global.fetch = async (url, init) => {
+    if (!url.startsWith('/api/import?')) return originalFetch(url, init);
+    await pending;
+    return json({ ok: true, characterDraft: { name: 'Late imported name' }, memoriesImported: 1 });
+  };
+  fireEvent.change(view.getByPlaceholderText('editor.namePlaceholder'), { target: { value: 'Draft' } });
+  fireEvent.change(view.container.querySelector('input[accept=".json,application/json"]'), {
+    target: { files: [new File(['{}'], 'character.json', { type: 'application/json' })] },
+  });
+  fireEvent.click(view.getByRole('button', { name: 'import.apply' }));
+  fireEvent.click(view.getByRole('button', { name: 'common.cancel' }));
+  fireEvent.click(view.getByRole('button', { name: 'common.discardChanges' }));
+  fireEvent.click(view.getByRole('button', { name: 'common.confirm' }));
+  await act(async () => { release(); });
+  assert.equal(view.getByPlaceholderText('editor.namePlaceholder').value, 'New Character');
+  assert.equal(view.getByRole('button', { name: 'common.discardChanges' }).disabled, true);
+  assert.ok(view.getByText(/import.successPrefix1 import.memoriesUnit/));
+  assert.equal(view.queryByText(/import.characterFormHint/), null);
+  assert.equal(calls.filter(call => call.method === 'PUT' || call.method === 'DELETE').length, 0);
+});
+
+for (const status of [200, 503]) test(`discard ignores a late AI generation response (${status})`, async () => {
+  const view = await mount();
+  const originalFetch = global.fetch;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  global.fetch = async (url, init) => {
+    if (url !== '/api/characters/generate') return originalFetch(url, init);
+    await pending;
+    return json(status === 200 ? { name: 'Late AI name' } : { error: 'Late AI error' }, status);
+  };
+  fireEvent.click(view.getByRole('button', { name: 'common.more' }));
+  fireEvent.click(view.getByRole('menuitem', { name: 'editor.aiGenerate' }));
+  fireEvent.change(view.getByPlaceholderText('editor.aiRequirementPlaceholder'), { target: { value: 'Fixture generation' } });
+  fireEvent.change(view.getByPlaceholderText('editor.namePlaceholder'), { target: { value: 'Draft' } });
+  fireEvent.click(view.getByRole('button', { name: 'editor.aiApplyHint' }));
+  assert.ok(view.getByRole('button', { name: 'editor.aiGenerating' }).disabled);
+  fireEvent.click(view.getByRole('button', { name: 'common.discardChanges' }));
+  fireEvent.click(view.getByRole('button', { name: 'common.confirm' }));
+  await act(async () => { release(); });
+  assert.equal(view.getByPlaceholderText('editor.namePlaceholder').value, 'New Character');
+  assert.equal(view.getByRole('button', { name: 'common.discardChanges' }).disabled, true);
+  assert.equal(view.queryByText('Late AI error'), null);
   assert.equal(pushes.length, 0);
 });
 

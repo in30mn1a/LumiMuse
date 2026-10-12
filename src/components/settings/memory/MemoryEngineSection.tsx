@@ -22,6 +22,7 @@ interface MemoryEngineSectionProps {
   parseNumber: (value: string) => number;
   t: (key: string) => string;
   children: ReactNode;
+  showEngineParameters?: boolean;
 }
 
 export function MemoryEngineSection({
@@ -41,14 +42,16 @@ export function MemoryEngineSection({
   parseNumber,
   t,
   children,
+  showEngineParameters = true,
 }: MemoryEngineSectionProps) {
   return (
     <section className="surface-panel p-5">
-      <div className="mb-4">
+      <div hidden={!showEngineParameters} className="mb-4">
         <h2 className="section-title text-lg">{t('settings.memoryEngine')}</h2>
       </div>
 
       <div className="space-y-3">
+        <div hidden={!showEngineParameters} className="space-y-3">
         <label className="flex items-start gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input
             id="settings-memory-index-enabled"
@@ -264,8 +267,10 @@ export function MemoryEngineSection({
             {t('settings.memoryAllowExternalPayloads')}
           </label>
         </div>
+        </div>
         {children}
 
+        <div hidden={!showEngineParameters} className="space-y-3">
         <div className="border-t border-border-light pt-3" />
 
         <label className="flex items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
@@ -373,6 +378,7 @@ export function MemoryEngineSection({
             />
           </div>
         )}
+        </div>
       </div>
     </section>
   );

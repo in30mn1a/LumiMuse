@@ -153,7 +153,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
 
   return (
     <Root
-      className={`group border-b border-border-light px-4 py-3 transition-colors last:border-b-0 ${selectMode ? 'cursor-pointer' : 'hover:bg-surface/70 dark:hover:bg-white/10'} ${editing ? 'bg-surface/70 dark:bg-white/10' : ''} ${selectMode && selected ? 'bg-[rgba(155,124,240,0.06)] dark:bg-[rgba(155,124,240,0.15)]' : ''}`}
+      className={`group border-b border-border-light px-4 py-3 transition-colors last:border-b-0 ${selectMode ? 'cursor-pointer' : 'hover:bg-surface-2'} ${editing ? 'bg-surface-2' : ''} ${selectMode && selected ? 'bg-accent/10' : ''}`}
     >
       <div className="flex gap-3">
         {selectMode && (
@@ -310,7 +310,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                         type="button"
                         onClick={e => { e.preventDefault(); e.stopPropagation(); onTagClick?.(tag); }}
                         title={t('memory.filterByTag').replace('{tag}', tag)}
-                        className="chip px-2 py-1 text-xs transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
+                        className="chip min-h-11 px-2 py-1 text-xs transition-colors hover:border-accent-dark/40 hover:text-accent-dark"
                       >
                         #{tag}
                       </button>
@@ -326,11 +326,11 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       onClick={e => { e.stopPropagation(); void handleSave(); }}
                       disabled={isPending}
                       aria-busy={pendingAction === 'save'}
-                      className="soft-button soft-button-primary h-8 min-h-0 px-3 py-0 text-xs"
+                      className="soft-button soft-button-primary h-11 min-h-11 px-3 py-0 text-xs"
                     >
                       {pendingAction === 'save' ? t('memory.saving') : t('memory.save')}
                     </button>
-                    <button type="button" onClick={e => { e.stopPropagation(); handleCancel(); }} disabled={isPending} className="soft-button soft-button-secondary h-8 min-h-0 px-3 py-0 text-xs">
+                    <button type="button" onClick={e => { e.stopPropagation(); handleCancel(); }} disabled={isPending} className="soft-button soft-button-secondary h-11 min-h-11 px-3 py-0 text-xs">
                       {t('memory.cancel')}
                     </button>
                   </div>
@@ -344,7 +344,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       aria-busy={pendingAction === 'pin'}
                       aria-label={pendingAction === 'pin' ? t('memory.updating') : (memory.pinned ? t('memory.unpin') : t('memory.pin'))}
                       title={memory.pinned ? t('memory.unpin') : t('memory.pin')}
-                      className={`soft-button h-8 min-h-0 w-8 rounded-full px-0 py-0 text-xs ${memory.pinned ? 'soft-button-primary' : 'soft-button-secondary'}`}
+                      className={`soft-button h-11 min-h-11 w-11 min-w-11 rounded-full px-0 py-0 text-xs ${memory.pinned ? 'soft-button-primary' : 'soft-button-secondary'}`}
                     >
                       <PinIcon className="h-3.5 w-3.5" />
                     </button>
@@ -354,7 +354,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       disabled={isPending}
                       aria-label={t('memory.edit')}
                       title={t('memory.edit')}
-                      className="soft-button soft-button-secondary h-8 min-h-0 w-8 rounded-full px-0 py-0 text-xs"
+                      className="soft-button soft-button-secondary h-11 min-h-11 w-11 min-w-11 rounded-full px-0 py-0 text-xs"
                     >
                       <PencilIcon className="h-3.5 w-3.5" />
                     </button>
@@ -365,7 +365,7 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
                       aria-busy={pendingAction === 'delete'}
                       aria-label={pendingAction === 'delete' ? t('memory.deleting') : t('memory.delete')}
                       title={t('memory.delete')}
-                      className="soft-button soft-button-danger h-8 min-h-0 w-8 rounded-full px-0 py-0 text-xs"
+                      className="soft-button soft-button-danger h-11 min-h-11 w-11 min-w-11 rounded-full px-0 py-0 text-xs"
                     >
                       <TrashIcon className="h-3.5 w-3.5" />
                     </button>

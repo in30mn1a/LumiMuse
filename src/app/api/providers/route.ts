@@ -149,6 +149,24 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: '供应商不存在' }, { status: 404 });
   }
 
+  if (body.sync_from_settings) {
+    const current = loadSettings();
+    if (current.active_provider_id !== body.id) {
+      return NextResponse.json({ error: '当前供应商已变化，请刷新设置后重试' }, { status: 409 });
+    }
+    // 统一保存从服务端读取密钥，刷新后的掩码也能重试，不会回写旧供应商密钥。
+    Object.assign(body, {
+      api_base: current.api_base,
+      api_key: current.api_key,
+      model: current.model,
+      temperature: current.temperature,
+      max_tokens: current.max_tokens,
+      context_window: current.context_window,
+      json_mode: current.json_mode,
+      save_as_current: false,
+    });
+  }
+
   const existingApiBase = existing.api_base as string;
   const apiKey = resolveProviderKey({
     incoming: body.api_key,

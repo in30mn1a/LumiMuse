@@ -167,6 +167,32 @@ test('预设列表把非 2xx 加载失败显示在页面上，而不是伪装成
   ]);
 });
 
+test('预设列表慢加载先显示可访问占位，成功空列表才显示空态', async () => {
+  const request = deferred();
+  global.fetch = () => request.promise;
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/page.tsx');
+  const view = render(React.createElement(Component));
+  assert.ok(view.getByRole('status', { name: 'preset.loading' }));
+  assert.equal(view.queryByText('preset.empty'), null);
+  await act(async () => { request.resolve(jsonResponse({ presets: [] })); });
+  await view.findByText('preset.empty');
+  assert.equal(view.queryByRole('status'), null);
+});
+
+test('预设详情慢加载不提前显示不存在或空条目', async () => {
+  const request = deferred();
+  global.fetch = () => request.promise.then(response => response.clone());
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/[id]/page.tsx', { unwrapParams: true });
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  assert.ok(view.getByRole('status', { name: 'preset.loading' }));
+  assert.equal(view.queryByText('preset.notFound'), null);
+  assert.equal(view.queryByText('preset.noEntries'), null);
+  await act(async () => { request.resolve(jsonResponse({ ...PRESET, entries: [] })); });
+  await view.findByRole('heading', { name: PRESET.name });
+  assert.equal(view.queryByRole('status'), null);
+  assert.equal(view.getAllByText('preset.noEntries').length, 2);
+});
+
 test('预设列表创建使用同步 pending guard，快速双击只发送一次 POST', async () => {
   const createRequest = deferred();
   let createCalls = 0;

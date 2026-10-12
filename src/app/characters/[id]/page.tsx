@@ -149,6 +149,9 @@ export default function CharacterEditor({ params }: Props) {
   const cleanupEligibleRef = useRef<string | null>(null);
   const creationFlowEndedRef = useRef(false);
   const characterRef = useRef<Character | null>(null);
+  const savedCharacterRef = useRef<Character | null>(null);
+  const draftRevisionRef = useRef(0);
+  const [tagResetRevision, setTagResetRevision] = useState(0);
   const [tagDrafts, setTagDrafts] = useState({ image_tags: '', user_image_tags: '' });
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -157,7 +160,7 @@ export default function CharacterEditor({ params }: Props) {
   // - handleSave() 成功后置为 false
   // 用于：取消按钮二次确认 + beforeunload 浏览器关闭/刷新拦截
   const [dirty, setDirty] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<'discard' | 'delete' | 'duplicate' | null>(null);
+  const [confirmAction, setConfirmAction] = useState<'discard' | 'reset' | 'delete' | 'duplicate' | null>(null);
   const [tab, setTab] = useState<EditorTab>('identity');
   const [moreOpen, setMoreOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -179,13 +182,20 @@ export default function CharacterEditor({ params }: Props) {
   }, [creationMarker, id]);
 
   useEffect(() => {
+    draftRevisionRef.current += 1;
     let cancelled = false;
     void (async () => {
       try {
         const loadedCharacter = await parseJsonResponse<Character>(await fetch(`/api/characters/${id}`));
         if (!cancelled) {
+          savedCharacterRef.current = loadedCharacter;
           characterRef.current = loadedCharacter;
           setCharacter(loadedCharacter);
+          setDirty(false);
+          setTagDrafts({ image_tags: '', user_image_tags: '' });
+          setTagResetRevision(value => value + 1);
+          setAiGenerating(false);
+          setAiError('');
         }
       } catch (error) {
         if (!cancelled) {
@@ -278,6 +288,21 @@ export default function CharacterEditor({ params }: Props) {
       return;
     }
     void discardAndLeave();
+  };
+
+  const resetFormChanges = () => {
+    const savedCharacter = savedCharacterRef.current;
+    if (operationRef.current || savedCharacter?.id !== id) return;
+    // 放弃只恢复表单，不撤销导入数据或删除已上传文件；迟到响应不能再覆盖快照。
+    draftRevisionRef.current += 1;
+    characterRef.current = savedCharacter;
+    setCharacter(savedCharacter);
+    setDirty(false);
+    setTagDrafts({ image_tags: '', user_image_tags: '' });
+    setTagResetRevision(value => value + 1);
+    setAiGenerating(false);
+    setAiError('');
+    setConfirmAction(null);
   };
 
   const handleSave = async () => {
@@ -408,11 +433,13 @@ export default function CharacterEditor({ params }: Props) {
   const handleAvatarUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !character) return;
+    const draftRevision = draftRevisionRef.current;
     const formData = new FormData();
     formData.append('avatar', file);
     const response = await fetch('/api/upload', { method: 'POST', body: formData });
     if (response.ok) {
       const { url } = await response.json();
+      if (draftRevisionRef.current !== draftRevision) return;
       setDirty(true);
       setCharacter({ ...character, avatar_url: url });
     }
@@ -435,6 +462,7 @@ export default function CharacterEditor({ params }: Props) {
     includeEmbeddings: boolean;
   }) => {
     if (!pendingImport || !character) return;
+    const draftRevision = draftRevisionRef.current;
 
     try {
       const params = new URLSearchParams({
@@ -454,7 +482,8 @@ export default function CharacterEditor({ params }: Props) {
       const data = await response.json() as ImportResponse;
       if (!response.ok || !data.ok) throw new Error(data.error || t('editor.importError'));
 
-      if (options.includeCharacter && data.characterDraft) {
+      const applyCharacterDraft = options.includeCharacter && data.characterDraft && draftRevisionRef.current === draftRevision;
+      if (applyCharacterDraft) {
         setDirty(true);
         setCharacter({ ...character, ...data.characterDraft });
       }
@@ -469,7 +498,7 @@ export default function CharacterEditor({ params }: Props) {
       if (data.embeddingsImported) parts.push(`${data.embeddingsImported} ${t('import.embeddingsUnit')}`);
       const summary = parts.length > 0 ? parts.join('，') : t('import.nothingImported');
       const warnings = data.warnings?.flatMap(warning => warning.message ? [warning.message] : []) ?? [];
-      setImportMsg({ type: 'ok', text: `${t('import.successPrefix')}${summary}。${t('import.characterFormHint')}${warnings.length ? ` ${warnings.join(' ')}` : ''}` });
+      setImportMsg({ type: 'ok', text: `${t('import.successPrefix')}${summary}。${applyCharacterDraft ? t('import.characterFormHint') : ''}${warnings.length ? ` ${warnings.join(' ')}` : ''}` });
     } catch (err) {
       setImportMsg({ type: 'err', text: err instanceof Error ? err.message : t('editor.importError') });
     } finally {
@@ -480,6 +509,7 @@ export default function CharacterEditor({ params }: Props) {
   };
   const handleGenerateCharacter = async () => {
     if (!character || !aiRequirement.trim()) return;
+    const draftRevision = draftRevisionRef.current;
     setAiGenerating(true);
     setAiError('');
 
@@ -493,6 +523,7 @@ export default function CharacterEditor({ params }: Props) {
         }),
       });
       const data = await response.json();
+      if (draftRevisionRef.current !== draftRevision) return;
       if (!response.ok) {
         throw new Error(data.error || t('editor.aiGenerateError'));
       }
@@ -511,9 +542,11 @@ export default function CharacterEditor({ params }: Props) {
         image_tags: data.image_tags ?? character.image_tags,
       });
     } catch (err) {
-      setAiError(err instanceof Error ? err.message : t('editor.aiGenerateError'));
+      if (draftRevisionRef.current === draftRevision) {
+        setAiError(err instanceof Error ? err.message : t('editor.aiGenerateError'));
+      }
     } finally {
-      setAiGenerating(false);
+      if (draftRevisionRef.current === draftRevision) setAiGenerating(false);
     }
   };
 
@@ -555,6 +588,8 @@ export default function CharacterEditor({ params }: Props) {
             ? t('editor.delete')
             : confirmAction === 'duplicate'
             ? t('editor.duplicate')
+            : confirmAction === 'reset'
+            ? t('common.discardChanges')
             : t('editor.cancel')
         }
         message={
@@ -562,9 +597,11 @@ export default function CharacterEditor({ params }: Props) {
             ? t('editor.deleteConfirm')
             : confirmAction === 'duplicate'
             ? t('editor.duplicateConfirm')
+            : confirmAction === 'reset'
+            ? t('common.discardChangesConfirm')
             : t('editor.confirmDiscard')
         }
-        danger={confirmAction === 'delete' || confirmAction === 'discard'}
+        danger={confirmAction === 'delete' || confirmAction === 'discard' || confirmAction === 'reset'}
         busy={saving || deleting || duplicating || leaving}
         confirmLabel={
           confirmAction === 'delete'
@@ -580,6 +617,8 @@ export default function CharacterEditor({ params }: Props) {
             void handleDuplicate();
           } else if (confirmAction === 'discard') {
             void discardAndLeave();
+          } else if (confirmAction === 'reset') {
+            resetFormChanges();
           }
         }}
         onCancel={() => setConfirmAction(null)}
@@ -868,6 +907,7 @@ export default function CharacterEditor({ params }: Props) {
             <label className={FIELD_LABEL}>{t('editor.imageTags')}</label>
             <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.imageTagsHint')}</p>
             <TagChipInput
+              key={`image-tags-${tagResetRevision}`}
               value={character.image_tags || ''}
               onChange={val => update('image_tags', val)}
               onDraftChange={value => setTagDrafts(prev => ({ ...prev, image_tags: value }))}
@@ -878,6 +918,7 @@ export default function CharacterEditor({ params }: Props) {
             <label className={FIELD_LABEL}>{t('editor.userImageTags')}</label>
             <p className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.userImageTagsHint')}</p>
             <TagChipInput
+              key={`user-image-tags-${tagResetRevision}`}
               value={character.user_image_tags || ''}
               onChange={val => update('user_image_tags', val)}
               onDraftChange={value => setTagDrafts(prev => ({ ...prev, user_image_tags: value }))}
@@ -895,6 +936,14 @@ export default function CharacterEditor({ params }: Props) {
               {hasUnsavedChanges ? t('common.unsavedChanges') : t('common.noUnsavedChanges')}
             </span>
           </p>
+          <button
+            type="button"
+            onClick={() => { if (!operationRef.current && hasUnsavedChanges) setConfirmAction('reset'); }}
+            disabled={!hasUnsavedChanges || saving || deleting || duplicating || leaving}
+            className="soft-button soft-button-ghost shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('common.discardChanges')}
+          </button>
           <button onClick={handleSave} disabled={saving || deleting || duplicating || leaving} className="soft-button soft-button-primary shrink-0 disabled:cursor-not-allowed disabled:opacity-50">
             {saving ? t('editor.saving') : t('editor.save')}
           </button>

@@ -9,7 +9,7 @@ const { installDomTestEnvironment } = require('./helpers/dom-test-environment.cj
 
 const restoreDom = installDomTestEnvironment();
 global.IS_REACT_ACT_ENVIRONMENT = true;
-const { cleanup, fireEvent, render } = require('@testing-library/react');
+const { cleanup, fireEvent, render, waitFor } = require('@testing-library/react');
 
 const root = path.resolve(__dirname, '..');
 const originalResolveFilename = Module._resolveFilename;
@@ -84,7 +84,7 @@ test.after(() => {
   restoreDom();
 });
 
-function renderInput(sent) {
+function renderInput(sent, overrides = {}) {
   const ChatInput = loadChatInput();
   const view = render(React.createElement(ChatInput, {
     onSend(content) { sent.push(content); },
@@ -94,6 +94,7 @@ function renderInput(sent) {
     currentModel: 'model-a',
     onModelChange() {},
     modelList: ['model-a'],
+    ...overrides,
   }));
   const textarea = view.getByRole('textbox');
   fireEvent.change(textarea, { target: { value: 'hello' } });
@@ -140,6 +141,52 @@ test('touch devices still send through the send button', () => {
   fireEvent.click(view.getByRole('button', { name: 'input.send' }));
 
   assert.deepEqual(sent, ['hello']);
+  assert.equal(view.getByRole('textbox').value, '');
+  assert.equal(view.getByRole('button', { name: 'input.send' }).disabled, true);
+});
+
+test('stop preserves the draft and does not invoke send', () => {
+  const sent = [];
+  let stopped = 0;
+  const { view, textarea } = renderInput(sent, { isGenerating: true, onStop() { stopped += 1; } });
+  fireEvent.click(view.getByRole('button', { name: 'input.stop' }));
+  assert.equal(stopped, 1);
+  assert.deepEqual(sent, []);
+  assert.equal(textarea.value, 'hello');
+});
+
+test('disabled send preserves the draft', () => {
+  const sent = [];
+  const { view, textarea } = renderInput(sent, { disabled: true });
+  fireEvent.click(view.getByRole('button', { name: 'input.send' }));
+  assert.deepEqual(sent, []);
+  assert.equal(textarea.value, 'hello');
+});
+
+test('model and reasoning pickers retain keyboard selection and trigger focus', async () => {
+  const models = [];
+  const efforts = [];
+  const { view } = renderInput([], {
+    modelList: ['model-a', 'model-b'],
+    onModelChange: model => models.push(model),
+    onReasoningEffortChange: effort => efforts.push(effort),
+  });
+  const modelTrigger = view.getByRole('button', { name: 'model-a' });
+  fireEvent.click(modelTrigger);
+  const selectedModel = view.getByRole('option', { name: 'model-a' });
+  await waitFor(() => assert.ok(document.activeElement === selectedModel, 'selected model receives focus'));
+  fireEvent.keyDown(selectedModel, { key: 'ArrowDown' });
+  const nextModel = view.getByRole('option', { name: 'model-b' });
+  assert.ok(document.activeElement === nextModel, 'ArrowDown moves focus to the next model');
+  fireEvent.keyDown(nextModel, { key: 'Enter' });
+  assert.deepEqual(models, ['model-b']);
+  assert.ok(document.activeElement === modelTrigger, 'selection returns focus to the model trigger');
+  const effortTrigger = view.getByRole('button', { name: /^input.reasoningEffort / });
+  fireEvent.click(effortTrigger);
+  fireEvent.keyDown(view.getByRole('option', { name: 'high' }), { key: 'Enter' });
+  assert.deepEqual(efforts, ['high']);
+  assert.ok(document.activeElement === effortTrigger, 'selection returns focus to the reasoning trigger');
+  assert.equal(view.queryByRole('listbox'), null);
 });
 
 test('desktop IME Enter preserves the draft until composition ends', () => {

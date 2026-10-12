@@ -537,6 +537,104 @@ test('message paging does not expose the previous conversation unextracted count
   }
 });
 
+test('initial message load stays loading until the active conversation settles and keeps failures distinct from empty', async () => {
+  const originalDocument = global.document;
+  global.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const activeConvIdRef = { current: 'conv-a' };
+  let activeConvId = 'conv-a';
+  const emptyResponse = { messages: [], hasMore: false, oldestSeq: null, unextractedCount: 0, totalTokens: 0 };
+  let resolveConversationB;
+  const conversationBResponse = new Promise(resolve => {
+    resolveConversationB = resolve;
+  });
+  const fetchMessagesPage = conversationId => {
+    if (conversationId === 'conv-b') return conversationBResponse;
+    if (conversationId === 'conv-c') return Promise.reject(new Error('boom'));
+    return Promise.resolve(emptyResponse);
+  };
+  const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+  const switchTo = conversationId => {
+    activeConvId = conversationId;
+    activeConvIdRef.current = conversationId;
+    runtime.render();
+  };
+
+  let runtime;
+  try {
+    runtime = createHookRuntime(
+      reactMock => {
+        const realMessageCache = require('../src/lib/chat-message-cache.ts');
+        realMessageCache.clearCachedMessages();
+        const { useMessagePaging } = requireFreshWithMocks('../src/hooks/chat/useMessagePaging.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage },
+          '@/lib/chat-message-cache': realMessageCache,
+        });
+        return useMessagePaging;
+      },
+      () => ({
+        activeConvId,
+        activeConvIdRef,
+        targetMessageId: null,
+        pageSize: 60,
+        onTargetMessageLoaded: () => {},
+        onInitialMessagesLoaded: () => {},
+        onError: () => {},
+      }),
+    );
+
+    runtime.render();
+    assert.equal(runtime.current.initialMessagesLoading, true);
+    await flush();
+    // 真正为空的对话：加载落定后才允许显示空态。
+    assert.equal(runtime.current.initialMessagesLoading, false);
+    assert.equal(runtime.current.initialMessagesError, null);
+    assert.deepEqual(runtime.current.visibleMessages, []);
+
+    // 切到未缓存的对话：请求未返回前列表为空，但必须仍是加载中。
+    switchTo('conv-b');
+    await flush();
+    assert.deepEqual(runtime.current.visibleMessages, []);
+    assert.equal(runtime.current.initialMessagesLoading, true);
+
+    resolveConversationB({
+      messages: [{
+        id: 'msg-b', conversation_id: 'conv-b', role: 'user', content: 'hello',
+        created_at: '2026-10-12T00:00:00.000Z', token_count: 1, metadata: {},
+      }],
+      hasMore: false,
+      oldestSeq: 1,
+      unextractedCount: 0,
+      totalTokens: 1,
+    });
+    await flush();
+    assert.equal(runtime.current.initialMessagesLoading, false);
+    assert.equal(runtime.current.visibleMessages.length, 1);
+
+    // 加载失败：既不是加载中也不能被当成空对话。
+    switchTo('conv-c');
+    assert.equal(runtime.current.initialMessagesLoading, true);
+    await flush();
+    assert.equal(runtime.current.initialMessagesLoading, false);
+    assert.equal(runtime.current.initialMessagesError, 'boom');
+
+    // 切回已缓存的对话：缓存快照落定即结束加载，且不继承上一段对话的失败。
+    switchTo('conv-a');
+    await flush();
+    assert.equal(runtime.current.initialMessagesLoading, false);
+    assert.equal(runtime.current.initialMessagesError, null);
+  } finally {
+    await flush();
+    runtime?.cleanup();
+    global.document = originalDocument;
+  }
+});
+
 test('older-page merge keeps the React updater pure and preserves cached server metadata', async () => {
   const originalDocument = global.document;
   global.document = {

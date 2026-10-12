@@ -40,6 +40,8 @@ export function useMessagePaging({
   const [oldestLoadedSeq, setOldestLoadedSeq] = useState<number | null>(null);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [messagePagingError, setMessagePagingError] = useState<string | null>(null);
+  // 首屏消息已落定（缓存/网络已应用，或网络失败）的对话；与 activeConvId 不一致即仍在加载。
+  const [initialLoad, setInitialLoad] = useState<{ convId: string; error: string | null } | null>(null);
   // 服务端返回的真实未提取消息数量（不受前端分页限制）
   const [serverUnextractedCountState, setServerUnextractedCountState] = useState<{ convId: string; value: number } | null>(null);
   const serverUnextractedCountRef = useRef(serverUnextractedCountState);
@@ -73,6 +75,8 @@ export function useMessagePaging({
     () => activeConvId ? messages.filter(message => message.conversation_id === activeConvId) : [],
     [activeConvId, messages],
   );
+  const initialMessagesLoading = Boolean(activeConvId) && initialLoad?.convId !== activeConvId;
+  const initialMessagesError = initialLoad?.convId === activeConvId ? initialLoad.error : null;
   const activeTargetMessageId = activeConvId === targetConversationId ? targetMessageId : null;
   const activeTargetRequestId = activeTargetMessageId ? targetRequestId : null;
 
@@ -103,7 +107,7 @@ export function useMessagePaging({
   }, [activeConvIdRef]);
 
   const applyMessagesResponse = useCallback((conversationIdToApply: string, response: MessagesResponse): boolean => {
-    return applyMessagesResponseToState(conversationIdToApply, response, {
+    const applied = applyMessagesResponseToState(conversationIdToApply, response, {
       getActiveConversationId: () => activeConvIdRef.current,
       replaceMessages: setMessages,
       setHasOlderMessages,
@@ -111,6 +115,12 @@ export function useMessagePaging({
       setServerUnextractedCount: count => setServerUnextractedCountValue(conversationIdToApply, count),
       setServerTotalTokens,
     });
+    if (applied) {
+      setInitialLoad(prev => prev?.convId === conversationIdToApply && prev.error === null
+        ? prev
+        : { convId: conversationIdToApply, error: null });
+    }
+    return applied;
   }, [activeConvIdRef, setServerUnextractedCountValue]);
 
   const clearMessages = useCallback(() => {
@@ -125,6 +135,7 @@ export function useMessagePaging({
     const message = error instanceof Error ? error.message : String(error);
     setMessagePagingError(message);
     onErrorRef.current?.(message);
+    return message;
   }, []);
 
   useEffect(() => {
@@ -168,7 +179,11 @@ export function useMessagePaging({
       })
       .catch(error => {
         if (isAbortError(error)) return;
-        reportMessagePagingError(error);
+        const message = reportMessagePagingError(error);
+        // 没有任何快照落定时记为失败，避免空列表被当成「对话为空」；已有缓存快照则保留。
+        if (!ctl.signal.aborted) {
+          setInitialLoad(prev => prev?.convId === loadingConvId ? prev : { convId: loadingConvId, error: message });
+        }
     });
     return () => ctl.abort();
   }, [activeConvId, activeTargetMessageId, activeTargetRequestId, applyMessagesResponse, pageSize, reportMessagePagingError]);
@@ -260,6 +275,8 @@ export function useMessagePaging({
     visibleMessages,
     hasOlderMessages,
     loadingOlderMessages,
+    initialMessagesLoading,
+    initialMessagesError,
     messagePagingError,
     serverUnextractedCount,
     serverUnextractedCountRef,

@@ -20,8 +20,11 @@ const settingsPage = read('src/app/settings/page.tsx');
 const settingsProviders = read('src/hooks/settings/useSettingsProviders.ts');
 const settingsAuth = read('src/hooks/settings/useSettingsAuth.ts');
 assert(settingsPage.includes('parseJsonResponse'), '设置页使用统一 HTTP 错误处理工具');
-assert(settingsProviders.includes('const loadProviders = useCallback(async () => {'), '供应商加载使用 async/try 模式');
-assert(settingsProviders.includes("showToast(`${t('common.loadFailed')}:"), '设置页加载失败会提示用户');
+assert(settingsProviders.includes('const loadProviders = useCallback(async ('), '供应商加载使用 async/try 模式');
+assert(
+  settingsProviders.includes('setProvidersError(message)') && settingsProviders.includes("'common.loadFailed'"),
+  '设置页加载失败会提示用户并保留错误状态',
+);
 assert(settingsProviders.includes("showToast(`${t('common.operationFailed')}:"), '供应商切换/删除失败会提示用户');
 assert(settingsProviders.includes("showToast(`${t('settings.saveFailed')}:"), '供应商保存失败会提示用户');
 assert(settingsAuth.includes("showToast(`${t('auth.logoutFailed')}:"), '登出失败会提示用户且不继续跳转');

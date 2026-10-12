@@ -337,7 +337,7 @@ export default function MemoriesPage() {
   };
 
   return (
-    <div className="app-shell min-h-screen px-4 py-4">
+    <div className="app-shell min-h-dvh px-4 py-4">
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
         <header className="surface-hero px-5 py-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -346,12 +346,7 @@ export default function MemoriesPage() {
                 <ArrowLeftIcon className="h-4 w-4" />
                 {t('memories.back')}
               </Link>
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/12 text-accent-dark">
-                <MemoryIcon className="h-5 w-5" />
-              </div>
-              <div>
-                <h1 className="section-title text-2xl">{t('memories.title')}</h1>
-              </div>
+              <h1 className="section-title text-xl">{t('memories.title')}</h1>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">

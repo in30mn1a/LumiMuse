@@ -136,6 +136,23 @@
     color-scheme: dark;
   }
 
+  /* 键盘焦点统一用强调色描边；输入框有自己的聚焦样式（见 .input-rich:focus） */
+  :where(button, a, summary, [role='tab'], [role='menuitem'], [tabindex]):focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
   /* 字体变量默认值（霞鹜文楷） — 通过 JS 动态修改 --font-sans 来切换字体；
      根 font-size 默认 16px（medium），由 applyFontSize 动态覆盖以缩放 rem */
   html {

@@ -161,7 +161,7 @@ export default function PromptPresetsPage() {
   };
 
   return (
-    <div className="app-shell min-h-screen px-4 py-4">
+    <div className="app-shell min-h-dvh px-4 py-4">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
         <header className="surface-hero px-5 py-5">
           <div className="flex items-start justify-between gap-4">

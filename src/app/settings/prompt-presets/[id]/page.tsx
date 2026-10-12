@@ -412,7 +412,7 @@ export default function PresetDetailPage({ params }: Props) {
   const inChatEntries = entries.filter(e => e.injection_position === 1);
 
   return (
-    <div className="app-shell min-h-screen px-4 py-4">
+    <div className="app-shell min-h-dvh px-4 py-4">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
         <header className="surface-hero min-w-0 px-5 py-5">
           <div className="flex min-w-0 flex-col gap-4">

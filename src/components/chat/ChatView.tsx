@@ -52,6 +52,7 @@ import { MenuIcon } from '@/components/ui/icons';
 import type { SidebarChat } from '@/components/sidebar/CharacterList';
 import { useToast } from '@/components/ui/Toast';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
+import ConfirmModal from '@/components/ui/ConfirmModal';
 
 const PAGE_SIZE = 60; // 每次从后端加载的消息数
 
@@ -101,6 +102,9 @@ export default function ChatView({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // 待确认删除的消息 id：点删除按钮只打开确认框，确认后才真正删除，防止误触
+  const [pendingDeleteMessageId, setPendingDeleteMessageId] = useState<string | null>(null);
+  const [deletingMessage, setDeletingMessage] = useState(false);
   const clearMessagesRef = useRef<() => void>(() => {});
   const clearStreamingTextRef = useRef<() => void>(() => {});
   const scrollControllerRef = useRef<Pick<UseChatScrollControllerResult, 'markTargetForScroll' | 'markScrollToBottomOnLoad'> | null>(null);
@@ -356,6 +360,23 @@ export default function ChatView({
     }
     return map;
   }, [visibleMessages]);
+
+  const requestDeleteMessage = useCallback((id: string) => {
+    setPendingDeleteMessageId(id);
+  }, []);
+
+  const pendingDeleteVersionInfo = pendingDeleteMessageId ? versionInfoByMessageId.get(pendingDeleteMessageId) : undefined;
+
+  const confirmDeleteMessage = async () => {
+    if (!pendingDeleteMessageId) return;
+    setDeletingMessage(true);
+    try {
+      await handleDeleteMessage(pendingDeleteMessageId);
+    } finally {
+      setDeletingMessage(false);
+      setPendingDeleteMessageId(null);
+    }
+  };
 
   const memoryCount = memories.length;
   const recentMemories = useMemo(() => memories.slice(0, 2), [memories]);
@@ -895,7 +916,7 @@ export default function ChatView({
               scrollContainerRef={scrollContainerRef}
               onLoadOlder={() => void loadOlderMessages()}
               onEdit={handleEditMessage}
-              onDelete={handleDeleteMessage}
+              onDelete={requestDeleteMessage}
               onRegenerate={handleRegenerate}
               onRegenerateFromHere={handleRegenerateFromHere}
               onSwitchVersion={handleSwitchVersion}
@@ -969,6 +990,21 @@ export default function ChatView({
           />
         </section>
       </div>
+
+      <ConfirmModal
+        open={pendingDeleteMessageId !== null}
+        title={t('message.deleteConfirmTitle')}
+        message={pendingDeleteVersionInfo && pendingDeleteVersionInfo.total > 1
+          ? formatTemplate(t('message.deleteVersionConfirm'), {
+            active: Math.min(pendingDeleteVersionInfo.active, pendingDeleteVersionInfo.total - 1) + 1,
+            total: pendingDeleteVersionInfo.total,
+          })
+          : t('message.deleteConfirm')}
+        danger
+        busy={deletingMessage}
+        onConfirm={() => void confirmDeleteMessage()}
+        onCancel={() => setPendingDeleteMessageId(null)}
+      />
 
       <ChatModals
         renameOpen={renameOpen}

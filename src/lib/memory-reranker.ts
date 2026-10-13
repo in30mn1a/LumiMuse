@@ -1,3 +1,4 @@
+import { sanitizeUpstreamError } from '@/lib/api-client';
 import { safeFetch } from '@/lib/ssrf-guard';
 
 export interface RerankerAdapterConfig {
@@ -99,7 +100,7 @@ export async function rerankDocuments(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      throw new Error(`reranker API error ${response.status}: ${errorText.slice(0, 200)}`);
+      throw new Error(`reranker API error ${response.status}: ${sanitizeUpstreamError(errorText, config.api_key)}`);
     }
 
     return parseRerankerResponse(await response.json(), documents);

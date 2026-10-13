@@ -275,6 +275,38 @@ test('supersede actually retires the model-designated target memory', async () =
   assert.match(active[0].content, /迷上了做甜点/);
 });
 
+test('supersede does not retire a memory the user edited during the LLM window', async () => {
+  const db = createExtractionDb();
+  insertExisting(db);
+  const { extractMemories } = loadEngineWithResponses(db, [
+    EXTRACTED,
+    () => {
+      // 模拟用户在阶段二 LLM 等待期间手工改了被指认的旧记忆（内容 + metadata + updated_at）
+      db.prepare("UPDATE memories SET content = ?, metadata = ?, updated_at = ? WHERE id = 'mem-sweet'")
+        .run('用户其实很爱吃甜的，只是最近在控糖。', JSON.stringify({ userNote: 'kept' }), '2026-06-02T00:00:00.000Z');
+      return JSON.stringify({ decisions: [{ index: 0, lifecycle_action: 'supersede', target: 0 }] });
+    },
+  ]);
+
+  const result = await extractMemories('char-a', longConversation(), settings(), {
+    messageIds: ['msg-1'],
+    reference: fakeReference(),
+  });
+
+  // 判定基于 LLM 前快照；用户版本不能被作废，metadata 也不能被快照覆盖
+  const edited = db.prepare("SELECT status, content, metadata, updated_at FROM memories WHERE id = 'mem-sweet'").get();
+  assert.equal(edited.status, 'active', '用户在 LLM 窗口内改过的记忆不得被 supersede');
+  assert.equal(edited.content, '用户其实很爱吃甜的，只是最近在控糖。');
+  assert.deepEqual(JSON.parse(edited.metadata), { userNote: 'kept' });
+  assert.equal(edited.updated_at, '2026-06-02T00:00:00.000Z');
+
+  // 新记忆照常插入，双保留、不丢内容
+  assert.equal(result.insertCount, 1);
+  const active = db.prepare("SELECT content FROM memories WHERE status = 'active'").all();
+  assert.equal(active.length, 2);
+  assert.ok(active.some(row => /迷上了做甜点/.test(row.content)));
+});
+
 test('supersede without a usable target falls back to lexical matching', async () => {
   const db = createExtractionDb();
   // 词法上高度相似 → findSimilarExistingMemories 能兜住

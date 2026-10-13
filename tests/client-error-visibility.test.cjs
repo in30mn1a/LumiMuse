@@ -189,7 +189,7 @@ test('character and memories pages validate initial loads and surface failures',
   assert.match(characterLoad, /showToast\(`\$\{t\('common\.loadFailed'\)\}: \$\{getErrorMessage\(error\)\}`, 'error'\)/);
   assert.doesNotMatch(characterLoad, /\.then\(r => r\.json\(\)\)\.then\(setCharacter\)/);
 
-  const memoriesLoad = sliceBetween(memoriesPage, 'useEffect(() => {', '  useEffect(() => {\n    selectedCharIdRef.current');
+  const memoriesLoad = sliceBetween(memoriesPage, 'useEffect(() => {', '  const handleMemoryAiReview = async () => {');
   assert.match(memoriesLoad, /parseJsonArrayResponse<Character>/);
   assert.match(memoriesLoad, /showToast\(`\$\{t\('common\.loadFailed'\)\}: \$\{getErrorMessage\(error\)\}`, 'error'\)/);
   assert.doesNotMatch(memoriesLoad, /\.then\(r => r\.json\(\)\)/);

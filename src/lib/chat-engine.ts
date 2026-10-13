@@ -598,6 +598,10 @@ export async function runChat(
   const scope = buildChainMessageScope(chain);
   const ascendingMessageOrder = ascendingMessageOrderSqlForChain(chain);
 
+  // 本轮含「无 URL 的 base64 图片」时记下新 user 消息与原始附件：这类图片不落库，
+  // 而上下文是从 DB 重新读出来的，不从内存补回就永远到不了模型。
+  let inlinePromptAttachments: { messageId: string; attachments: AttachmentItem[] } | undefined;
+
   if (!options?.regenerateAssistantId && !options?.skipUserInsert) {
     const userMsgId = crypto.randomUUID().slice(0, 12);
     const now = new Date().toISOString();
@@ -615,6 +619,9 @@ export async function runChat(
       } else {
         storedAttachments.push(att);
       }
+    }
+    if (storedAttachments.length !== promptAttachments.length) {
+      inlinePromptAttachments = { messageId: userMsgId, attachments: promptAttachments };
     }
     const userTokenResult = createMessageTokenCount(userContent, 'user', storedAttachments);
     const userMeta = JSON.stringify(metadataWithTokenCountProvenance(
@@ -699,13 +706,20 @@ export async function runChat(
   const repairTokenCount = db.prepare(
     'UPDATE messages SET token_count = ?, metadata = ? WHERE id = ?',
   );
-  const contextMessages = history.map(message => {
+  const storedContextMessages = history.map(message => {
     const resolved = resolveMessageTokenCount(message);
     if (resolved.reused) return message;
     const metadata = metadataWithTokenCountProvenance(message.metadata, resolved.provenance);
     repairTokenCount.run(resolved.tokenCount, JSON.stringify(metadata), message.id);
     return { ...message, token_count: resolved.tokenCount, metadata };
   });
+  // 只改内存里送去组装 prompt 的副本，必须在上面的 token 修复写库之后，base64 不得进 DB。
+  const inlineAttachments = inlinePromptAttachments;
+  const contextMessages = inlineAttachments
+    ? storedContextMessages.map(message => message.id === inlineAttachments.messageId
+        ? { ...message, metadata: { ...message.metadata, attachments: inlineAttachments.attachments } }
+        : message)
+    : storedContextMessages;
 
   const effectiveTimeContext = resolveCurrentTimeContext(
     options?.timeContext,

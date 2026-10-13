@@ -317,7 +317,7 @@ npm run start:local
 | Command | Purpose |
 |:---|:---|
 | `npm run start:local` | Uses `next start` — local source-tree production check |
-| `npm start` / `npm run start:standalone` | Runs `.next/standalone/server.js`; Docker copies that folder into the container workdir and runs `node server.js` |
+| `npm start` / `npm run start:standalone` | Runs `.next/standalone/server.js`; Docker copies that folder into the container workdir and runs `node server.js`. The folder is an application-only bundle without the workspace's `data/` or user media, so running it directly starts an empty instance |
 
 ### Windows Quick Start
 
@@ -444,6 +444,8 @@ docker compose up -d --build
 
 Before updating, export a backup from the app or manually back up `data/` and `public/{generated,avatars,attachments}/`.
 
+SQLite runs in WAL mode: copying only the main `.db` file while the app is running can produce a torn copy (writes still sitting in the `-wal` file are missing, so the most recent data is lost on restore). For a live backup use `sqlite3 data/lumimuse.db "VACUUM INTO 'backup.db'"` (SQLite online backup), or stop the container first and copy the whole `data/` directory including the `-wal` / `-shm` files.
+
 **Health checks**
 
 | Endpoint | Meaning |
@@ -560,6 +562,8 @@ public/generated/
 public/avatars/
 public/attachments/
 ```
+
+If the app is still running, do not `cp` only the main database file: SQLite is in WAL mode, so recent writes may still be in `data/lumimuse.db-wal` and not yet merged into the main file — copying just the `.db` loses them. For a live backup use `sqlite3 data/lumimuse.db "VACUUM INTO 'backup.db'"` (SQLite online backup), or stop the container first and copy the whole `data/` directory together with the `-wal` / `-shm` files.
 
 Database migrations record SQLite `user_version`. Before downgrading, stop the app and fully back up the directories above. Do not roll back by manually lowering `user_version` — restore a database and asset backup that matches the older build.
 

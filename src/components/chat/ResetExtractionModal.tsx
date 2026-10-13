@@ -56,6 +56,9 @@ function ResetExtractionModalInner({
   const { t } = useTranslation();
   // null = 加载中，[] = 加载完成但无消息
   const [allMessages, setAllMessages] = useState<Message[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  // 点「重试」时递增，仅用于让下面的加载 effect 重跑
+  const [retryRevision, setRetryRevision] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
@@ -64,9 +67,9 @@ function ResetExtractionModalInner({
     let cancelled = false;
     loadAllMessages(conversationId)
       .then(msgs => { if (!cancelled) setAllMessages(msgs); })
-      .catch(() => {});
+      .catch(() => { if (!cancelled) setLoadFailed(true); });
     return () => { cancelled = true; };
-  }, [conversationId, loadAllMessages]);
+  }, [conversationId, loadAllMessages, retryRevision]);
 
   const userMsgs = (allMessages || []).filter(m => m.role === 'user').reverse();
   const visible = userMsgs.slice(0, visibleCount);
@@ -100,7 +103,18 @@ function ResetExtractionModalInner({
       </div>
 
       {/* 消息列表 */}
-      {allMessages === null ? (
+      {allMessages === null && loadFailed ? (
+        <div role="alert" className="mt-2 flex flex-col items-center justify-center gap-2 py-8 text-sm text-danger">
+          <p>{t('common.loadFailed')}</p>
+          <button
+            type="button"
+            onClick={() => { setLoadFailed(false); setRetryRevision(current => current + 1); }}
+            className="soft-button soft-button-secondary px-3 py-1.5 text-xs"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : allMessages === null ? (
         <div className="mt-2 flex items-center justify-center py-8 text-sm text-text-muted">
           {t('common.loading')}
         </div>

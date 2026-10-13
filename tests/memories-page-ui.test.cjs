@@ -215,22 +215,24 @@ test('/memories page places AI review beside character selector and exposes late
   }
 });
 
-test('/memories page binds AI review results to the initiating character', () => {
+// 归属判断用「这一轮自己的 AbortController」而不是角色 id：切走又切回同一角色后新开的一轮，
+// 角色 id 与旧一轮相同，只比 id 会让旧一轮把结果写进新一轮（审计 2026-10-13 F13）。
+test('/memories page binds AI review results to the initiating run', () => {
   const memoriesPage = readProjectFile('src/app/memories/page.tsx');
 
   for (const snippet of [
-    'const selectedCharIdRef = useRef<string | null>(null);',
+    'memoryAiReviewAbortRef.current = abortController;',
     'const requestedCharacterId = selectedCharId;',
     'character_id: requestedCharacterId',
     'batch_index: nextBatchIndex',
     'if (planId) body.plan_id = planId;',
-    'if (selectedCharIdRef.current !== requestedCharacterId) return;',
+    'if (memoryAiReviewAbortRef.current !== abortController) return;',
   ]) {
     assert.ok(memoriesPage.includes(snippet), `missing snippet: ${snippet}`);
   }
 });
 
-test('/memories page keeps AI review loading scoped to the initiating character', () => {
+test('/memories page keeps AI review loading scoped to the initiating run', () => {
   const memoriesPage = readProjectFile('src/app/memories/page.tsx');
   const handlerStart = memoriesPage.indexOf('const handleMemoryAiReview = async () => {');
   assert.notEqual(handlerStart, -1, 'missing handleMemoryAiReview');
@@ -240,8 +242,8 @@ test('/memories page keeps AI review loading scoped to the initiating character'
 
   assert.match(
     handlerBlock,
-    /finally \{\s*if \(selectedCharIdRef\.current === requestedCharacterId\) \{\s*setMemoryAiReviewRunning\(false\);\s*\}\s*\}/,
-    'an old AI review request must not clear the loading state for a newly selected character',
+    /finally \{\s*if \(memoryAiReviewAbortRef\.current === abortController\) \{\s*setMemoryAiReviewRunning\(false\);\s*\}\s*\}/,
+    'an old AI review run must not clear the loading state of a newer run',
   );
 });
 
@@ -254,7 +256,8 @@ test('/memories page clears AI review running and old result state when changing
   const selectBlock = memoriesPage.slice(selectStart, selectEnd);
 
   for (const snippet of [
-    'selectedCharIdRef.current = nextCharacterId;',
+    'memoryAiReviewAbortRef.current?.abort();',
+    'memoryAiReviewAbortRef.current = null;',
     'setSelectedCharId(nextCharacterId);',
     'setMemoryAiReviewRunning(false);',
     'setLastMemoryAiReviewResult(null);',

@@ -275,31 +275,37 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
       const isImage = ACCEPTED_IMAGE_TYPES.includes(file.type);
       const isText = ACCEPTED_TEXT_TYPES.some(t => file.type.startsWith(t)) || ACCEPTED_TEXT_EXTS.has(ext);
 
-      if (isImage) {
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-        const formData = new FormData();
-        formData.append('avatar', file);
-        formData.append('purpose', 'attachment');
-        const uploadResponse = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await uploadResponse.json() as { url?: string; error?: string };
-        if (!uploadResponse.ok || !data.url) {
-          setAttachError(data.error || formatTemplate(t('input.attachUploadFail'), { name: file.name }));
-          continue;
+      // 读取 / 上传 / 解析响应都可能抛错（断网、响应不是 JSON 等）：按文件兜住，
+      // 只提示这一个文件失败，之前已处理好的附件照常加入
+      try {
+        if (isImage) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+          const formData = new FormData();
+          formData.append('avatar', file);
+          formData.append('purpose', 'attachment');
+          const uploadResponse = await fetch('/api/upload', { method: 'POST', body: formData });
+          const data = await uploadResponse.json() as { url?: string; error?: string };
+          if (!uploadResponse.ok || !data.url) {
+            setAttachError(data.error || formatTemplate(t('input.attachUploadFail'), { name: file.name }));
+            continue;
+          }
+          newAttachments.push({ id: genAttachmentId(), type: 'image', name: file.name, data: dataUrl, url: data.url, mimeType: file.type });
+        } else if (isText) {
+          if (file.size > MAX_TEXT_SIZE) {
+            setAttachError(formatTemplate(t('input.attachTextWarn'), { name: file.name }));
+          }
+          const text = await file.text();
+          newAttachments.push({ id: genAttachmentId(), type: 'text', name: file.name, data: text, mimeType: file.type || 'text/plain' });
+        } else {
+          setAttachError(formatTemplate(t('input.attachUnsupported'), { name: file.name }));
         }
-        newAttachments.push({ id: genAttachmentId(), type: 'image', name: file.name, data: dataUrl, url: data.url, mimeType: file.type });
-      } else if (isText) {
-        if (file.size > MAX_TEXT_SIZE) {
-          setAttachError(formatTemplate(t('input.attachTextWarn'), { name: file.name }));
-        }
-        const text = await file.text();
-        newAttachments.push({ id: genAttachmentId(), type: 'text', name: file.name, data: text, mimeType: file.type || 'text/plain' });
-      } else {
-        setAttachError(formatTemplate(t('input.attachUnsupported'), { name: file.name }));
+      } catch {
+        setAttachError(formatTemplate(t('input.attachUploadFail'), { name: file.name }));
       }
     }
 

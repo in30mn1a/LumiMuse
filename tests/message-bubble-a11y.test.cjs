@@ -178,9 +178,9 @@ test('image lightbox traps focus, closes with Escape, and restores thumbnail foc
 
   enabledButtons.at(-1).focus();
   await user.tab();
-  assert.equal(document.activeElement, enabledButtons[0], 'Tab from the final control should loop to the first enabled control');
+  assert.ok(document.activeElement === enabledButtons[0], 'Tab from the final control should loop to the first enabled control');
 
   await user.keyboard('{Escape}');
   assert.equal(within(document.body).queryByRole('dialog'), null);
-  assert.equal(document.activeElement, image.closest('button'));
+  assert.ok(document.activeElement === image.closest('button'), 'focus should return to the lightbox trigger');
 });

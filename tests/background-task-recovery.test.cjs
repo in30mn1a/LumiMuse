@@ -136,6 +136,73 @@ test('recoverStaleTasks resets processing task with expired lease', () => {
   assert.equal(row.started_at, null);
 });
 
+test('boot recovery wakes again once an unexpired orphan lease expires', async () => {
+  const db = memoryTasksDb();
+  const now = new Date().toISOString();
+  // 快速重启：上个进程留下的 processing 任务，租约还没过期
+  db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, claim_token, lease_expires_at,
+      started_at, created_at, updated_at
+    )
+    VALUES ('c1', 'conv1', '[]', 'processing', 'orphan-token', datetime('now', '+1 seconds'), ?, ?, ?)
+  `).run(now, now, now);
+
+  const { recoverStaleTasks } = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/memory-engine': noopMemoryEngine,
+    '@/lib/settings': noopSettings,
+    '@/lib/memory-profile': noopProfile,
+  });
+  const { recoverAndWakeAtLeaseExpiry } = require('../src/lib/background-task-recovery.ts');
+  let triggers = 0;
+  recoverAndWakeAtLeaseExpiry(db, 'memory_tasks', {
+    recover: recoverStaleTasks,
+    trigger: () => { triggers += 1; },
+  }, error => { throw error; });
+
+  // 启动这一次：未过期租约不抢，trigger 只跑一次
+  assert.equal(db.prepare('SELECT status FROM memory_tasks WHERE id = 1').get().status, 'processing');
+  assert.equal(triggers, 1);
+
+  await new Promise(resolve => setTimeout(resolve, 2600));
+
+  // 租约到期后必须自动补跑 recover + trigger，而不是闲置到下一次业务触发
+  const row = db.prepare('SELECT status, claim_token FROM memory_tasks WHERE id = 1').get();
+  assert.equal(row.status, 'pending');
+  assert.equal(row.claim_token, null);
+  assert.equal(triggers, 2);
+});
+
+test('boot recovery arms no wake timer when no unexpired lease is left', async () => {
+  const db = memoryTasksDb();
+  const stale = new Date(Date.now() - 400_000).toISOString();
+  db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, claim_token, lease_expires_at,
+      started_at, created_at, updated_at
+    )
+    VALUES ('c1', 'conv1', '[]', 'processing', 'stale-token', datetime('now', '-1 minute'), ?, ?, ?)
+  `).run(stale, stale, stale);
+
+  const { recoverStaleTasks } = requireFreshWithMocks('../src/lib/memory-queue.ts', {
+    '@/lib/db': { getDb: () => db },
+    '@/lib/memory-engine': noopMemoryEngine,
+    '@/lib/settings': noopSettings,
+    '@/lib/memory-profile': noopProfile,
+  });
+  const { recoverAndWakeAtLeaseExpiry } = require('../src/lib/background-task-recovery.ts');
+  let triggers = 0;
+  recoverAndWakeAtLeaseExpiry(db, 'memory_tasks', {
+    recover: recoverStaleTasks,
+    trigger: () => { triggers += 1; },
+  }, error => { throw error; });
+
+  assert.equal(db.prepare('SELECT status FROM memory_tasks WHERE id = 1').get().status, 'pending');
+  await new Promise(resolve => setTimeout(resolve, 1300));
+  assert.equal(triggers, 1);
+});
+
 test('processQueue resumes committed task without re-calling extractMemories', async () => {
   const db = memoryTasksDb();
   db.exec(`

@@ -185,7 +185,7 @@ test('gallery preview is the only active dialog and Escape closes only the previ
   ));
   assert.equal(closeCalls, 0, 'Escape must not close the underlying gallery');
   assert.ok(within(document.body).getByRole('dialog', { name: 'chat.imageManagerTitle' }));
-  assert.equal(document.activeElement, previewTrigger, 'focus should return to the preview trigger');
+  assert.ok(document.activeElement === previewTrigger, 'focus should return to the preview trigger');
 });
 
 test('gallery preview keeps a visible loading viewport while cache warming is pending', async () => {

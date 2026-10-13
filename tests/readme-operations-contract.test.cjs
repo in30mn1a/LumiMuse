@@ -16,6 +16,8 @@ for (const filename of ['README.md', 'README.en.md']) {
     assert.match(readme, /docker compose logs lumimuse/);
     assert.match(readme, /user_version/);
     assert.match(readme, /(?:降级|downgrad)/i);
+    // WAL 模式下运行中只拷主 .db 会丢最近写入：两种语言都必须给出在线备份命令
+    assert.match(readme, /VACUUM INTO/);
     assert.match(readme, /Start\.bat/);
     assert.match(readme, /npm explain postcss/);
     assert.match(readme, /npm prune --dry-run/);

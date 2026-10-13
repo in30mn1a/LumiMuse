@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { DEFAULT_BACKGROUND_TASK_LEASE_SECONDS } from '@/lib/background-task-recovery';
 import { createDbTaskQueue } from '@/lib/db-task-queue';
 import { getDb } from '@/lib/db';
+import { sanitizeUpstreamError } from '@/lib/api-client';
 import { safeFetch } from '@/lib/ssrf-guard';
 import { Memory } from '@/types';
 import {
@@ -343,7 +344,8 @@ async function requestEmbeddings(input: string | string[], config: EmbeddingAdap
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      throw new Error(`embedding API error ${response.status}: ${errorText.slice(0, 200)}`);
+      // 与聊天适配器同一脱敏边界：这条 message 会落进任务表 error_message、索引状态 API 和日志
+      throw new Error(`embedding API error ${response.status}: ${sanitizeUpstreamError(errorText, config.api_key)}`);
     }
 
     return response.json();

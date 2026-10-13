@@ -23,7 +23,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { results, loading, loadingMore, hasMore, loadMore, clearSearch } = useMessageSearch(query, { limit: 30, debounceMs: 250 });
+  const { results, loading, loadingMore, hasMore, error, loadMore, clearSearch } = useMessageSearch(query, { limit: 30, debounceMs: 250 });
 
   const scrollSearchInputToEnd = (input: HTMLInputElement, value: string) => {
     requestAnimationFrame(() => {
@@ -50,6 +50,8 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
     setQuery('');
     clearSearch();
     inputRef.current?.blur();
+    // 键盘选中时焦点在结果按钮上，它随面板卸载不会触发 blur，这里显式收起
+    setFocused(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -75,8 +77,14 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
         </h1>
       </div>
 
-      {/* 对话内容搜索框 */}
-      <div className="relative px-3 pb-3 pt-1">
+      {/* 对话内容搜索框：展开状态跟随整个容器的焦点，Tab 进结果列表时面板不能被卸载 */}
+      <div
+        className="relative px-3 pb-3 pt-1"
+        onFocus={() => setFocused(true)}
+        onBlur={e => {
+          if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
+        }}
+      >
         <div className={`flex min-h-10 items-center gap-2 rounded-xl border px-3 text-sm transition-colors ${
           focused ? 'border-accent/40 bg-surface' : 'border-transparent bg-surface-2'
         }`}>
@@ -86,7 +94,6 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
             value={query}
             onChange={handleQueryChange}
             onFocus={handleQueryFocus}
-            onBlur={() => setTimeout(() => setFocused(false), 150)}
             onKeyDown={handleKeyDown}
             placeholder={t('search.placeholder')}
             className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
@@ -94,7 +101,7 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
           {query && (
             <button
               onMouseDown={e => e.preventDefault()}
-              onClick={() => { setQuery(''); clearSearch(); }}
+              onClick={() => { setQuery(''); clearSearch(); inputRef.current?.focus(); }}
               className="text-text-muted hover:text-text-secondary"
             >
               ×
@@ -108,7 +115,12 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
             {loading && (
               <div className="px-4 py-3 text-center text-xs text-text-muted">{t('common.loading')}</div>
             )}
-            {!loading && results.length === 0 && (
+            {!loading && error && (
+              <div className="px-4 py-3 text-center text-xs text-danger" role="alert">
+                {`${t('common.loadFailed')}: ${error}`}
+              </div>
+            )}
+            {!loading && !error && results.length === 0 && (
               <div className="px-4 py-3 text-center text-xs text-text-muted">{t('search.noResults')}</div>
             )}
             {!loading && results.length > 0 && (

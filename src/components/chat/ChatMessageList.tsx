@@ -46,7 +46,7 @@ interface Props {
   topSentinelRef: Ref<HTMLDivElement>;
   scrollContainerRef: RefObject<HTMLDivElement | null>;
   onLoadOlder: () => void;
-  onEdit: (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => void;
+  onEdit: (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => void | boolean | Promise<void | boolean>;
   onDelete: (id: string) => void;
   onRegenerate: (id: string) => void;
   onRegenerateFromHere: (id: string) => void;

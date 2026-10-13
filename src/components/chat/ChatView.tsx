@@ -481,6 +481,48 @@ export default function ChatView({
   // 未提取记忆的用户消息数（使用服务端返回的真实数量，不受前端分页限制）
   const unextractedCount = serverUnextractedCount;
 
+  // 模型与思考强度写的是同一份设置（含共用的 reasoning_effort_by_model），必须按操作顺序逐个落库；
+  // 失败回滚只认服务端最后确认的状态，各次操作闭包里的「上一个值」可能从未保存成功。
+  const modelSettingsWritesRef = useRef<{
+    chain: Promise<void>;
+    pending: number;
+    failed: boolean;
+    confirmed: { model: string; effort: ReasoningEffort; byModel: Record<string, ReasoningEffort> };
+  }>({ chain: Promise.resolve(), pending: 0, failed: false, confirmed: { model: '', effort: 'default', byModel: {} } });
+
+  const queueModelSettingsWrite = useCallback((body: {
+    model?: string;
+    reasoning_effort: ReasoningEffort;
+    reasoning_effort_by_model: Record<string, ReasoningEffort>;
+  }) => {
+    const writes = modelSettingsWritesRef.current;
+    writes.pending += 1;
+    writes.chain = writes.chain.then(async () => {
+      try {
+        await parseJsonResponse<void>(await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }));
+        writes.confirmed = {
+          model: body.model ?? writes.confirmed.model,
+          effort: body.reasoning_effort,
+          byModel: body.reasoning_effort_by_model,
+        };
+      } catch (err) {
+        writes.failed = true;
+        showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
+      }
+      writes.pending -= 1;
+      // 后面还排着更新的选择时不动界面；排空后若期间有写入失败，界面上的乐观值已不可信，对齐到已确认状态
+      if (writes.pending > 0 || !writes.failed) return;
+      writes.failed = false;
+      setCurrentModel(writes.confirmed.model);
+      setReasoningEffort(writes.confirmed.effort);
+      setReasoningEffortByModel(writes.confirmed.byModel);
+    });
+  }, [showToast, t]);
+
   useEffect(() => {
     fetch('/api/settings')
       .then(r => parseJsonResponse<Partial<Settings>>(r))
@@ -493,15 +535,18 @@ export default function ChatView({
         setCurrentModel(model);
         setReasoningEffort(effort);
         setReasoningEffortByModel(byModel);
+        const writes = modelSettingsWritesRef.current;
+        writes.confirmed = { model, effort, byModel };
         // 设置页改模型不会改思考强度；进入聊天时按该模型上次记录对齐，避免 UI 和实际请求不一致
         if (effort !== storedEffort) {
-          void fetch('/api/settings', {
+          // 与用户随后的切换共用同一条写队列，免得这次对齐晚到、盖掉更新的选择
+          writes.chain = writes.chain.then(() => fetch('/api/settings', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ reasoning_effort: effort }),
-          }).catch(() => {
+          }).then(() => undefined).catch(() => {
             // 对齐失败不挡聊天：本轮仍用页面上的 effort，下次进入会再试
-          });
+          }));
         }
         setMemoryPackageBudget(s.memory_engine?.memory_package_token_budget ?? 12000);
         setMemoryInjectEnabled(s.memory_inject ?? true);
@@ -550,6 +595,9 @@ export default function ChatView({
     selectUserConversation(next?.id || null);
     if (!next) clearMessages();
     setDeleteOpen(false);
+    // ChatView 切角色不会重挂载：请求返回时界面可能已属于另一个角色，届时不能再用这里的快照去改它
+    const originCharacterId = character?.id ?? null;
+    const isSameCharacter = () => (characterRef.current?.id ?? null) === originCharacterId;
     try {
       // 关键点：DELETE 用上面快照下来的 targetConvId，
       // 即便用户在 await 期间又切到别的对话也只会删自己最初确认的那一条
@@ -566,16 +614,22 @@ export default function ChatView({
       clearCachedMessages(targetConvId);
       setConversations(prev => prev.filter(conversation => conversation.id !== targetConvId));
       if (character?.id) removeCharacterConversation(character.id, targetConvId);
-      void refreshConversationState(next?.id || null);
+      // refreshConversationState 按「当前」角色重拉并改选中对话，角色已换时不能拿旧角色的 next 去改新界面
+      if (isSameCharacter()) void refreshConversationState(next?.id || null);
     } catch (err) {
-      selectUserConversation(previousActiveConvId);
-      replaceMessages(previousMessages);
+      // 只有界面还停在这次乐观删除留下的位置（角色没换、选中的仍是 next）才回滚选中对话 / 消息
+      const canRollback = isSameCharacter() && activeConvIdRef.current === (next?.id || null);
+      if (canRollback) {
+        selectUserConversation(previousActiveConvId);
+        replaceMessages(previousMessages);
+      }
       // 被索引副本引用时删除永远不会成功，重开确认弹窗只会让人反复碰壁
       const linkedChildren = err instanceof HttpResponseError
         && (err.data as { code?: string } | null)?.code === 'HAS_LINKED_CHILDREN'
         ? ((err.data as { children?: unknown[] }).children?.length ?? 0)
         : 0;
-      if (linkedChildren === 0) setDeleteOpen(true);
+      // 界面已移走时也不能重开：确认弹窗删的是「当前选中」的对话，那已经不是当初确认的那一段
+      if (linkedChildren === 0 && canRollback) setDeleteOpen(true);
       showToast(
         linkedChildren > 0
           ? formatTemplate(t('chat.deleteBlockedByChildren'), { count: linkedChildren })
@@ -934,58 +988,32 @@ export default function ChatView({
             disabled={isStreamingHere}
             isGenerating={isStreamingHere}
             currentModel={currentModel}
-            onModelChange={async (model: string) => {
+            onModelChange={(model: string) => {
               if (model === currentModel) return;
-              const previousModel = currentModel;
-              const previousEffort = reasoningEffort;
-              const previousByModel = reasoningEffortByModel;
               const planned = planModelReasoningSwitch({
-                previousModel,
-                previousEffort,
+                previousModel: currentModel,
+                previousEffort: reasoningEffort,
                 nextModel: model,
-                byModel: previousByModel,
+                byModel: reasoningEffortByModel,
               });
               setCurrentModel(model);
               setReasoningEffort(planned.effort);
               setReasoningEffortByModel(planned.byModel);
-              try {
-                await parseJsonResponse<void>(await fetch('/api/settings', {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    model,
-                    reasoning_effort: planned.effort,
-                    reasoning_effort_by_model: planned.byModel,
-                  }),
-                }));
-              } catch (err) {
-                setCurrentModel(previousModel);
-                setReasoningEffort(previousEffort);
-                setReasoningEffortByModel(previousByModel);
-                showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
-              }
+              queueModelSettingsWrite({
+                model,
+                reasoning_effort: planned.effort,
+                reasoning_effort_by_model: planned.byModel,
+              });
             }}
             reasoningEffort={reasoningEffort}
-            onReasoningEffortChange={async (effort: ReasoningEffort) => {
-              const previousEffort = reasoningEffort;
-              const previousByModel = reasoningEffortByModel;
-              const nextByModel = rememberReasoningEffortForModel(previousByModel, currentModel, effort);
+            onReasoningEffortChange={(effort: ReasoningEffort) => {
+              const nextByModel = rememberReasoningEffortForModel(reasoningEffortByModel, currentModel, effort);
               setReasoningEffort(effort);
               setReasoningEffortByModel(nextByModel);
-              try {
-                await parseJsonResponse<void>(await fetch('/api/settings', {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    reasoning_effort: effort,
-                    reasoning_effort_by_model: nextByModel,
-                  }),
-                }));
-              } catch (err) {
-                setReasoningEffort(previousEffort);
-                setReasoningEffortByModel(previousByModel);
-                showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
-              }
+              queueModelSettingsWrite({
+                reasoning_effort: effort,
+                reasoning_effort_by_model: nextByModel,
+              });
             }}
           />
         </section>

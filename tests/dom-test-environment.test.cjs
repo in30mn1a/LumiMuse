@@ -21,7 +21,7 @@ test('DOM test helper installs a usable document and restores globals', () => {
     document.body.appendChild(button);
     button.focus();
 
-    assert.equal(document.activeElement, button);
+    assert.ok(document.activeElement === button, 'the created button should receive focus');
     assert.equal(typeof requestAnimationFrame, 'function');
   } finally {
     cleanup();

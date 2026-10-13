@@ -112,9 +112,11 @@ export function useChatMessageActions({
     id: string,
     content: string,
     attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>,
-  ) => {
+  ): Promise<boolean> => {
     const viewConversationId = activeConvIdRef.current;
-    if (!viewConversationId) return;
+    if (!viewConversationId) return false;
+    // 返回值告诉编辑框这次编辑是否已落库：失败时编辑框要留住草稿
+    let saved = false;
     try {
       const response = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${id}`, {
         method: 'PUT',
@@ -128,10 +130,13 @@ export function useChatMessageActions({
           ? scopeMessageToConversationView(updated, viewConversationId, message)
           : message
       )));
+      // PUT 已成功，后面的重拉失败只影响列表刷新，不算保存失败
+      saved = true;
       await refreshMessagesForConversation(viewConversationId);
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
+    return saved;
   }, [activeConvIdRef, refreshMessagesForConversation, showToast, t, updateMessagesForConversation]);
 
   const handleDeleteMessage = useCallback(async (id: string) => {

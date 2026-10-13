@@ -211,6 +211,47 @@ test('retrieveRelevantMemories normalizes memory rows without mutating source ob
   assert.deepEqual(normalized.source_msg_ids, ['msg-frozen']);
 });
 
+test('retrieveRelevantMemories 的检索 token 缓存在只改 tags 时也会失效', () => {
+  const makeRow = (id, content, tags) => ({
+    id,
+    character_id: 'char-a',
+    category: '话题历史',
+    content,
+    confidence: 0.8,
+    tags: JSON.stringify(tags),
+    source_msg_ids: '[]',
+    memory_kind: 'general',
+    importance: 0.5,
+    emotional_weight: 0,
+    status: 'active',
+    pinned: 0,
+    last_used_at: null,
+    usage_count: 0,
+    metadata: '{}',
+    created_at: '2026-06-01T00:00:00.000Z',
+    updated_at: '2026-06-01T00:00:00.000Z',
+  });
+  let rows = [
+    makeRow('mem-token-cache-a', 'alpha 的内容', ['cat']),
+    makeRow('mem-token-cache-b', 'beta 的内容', ['bird']),
+  ];
+  const { retrieveRelevantMemories } = loadMemoryEngine({
+    prepare: () => ({
+      all: () => rows,
+    }),
+  }, '');
+
+  assert.deepEqual(retrieveRelevantMemories('cat', 'char-a', 1).map(memory => memory.id), ['mem-token-cache-a']);
+
+  // 只改标签（记忆管理页编辑 tags），content 一字不变
+  rows = [
+    makeRow('mem-token-cache-a', 'alpha 的内容', ['dog']),
+    makeRow('mem-token-cache-b', 'beta 的内容', ['cat']),
+  ];
+
+  assert.deepEqual(retrieveRelevantMemories('cat', 'char-a', 1).map(memory => memory.id), ['mem-token-cache-b']);
+});
+
 test('extractMemories 将队列提供的 messageIds 写入 source_msg_ids', async () => {
   const db = createExtractionDb();
   const { extractMemories } = loadMemoryEngine(db, JSON.stringify({

@@ -77,6 +77,14 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/**
+ * 安全提取对象数组字段：非数组视为空数组，并跳过 null / 非对象元素，
+ * 避免后续按字段读取这些元素时抛出未捕获的 TypeError。
+ */
+function asRecordArray<T>(v: unknown): T[] {
+  return asArray<T>(v).filter(item => asRecord(item) !== undefined);
+}
+
 function asNumber(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
@@ -96,7 +104,7 @@ function findImportEnumValidationError(
   memories: Record<string, unknown>[],
 ): ImportEnumValidationError | undefined {
   for (let conversationIndex = 0; conversationIndex < conversations.length; conversationIndex++) {
-    const messages = asArray<Record<string, unknown>>(conversations[conversationIndex].messages);
+    const messages = asRecordArray<Record<string, unknown>>(conversations[conversationIndex].messages);
     for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
       const value = invalidEnumValue(messages[messageIndex], 'role', MESSAGE_ROLES);
       if (value !== undefined) {
@@ -304,8 +312,8 @@ function normalizeImportedBinding(row: Record<string, unknown>): { model: string
 }
 
 function collectModelPresetBindingsFromPayload(payload: ImportPayload): Record<string, unknown>[] {
-  const fromAll = asArray<Record<string, unknown>>(payload.character_model_preset_bindings);
-  const fromSingle = asArray<Record<string, unknown>>(payload.model_preset_bindings);
+  const fromAll = asRecordArray<Record<string, unknown>>(payload.character_model_preset_bindings);
+  const fromSingle = asRecordArray<Record<string, unknown>>(payload.model_preset_bindings);
   if (fromAll.length === 0 && fromSingle.length === 0) return [];
 
   const impliedCharacterId = asString(asRecord(payload.character)?.id);
@@ -352,7 +360,7 @@ function getCharactersToImport(payload: ImportPayload, includeCharacter: boolean
 
   const normalizedCard = normalizeCharacterCard(payload);
   const singleCharacter = asRecord(payload.character);
-  const characters = asArray<Record<string, unknown>>(payload.characters);
+  const characters = asRecordArray<Record<string, unknown>>(payload.characters);
 
   if (characters.length > 0) return characters;
   if (singleCharacter) return [singleCharacter];
@@ -422,6 +430,10 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: '无效的 JSON 格式' }, { status: 400 });
   }
+  // 合法 JSON 不一定是对象：null / 数组 / 字符串 / 数字会让后续按字段读取抛 TypeError。
+  if (!asRecord(payload)) {
+    return NextResponse.json({ error: '导入数据必须是 JSON 对象' }, { status: 400 });
+  }
 
   // ── 版本号校验 ──────────────────────────────────────────────
   // 拒绝读不懂的未来版本，避免新格式字段被旧代码忽略后写出半成品数据。
@@ -447,10 +459,10 @@ export async function POST(request: NextRequest) {
   const characterDraft = target_character_id && includeCharacter ? getCharacterDraft(payload) : null;
 
   const memoriesToImport: Record<string, unknown>[] = includeMemories
-    ? asArray<Record<string, unknown>>(payload.memories)
+    ? asRecordArray<Record<string, unknown>>(payload.memories)
     : [];
   const conversationsToImport: ConversationWithMessages[] = includeConversations
-    ? asArray<ConversationWithMessages>(payload.conversations)
+    ? asRecordArray<ConversationWithMessages>(payload.conversations)
     : [];
   const charactersToImport: Record<string, unknown>[] = target_character_id
     ? []
@@ -460,26 +472,26 @@ export async function POST(request: NextRequest) {
   // 统一收集成数组，导入时按 character_id 重映射。
   const profilesToImport: Record<string, unknown>[] = includeProfiles
     ? [
-        ...asArray<Record<string, unknown>>(payload.memory_profiles),
-        ...(payload.memory_profile ? [payload.memory_profile] : []),
+        ...asRecordArray<Record<string, unknown>>(payload.memory_profiles),
+        ...asRecordArray<Record<string, unknown>>([payload.memory_profile]),
       ]
     : [];
   const profileVersionsToImport: Record<string, unknown>[] = includeProfiles
-    ? asArray<Record<string, unknown>>(payload.memory_profile_versions)
+    ? asRecordArray<Record<string, unknown>>(payload.memory_profile_versions)
     : [];
   const embeddingsToImport: Record<string, unknown>[] = includeEmbeddings
-    ? asArray<Record<string, unknown>>(payload.memory_embeddings)
+    ? asRecordArray<Record<string, unknown>>(payload.memory_embeddings)
     : [];
   // 角色级记忆配置：单角色字段 character_memory_config，全量 character_memory_configs。
   // 与角色绑定；导入时按 idMap / target_character_id 重映射。可选字段，旧备份无此字段则空数组。
   const configsToImport: Record<string, unknown>[] = [
-    ...asArray<Record<string, unknown>>(payload.character_memory_configs),
-    ...(payload.character_memory_config ? [payload.character_memory_config] : []),
+    ...asRecordArray<Record<string, unknown>>(payload.character_memory_configs),
+    ...asRecordArray<Record<string, unknown>>([payload.character_memory_config]),
   ];
   const modelPresetBindingsToImport = collectModelPresetBindingsFromPayload(payload);
   const includePresets = includeCharacter || modelPresetBindingsToImport.length > 0;
-  const presetsToImport = includePresets ? asArray<Record<string, unknown>>(payload.prompt_presets) : [];
-  const presetEntriesToImport = includePresets ? asArray<Record<string, unknown>>(payload.prompt_preset_entries) : [];
+  const presetsToImport = includePresets ? asRecordArray<Record<string, unknown>>(payload.prompt_presets) : [];
+  const presetEntriesToImport = includePresets ? asRecordArray<Record<string, unknown>>(payload.prompt_preset_entries) : [];
   const presetIds = new Set(presetsToImport.map(row => asString(row.id)));
   if (presetsToImport.some(row => !asString(row.id) || !asString(row.name))
     || presetIds.size !== presetsToImport.length
@@ -840,7 +852,7 @@ function importPayload({
       results.conversationsImported++;
 
       // 导入该对话的消息
-      const messages = asArray<Record<string, unknown>>(conv.messages);
+      const messages = asRecordArray<Record<string, unknown>>(conv.messages);
       const conversationMessageIdMap = new Map<string, string>();
       // 始终按稳定顺序重建 1..N，避免外部重复/非整数/稀疏 seq 破坏游标分页。
       const seqByIndex = resolveImportMessageSeq(messages);
@@ -856,6 +868,11 @@ function importPayload({
         const role = (asString(msg.role) || 'user') as (typeof MESSAGE_ROLES)[number];
         const content = asString(msg.content);
         const metadata = parseMessageMetadata(msg.metadata);
+        // attachments 同样来自导入包：不是数组、或混有 null / 非对象元素时，token 计数和之后的
+        // 聊天渲染都会在读取附件字段时抛 TypeError，这里按对象数组收口（合法附件原样保留）
+        if (metadata.attachments !== undefined) {
+          metadata.attachments = asRecordArray(metadata.attachments);
+        }
         const tokenResult = createMessageTokenCount(content, role, metadata.attachments);
         const importedMetadata = metadataWithTokenCountProvenance(metadata, tokenResult.provenance);
         const metaStr = JSON.stringify(importedMetadata);

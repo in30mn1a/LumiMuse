@@ -90,7 +90,6 @@ export default function MemoriesPage() {
   const [mergeBusyKey, setMergeBusyKey] = useState<string | null>(null);
   const [mergeSourcesModal, setMergeSourcesModal] = useState<MergeSourcesModalState | null>(null);
   const [memoryRefreshNonce, setMemoryRefreshNonce] = useState(0);
-  const selectedCharIdRef = useRef<string | null>(null);
   const memoryAiReviewAbortRef = useRef<AbortController | null>(null);
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -104,7 +103,6 @@ export default function MemoriesPage() {
         setCharacters(chars);
         setCharactersLoadError('');
         if (chars.length > 0) {
-          selectedCharIdRef.current = chars[0].id;
           setSelectedCharId(chars[0].id);
         }
       } catch (error) {
@@ -120,10 +118,6 @@ export default function MemoriesPage() {
       cancelled = true;
     };
   }, [showToast, t]);
-
-  useEffect(() => {
-    selectedCharIdRef.current = selectedCharId;
-  }, [selectedCharId]);
 
   const handleMemoryAiReview = async () => {
     if (!selectedCharId) return;
@@ -176,7 +170,9 @@ export default function MemoriesPage() {
           }
         }
         const result: MemoryAiReviewResult = await parseJsonResponse<MemoryAiReviewResult>(response);
-        if (selectedCharIdRef.current !== requestedCharacterId) return;
+        // 运行身份 = 自己的 AbortController。只比角色 id 分不出「切走又切回后新开的一轮」，
+        // 旧一轮会把进度/结果写进新一轮并提前解除它的忙态。
+        if (memoryAiReviewAbortRef.current !== abortController) return;
 
         if (result.plan_id) planId = result.plan_id;
         aggregateResult.plan_id = planId;
@@ -228,7 +224,7 @@ export default function MemoriesPage() {
         showToast(reviewSummary, 'success');
       }
     } catch (err) {
-      if (selectedCharIdRef.current !== requestedCharacterId) return;
+      if (memoryAiReviewAbortRef.current !== abortController) return;
       // 用户主动点了停止：不是故障，不按错误提示。
       const stoppedByUser = abortController.signal.aborted;
       // 整页失败会中断后续页，但此前已成功的页其修正已落库；保留并展示已处理进度，避免表现为全盘失败、让已落库的修改对用户不可见。
@@ -250,7 +246,7 @@ export default function MemoriesPage() {
         showToast(`${t('memory.aiReviewFailed')}: ${getErrorMessage(err)}`, 'error');
       }
     } finally {
-      if (selectedCharIdRef.current === requestedCharacterId) {
+      if (memoryAiReviewAbortRef.current === abortController) {
         setMemoryAiReviewRunning(false);
       }
     }
@@ -400,7 +396,9 @@ export default function MemoriesPage() {
                 value={selectedCharId || ''}
                 onChange={e => {
                   const nextCharacterId = e.target.value || null;
-                  selectedCharIdRef.current = nextCharacterId;
+                  // 切角色即作废在途整理：中止它的后续请求，它的收尾也不再碰界面状态。已落库的批次不回滚。
+                  memoryAiReviewAbortRef.current?.abort();
+                  memoryAiReviewAbortRef.current = null;
                   setSelectedCharId(nextCharacterId);
                   setMemoryAiReviewRunning(false);
                   setLastMemoryAiReviewResult(null);

@@ -66,6 +66,9 @@ export default function GlobalSearch({ open, onClose, characterId = null, onConv
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') { onClose(); return; }
+    // 输入法组合期间的 Enter / 方向键是在操作候选词，不能当成结果导航。
+    // Safari 先派发 compositionend 再派发 keydown，此时 isComposing 已为 false，只剩 keyCode 229。
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIndex(i => Math.min(i + 1, results.length - 1)); }
     if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIndex(i => Math.max(i - 1, 0)); }
     if (e.key === 'Enter' && results[safeActiveIndex]) { handleSelect(results[safeActiveIndex]); }

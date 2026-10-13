@@ -34,6 +34,17 @@ require.extensions['.ts'] = function loadTs(module, filename) {
   module._compile(output.outputText, filename);
 };
 
+// 默认依赖（loadPriorityMemories / readMemoryProfile / markMemoriesUsed）在测试未显式注入时
+// 会走到真实的 getDb()，从而打开 data/lumimuse.db 并触发启动期的后台队列（含真实 LLM 调用）。
+// 用一个已迁移的内存库顶掉模块级单例：getDb() 直接命中它并提前返回，不再有副作用。
+{
+  const { __migrateForTests, __setDbForTests } = require('../src/lib/db.ts');
+  const isolatedMemoryDb = new Database(':memory:');
+  isolatedMemoryDb.pragma('foreign_keys = ON');
+  __migrateForTests(isolatedMemoryDb);
+  __setDbForTests(isolatedMemoryDb);
+}
+
 function requireFreshWithMocks(modulePath, mocks) {
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (Object.prototype.hasOwnProperty.call(mocks, request)) {

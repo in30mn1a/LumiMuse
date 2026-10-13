@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { loadSettings } from '@/lib/settings';
@@ -18,6 +19,14 @@ type PostParamsResult =
 
 type CredentialSource = 'chat' | 'embedding' | 'reranker';
 
+interface ModelsPostBody {
+  api_base?: string;
+  api_key?: string;
+  refresh?: boolean;
+  credential_source?: CredentialSource;
+  provider_id?: string;
+}
+
 /**
  * 解析模型列表请求参数：
  * - GET 仅支持 refresh 标志，api_base/api_key 必须从已保存的 settings 中读取（避免敏感信息进 URL）
@@ -33,20 +42,21 @@ function readGetParams(request: NextRequest): ModelsRequestParams {
 }
 
 async function readPostParams(request: NextRequest): Promise<PostParamsResult> {
-  let body: {
-    api_base?: string;
-    api_key?: string;
-    refresh?: boolean;
-    credential_source?: CredentialSource;
-    provider_id?: string;
-  } = {};
+  let body: ModelsPostBody = {};
   const rawBody = await request.text();
   if (rawBody.trim()) {
+    let parsed: unknown;
     try {
-      body = JSON.parse(rawBody);
+      parsed = JSON.parse(rawBody);
     } catch {
       return { response: NextResponse.json({ models: [], error: '请求体不是有效 JSON' }, { status: 400 }) };
     }
+    // 合法 JSON 不等于合法形状：null / 数组 / 标量，或字符串字段传了别的类型，
+    // 下面的 .trim() 与字符串拼接会抛 TypeError 变成 500。
+    if (!isValidPostBody(parsed)) {
+      return { response: NextResponse.json({ models: [], error: '请求体格式无效' }, { status: 400 }) };
+    }
+    body = parsed;
   }
   const forceRefresh = body.refresh === true;
   const providerId = body.provider_id?.trim();
@@ -71,6 +81,14 @@ async function readPostParams(request: NextRequest): Promise<PostParamsResult> {
       forceRefresh,
     },
   };
+}
+
+function isValidPostBody(value: unknown): value is ModelsPostBody {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return ['api_base', 'api_key', 'provider_id'].every(
+    field => record[field] == null || typeof record[field] === 'string',
+  );
 }
 
 function readProviderParams(providerId: string): { api_base: string; api_key: string; model: string } | undefined {
@@ -119,10 +137,13 @@ async function handle(params: ModelsRequestParams): Promise<NextResponse> {
   }
 
   const db = getDb();
+  // 缓存归属到「api_base + 密钥指纹」：同一地址下不同 key 可见的模型可能不同（中转站按 key 分组），
+  // 也可能根本无效；只按 api_base 命中会让错误的 key 试连时拿到别的 key 的列表、看起来像成功。
+  const keyHash = createHash('sha256').update(apiKey).digest('hex');
 
   // 读缓存
   if (!forceRefresh) {
-    const cached = db.prepare('SELECT models, cached_at FROM model_cache WHERE api_base = ?').get(apiBase) as
+    const cached = db.prepare('SELECT models, cached_at FROM model_cache WHERE api_base = ? AND key_hash = ?').get(apiBase, keyHash) as
       | { models: string; cached_at: string }
       | undefined;
     if (cached) {
@@ -153,15 +174,15 @@ async function handle(params: ModelsRequestParams): Promise<NextResponse> {
     // 写入缓存
     const now = new Date().toISOString();
     db.prepare(`
-      INSERT INTO model_cache (api_base, models, cached_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(api_base) DO UPDATE SET models = excluded.models, cached_at = excluded.cached_at
-    `).run(apiBase, JSON.stringify(models), now);
+      INSERT INTO model_cache (api_base, models, cached_at, key_hash)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(api_base) DO UPDATE SET models = excluded.models, cached_at = excluded.cached_at, key_hash = excluded.key_hash
+    `).run(apiBase, JSON.stringify(models), now, keyHash);
 
     return NextResponse.json({ models, error: null, cached: false });
   } catch {
     // 拉取失败时尝试返回旧缓存
-    const stale = db.prepare('SELECT models FROM model_cache WHERE api_base = ?').get(apiBase) as
+    const stale = db.prepare('SELECT models FROM model_cache WHERE api_base = ? AND key_hash = ?').get(apiBase, keyHash) as
       | { models: string }
       | undefined;
     if (stale) {

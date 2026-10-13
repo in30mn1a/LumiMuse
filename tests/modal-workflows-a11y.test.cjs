@@ -198,12 +198,12 @@ test('GlobalSearch traps Tab focus inside the dialog', async () => {
 
   const dialog = within(document.body).getByRole('dialog');
   const input = within(dialog).getByRole('textbox');
-  await waitFor(() => assert.equal(document.activeElement, input));
+  await waitFor(() => assert.ok(document.activeElement === input, 'the search input should receive focus'));
   const resultButtons = within(dialog).getAllByRole('button');
   resultButtons.at(-1).focus();
   await user.tab();
 
-  assert.equal(document.activeElement, input, 'Tab from the last result should loop to the search input');
+  assert.ok(document.activeElement === input, 'Tab from the last result should loop to the search input');
 });
 
 test('GlobalSearch closes with Escape and restores focus to its trigger', async () => {
@@ -216,11 +216,11 @@ test('GlobalSearch closes with Escape and restores focus to its trigger', async 
 
   const dialog = within(document.body).getByRole('dialog');
   const input = within(dialog).getByRole('textbox');
-  await waitFor(() => assert.equal(document.activeElement, input));
+  await waitFor(() => assert.ok(document.activeElement === input, 'the search input should receive focus'));
   await user.keyboard('{Escape}');
 
   await waitFor(() => assert.equal(within(document.body).queryByRole('dialog'), null));
-  assert.equal(document.activeElement, trigger);
+  assert.ok(document.activeElement === trigger, 'focus should return to the search trigger');
 });
 
 test('GlobalSearch scrolls the keyboard-active result into view', async () => {

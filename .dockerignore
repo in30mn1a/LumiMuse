@@ -5,9 +5,26 @@ data
 public/generated
 public/avatars
 public/attachments
-.env*.local
-.env
+.env*
+!.env.local.example
 *.log
 .DS_Store
 .vscode
 .superpowers
+# 个人备份与数据库副本
+*.tar
+*.tar.gz
+*.zip
+**/*.db
+**/*.db-wal
+**/*.db-shm
+# 本地工作材料
+.claude
+.tmp-tests
+docs
+output
+test-results
+CLAUDE.md
+AGENTS.md
+*.html
+*.tsbuildinfo

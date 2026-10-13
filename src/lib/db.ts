@@ -14,6 +14,7 @@ import {
   installGeneratedImageFolderMigrationTracking,
 } from '@/lib/generated-image-folder-migration';
 import { migrateGlobalBackgroundTaskSettings } from '@/lib/character-task-settings-migration';
+import { recoverAndWakeAtLeaseExpiry } from '@/lib/background-task-recovery';
 import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
 import type { MemoryChatInjectionMode } from '@/types';
 
@@ -175,7 +176,7 @@ export function getDb(): Database.Database {
   // 各队列独立 boot：一条失败不得拖垮其余队列。
   setImmediate(() => {
     for (const entry of BACKGROUND_QUEUE_BOOT) {
-      void entry.run().catch(entry.onError);
+      void entry.run(entry.onError).catch(entry.onError);
     }
   });
 
@@ -185,16 +186,19 @@ export function getDb(): Database.Database {
 /**
  * 后台队列启动注册表：每条独立 import + recover + trigger。
  * 新增队列时在此追加一项即可，不要再往 getDb 里堆 setImmediate 分支。
+ * 三个租约队列走 recoverAndWakeAtLeaseExpiry：快速重启留下的未过期租约到期后会自动补跑一次。
  */
 const BACKGROUND_QUEUE_BOOT: Array<{
-  run: () => Promise<void>;
+  run: (onError: (err: unknown) => void) => Promise<void>;
   onError: (err: unknown) => void;
 }> = [
   {
-    run: async () => {
+    run: async (onError) => {
       const { recoverStaleTasks, triggerQueue } = await import('@/lib/memory-queue');
-      recoverStaleTasks();
-      triggerQueue();
+      recoverAndWakeAtLeaseExpiry(getDb(), 'memory_tasks', {
+        recover: recoverStaleTasks,
+        trigger: triggerQueue,
+      }, onError);
     },
     onError: (err) => {
       // 不静默吞错：启动期失败必须可见，否则记忆队列恢复出问题用户根本无从察觉
@@ -204,10 +208,12 @@ const BACKGROUND_QUEUE_BOOT: Array<{
     },
   },
   {
-    run: async () => {
+    run: async (onError) => {
       const { recoverStaleMemoryProfileTasks, triggerMemoryProfileQueue } = await import('@/lib/memory-profile');
-      recoverStaleMemoryProfileTasks();
-      triggerMemoryProfileQueue();
+      recoverAndWakeAtLeaseExpiry(getDb(), 'character_memory_profile_update_tasks', {
+        recover: recoverStaleMemoryProfileTasks,
+        trigger: triggerMemoryProfileQueue,
+      }, onError);
     },
     onError: (err) => {
       structuredLog('error', 'memory.profile.boot_failed', {
@@ -219,17 +225,22 @@ const BACKGROUND_QUEUE_BOOT: Array<{
     // 向量索引：recover 后必须 trigger（仅 recover 时 pending 可能长期闲置）。
     // drain 自带 config 缺失短路与 claim 守卫，启动触发是安全的。
     // trigger 单独 try/catch：recover 成功但 trigger 失败时保留 recovery_failed / boot_trigger_failed 分流。
-    run: async () => {
+    run: async (onError) => {
       const { recoverStaleMemoryEmbeddingTasks } = await import('@/lib/memory-embeddings');
-      recoverStaleMemoryEmbeddingTasks();
-      try {
-        const { triggerMemoryIndexProcessing } = await import('@/lib/memory-index-trigger');
-        triggerMemoryIndexProcessing();
-      } catch (triggerErr) {
-        structuredLog('error', 'memory.embedding.boot_trigger_failed', {
-          operation: 'trigger_drain', status: 'failed',
-        }, triggerErr);
-      }
+      const triggerDrain = async () => {
+        try {
+          const { triggerMemoryIndexProcessing } = await import('@/lib/memory-index-trigger');
+          triggerMemoryIndexProcessing();
+        } catch (triggerErr) {
+          structuredLog('error', 'memory.embedding.boot_trigger_failed', {
+            operation: 'trigger_drain', status: 'failed',
+          }, triggerErr);
+        }
+      };
+      recoverAndWakeAtLeaseExpiry(getDb(), 'memory_embedding_tasks', {
+        recover: recoverStaleMemoryEmbeddingTasks,
+        trigger: () => { void triggerDrain(); },
+      }, onError);
     },
     onError: (err) => {
       structuredLog('error', 'memory.embedding.recovery_failed', {
@@ -727,9 +738,15 @@ function migrate(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS model_cache (
       api_base TEXT PRIMARY KEY,
       models TEXT NOT NULL DEFAULT '[]',
-      cached_at TEXT NOT NULL DEFAULT (datetime('now'))
+      cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+      key_hash TEXT
     );
   `);
+  // 增量迁移：缓存归属到「api_base + 密钥指纹」。旧行 key_hash 为 NULL，永不命中，下次拉取时覆盖。
+  const modelCacheCols = db.prepare("PRAGMA table_info(model_cache)").all() as { name: string }[];
+  if (!modelCacheCols.some(c => c.name === 'key_hash')) {
+    db.exec(`ALTER TABLE model_cache ADD COLUMN key_hash TEXT`);
+  }
 
   // 增量迁移：API 供应商表（支持保存多个 API 配置并切换）
   db.exec(`

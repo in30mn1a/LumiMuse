@@ -101,7 +101,7 @@ test('error toast uses alert semantics and a focusable 44px dismiss button', () 
   assert.match(dismiss.className, /min-w-11/);
 
   dismiss.focus();
-  assert.equal(document.activeElement, dismiss);
+  assert.ok(document.activeElement === dismiss, 'the dismiss button should hold focus');
   fireEvent.click(dismiss);
   assert.equal(within(document.body).queryByRole('alert'), null);
 });

@@ -417,10 +417,10 @@ test('provider menus use radio selection and restore their trigger on Escape', a
   const trigger = view.getAllByRole('button', { name: 'settings.providerActions' })[1];
   trigger.focus();
   fireEvent.click(trigger);
-  assert.equal(document.activeElement, view.getByRole('button', { name: 'common.edit' }));
+  assert.ok(document.activeElement === view.getByRole('button', { name: 'common.edit' }), 'the menu should focus its first item');
   fireEvent.keyDown(document, { key: 'Escape' });
   assert.equal(view.queryByRole('button', { name: 'common.edit' }), null);
-  assert.equal(document.activeElement, trigger);
+  assert.ok(document.activeElement === trigger, 'Escape should restore focus to the provider trigger');
   fireEvent.click(trigger);
   fireEvent.pointerDown(document.body);
   assert.equal(view.queryByRole('button', { name: 'common.delete' }), null);
@@ -438,7 +438,7 @@ test('category navigation closes provider menus without discarding their control
   generation.focus();
   fireEvent.click(generation);
   fireEvent.keyDown(document, { key: 'Escape' });
-  assert.equal(document.activeElement, generation);
+  assert.ok(document.activeElement === generation, 'Escape should restore focus to the generation tab');
   fireEvent.click(view.getByRole('button', { name: 'settings.tabApi' }));
   assert.equal(view.queryByRole('button', { name: 'common.edit' }), null);
   assert.equal(view.container.querySelector('#settings-provider-model').value, 'provider-editor-draft');

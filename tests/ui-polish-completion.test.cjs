@@ -66,7 +66,7 @@ test('login provides a visible password label, loading name and linked inline er
   const input = view.getByLabelText('login.passwordPrompt');
   assert.equal(input.type, 'password');
   assert.equal(input.autocomplete, 'current-password');
-  assert.equal(document.activeElement, input);
+  assert.ok(document.activeElement === input, 'the password input should receive focus');
   fireEvent.change(input, { target: { value: 'fictional-password' } });
   fireEvent.click(view.getByRole('button', { name: 'login.submit' }));
   const busyButton = view.getByRole('button', { name: 'common.loading' });
@@ -78,7 +78,7 @@ test('login provides a visible password label, loading name and linked inline er
   assert.equal(input.getAttribute('aria-describedby'), error.id);
   assert.equal(input.getAttribute('aria-invalid'), 'true');
   assert.equal(input.value, '');
-  assert.equal(document.activeElement, input);
+  assert.ok(document.activeElement === input, 'the password input should receive focus');
   fireEvent.change(input, { target: { value: 'new-password' } });
   assert.equal(view.queryByRole('alert'), null);
   assert.equal(input.getAttribute('aria-invalid'), 'false');

@@ -315,3 +315,44 @@ test('short fact reaches real extraction queue and persists memory without noop 
     assert.match(h.db.prepare("SELECT content FROM memories WHERE source_msg_ids LIKE '%short%'").get().content, /Jo/);
   });
 });
+
+test('message edited during the extraction LLM window is not marked extracted', async () => {
+  await fixture(async h => {
+    h.add('edited', 'user', 'My name is Jo.', 1);
+    h.add('stable', 'user', 'I live in Oslo.', 2);
+    h.setChat(async () => {
+      // 用户在提取 LLM 等待期间改了这条消息：新内容没有被本轮提取读到
+      h.db.prepare("UPDATE messages SET content = 'My name is Max.' WHERE id = 'edited'").run();
+      return JSON.stringify({ memories: [{ category: '用户信息', content: 'The user name is Jo and lives in Oslo.',
+        memory_kind: 'general', lifecycle_action: 'insert', importance: 0.8 }] });
+    });
+    h.mocks['@/lib/memory-profile'] = { enqueueMemoryProfilePatchExtraction() {}, triggerMemoryProfileQueue() {},
+      readMemoryProfile: () => null, renderMemoryProfile: () => '' };
+    h.fresh('../src/lib/memory-engine.ts');
+    h.fresh('../src/lib/memory-extraction-reference.ts');
+    const queue = h.fresh('../src/lib/memory-queue.ts');
+    const taskId = Number(h.db.prepare("INSERT INTO memory_tasks(character_id,conversation_id,message_ids) VALUES('char','conv',?)")
+      .run(JSON.stringify(['edited', 'stable'])).lastInsertRowid);
+    await queue.__processQueueForTest();
+    assert.equal(h.db.prepare('SELECT status FROM memory_tasks WHERE id=?').get(taskId).status, 'done');
+    const metadataOf = id => JSON.parse(h.db.prepare('SELECT metadata FROM messages WHERE id=?').get(id).metadata);
+    // 改过的消息留给下一轮提取；没改的照常标记
+    assert.notEqual(metadataOf('edited').memory_extracted, true);
+    assert.equal(metadataOf('stable').memory_extracted, true);
+  });
+});
+
+test('data-only image attachment reaches the same-turn prompt without being stored', async () => {
+  await fixture(async h => {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    const prompt = await h.runChat('conv', {
+      attachments: [{ type: 'image', name: 'inline.png', data: dataUrl, mimeType: 'image/png' }],
+    }, 'LOOK_AT_THIS');
+    // schema 接受无 URL 的 base64 图片：它必须真的作为多模态输入送到本轮模型
+    assert.match(prompt, /LOOK_AT_THIS/);
+    assert.ok(prompt.includes(dataUrl), '本轮 prompt 必须带上 data-only 图片');
+    // 仍然不落库（避免 DB 体积爆炸）
+    const stored = h.db.prepare("SELECT metadata FROM messages WHERE role = 'user' AND content = 'LOOK_AT_THIS'").get();
+    assert.ok(!stored.metadata.includes('base64'));
+  });
+});

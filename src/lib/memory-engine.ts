@@ -53,10 +53,11 @@ function hashStringForCache(text: string): number {
 
 /**
  * 取某条记忆用于检索评分的完整 token 集（content 分词 + tags 小写 + category）。
- * 命中缓存且 content 未变时直接复用，避免每轮重复 tokenize。
+ * 命中缓存且 content/tags/category 均未变时直接复用，避免每轮重复 tokenize。
+ * 指纹必须覆盖 token 集的全部输入：只改标签或分类（content 不变）也要失效。
  */
 function getMemoryTokensForScoring(memory: Memory): Set<string> {
-  const hash = hashStringForCache(memory.content);
+  const hash = hashStringForCache(`${memory.category}\u0000${memory.tags.join('\u0001')}\u0000${memory.content}`);
   const cached = memoryTokenCache.get(memory.id);
   if (cached && cached.hash === hash) {
     return cached.tokens;
@@ -950,11 +951,14 @@ export async function extractMemories(
           sourceMsgIds: entry.source_msg_ids,
           supersededAt: entry.updated_at,
         };
+        // 乐观锁：守卫 LLM 前快照的 updated_at（与下方 upsert 同口径）。
+        // 用户在 LLM 窗口内手工改过该记忆 → 作废判定基于的是旧内容，落空不作废，
+        // 也不拿快照 metadata 覆盖用户版本；新记忆照常插入，双保留、不丢内容。
         db.prepare(`
           UPDATE memories
           SET status = 'superseded', metadata = ?, updated_at = ?
-          WHERE id = ? AND status = 'active'
-        `).run(JSON.stringify(metadata), entry.updated_at, target.id);
+          WHERE id = ? AND status = 'active' AND updated_at = ?
+        `).run(JSON.stringify(metadata), entry.updated_at, target.id, target.updated_at);
       }
       insertMemory(entry);
     }

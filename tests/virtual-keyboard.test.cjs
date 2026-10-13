@@ -37,7 +37,7 @@ function focusTextarea() {
   const textarea = document.createElement('textarea');
   document.body.appendChild(textarea);
   textarea.focus();
-  assert.equal(document.activeElement, textarea);
+  assert.ok(document.activeElement === textarea, 'the created textarea should receive focus');
   return textarea;
 }
 
@@ -69,7 +69,7 @@ test('resolves immediately without blurring when no keyboard is shown', async ()
   test.mock.timers.enable({ apis: ['setTimeout'] });
 
   assert.equal(await isSettled(dismissVirtualKeyboard()), true);
-  assert.equal(document.activeElement, textarea);
+  assert.ok(document.activeElement === textarea, 'the created textarea should receive focus');
 });
 
 test('blurs the focused field and waits for the keyboard to close before resolving', async () => {
@@ -78,7 +78,7 @@ test('blurs the focused field and waits for the keyboard to close before resolvi
   test.mock.timers.enable({ apis: ['setTimeout'] });
 
   const pending = dismissVirtualKeyboard();
-  assert.equal(document.activeElement, document.body, 'focused field should be blurred to dismiss the keyboard');
+  assert.ok(document.activeElement === document.body, 'focused field should be blurred to dismiss the keyboard');
   assert.equal(await isSettled(pending), false);
 
   // 键盘收起动画中间的 resize 不算收起

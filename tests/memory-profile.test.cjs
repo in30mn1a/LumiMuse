@@ -151,6 +151,26 @@ function createCharacterDbFile(tmpDir) {
   return { db, dbPath };
 }
 
+// 真实 getDb() 的 DB_PATH 由「实例创建那一刻的 cwd」决定（db.ts 顶层 join(process.cwd(), 'data')）。
+// 本文件的 withTempWorkspace 会临时 chdir、清理时切回仓库根，而它注册的后台队列 setImmediate
+// 可能在清理之后才触发：那时 boot 里惰性 import 的 db.ts 若已被 deleteModuleCache 摘掉，就会在
+// 仓库根下新建实例并打开 data/lumimuse.db。让整个文件都在一个临时工作区 cwd 下运行即可根治
+// （各用例自己的 withTempWorkspace 仍可正常嵌套）。刻意不在退出前切回，避免重新武装同一个竞态。
+const fileScratchDir = (() => {
+  const tmpRoot = path.join(root, '.tmp-tests');
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  return fs.mkdtempSync(path.join(tmpRoot, 'memory-profile-scratch-'));
+})();
+process.chdir(fileScratchDir);
+process.on('exit', () => {
+  try {
+    process.chdir(root);
+    fs.rmSync(fileScratchDir, { recursive: true, force: true });
+  } catch {
+    // 尽最大努力清理：SQLite 句柄尚未释放时 Windows 会拒绝删除，留在 .tmp-tests/ 下即可
+  }
+});
+
 test('getDb 迁移会创建 character_memory_profiles 表与 11.1 字段', () => {
   withTempWorkspace(() => {
     const originalSetImmediate = global.setImmediate;
@@ -560,6 +580,11 @@ test('memory profile init_from_memories 只读取采样用户消息的下一条 
   const route = requireFreshWithMocks('../src/app/api/memory-profile/route.ts', {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    // 真实 loadSettings 会走 getDb()，绕开上面 '@/lib/db' 的 mock（settings 模块已缓存了真连接）
+    // 从而打开工作区的 data/lumimuse.db。这里按同文件其他用例的写法直接注入。
+    '@/lib/settings': {
+      loadSettings: () => ({ client_timezone: 'Asia/Shanghai' }),
+    },
     '@/lib/memory-profile': {
       deleteMemoryProfileVersion: () => false,
       enqueueMemoryProfileUpdate: () => {

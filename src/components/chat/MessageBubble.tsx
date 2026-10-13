@@ -28,7 +28,8 @@ interface Props {
   versionInfo?: VersionInfo;
   /** 搜索跳转命中的精确正文坐标：匹配处套黄色高亮 */
   highlightRanges?: readonly TextHighlightRange[] | null;
-  onEdit?: (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => void;
+  /** 返回（或 resolve 为）false 表示保存失败，编辑框保持打开并保留草稿；不返回值视为成功 */
+  onEdit?: (id: string, content: string, attachments?: Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>) => void | boolean | Promise<void | boolean>;
   onDelete?: (id: string) => void;
   onRegenerate?: (id: string) => void;
   onRegenerateFromHere?: (id: string) => void;
@@ -142,15 +143,24 @@ function SummaryCard({
 }: {
   message: Message;
   showTimestamps?: boolean;
-  onEdit?: (id: string, content: string) => void;
+  onEdit?: (id: string, content: string) => void | boolean | Promise<void | boolean>;
   onDelete?: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = () => {
-    onEdit?.(message.id, editContent);
+  const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      // 等保存结果：明确得到 false 才算失败，留在编辑态保住草稿
+      const saved = await onEdit?.(message.id, editContent);
+      if (saved === false) return;
+    } finally {
+      setSaving(false);
+    }
     setEditing(false);
   };
 
@@ -211,7 +221,7 @@ function SummaryCard({
               <span>{t('message.editKeyHint')}</span>
             </div>
             <div className="flex gap-2">
-              <button onClick={handleSave} className="soft-button soft-button-primary px-3 py-1.5 text-xs">
+              <button onClick={handleSave} disabled={saving} className="soft-button soft-button-primary px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50">
                 {t('memory.save')}
               </button>
               <button onClick={handleCancel} className="soft-button soft-button-secondary px-3 py-1.5 text-xs">
@@ -266,6 +276,7 @@ function MessageBubbleInner({
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [editAttachments, setEditAttachments] = useState<Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>>([]);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -313,10 +324,18 @@ function MessageBubbleInner({
     setEditing(true);
   };
 
-  const handleEditSave = () => {
+  const handleEditSave = async () => {
+    if (savingEdit) return;
     if (editContent.trim() || editAttachments.length > 0) {
-      // 始终传 editAttachments（即使是空数组），让 API 能清除旧附件
-      onEdit?.(message.id, editContent.trim(), editAttachments);
+      setSavingEdit(true);
+      try {
+        // 始终传 editAttachments（即使是空数组），让 API 能清除旧附件
+        // 等保存结果：明确得到 false 才算失败，留在编辑态保住草稿
+        const saved = await onEdit?.(message.id, editContent.trim(), editAttachments);
+        if (saved === false) return;
+      } finally {
+        setSavingEdit(false);
+      }
     }
     setEditing(false);
   };
@@ -513,7 +532,8 @@ function MessageBubbleInner({
               </button>
               <button
                 onClick={handleEditSave}
-                className={`rounded-lg px-3 py-1 text-xs transition-colors ${
+                disabled={savingEdit}
+                className={`rounded-lg px-3 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   isUser ? 'bg-white/25 text-white hover:bg-white/35' : 'bg-accent-solid text-white hover:bg-accent-dark'
                 }`}
               >

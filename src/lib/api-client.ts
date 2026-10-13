@@ -10,9 +10,15 @@ export const REASONING_SAFE_MAX_TOKENS = 16384;
 /**
  * 清理上游响应中可能回显的敏感字段（Authorization 头、API key 片段等），
  * 防止错误消息被透传到客户端日志/前端时泄漏凭据。最终长度限制 200。
+ *
+ * knownSecret：本次请求实际使用的 key。上游可能不带 Authorization/api_key 标记地原样回显它，
+ * 模式匹配认不出来，所以先做精确替换（过短的值不替换，避免把正常诊断文本打碎）。
  */
-export function sanitizeUpstreamError(text: string): string {
+export function sanitizeUpstreamError(text: string, knownSecret?: string): string {
   let sanitized = text;
+  if (knownSecret && knownSecret.length >= 8) {
+    sanitized = sanitized.split(knownSecret).join('[REDACTED]');
+  }
   // Authorization: Bearer xxx（含 Bearer 后整段 token）
   sanitized = sanitized.replace(/Authorization\s*[:=]\s*Bearer\s+[\w.\-+/=]+/gi, 'Authorization: Bearer [REDACTED]');
   // Authorization: 其他认证方案（Basic/Digest/纯 token 等）

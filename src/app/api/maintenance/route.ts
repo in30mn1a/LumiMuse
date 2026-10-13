@@ -156,9 +156,11 @@ function safeDelete(db: ReturnType<typeof getDb>, sql: string): number {
   }
 }
 
-function addReferencedFromUrl(url: string, dirName: string, set: Set<string>) {
+type ReferencedFilesByDir = Record<'avatars' | 'attachments' | 'generated', Set<string>>;
+
+function addReferencedFromUrl(url: string, referenced: ReferencedFilesByDir) {
   const asset = resolveLocalAssetUrl(url);
-  if (asset && asset.dir === dirName) set.add(asset.filename);
+  if (asset) referenced[asset.dir].add(asset.filename);
 }
 
 /**
@@ -173,48 +175,56 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   return chunks;
 }
 
-function getReferencedFiles(dirName: string): Set<string> {
+/**
+ * 一次扫描产出三个目录各自的引用集合。
+ * 引用按「URL 解析出的目录」归类，而不是按「被扫描的表」归类：角色头像可以指向
+ * generated/attachments（把生成图设为头像），消息正文 / metadata 也可以引用 avatars；
+ * 只按表归类会把这类跨目录引用的文件误判成孤儿删掉。
+ */
+function getReferencedFiles(): ReferencedFilesByDir {
   const db = getDb();
-  const referenced = new Set<string>();
+  const referenced: ReferencedFilesByDir = {
+    avatars: new Set<string>(),
+    attachments: new Set<string>(),
+    generated: new Set<string>(),
+  };
 
-  if (dirName === 'avatars') {
-    const rows = db.prepare('SELECT avatar_url FROM characters WHERE avatar_url IS NOT NULL').all() as { avatar_url: string }[];
+  const avatarRows = db.prepare('SELECT avatar_url FROM characters WHERE avatar_url IS NOT NULL').all() as { avatar_url: string }[];
+  for (const row of avatarRows) {
+    addReferencedFromUrl(row.avatar_url, referenced);
+  }
+
+  // 分页扫描 messages 表，避免一次性把所有消息拉进内存导致 OOM。
+  // 使用 rowid 游标比 LIMIT/OFFSET 更稳定（OFFSET 大时扫描成本会线性增长）。
+  const PAGE_SIZE = 1000;
+  const stmt = db.prepare(
+    'SELECT rowid, content, metadata FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?'
+  );
+  let lastRowid = 0;
+  while (true) {
+    const rows = stmt.all(lastRowid, PAGE_SIZE) as {
+      rowid: number;
+      content: string | null;
+      metadata: string | null;
+    }[];
+    if (rows.length === 0) break;
     for (const row of rows) {
-      addReferencedFromUrl(row.avatar_url, dirName, referenced);
-    }
-  } else {
-    // 分页扫描 messages 表，避免一次性把所有消息拉进内存导致 OOM。
-    // 使用 rowid 游标比 LIMIT/OFFSET 更稳定（OFFSET 大时扫描成本会线性增长）。
-    const PAGE_SIZE = 1000;
-    const stmt = db.prepare(
-      'SELECT rowid, content, metadata FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?'
-    );
-    let lastRowid = 0;
-    while (true) {
-      const rows = stmt.all(lastRowid, PAGE_SIZE) as {
-        rowid: number;
-        content: string | null;
-        metadata: string | null;
-      }[];
-      if (rows.length === 0) break;
-      for (const row of rows) {
-        for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
-          addReferencedFromUrl(url, dirName, referenced);
-        }
-        // metadata 原文整体再扫一遍：metadata.versions[i].content / versions[i].attachments
-        // 等历史版本内嵌的 URL 不在顶层 generatedImages/attachments 里，漏掉会把
-        // 「仅被旧版本引用」的文件误判成孤儿删掉（用户切回旧版本时图片 404）。
-        // 与 filterUnreferencedLocalAssetUrls 的既有做法保持一致。
-        for (const url of collectLocalAssetUrlsFromContent(row.metadata)) {
-          addReferencedFromUrl(url, dirName, referenced);
-        }
-        for (const url of collectLocalAssetUrlsFromContent(row.content)) {
-          addReferencedFromUrl(url, dirName, referenced);
-        }
+      for (const url of collectLocalAssetUrlsFromMetadata(row.metadata)) {
+        addReferencedFromUrl(url, referenced);
       }
-      lastRowid = rows[rows.length - 1].rowid;
-      if (rows.length < PAGE_SIZE) break;
+      // metadata 原文整体再扫一遍：metadata.versions[i].content / versions[i].attachments
+      // 等历史版本内嵌的 URL 不在顶层 generatedImages/attachments 里，漏掉会把
+      // 「仅被旧版本引用」的文件误判成孤儿删掉（用户切回旧版本时图片 404）。
+      // 与 filterUnreferencedLocalAssetUrls 的既有做法保持一致。
+      for (const url of collectLocalAssetUrlsFromContent(row.metadata)) {
+        addReferencedFromUrl(url, referenced);
+      }
+      for (const url of collectLocalAssetUrlsFromContent(row.content)) {
+        addReferencedFromUrl(url, referenced);
+      }
     }
+    lastRowid = rows[rows.length - 1].rowid;
+    if (rows.length < PAGE_SIZE) break;
   }
 
   return referenced;
@@ -241,7 +251,10 @@ async function listGeneratedFilesRecursively(
 /**
  * 扫描目录找出不被任何 DB 记录引用的孤儿文件
  */
-async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphans: string[] }> {
+async function scanOrphanFiles(
+  dirName: string,
+  referenced: Set<string>,
+): Promise<{ total: number; orphans: string[] }> {
   const dir = path.join(process.cwd(), 'public', dirName);
   if (!existsSync(dir)) return { total: 0, orphans: [] };
 
@@ -250,7 +263,6 @@ async function scanOrphanFiles(dirName: string): Promise<{ total: number; orphan
     ? await listGeneratedFilesRecursively(dir)
     : entries.filter(e => e.isFile()).map(e => e.name);
 
-  const referenced = getReferencedFiles(dirName);
   const now = Date.now();
   const orphans: string[] = [];
   for (const filename of files) {
@@ -287,10 +299,11 @@ export async function GET(request: NextRequest) {
   if (unauthorized) return unauthorized;
 
   const dbStats = countOrphans();
+  const referenced = getReferencedFiles();
   const scanResults = {
-    avatars: await scanOrphanFiles('avatars'),
-    attachments: await scanOrphanFiles('attachments'),
-    generated: await scanOrphanFiles('generated'),
+    avatars: await scanOrphanFiles('avatars', referenced.avatars),
+    attachments: await scanOrphanFiles('attachments', referenced.attachments),
+    generated: await scanOrphanFiles('generated', referenced.generated),
   };
   const orphanFiles = {
     avatars: { total: scanResults.avatars.total, orphanCount: scanResults.avatars.orphans.length },
@@ -402,9 +415,11 @@ export async function POST(request: NextRequest) {
   // 6. 清理孤儿文件
   const fileResults: Record<string, { deleted: number; errors: number }> = {};
   const deletedUrls: string[] = [];
+  // 必须在上面的 DB 孤儿清理之后再收集引用：被清掉的孤儿消息不再算作引用。
+  const referenced = getReferencedFiles();
 
   for (const dirName of ['avatars', 'attachments', 'generated'] as const) {
-    const { orphans } = await scanOrphanFiles(dirName);
+    const { orphans } = await scanOrphanFiles(dirName, referenced[dirName]);
     let deleted = 0;
     let errors = 0;
 

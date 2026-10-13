@@ -80,7 +80,7 @@ function hasTable(db: ReturnType<typeof getDb>, tableName: string): boolean {
 
 function markIncludedUserMessagesProcessed(
   db: ReturnType<typeof getDb>,
-  messages: Array<{ id: string; role: string; metadata: string }>,
+  messages: Array<{ id: string; role: string; content: string; metadata: string }>,
   includedCompleteUserIds: Set<string>,
   noopExtractedAt?: string,
 ): void {
@@ -88,10 +88,13 @@ function markIncludedUserMessagesProcessed(
     if (msg.role !== 'user' || !includedCompleteUserIds.has(msg.id)) continue;
     // 写前重读最新 metadata：提取 LLM 窗口可达秒~分钟级，期间用户可能补附件/切版本/PATCH metadata。
     // 若用调用前快照整包覆写，会静默丢掉这些字段；只合并提取标记字段。
-    const row = db.prepare('SELECT metadata FROM messages WHERE id = ?').get(msg.id) as
-      | { metadata: string | null }
+    const row = db.prepare('SELECT content, metadata FROM messages WHERE id = ?').get(msg.id) as
+      | { content: string | null; metadata: string | null }
       | undefined;
     if (!row) continue;
+    // 同一窗口内正文被编辑/切版本：本轮提取读到的是旧内容，新内容还没被提取过，
+    // 不能标 extracted，否则它会从「未提取」里消失、永远进不了记忆；留给下一轮提取。
+    if (row.content !== msg.content) continue;
     let meta: Record<string, unknown> = {};
     try {
       const parsed = JSON.parse(row.metadata || '{}');

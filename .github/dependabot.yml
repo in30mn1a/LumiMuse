@@ -1,10 +1,13 @@
 version: 2
+# 依赖自动升级 PR 暂停（2026-10-14）：三个生态的 open-pull-requests-limit 均置 0。
+# 这是 GitHub 官方暂停 version updates 的机制，ignore / groups 等配置原样保留，恢复时改回非 0 即可。
+# 注：Dependabot 安全更新属仓库设置范畴，本来就是 disabled，不受本文件影响。
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     groups:
       github-actions:
         patterns:
@@ -14,7 +17,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0
     # 生产镜像固定 node:20-slim；major 跳到 26 需单独评估引擎/原生模块兼容。
     ignore:
       - dependency-name: "node"
@@ -24,7 +27,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     groups:
       production-deps:
         dependency-type: "production"

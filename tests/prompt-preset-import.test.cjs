@@ -61,6 +61,8 @@ test.beforeEach(() => {
 
 test.afterEach(() => { try { db && db.close(); } catch {} });
 
+const warningsWith = (report, code) => report.warnings.filter(warning => typeof warning === 'object' && warning.code === code);
+
 test('非法 JSON 抛出友好错误', () => {
   assert.throws(() => importLib.importSillyTavernPreset('not json'), /JSON 解析失败/);
 });
@@ -76,8 +78,8 @@ test('预设参数有意忽略，损坏采样值不阻止提示词导入或出�
   assert.equal(report.enabled, 1);
   assert.equal(Object.hasOwn(report, 'sampling_params'), false);
   assert.equal(Object.hasOwn(presetLib.getPreset(report.preset_id), 'sampling_params'), false);
-  assert.equal(report.warnings.filter(warning => warning.includes('参数不导入')).length, 1);
-  assert.ok(!report.warnings.some(warning => /未支持.*(temperature|top_p|top_k|seed|reasoning_effort|openai_max_tokens|stream_openai|sampling_params)/.test(warning)));
+  assert.equal(warningsWith(report, 'params_ignored').length, 1);
+  assert.deepEqual(warningsWith(report, 'unsupported_fields'), []);
   const native = exportLib.buildLumiMusePresetExport(report.preset_id);
   const st = exportLib.buildSillyTavernPresetExport(report.preset_id);
   assert.equal(Object.hasOwn(native.preset, 'sampling_params'), false);
@@ -127,7 +129,8 @@ test('缺少排序按 prompts.enabled，显式空排序保持全部禁用', () =
   }));
   assert.equal(missing.enabled, 1);
   assert.equal(empty.enabled, 0);
-  assert.ok(empty.warnings.some(warning => warning.includes('0')));
+  // 0 启用由界面按实时条目状态提示，不写进导入快照，避免用户启用条目后仍显示过期警告。
+  assert.deepEqual(empty.warnings, []);
 });
 
 test('官方 Prompt Manager 包裹与直接 order 数组补回省略的核心 marker', () => {
@@ -145,7 +148,7 @@ test('官方 Prompt Manager 包裹与直接 order 数组补回省略的核心 ma
   const entries = presetLib.listEntries(report.preset_id);
   assert.equal(entries[0].marker_key, 'charDescription');
   assert.equal(entries[1].content, '正文');
-  assert.ok(report.warnings.some(warning => warning.includes('unknown')));
+  assert.deepEqual(warningsWith(report, 'dangling_order'), [{ code: 'dangling_order', params: { identifier: 'unknown' } }]);
 });
 
 test('非法 SillyTavern 结构、重复标识符和字段类型在写库前拒绝', () => {
@@ -176,10 +179,12 @@ test('兼容说明持久化，插件工具依赖不修改启用正文', () => {
   const entry = presetLib.listEntries(report.preset_id)[0];
   assert.equal(entry.content, content);
   assert.equal(entry.enabled, true);
-  assert.ok(report.warnings.some(warning => warning.includes('game_content')));
-  assert.ok(report.warnings.some(warning => warning.includes('参数不导入')));
-  assert.ok(!report.warnings.some(warning => warning.includes('未支持的预设字段 top_a')));
-  assert.ok(report.warnings.some(warning => warning.includes('unknownmacro')));
+  assert.deepEqual(warningsWith(report, 'tool_binding'), [{ code: 'tool_binding', params: { tool: 'game_content' } }]);
+  assert.equal(warningsWith(report, 'params_ignored').length, 1);
+  assert.deepEqual(warningsWith(report, 'unsupported_fields'), []);
+  assert.deepEqual(warningsWith(report, 'unsupported_macro'), [
+    { code: 'unsupported_macro', params: { entry: '工具要求', macro: 'unknownmacro' } },
+  ]);
   assert.deepEqual(presetLib.getPreset(report.preset_id).import_warnings, report.warnings);
 });
 
@@ -228,10 +233,10 @@ test('排序回退、直接 order、未启用正文宏与忽略的思考参数',
   };
   const fallback = importLib.importSillyTavernPreset(JSON.stringify(data));
   assert.equal(fallback.enabled, 1);
-  assert.ok(fallback.warnings.some(warning => warning.includes('character_id=7')));
-  assert.ok(fallback.warnings.some(warning => warning.includes('参数不导入')));
-  assert.ok(!fallback.warnings.some(warning => warning.includes('reasoning_effort')));
-  assert.ok(!fallback.warnings.some(warning => warning.includes('unsupported-disabled')));
+  assert.deepEqual(warningsWith(fallback, 'order_fallback'), [{ code: 'order_fallback', params: { characterId: '7' } }]);
+  assert.equal(warningsWith(fallback, 'params_ignored').length, 1);
+  assert.deepEqual(warningsWith(fallback, 'unsupported_fields'), []);
+  assert.deepEqual(warningsWith(fallback, 'unsupported_macro'), []);
   assert.equal(Object.hasOwn(fallback, 'sampling_params'), false);
   const direct = importLib.importSillyTavernPreset(JSON.stringify({
     ...data, reasoning_effort: 'auto', prompt_order: [{ identifier: 'active', enabled: true }],
@@ -287,7 +292,11 @@ test('采样忽略，extensions 只报告且不写全局设置', () => {
   assert.equal(e.content, 'hello');
   assert.equal(Object.hasOwn(report, 'sampling_params'), false);
   assert.deepEqual(db.prepare('SELECT * FROM settings ORDER BY key').all(), settingsBefore);
-  assert.ok(report.warnings.some(warning => warning.includes('第三方插件')));
+  assert.equal(warningsWith(report, 'extensions_ignored').length, 1);
+  // 多个未支持字段合并成一条说明，不再逐字段刷屏。
+  assert.deepEqual(warningsWith(report, 'unsupported_fields'), [
+    { code: 'unsupported_fields', params: { fields: 'wi_format, impersonation_prompt' } },
+  ]);
 });
 
 test('order.entry.enabled 优先于 prompt.enabled', () => {
@@ -407,7 +416,9 @@ test('injection_trigger 保留，未支持生成场景明确报告', () => {
   assert.equal(e.name, 'has-triggers');
   assert.equal(e.content, 'x');
   assert.deepEqual(e.injection_trigger, ['normal', 'quiet']);
-  assert.ok(report.warnings.some(warning => warning.includes('quiet')));
+  assert.deepEqual(warningsWith(report, 'unsupported_trigger'), [
+    { code: 'unsupported_trigger', params: { entry: 'has-triggers', trigger: 'quiet' } },
+  ]);
 });
 
 test('显式传入 presetName 覆盖导入名', () => {

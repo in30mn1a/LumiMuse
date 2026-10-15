@@ -22,6 +22,7 @@ import {
   Character,
   CharacterModelPresetBinding,
   PresetEntry,
+  PresetImportWarning,
   PresetMarkerKey,
   PromptPreset,
 } from '@/types';
@@ -132,7 +133,7 @@ export function getPreset(id: string): PromptPreset | null {
 
 export function createPreset(input: {
   name: string; description?: string; id?: string; story_plot_strip?: boolean; strip_tags?: string[];
-  import_warnings?: string[];
+  import_warnings?: PresetImportWarning[];
 }): PromptPreset {
   const db = getDb();
   const id = input.id ?? genId();

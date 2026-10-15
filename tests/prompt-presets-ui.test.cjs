@@ -1003,3 +1003,108 @@ test('导入报告忽略旧响应中的采样参数，保留兼容说明和管�
   assert.ok(!view.container.querySelector('dl'), 'legacy import sampling parameters have no display panel');
   assert.doesNotMatch(view.container.textContent, /temperature|max_tokens|Chat parameters for this preset|Only overrides|preset\.samplingParams/);
 });
+
+const WARNING_TRANSLATIONS = {
+  ...REPORT_TRANSLATIONS,
+  'preset.warning.unsupported_macro': 'Entry {entry} contains the unsupported macro or syntax {{{macro}}}.',
+  'preset.warning.unsupported_fields': 'These preset fields are not applied: {fields}.',
+  'preset.warning.unknown': 'Other compatibility note: {code} {details}',
+};
+
+test('code 型兼容说明按当前语言渲染，未知 code 兜底显示，旧字符串原样保留', async () => {
+  global.fetch = async url => {
+    if (String(url) === '/api/prompt-presets/import') {
+      return jsonResponse({
+        preset_id: 'coded', preset_name: 'Coded preset', total: 1, enabled: 1,
+        warnings: [
+          { code: 'unsupported_macro', params: { entry: 'Main', macro: 'random' } },
+          { code: 'unsupported_fields', params: { fields: 'wi_format, impersonation_prompt' } },
+          { code: 'future_code', params: { key: 'value' } },
+          'Legacy plain note.',
+        ],
+      }, 201);
+    }
+    if (String(url) === '/api/prompt-presets') return jsonResponse({ presets: [] });
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/page.tsx', { translations: WARNING_TRANSLATIONS });
+  const view = render(React.createElement(Component));
+  await view.findByText('preset.empty');
+  selectImportFile(view);
+
+  await view.findByText('Entry Main contains the unsupported macro or syntax {{random}}.');
+  assert.ok(view.getByText('These preset fields are not applied: wi_format, impersonation_prompt.'));
+  assert.ok(view.getByText('Other compatibility note: future_code key=value'));
+  assert.ok(view.getByText('Legacy plain note.'));
+  assert.doesNotMatch(view.container.textContent, /preset\.warning\./);
+});
+
+test('删除刚导入的预设会清掉报告，避免管理链接指向不存在的页面', async () => {
+  let deleted = false;
+  window.confirm = () => true;
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl === '/api/prompt-presets/import') {
+      return jsonResponse({ preset_id: PRESET.id, preset_name: PRESET.name, total: 1, enabled: 1 }, 201);
+    }
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && init.method === 'DELETE') {
+      deleted = true;
+      return jsonResponse({ ok: true });
+    }
+    if (requestUrl === '/api/prompt-presets') {
+      return jsonResponse({ presets: deleted ? [] : [{ ...PRESET, entry_count: 1, enabled_count: 1, is_built_in: false }] });
+    }
+    throw new Error(`unexpected fetch: ${init.method || 'GET'} ${requestUrl}`);
+  };
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/page.tsx', { translations: REPORT_TRANSLATIONS });
+  const view = render(React.createElement(Component));
+  const input = selectImportFile(view);
+  await view.findByRole('heading', { name: 'Import report' });
+  await waitFor(() => assert.equal(input.disabled, false));
+
+  fireEvent.click(await view.findByTitle('preset.delete'));
+  await view.findByText('preset.empty');
+  assert.equal(view.queryByRole('heading', { name: 'Import report' }), null);
+  assert.equal(view.queryByRole('link', { name: 'preset.manage' }), null);
+});
+
+test('重新导入失败时不保留上一次的导入报告', async () => {
+  let imports = 0;
+  global.fetch = async url => {
+    if (String(url) === '/api/prompt-presets/import') {
+      imports += 1;
+      return imports === 1
+        ? jsonResponse({ preset_id: 'first', preset_name: 'First preset', total: 1, enabled: 1 }, 201)
+        : jsonResponse({ error: 'broken file' }, 400);
+    }
+    if (String(url) === '/api/prompt-presets') return jsonResponse({ presets: [] });
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  const { Component, toastCalls } = loadUiModule('src/app/settings/prompt-presets/page.tsx', { translations: REPORT_TRANSLATIONS });
+  const view = render(React.createElement(Component));
+  await view.findByText('preset.empty');
+  const input = selectImportFile(view);
+  await view.findByText('Imported "First preset"');
+  await waitFor(() => assert.equal(input.disabled, false));
+
+  selectImportFile(view, 'Broken.json');
+  await waitFor(() => assert.ok(toastCalls.some(([message, type]) => message === 'preset.importError: broken file' && type === 'error')));
+  await waitFor(() => assert.equal(input.disabled, false));
+  assert.equal(view.queryByText('Imported "First preset"'), null);
+  assert.equal(view.queryByRole('heading', { name: 'Import report' }), null);
+});
+
+test('新建的空预设详情不显示兼容报告', async () => {
+  global.fetch = async url => {
+    if (String(url).endsWith('/entries')) return jsonResponse({ entries: [] });
+    return jsonResponse({ ...PRESET, import_warnings: [] });
+  };
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/[id]/page.tsx', {
+    unwrapParams: true,
+    translations: REPORT_TRANSLATIONS,
+  });
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  await view.findByRole('heading', { name: PRESET.name });
+  assert.equal(view.queryByRole('heading', { name: 'Preset compatibility' }), null);
+  assert.equal(view.queryByText(REPORT_TRANSLATIONS['preset.noEnabledEntries']), null);
+});

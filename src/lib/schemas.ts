@@ -436,7 +436,10 @@ export const promptPresetCreateSchema = z.object({
 });
 export type PromptPresetCreate = z.infer<typeof promptPresetCreateSchema>;
 
-export const presetImportWarningsSchema = z.array(z.string());
+export const presetImportWarningsSchema = z.array(z.union([
+  z.string(),
+  z.object({ code: z.string().min(1), params: z.record(z.string(), z.string()).optional() }),
+]));
 export const presetInjectionTriggerSchema = z.array(z.string().min(1));
 
 export const promptPresetUpdateSchema = z.object({

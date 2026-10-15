@@ -30,7 +30,7 @@ import {
   stripTagRulesSchema,
 } from '@/lib/schemas';
 import { findUnsupportedStMacros } from '@/lib/st-macros';
-import { PresetImportReport, PresetMarkerKey } from '@/types';
+import { PresetImportReport, PresetImportWarning, PresetMarkerKey } from '@/types';
 
 /** 酒馆内建 marker → LumiMuse 6 条核心 marker 的映射（Q3）。 */
 const CORE_MARKER_MAP: Record<string, PresetMarkerKey> = {
@@ -77,7 +77,7 @@ interface RawLumiMusePreset {
     description: string;
     story_plot_strip: boolean;
     strip_tags?: string[];
-    import_warnings: string[];
+    import_warnings: PresetImportWarning[];
   };
   entries: RawLumiMusePresetEntry[];
 }
@@ -159,7 +159,10 @@ function assertUniqueIdentifiers(values: Array<{ identifier: string }>, field: s
   }
 }
 
-function parseStOrder(data: Record<string, unknown>, directEmpty: boolean, warnings: Set<string>): RawOrderEntry[] | null {
+/** 兼容说明只存 code + 参数，由前端按当前界面语言渲染（文案见 i18n 的 preset.warning.*）。 */
+type WarnFn = (code: string, params?: Record<string, string>) => void;
+
+function parseStOrder(data: Record<string, unknown>, directEmpty: boolean, warn: WarnFn): RawOrderEntry[] | null {
   if (data.prompt_order == null) return null;
   if (!Array.isArray(data.prompt_order)) throw new Error('导入失败：prompt_order 必须是数组');
   if (data.prompt_order.length === 0) return directEmpty ? [] : null;
@@ -190,7 +193,7 @@ function parseStOrder(data: Record<string, unknown>, directEmpty: boolean, warni
   const chosen = blocks.find(block => block.character_id === 100001)
     ?? blocks.find(block => block.order.length > 0) ?? blocks[0];
   if (chosen.character_id !== 100001) {
-    warnings.add(`没有 character_id=100001 排序组，已回退到 character_id=${chosen.character_id}。`);
+    warn('order_fallback', { characterId: String(chosen.character_id) });
   }
   return chosen.order;
 }
@@ -210,30 +213,28 @@ function isActiveSetting(value: unknown): boolean {
   return object ? Object.keys(object).length > 0 : true;
 }
 
-function collectStWarnings(data: Record<string, unknown>, warnings: Set<string>): void {
+function collectStWarnings(data: Record<string, unknown>, warn: WarnFn): void {
   const handled = new Set<string>([
     'prompts', 'prompt_order', 'name', 'extensions', 'lumimuse_story_plot_strip',
     'lumimuse_import_warnings', ...ST_IGNORED_PARAMETER_KEYS,
   ]);
-  if (ST_IGNORED_PARAMETER_KEYS.some(key => Object.hasOwn(data, key))) {
-    warnings.add('预设参数不导入，聊天沿用 LumiMuse 自身设置。');
-  }
-  for (const [key, value] of Object.entries(data)) {
-    if (!handled.has(key) && isActiveSetting(value)) {
-      warnings.add(`未支持的预设字段 ${key} 未应用；不改变 LumiMuse 全局、上下文或后台设置。`);
-    }
-  }
+  if (ST_IGNORED_PARAMETER_KEYS.some(key => Object.hasOwn(data, key))) warn('params_ignored');
+  // 标准酒馆预设顶层有几十个界面/供应商字段，合成一条说明，避免逐字段刷屏。
+  const unsupportedFields = Object.entries(data)
+    .filter(([key, value]) => !handled.has(key) && isActiveSetting(value))
+    .map(([key]) => key);
+  if (unsupportedFields.length > 0) warn('unsupported_fields', { fields: unsupportedFields.join(', ') });
   if (isActiveSetting(data.extensions)) {
-    warnings.add('检测到第三方插件配置；不执行脚本、正则、界面、历史处理或工具绑定。原提示词正文保持不变。');
+    warn('extensions_ignored');
     const spreset = asRecord(asRecord(data.extensions)?.SPreset);
     const bindings = spreset?.ToolBindings;
     const tools = Array.isArray(bindings) ? bindings : Object.values(asRecord(bindings) ?? {});
-    for (const value of tools) {
+    for (const [index, value] of tools.entries()) {
       const tool = asRecord(value);
       if (!tool || tool.enabled === false) continue;
       const name = typeof tool.resolvedName === 'string' ? tool.resolvedName
-        : typeof tool.name === 'string' ? tool.name : '未命名工具';
-      warnings.add(`预设依赖 SPreset.ToolBindings 工具 ${name}；LumiMuse 不发送或执行此插件工具，要求调用它的正文可能无法正常产生聊天回复。`);
+        : typeof tool.name === 'string' ? tool.name : `#${index + 1}`;
+      warn('tool_binding', { tool: name });
     }
   }
 }
@@ -364,21 +365,25 @@ export function importSillyTavernPreset(
   if (Object.hasOwn(data, 'name') && typeof data.name !== 'string') {
     throw new Error('导入失败：name 必须是字符串');
   }
-  const warnings = new Set(validateImportField(
+  // 按内容去重并保留首次出现顺序；LumiMuse 导出的酒馆格式会带回原有说明。
+  const warnings = new Map<string, PresetImportWarning>();
+  const addWarning = (warning: PresetImportWarning) => warnings.set(JSON.stringify(warning), warning);
+  const warn: WarnFn = (code, params) => addWarning(params ? { code, params } : { code });
+  validateImportField(
     presetImportWarningsSchema,
     Object.hasOwn(data, 'lumimuse_import_warnings') ? data.lumimuse_import_warnings : [],
     'lumimuse_import_warnings',
-  ));
-  const selectedOrder = parseStOrder(data, wrapped, warnings);
+  ).forEach(addWarning);
+  const selectedOrder = parseStOrder(data, wrapped, warn);
   const rawOrders = selectedOrder ?? rawPrompts.map(prompt => ({
     identifier: prompt.identifier, enabled: prompt.enabled ?? true,
   }));
-  collectStWarnings(data, warnings);
+  collectStWarnings(data, warn);
 
   for (const prompt of rawPrompts) {
     for (const trigger of prompt.injection_trigger ?? []) {
       if (trigger !== 'normal' && trigger !== 'regenerate') {
-        warnings.add(`条目 ${prompt.name || prompt.identifier} 的生成场景 ${trigger} 已保留，但 LumiMuse 当前仅执行 normal/regenerate 场景。`);
+        warn('unsupported_trigger', { entry: prompt.name || prompt.identifier, trigger });
       }
     }
   }
@@ -470,7 +475,7 @@ export function importSillyTavernPreset(
         prompt = { identifier, name: identifier, marker: true, system_prompt: true, role: 'system' };
       }
       if (!prompt) {
-        warnings.add(`排序引用 ${identifier} 没有对应提示词正文，已跳过；不会伪造缺失内容。`);
+        warn('dangling_order', { identifier });
         continue;
       }
 
@@ -540,11 +545,11 @@ export function importSillyTavernPreset(
         content = '';
         enabled = false;
         markersDisabled += 1;
-        warnings.add(`条目 ${prompt.name || identifier} (${identifier}) 缺少对应世界书、用户人设或其他动态数据，已保留为空占位并禁用。`);
+        warn('missing_data_marker', { entry: prompt.name || identifier, identifier });
       }
       if (enabled && content) {
         for (const macro of findUnsupportedStMacros(content)) {
-          warnings.add(`条目 ${prompt.name || identifier} 包含未支持的宏或宏写法 {{${macro}}}，不会假装已完整解析。`);
+          warn('unsupported_macro', { entry: prompt.name || identifier, macro });
         }
       }
 
@@ -571,9 +576,9 @@ export function importSillyTavernPreset(
       total += 1;
       if (enabled) enabledCount += 1;
     }
-    if (enabledCount === 0) warnings.add('当前启用条目为 0；预设已保存，但这些条目不会参与聊天。');
+    // 0 启用由界面按实时条目状态提示，不写进导入快照，免得启用条目后仍显示过时说明。
     db.prepare('UPDATE prompt_presets SET import_warnings = ? WHERE id = ?')
-      .run(JSON.stringify([...warnings]), presetId);
+      .run(JSON.stringify([...warnings.values()]), presetId);
   })();
 
   return {
@@ -584,7 +589,7 @@ export function importSillyTavernPreset(
     markers_recognized: markersRecognized,
     markers_disabled: markersDisabled,
     story_plot_strip: storyPlotStrip,
-    warnings: [...warnings],
+    warnings: [...warnings.values()],
   };
 }
 

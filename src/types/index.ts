@@ -414,7 +414,7 @@ export interface PromptPreset {
    * '#story_plot' 仍按通用 drop 规则处理。
    */
   strip_tags: string[];
-  import_warnings?: string[];
+  import_warnings?: PresetImportWarning[];
   created_at: string;
   updated_at: string;
 }
@@ -452,9 +452,17 @@ export interface PresetImportReport {
   enabled: number;
   markers_recognized: number;
   markers_disabled: number;
-  warnings?: string[];
+  warnings?: PresetImportWarning[];
   story_plot_strip: boolean;
 }
+
+/** 导入兼容说明：code 由前端按当前语言渲染；纯字符串是旧版或外部来源的原文说明，按原样显示。 */
+export interface PresetImportWarningDetail {
+  code: string;
+  params?: Record<string, string>;
+}
+
+export type PresetImportWarning = string | PresetImportWarningDetail;
 
 export interface Settings {
   api_base: string;

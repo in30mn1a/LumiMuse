@@ -5,6 +5,7 @@
  */
 
 import { listEntries, getPreset } from '@/lib/prompt-presets';
+import type { PresetImportWarning } from '@/types';
 
 /** LumiMuse native：完整保真（含 enabled/sort_order/story_plot_strip/strip_tags/MarkerKey/is_marker） */
 export interface LumiMusePresetExport {
@@ -15,7 +16,7 @@ export interface LumiMusePresetExport {
     description: string;
     story_plot_strip: boolean;
     strip_tags: string[];
-    import_warnings: string[];
+    import_warnings: PresetImportWarning[];
   };
   entries: Array<{
     name: string;
@@ -98,7 +99,7 @@ export interface StPresetExport {
     order: Array<{ identifier: string; enabled: boolean }>;
   }>;
   lumimuse_story_plot_strip?: boolean;
-  lumimuse_import_warnings?: string[];
+  lumimuse_import_warnings?: PresetImportWarning[];
 }
 
 export function buildSillyTavernPresetExport(presetId: string): StPresetExport | null {

@@ -1,26 +1,49 @@
 import { useId } from 'react';
 import Link from 'next/link';
 import { formatTemplate } from '@/lib/i18n';
+import type { PresetImportWarning } from '@/types';
 
 interface Props {
   total: number;
   enabled: number;
-  warnings?: string[];
+  warnings?: PresetImportWarning[];
   importedPreset?: { id: string; name: string };
   t: (key: string) => string;
 }
 
+/** code 型说明按当前语言渲染；纯字符串（旧版或外部来源）原样显示。 */
+function formatWarning(warning: unknown, t: Props['t']): string | null {
+  if (typeof warning === 'string') return warning;
+  if (!warning || typeof warning !== 'object') return null;
+  const { code, params } = warning as { code?: unknown; params?: unknown };
+  if (typeof code !== 'string') return null;
+  const values: Record<string, string> = {};
+  if (params && typeof params === 'object') {
+    for (const [key, value] of Object.entries(params)) {
+      if (typeof value === 'string') values[key] = value;
+    }
+  }
+  const key = `preset.warning.${code}`;
+  const template = t(key);
+  if (template !== key) return formatTemplate(template, values);
+  const details = Object.entries(values).map(([name, value]) => `${name}=${value}`).join(', ');
+  return formatTemplate(t('preset.warning.unknown'), { code, details }).trim();
+}
+
 export default function PresetCompatibilityReport({ total, enabled, warnings, importedPreset, t }: Props) {
   const headingId = useId();
-  const warningList = Array.isArray(warnings) ? warnings.filter(warning => typeof warning === 'string') : [];
-  if (!importedPreset && warningList.length === 0 && enabled > 0) return null;
+  const warningList = Array.isArray(warnings)
+    ? warnings.map(warning => formatWarning(warning, t)).filter((text): text is string => text !== null)
+    : [];
+  // 详情页只在有说明或「有条目却全部未启用」时出现；新建的空预设不提示。
+  if (!importedPreset && warningList.length === 0 && (enabled > 0 || total === 0)) return null;
 
   return (
     <section
       className="surface-panel min-w-0 p-5"
       aria-labelledby={headingId}
       role={importedPreset ? 'status' : undefined}
-      aria-live="polite"
+      aria-live={importedPreset ? 'polite' : undefined}
     >
       <h2 id={headingId} className="text-base font-semibold text-text-primary">
         {t(importedPreset ? 'preset.importReport' : 'preset.compatibilityReport')}

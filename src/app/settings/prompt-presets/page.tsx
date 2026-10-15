@@ -121,6 +121,8 @@ export default function PromptPresetsPage() {
         headers: { 'Content-Type': 'application/json' },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // 删掉的正是刚导入的预设时，报告里的「管理」会指向不存在的页面
+      setImportReport(current => current?.preset_id === preset.id ? null : current);
       showToast(t('preset.deleteSuccess'), 'success');
       await load();
     } catch (err) {
@@ -133,6 +135,8 @@ export default function PromptPresetsPage() {
   const handleImport = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !beginAction('import')) return;
+    // 上一份报告属于上一次导入；本次失败时不能让它看起来像这次的结果
+    setImportReport(null);
     try {
       const text = await file.text();
       const res = await fetch('/api/prompt-presets/import', {

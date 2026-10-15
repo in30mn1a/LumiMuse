@@ -143,6 +143,7 @@ export const settingsUpdateSchema = z.looseObject({
     settingModelSchema.min(1),
     z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']),
   ).refine((value) => Object.keys(value).length <= 256).optional(),
+  pinned_models: z.array(settingModelSchema.min(1)).max(256).optional(),
   streaming: z.boolean().optional(),
   example_dialogue: z.boolean().optional(),
   memory_inject: z.boolean().optional(),

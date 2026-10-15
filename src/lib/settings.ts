@@ -7,6 +7,7 @@ import {
 import { RETIRED_BACKGROUND_SETTING_KEYS } from '@/lib/character-task-settings-migration';
 import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
 import { resolveReasoningEffortForModel, sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
+import { sanitizePinnedModels } from '@/lib/pinned-models';
 import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, Settings } from '@/types';
 
 const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
@@ -130,6 +131,7 @@ export function loadSettings(): Settings {
   }
 
   merged.reasoning_effort_by_model = sanitizeReasoningEffortByModel(map.reasoning_effort_by_model);
+  merged.pinned_models = sanitizePinnedModels(map.pinned_models);
   for (const key of RETIRED_BACKGROUND_SETTING_KEYS) {
     delete (merged as unknown as Record<string, unknown>)[key];
   }

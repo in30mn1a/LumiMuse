@@ -303,6 +303,27 @@ test('loadSettings sanitizes invalid reasoning_effort_by_model entries', () => {
   assert.deepEqual(settings.reasoning_effort_by_model, { 'gpt-5': 'high' });
 });
 
+test('/api/settings PUT accepts pinned_models and rejects malformed lists', async () => {
+  const harness = createSettingsHarness();
+
+  const accepted = await harness.route.PUT(jsonRequest({ pinned_models: ['gpt-5', 'local-model'] }));
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(harness.settingsState.pinned_models, ['gpt-5', 'local-model']);
+
+  await assertInvalidSettingsPut({ pinned_models: 'gpt-5' });
+  await assertInvalidSettingsPut({ pinned_models: [''] });
+  await assertInvalidSettingsPut({ pinned_models: [42] });
+});
+
+test('loadSettings defaults pinned_models to an empty list and drops junk entries', () => {
+  assert.deepEqual(loadSettingsFromRows([]).pinned_models, []);
+  assert.deepEqual(loadSettingsFromRows([{ key: 'pinned_models', value: JSON.stringify('gpt-5') }]).pinned_models, []);
+  assert.deepEqual(
+    loadSettingsFromRows([{ key: 'pinned_models', value: JSON.stringify(['gpt-5', '', 'gpt-5', 7, 'local']) }]).pinned_models,
+    ['gpt-5', 'local'],
+  );
+});
+
 test('/api/settings PUT accepts known typed fields and preserves unknown fields', async () => {
   const harness = createSettingsHarness();
 

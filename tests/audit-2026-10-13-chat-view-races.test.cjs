@@ -467,3 +467,37 @@ test('F12: a lone switch saves normally and a lone failure rolls back', async ()
   assert.deepEqual(chat.shown(), serverShown(server));
   assert.deepEqual(toasts, [['write failed', 'error']]);
 });
+
+test('pinned models load from settings and save one full list at a time, rolling back to the confirmed list', async () => {
+  const { server, settled } = settingsBackend(body => (
+    body.pinned_models?.includes('model-B') && !body.pinned_models.includes('model-C')
+      ? { delay: 40, fail: 'pin write failed' }
+      : { delay: 5 }
+  ));
+  server.settings.pinned_models = ['model-A'];
+  await renderSettledChatView('pin-a');
+  await waitFor(() => assert.deepEqual(latestInput.pinnedModels, ['model-A']));
+
+  // B 的写入晚到失败，但随后 C 的写入已带着完整列表成功：界面应停在服务端的最终值
+  act(() => { latestInput.onTogglePinnedModel('model-B'); });
+  act(() => { latestInput.onTogglePinnedModel('model-C'); });
+  assert.deepEqual(latestInput.pinnedModels, ['model-A', 'model-B', 'model-C']);
+  await waitFor(() => assert.equal(settled.count, 2));
+  await act(async () => { await pause(20); });
+  assert.deepEqual(server.settingsPuts.map(body => body.pinned_models), [
+    ['model-A', 'model-B'],
+    ['model-A', 'model-B', 'model-C'],
+  ]);
+  assert.equal(server.maxConcurrentSettingsPuts, 1);
+  assert.deepEqual(latestInput.pinnedModels, server.settings.pinned_models);
+  assert.deepEqual(toasts, [['pin write failed', 'error']]);
+
+  // 取消置顶失败时回到服务端最后确认的列表
+  toasts.length = 0;
+  act(() => { latestInput.onTogglePinnedModel('model-C'); });
+  assert.deepEqual(latestInput.pinnedModels, ['model-A', 'model-B']);
+  await waitFor(() => assert.equal(settled.count, 3));
+  await act(async () => { await pause(60); });
+  assert.deepEqual(latestInput.pinnedModels, ['model-A', 'model-B', 'model-C']);
+  assert.deepEqual(toasts, [['pin write failed', 'error']]);
+});

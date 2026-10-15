@@ -5,7 +5,8 @@ import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { parseJsonResponse } from '@/lib/http';
 import { prepareAttachmentPayload } from '@/lib/attachment-payload';
-import { StopIcon } from '@/components/ui/icons';
+import { PinIcon, StopIcon } from '@/components/ui/icons';
+import { sortModelsByPinned } from '@/lib/pinned-models';
 import type { AttachmentItem } from '@/lib/chat-engine';
 import type { ReasoningEffort } from '@/types';
 
@@ -28,6 +29,8 @@ interface Props {
   currentModel?: string;
   onModelChange?: (model: string) => void;
   modelList?: string[];
+  pinnedModels?: string[];
+  onTogglePinnedModel?: (model: string) => void;
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
 }
@@ -73,7 +76,7 @@ function genAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList, reasoningEffort = 'default', onReasoningEffortChange }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList, pinnedModels = [], onTogglePinnedModel, reasoningEffort = 'default', onReasoningEffortChange }: Props) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<LocalAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
@@ -89,6 +92,9 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
   // 触发按钮引用，关闭后把焦点还回去，保持键盘用户操作连续
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  // 触屏没有悬停：第一次点星标位置只把它显示出来，再点一次才切换置顶，避免点模型名时误触
+  const [revealedPinModel, setRevealedPinModel] = useState<string | null>(null);
+  const pinPointerTypeRef = useRef('');
   // 思考强度下拉
   const [effortPickerOpen, setEffortPickerOpen] = useState(false);
   const effortPickerRef = useRef<HTMLDivElement>(null);
@@ -99,6 +105,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
   const { t } = useTranslation();
 
   const modelList = externalModelList && externalModelList.length > 0 ? externalModelList : fetchedModels;
+  const displayModels = sortModelsByPinned(modelList, pinnedModels);
 
   useEffect(() => {
     if (!textareaRef.current) return;
@@ -147,13 +154,13 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     return () => cancelAnimationFrame(raf);
   }, [effortPickerOpen, reasoningEffort]);
 
-  // 下拉打开后把焦点移到当前选中项（或首项），方便键盘用户立即用方向键导航
+  // 下拉打开后把焦点移到当前选中项（或首项），方便键盘用户立即用方向键导航。
+  // 按渲染后的 DOM 找选中项，不依赖置顶列表：切换置顶只重排，不能把焦点从星标上抢走
   useEffect(() => {
     if (!modelPickerOpen || modelList.length === 0) return;
     const raf = requestAnimationFrame(() => {
-      const selectedIdx = modelList.findIndex((m) => m === currentModel);
-      const targetIdx = selectedIdx >= 0 ? selectedIdx : 0;
-      optionRefs.current[targetIdx]?.focus();
+      const options = optionRefs.current;
+      (options.find((option) => option?.getAttribute('aria-selected') === 'true') ?? options[0])?.focus();
     });
     return () => cancelAnimationFrame(raf);
   }, [modelPickerOpen, modelList, currentModel]);
@@ -164,6 +171,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
       return;
     }
     setModelPickerOpen(true);
+    setRevealedPinModel(null);
     setModelError('');
     if (fetchedModels.length === 0 && !modelLoading && (!externalModelList || externalModelList.length === 0)) {
       setModelLoading(true);
@@ -187,17 +195,36 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
     modelTriggerRef.current?.focus();
   };
 
+  const handlePinClick = (e: React.MouseEvent<HTMLButtonElement>, model: string, pinned: boolean) => {
+    e.stopPropagation();
+    const pointerType = pinPointerTypeRef.current;
+    pinPointerTypeRef.current = '';
+    if (!pinned && pointerType === 'touch' && revealedPinModel !== model) {
+      setRevealedPinModel(model);
+      return;
+    }
+    setRevealedPinModel(null);
+    onTogglePinnedModel?.(model);
+    // 置顶会重排选项，被移动的节点可能丢焦点；键盘用户继续停在这颗星标上
+    if (e.currentTarget === document.activeElement) {
+      const star = e.currentTarget;
+      requestAnimationFrame(() => star.focus());
+    }
+  };
+
   // listbox 选项键盘导航：方向键移动焦点、Enter 选中、Esc 关闭
   const handleOptionKeyDown = (e: React.KeyboardEvent<HTMLDivElement>, index: number, model: string) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const next = Math.min(index + 1, modelList.length - 1);
+      const next = Math.min(index + 1, displayModels.length - 1);
       optionRefs.current[next]?.focus();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       const prev = Math.max(index - 1, 0);
       optionRefs.current[prev]?.focus();
     } else if (e.key === 'Enter' || e.key === ' ') {
+      // 星标按钮上的回车/空格交给按钮自己切换置顶，不当成选中模型
+      if (e.target !== e.currentTarget) return;
       e.preventDefault();
       handleSelectModel(model);
     } else if (e.key === 'Escape') {
@@ -209,7 +236,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
       optionRefs.current[0]?.focus();
     } else if (e.key === 'End') {
       e.preventDefault();
-      optionRefs.current[modelList.length - 1]?.focus();
+      optionRefs.current[displayModels.length - 1]?.focus();
     }
   };
 
@@ -417,8 +444,9 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                   {modelList.length === 0 && !modelLoading && (
                     <div className="px-3 py-2 text-xs text-text-muted">{modelError || t('input.noModels')}</div>
                   )}
-                  {modelList.map((model, index) => {
+                  {displayModels.map((model, index) => {
                     const isSelected = model === currentModel;
+                    const isPinned = pinnedModels.includes(model);
                     return (
                       // role="option" + aria-selected：屏幕阅读器会朗读"选项 X，已选中"
                       // tabIndex=0 让方向键导航时能 focus 到具体选项
@@ -433,13 +461,30 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                         tabIndex={0}
                         onClick={() => handleSelectModel(model)}
                         onKeyDown={(e) => handleOptionKeyDown(e, index, model)}
-                        className={`w-full cursor-pointer px-3 py-1.5 text-left text-xs transition-colors outline-none focus:bg-accent/10 ${
+                        className={`group flex w-full cursor-pointer items-center gap-1 px-3 py-1.5 text-left text-xs transition-colors outline-none focus:bg-accent/10 ${
                           isSelected
                             ? 'bg-accent/10 text-accent-dark font-medium'
                             : 'text-text-secondary hover:bg-accent/5'
                         }`}
                       >
-                        <span className="block truncate">{model}</span>
+                        <span className="min-w-0 flex-1 truncate">{model}</span>
+                        {onTogglePinnedModel && (
+                          <button
+                            type="button"
+                            onPointerDown={(e) => { pinPointerTypeRef.current = e.pointerType; }}
+                            onClick={(e) => handlePinClick(e, model, isPinned)}
+                            aria-pressed={isPinned}
+                            aria-label={formatTemplate(t(isPinned ? 'input.unpinModel' : 'input.pinModel'), { model })}
+                            title={formatTemplate(t(isPinned ? 'input.unpinModel' : 'input.pinModel'), { model })}
+                            className={`-my-1.5 -mr-2 flex h-7 w-8 shrink-0 items-center justify-center rounded-md outline-none transition-opacity focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-accent/50 ${
+                              isPinned
+                                ? 'text-accent-dark'
+                                : `text-text-muted hover:text-accent-dark ${revealedPinModel === model ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`
+                            }`}
+                          >
+                            <PinIcon className={`h-3.5 w-3.5 ${isPinned ? 'fill-current' : ''}`} />
+                          </button>
+                        )}
                       </div>
                     );
                   })}

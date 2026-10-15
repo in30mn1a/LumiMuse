@@ -510,6 +510,8 @@ export interface Settings {
   reasoning_effort: ReasoningEffort;
   // 聊天框按模型记住的思考强度；切模型时还原对应条目。
   reasoning_effort_by_model: Record<string, ReasoningEffort>;
+  // 聊天框模型列表中置顶的模型名（全局，跨供应商共用）
+  pinned_models: string[];
   // 生图设置
   image_gen: ImageGenSettings;
   memory_engine: MemoryEngineSettings;
@@ -552,6 +554,7 @@ export const DEFAULT_SETTINGS: Settings = {
   seed: null,
   reasoning_effort: 'default',
   reasoning_effort_by_model: {},
+  pinned_models: [],
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
   memory_engine: { ...DEFAULT_MEMORY_ENGINE_SETTINGS },
   artist_strings: [],

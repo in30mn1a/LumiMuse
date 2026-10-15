@@ -9,6 +9,7 @@ import {
   resolveReasoningEffortForModel,
   sanitizeReasoningEffortByModel,
 } from '@/lib/reasoning-effort';
+import { sanitizePinnedModels, togglePinnedModel } from '@/lib/pinned-models';
 import MessageBubble from './MessageBubble';
 import ChatInput from './ChatInput';
 import ChatHeader from './ChatHeader';
@@ -94,6 +95,7 @@ export default function ChatView({
   // 思考强度：'default' 时请求体不发送 reasoning_effort 字段
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('default');
   const [reasoningEffortByModel, setReasoningEffortByModel] = useState<Record<string, ReasoningEffort>>({});
+  const [pinnedModels, setPinnedModels] = useState<string[]>([]);
   // 记忆包 token 预算（后端 trimByTokenBudget 的裁剪上限）与记忆注入开关，用于前端估算实际注入量
   const [memoryPackageBudget, setMemoryPackageBudget] = useState(12000);
   const [memoryInjectEnabled, setMemoryInjectEnabled] = useState(true);
@@ -523,6 +525,33 @@ export default function ChatView({
     });
   }, [showToast, t]);
 
+  // 置顶列表每次写完整值并按操作顺序串行落库；失败的处理与模型写队列相同，排空后对齐到服务端最后确认的列表
+  const pinnedModelsWritesRef = useRef({ chain: Promise.resolve(), pending: 0, failed: false, confirmed: [] as string[] });
+
+  const handleTogglePinnedModel = (model: string) => {
+    const next = togglePinnedModel(pinnedModels, model);
+    setPinnedModels(next);
+    const writes = pinnedModelsWritesRef.current;
+    writes.pending += 1;
+    writes.chain = writes.chain.then(async () => {
+      try {
+        await parseJsonResponse<void>(await fetch('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pinned_models: next }),
+        }));
+        writes.confirmed = next;
+      } catch (err) {
+        writes.failed = true;
+        showToast(err instanceof Error ? err.message : t('settings.saveFailed'), 'error');
+      }
+      writes.pending -= 1;
+      if (writes.pending > 0 || !writes.failed) return;
+      writes.failed = false;
+      setPinnedModels(writes.confirmed);
+    });
+  };
+
   useEffect(() => {
     fetch('/api/settings')
       .then(r => parseJsonResponse<Partial<Settings>>(r))
@@ -535,6 +564,9 @@ export default function ChatView({
         setCurrentModel(model);
         setReasoningEffort(effort);
         setReasoningEffortByModel(byModel);
+        const pinned = sanitizePinnedModels(s.pinned_models);
+        setPinnedModels(pinned);
+        pinnedModelsWritesRef.current.confirmed = pinned;
         const writes = modelSettingsWritesRef.current;
         writes.confirmed = { model, effort, byModel };
         // 设置页改模型不会改思考强度；进入聊天时按该模型上次记录对齐，避免 UI 和实际请求不一致
@@ -1005,6 +1037,8 @@ export default function ChatView({
                 reasoning_effort_by_model: planned.byModel,
               });
             }}
+            pinnedModels={pinnedModels}
+            onTogglePinnedModel={handleTogglePinnedModel}
             reasoningEffort={reasoningEffort}
             onReasoningEffortChange={(effort: ReasoningEffort) => {
               const nextByModel = rememberReasoningEffortForModel(reasoningEffortByModel, currentModel, effort);

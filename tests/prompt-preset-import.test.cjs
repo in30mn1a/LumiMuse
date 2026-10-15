@@ -65,6 +65,204 @@ test('非法 JSON 抛出友好错误', () => {
   assert.throws(() => importLib.importSillyTavernPreset('not json'), /JSON 解析失败/);
 });
 
+test('预设参数有意忽略，损坏采样值不阻止提示词导入或出现在导出', () => {
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    temperature: 'invalid', top_p: { invalid: true }, top_k: -99, seed: 'invalid',
+    frequency_penalty: [], presence_penalty: null, repetition_penalty: false,
+    reasoning_effort: 123, openai_max_tokens: null, stream_openai: 'invalid',
+    max_tokens: -1, streaming: 'invalid', sampling_params: '{broken',
+    prompts: [{ identifier: 'prompt-only', content: '完整正文', role: 'system' }],
+  }));
+  assert.equal(report.enabled, 1);
+  assert.equal(Object.hasOwn(report, 'sampling_params'), false);
+  assert.equal(Object.hasOwn(presetLib.getPreset(report.preset_id), 'sampling_params'), false);
+  assert.equal(report.warnings.filter(warning => warning.includes('参数不导入')).length, 1);
+  assert.ok(!report.warnings.some(warning => /未支持.*(temperature|top_p|top_k|seed|reasoning_effort|openai_max_tokens|stream_openai|sampling_params)/.test(warning)));
+  const native = exportLib.buildLumiMusePresetExport(report.preset_id);
+  const st = exportLib.buildSillyTavernPresetExport(report.preset_id);
+  assert.equal(Object.hasOwn(native.preset, 'sampling_params'), false);
+  for (const key of ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty',
+    'repetition_penalty', 'seed', 'reasoning_effort', 'openai_max_tokens', 'stream_openai',
+    'sampling_params', 'max_tokens', 'streaming']) {
+    assert.equal(Object.hasOwn(st, key), false);
+  }
+});
+
+test('旧原生采样字段忽略而不校验，warnings 与 trigger 仍严格保真', () => {
+  const source = presetLib.createPreset({ name: '提示词原生往返', import_warnings: ['保留兼容说明'] });
+  presetLib.upsertEntry({ preset_id: source.id, name: '正文', role: 'user', content: '正文', injection_trigger: ['normal'] });
+  const exported = exportLib.buildLumiMusePresetExport(source.id);
+  exported.preset.sampling_params = '{broken';
+  const report = importLib.importSillyTavernPreset(JSON.stringify(exported));
+  assert.equal(Object.hasOwn(report, 'sampling_params'), false);
+  assert.deepEqual(report.warnings, ['保留兼容说明']);
+  assert.deepEqual(presetLib.listEntries(report.preset_id)[0].injection_trigger, ['normal']);
+  assert.equal(Object.hasOwn(exportLib.buildLumiMusePresetExport(report.preset_id).preset, 'sampling_params'), false);
+});
+
+test('标准排序优先选 100001，忽略第一组空排序与参数并保留 trigger', () => {
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    temperature: 1.08, top_p: 0.98, top_k: 0, seed: -1,
+    openai_max_tokens: 65535, stream_openai: false,
+    prompts: [{ identifier: 'standard', content: '完整正文', role: 'system', injection_trigger: ['normal'] }],
+    prompt_order: [
+      { character_id: 100000, order: [] },
+      { character_id: 100001, order: [{ identifier: 'standard', enabled: true }] },
+    ],
+  }));
+  assert.equal(report.enabled, 1);
+  assert.deepEqual(presetLib.listEntries(report.preset_id)[0].injection_trigger, ['normal']);
+  assert.equal(Object.hasOwn(report, 'sampling_params'), false);
+  assert.equal(Object.hasOwn(presetLib.getPreset(report.preset_id), 'sampling_params'), false);
+});
+
+test('缺少排序按 prompts.enabled，显式空排序保持全部禁用', () => {
+  const prompts = [
+    { identifier: 'enabled', content: '正文', enabled: true },
+    { identifier: 'disabled', content: '正文', enabled: false },
+  ];
+  const missing = importLib.importSillyTavernPreset(JSON.stringify({ prompts }));
+  const empty = importLib.importSillyTavernPreset(JSON.stringify({
+    prompts, prompt_order: [{ character_id: 100001, order: [] }],
+  }));
+  assert.equal(missing.enabled, 1);
+  assert.equal(empty.enabled, 0);
+  assert.ok(empty.warnings.some(warning => warning.includes('0')));
+});
+
+test('官方 Prompt Manager 包裹与直接 order 数组补回省略的核心 marker', () => {
+  const report = importLib.importSillyTavernPreset('\ufeff' + JSON.stringify({
+    version: 1, type: 'character', data: {
+      prompts: [{ identifier: 'custom', content: '正文', role: 'user' }],
+      prompt_order: [
+        { identifier: 'charDescription', enabled: true },
+        { identifier: 'custom', enabled: true },
+        { identifier: 'unknown', enabled: true },
+      ],
+    },
+  }));
+  assert.equal(report.enabled, 2);
+  const entries = presetLib.listEntries(report.preset_id);
+  assert.equal(entries[0].marker_key, 'charDescription');
+  assert.equal(entries[1].content, '正文');
+  assert.ok(report.warnings.some(warning => warning.includes('unknown')));
+});
+
+test('非法 SillyTavern 结构、重复标识符和字段类型在写库前拒绝', () => {
+  const valid = { prompts: [{ identifier: 'x', content: '正文' }] };
+  const invalid = [
+    {}, { prompts: {} }, { prompts: [null] },
+    { prompts: [{ identifier: '' }] },
+    { prompts: [{ identifier: 'x' }, { identifier: 'x' }] },
+    { ...valid, prompt_order: [{ character_id: 100001, order: [{ identifier: 'x' }, { identifier: 'x' }] }] },
+    { prompts: [{ identifier: 'x', enabled: 'true' }] },
+    { prompts: [{ identifier: 'x', role: 'tool' }] },
+    { prompts: [{ identifier: 'x', injection_depth: -1 }] },
+    { prompts: [{ identifier: 'x', injection_trigger: [false] }] },
+  ];
+  for (const data of invalid) {
+    assert.throws(() => importLib.importSillyTavernPreset(JSON.stringify(data)), /导入失败/);
+  }
+  assert.equal(presetLib.listPresets().length, 0);
+});
+
+test('兼容说明持久化，插件工具依赖不修改启用正文', () => {
+  const content = '所有回复调用 game_content，{{unknownmacro}}';
+  const report = importLib.importSillyTavernPreset(JSON.stringify({
+    top_a: 0.5,
+    extensions: { SPreset: { ToolBindings: [{ name: 'game_content', enabled: true }] } },
+    prompts: [{ identifier: 'tool-dependent', name: '工具要求', content }],
+  }));
+  const entry = presetLib.listEntries(report.preset_id)[0];
+  assert.equal(entry.content, content);
+  assert.equal(entry.enabled, true);
+  assert.ok(report.warnings.some(warning => warning.includes('game_content')));
+  assert.ok(report.warnings.some(warning => warning.includes('参数不导入')));
+  assert.ok(!report.warnings.some(warning => warning.includes('未支持的预设字段 top_a')));
+  assert.ok(report.warnings.some(warning => warning.includes('unknownmacro')));
+  assert.deepEqual(presetLib.getPreset(report.preset_id).import_warnings, report.warnings);
+});
+
+test('旧数据库采样列与数据保留，但读取与独立预设导出不暴露采样覆盖', () => {
+  db.exec("ALTER TABLE prompt_presets ADD COLUMN sampling_params TEXT NOT NULL DEFAULT '{}'");
+  const source = presetLib.createPreset({ name: '旧数据库预设', import_warnings: ['兼容说明'] });
+  const legacySampling = '{broken-sampling';
+  db.prepare('UPDATE prompt_presets SET sampling_params = ? WHERE id = ?').run(legacySampling, source.id);
+  assert.equal(Object.hasOwn(presetLib.getPreset(source.id), 'sampling_params'), false);
+  assert.equal(Object.hasOwn(presetLib.listPresets()[0], 'sampling_params'), false);
+  assert.equal(Object.hasOwn(exportLib.buildLumiMusePresetExport(source.id).preset, 'sampling_params'), false);
+  assert.equal(Object.hasOwn(exportLib.buildSillyTavernPresetExport(source.id), 'sampling_params'), false);
+  presetLib.updatePreset(source.id, { description: '只改描述' });
+  assert.equal(db.prepare('SELECT sampling_params FROM prompt_presets WHERE id = ?').get(source.id).sampling_params, legacySampling);
+  assert.deepEqual(presetLib.getPreset(source.id).import_warnings, ['兼容说明']);
+});
+
+test('导入警告与 trigger 在原生/酒馆导出中往返，参数不导出', () => {
+  const first = importLib.importSillyTavernPreset(JSON.stringify({
+    temperature: 1.2, seed: -1,
+    prompts: [{ identifier: 'x', content: '正文', injection_trigger: ['normal', 'future-trigger'] }],
+  }));
+  const native = exportLib.buildLumiMusePresetExport(first.preset_id);
+  const nativeReport = importLib.importSillyTavernPreset(JSON.stringify(native));
+  assert.equal(Object.hasOwn(native.preset, 'sampling_params'), false);
+  assert.equal(Object.hasOwn(presetLib.getPreset(nativeReport.preset_id), 'sampling_params'), false);
+  assert.deepEqual(nativeReport.warnings, first.warnings);
+  assert.deepEqual(presetLib.listEntries(nativeReport.preset_id)[0].injection_trigger, ['normal', 'future-trigger']);
+  const st = exportLib.buildSillyTavernPresetExport(first.preset_id);
+  assert.equal(Object.hasOwn(st, 'temperature'), false);
+  assert.equal(Object.hasOwn(st, 'seed'), false);
+  const stReport = importLib.importSillyTavernPreset(JSON.stringify(st));
+  assert.equal(Object.hasOwn(stReport, 'sampling_params'), false);
+  assert.deepEqual(stReport.warnings, first.warnings);
+  assert.deepEqual(presetLib.listEntries(stReport.preset_id)[0].injection_trigger, ['normal', 'future-trigger']);
+});
+
+test('排序回退、直接 order、未启用正文宏与忽略的思考参数', () => {
+  const data = {
+    reasoning_effort: 'none',
+    prompts: [
+      { identifier: 'active', content: '正文' },
+      { identifier: 'off', content: '{{unsupported-disabled}}', enabled: false },
+    ],
+    prompt_order: [{ character_id: 7, order: [{ identifier: 'active', enabled: true }] }],
+  };
+  const fallback = importLib.importSillyTavernPreset(JSON.stringify(data));
+  assert.equal(fallback.enabled, 1);
+  assert.ok(fallback.warnings.some(warning => warning.includes('character_id=7')));
+  assert.ok(fallback.warnings.some(warning => warning.includes('参数不导入')));
+  assert.ok(!fallback.warnings.some(warning => warning.includes('reasoning_effort')));
+  assert.ok(!fallback.warnings.some(warning => warning.includes('unsupported-disabled')));
+  assert.equal(Object.hasOwn(fallback, 'sampling_params'), false);
+  const direct = importLib.importSillyTavernPreset(JSON.stringify({
+    ...data, reasoning_effort: 'auto', prompt_order: [{ identifier: 'active', enabled: true }],
+  }));
+  assert.equal(direct.enabled, 1);
+  assert.equal(Object.hasOwn(direct, 'sampling_params'), false);
+});
+
+test('原生新字段严格校验，旧原生预设缺字段仍无覆盖和触发限制', () => {
+  const source = presetLib.createPreset({ name: '原生校验' });
+  presetLib.upsertEntry({ preset_id: source.id, name: '正文', role: 'user', content: '正文' });
+  const exported = exportLib.buildLumiMusePresetExport(source.id);
+  for (const [field, value] of [
+    ['import_warnings', [false]],
+  ]) {
+    const invalid = structuredClone(exported);
+    invalid.preset[field] = value;
+    assert.throws(() => importLib.importSillyTavernPreset(JSON.stringify(invalid)), /导入失败/);
+  }
+  const invalidTrigger = structuredClone(exported);
+  invalidTrigger.entries[0].injection_trigger = null;
+  assert.throws(() => importLib.importSillyTavernPreset(JSON.stringify(invalidTrigger)), /导入失败/);
+  assert.equal(presetLib.listPresets().length, 1, '非法字段不得创建半成品预设');
+  delete exported.preset.import_warnings;
+  delete exported.entries[0].injection_trigger;
+  const legacy = importLib.importSillyTavernPreset(JSON.stringify(exported));
+  assert.equal(Object.hasOwn(legacy, 'sampling_params'), false);
+  assert.deepEqual(legacy.warnings, []);
+  assert.deepEqual(presetLib.listEntries(legacy.preset_id)[0].injection_trigger, []);
+});
+
 test('空 prompts + 空 order：创建空预设但不报 marker', () => {
   const report = importLib.importSillyTavernPreset(JSON.stringify({ prompts: [], prompt_order: [{ character_id: 100001, order: [] }] }));
   assert.equal(report.total, 0);
@@ -73,7 +271,8 @@ test('空 prompts + 空 order：创建空预设但不报 marker', () => {
   assert.equal(report.markers_disabled, 0);
 });
 
-test('顶层采样/extensions 等字段被完全忽略', () => {
+test('采样忽略，extensions 只报告且不写全局设置', () => {
+  const settingsBefore = db.prepare('SELECT * FROM settings ORDER BY key').all();
   const report = importLib.importSillyTavernPreset(JSON.stringify({
     temperature: 0.7,
     top_p: 1,
@@ -86,6 +285,9 @@ test('顶层采样/extensions 等字段被完全忽略', () => {
   assert.equal(report.total, 1);
   const e = presetLib.listEntries(report.preset_id)[0];
   assert.equal(e.content, 'hello');
+  assert.equal(Object.hasOwn(report, 'sampling_params'), false);
+  assert.deepEqual(db.prepare('SELECT * FROM settings ORDER BY key').all(), settingsBefore);
+  assert.ok(report.warnings.some(warning => warning.includes('第三方插件')));
 });
 
 test('order.entry.enabled 优先于 prompt.enabled', () => {
@@ -192,7 +394,7 @@ test('marker=false 的内建 regular 条目（main/jailbreak 等）保留内容�
   assert.equal(jailbreak.enabled, false, 'order.enabled=false 应生效');
 });
 
-test('injection_trigger 字段忽略（Q6b）', () => {
+test('injection_trigger 保留，未支持生成场景明确报告', () => {
   const id = 'aaaaaaaa-1111-4111-a111-111111111115';
   const report = importLib.importSillyTavernPreset(JSON.stringify({
     prompts: [{
@@ -202,9 +404,10 @@ test('injection_trigger 字段忽略（Q6b）', () => {
     prompt_order: [{ character_id: 100001, order: [{ identifier: id, enabled: true }] }],
   }));
   const e = presetLib.listEntries(report.preset_id)[0];
-  // 我们 schema 不存 injection_trigger；只确保入库成功且核心字段正确
   assert.equal(e.name, 'has-triggers');
   assert.equal(e.content, 'x');
+  assert.deepEqual(e.injection_trigger, ['normal', 'quiet']);
+  assert.ok(report.warnings.some(warning => warning.includes('quiet')));
 });
 
 test('显式传入 presetName 覆盖导入名', () => {

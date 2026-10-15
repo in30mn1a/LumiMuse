@@ -804,6 +804,7 @@ export async function runChat(
       effectiveTimeContext,
       activePreset,
       presetEntries,
+      { generationType: options?.regenerateAssistantId ? 'regenerate' : 'normal' },
     );
   } else {
     chatMessages = await assemblePrompt(character, contextMessages, chatSettings, memoryContents, effectiveTimeContext, memoryIsStable);

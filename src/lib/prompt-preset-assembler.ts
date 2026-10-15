@@ -29,9 +29,9 @@ import {
   prepareImageTagsForLlm,
 } from '@/lib/image-prompt-sensitive-tags';
 import {
-  collectSetAndAddVars,
   createStMacroState,
-  expandGetVars,
+  renderStMacros,
+  StMacroContext,
   StMacroState,
 } from '@/lib/st-macros';
 import {
@@ -43,8 +43,7 @@ import {
   Settings,
 } from '@/types';
 
-const MACRO_USER_RE = /\{\{user\}\}/gi;
-const MACRO_CHAR_RE = /\{\{char\}\}/gi;
+const MACRO_NAME_RE = /\{\{(user|char)\}\}/gi;
 
 /** Gemini 不允许连续同 role；用零宽 system 隔开不同语义段，避免文风/记忆/示例/当前输入粘成一条 user。 */
 export const PRESET_SEGMENT_SEAM = '\u200b';
@@ -80,19 +79,15 @@ function stripMacroUser(history: ChatMessage[], macroText: string, target: ChatM
 export interface MacroContext {
   userName: string;
   charName: string;
+  values?: StMacroContext;
 }
 
 export function substitutePresetMacros(content: string, ctx: MacroContext): string {
-  return content
-    .replace(MACRO_CHAR_RE, () => ctx.charName)
-    .replace(MACRO_USER_RE, () => ctx.userName);
+  return content.replace(MACRO_NAME_RE, (_, name: string) => name.toLowerCase() === 'char' ? ctx.charName : ctx.userName);
 }
 
 /**
- * 完整宏替换流水线（酒馆子集）：
- *   1. 收集 setvar/addvar 到 state（返回剥离后的 content）
- *   2. 替换 getvar / lastUserMessage
- *   3. 替换 {{user}}/{{char}}
+ * 按原模板顺序执行常用宏；宏返回的用户正文不会再次作为模板解释。
  */
 export function renderContentWithStMacros(
   content: string,
@@ -100,9 +95,12 @@ export function renderContentWithStMacros(
   ctx: MacroContext,
   lastUserMessage: string,
 ): string {
-  const collected = collectSetAndAddVars(content, state);
-  const expanded = expandGetVars(collected, state, lastUserMessage);
-  return substitutePresetMacros(expanded, ctx);
+  return renderStMacros(content, state, {
+    ...ctx.values,
+    user: ctx.userName,
+    char: ctx.charName,
+    lastUserMessage,
+  }).content;
 }
 
 function formatBehaviorAndTimeSystemContent(
@@ -167,8 +165,7 @@ function renderEntry(
     character: Character;
     memoryText: string;
     macro: MacroContext;
-    stMacroState: StMacroState;
-    lastUserMessageText: string;
+    renderContent: (content: string) => string;
   },
 ): ChatMessage[] {
   const c = ctx.character;
@@ -176,8 +173,7 @@ function renderEntry(
   switch (entry.marker_key) {
     case null:
     case undefined: {
-      // 普通文本条目：先做 setvar/addvar 收集 + getvar / lastUserMessage / {{user}}/{{char}} 替换
-      const text = renderContentWithStMacros(entry.content, ctx.stMacroState, ctx.macro, ctx.lastUserMessageText).trim();
+      const text = ctx.renderContent(entry.content).trim();
       if (!text) return [];
       return [{ role: entry.role, content: text }];
     }
@@ -214,7 +210,7 @@ function renderEntry(
     }
     default: {
       // 未识别 marker_key：当作普通文本条目渲染（碑记模式）
-      const text = renderContentWithStMacros(entry.content, ctx.stMacroState, ctx.macro, ctx.lastUserMessageText).trim();
+      const text = ctx.renderContent(entry.content).trim();
       if (!text) return [];
       return [{ role: entry.role, content: text }];
     }
@@ -240,9 +236,7 @@ interface PreparedInjectionGroup {
 
 function prepareInjectionGroups(
   inChatEntries: PresetEntry[],
-  macro: MacroContext,
-  stMacroState: StMacroState,
-  lastUserMessageText: string,
+  getContent: (entry: PresetEntry) => string,
 ): PreparedInjectionGroup[] {
   const groups: PreparedInjectionGroup[] = [];
   const depths = Array.from(new Set(inChatEntries.map(e => e.injection_depth))).sort((a, b) => a - b);
@@ -267,7 +261,7 @@ function prepareInjectionGroups(
         const byRole = group.filter(e => e.role === role);
         if (byRole.length === 0) continue;
         const body = byRole
-          .map(e => renderContentWithStMacros(e.content, stMacroState, macro, lastUserMessageText).trim())
+          .map(e => getContent(e).trim())
           .filter(Boolean)
           .join('\n');
         if (body) roleMessages.push({ role, content: body });
@@ -298,6 +292,7 @@ function populateInjectionPrompts(
 export interface AssemblePresetPromptOptions {
   /** 用户显示名（用于 {{user}} 替换）。MVP 默认 "用户"。 */
   userName?: string;
+  generationType?: 'normal' | 'regenerate';
 }
 
 function hasAttachments(messages: Message[]): boolean {
@@ -341,11 +336,13 @@ export async function assemblePresetPrompt(
 ): Promise<ChatMessage[]> {
   const userName = options?.userName ?? '用户';
   const macro: MacroContext = { userName, charName: character.name };
-
-  const relativeEntries = entries
-    .filter(e => e.enabled && e.injection_position === 0)
+  const generationType = options?.generationType ?? 'normal';
+  const enabledEntries = entries.filter(e => e.enabled
+    && (!e.injection_trigger?.length || e.injection_trigger.includes(generationType)));
+  const relativeEntries = enabledEntries
+    .filter(e => e.injection_position === 0)
     .sort((a, b) => a.sort_order - b.sort_order);
-  const inChatEntries = entries.filter(e => e.enabled && e.injection_position === 1);
+  const inChatEntries = enabledEntries.filter(e => e.injection_position === 1);
   const normalizedMemoryText = normalizeMemoryContextText(memoryText);
   const hasMemoryPackageMarker = relativeEntries.some(e => e.marker_key === 'memoryPackage');
   const memoryMessages: ChatMessage[] = !hasMemoryPackageMarker && normalizedMemoryText
@@ -362,24 +359,50 @@ export async function assemblePresetPrompt(
     }
     return '';
   })();
+  const examples = substitutePresetMacros(character.example_dialogue ?? '', macro);
+  const macroValues: StMacroContext = {
+    user: userName,
+    char: character.name,
+    description: substitutePresetMacros([character.system_prompt, character.basic_info].filter(text => text?.trim()).join('\n\n'), macro),
+    personality: substitutePresetMacros(character.personality ?? '', macro),
+    scenario: substitutePresetMacros(character.scenario ?? '', macro),
+    mesExamples: examples,
+    mesExamplesRaw: examples,
+    lastUserMessage: lastUserRaw,
+    lastCharMessage: messages.findLast(message => message.role === 'assistant')?.content ?? '',
+    lastMessage: messages.at(-1)?.content ?? '',
+  };
 
   // 先渲染固定 preset 上下文，再把其真实 token 占用交给 buildHistoryMessages。
   // 这样 setvar 等不输出内容的宏不会被重复计费，in-chat、行为/时间和 inline 指令也不会漏记。
   const stMacroState = createStMacroState();
+  let usesLastUserMessageMacro = false;
+  const renderContent = (content: string): string => {
+    const rendered = renderStMacros(content, stMacroState, macroValues);
+    usesLastUserMessageMacro ||= rendered.usesLastUserMessage && Boolean(lastUserRaw)
+      && rendered.content.includes(lastUserRaw);
+    return rendered.content;
+  };
   const segments: RelativeSegment[] = [];
   const renderCtx = {
     character,
     memoryText,
     macro,
-    stMacroState,
-    lastUserMessageText: lastUserRaw,
+    renderContent,
   };
+  const relativeContent = new Map<string, ChatMessage[]>();
+  const inChatContent = new Map<string, string>();
+  // Prompt Manager 按全部 prompt_order 求值；布局阶段只读缓存，不重复执行变量指令。
+  for (const entry of [...enabledEntries].sort((a, b) => a.sort_order - b.sort_order)) {
+    if (entry.injection_position === 0) relativeContent.set(entry.id, renderEntry(entry, renderCtx));
+    else inChatContent.set(entry.id, renderContent(entry.content));
+  }
   for (const entry of relativeEntries) {
     if (entry.marker_key === 'chatHistory') {
       segments.push({ kind: 'history', role: entry.role });
       continue;
     }
-    const rendered = renderEntry(entry, renderCtx);
+    const rendered = relativeContent.get(entry.id) ?? [];
     if (rendered.length > 0) {
       const trimmedContent = entry.content.trim();
       segments.push({
@@ -393,9 +416,7 @@ export async function assemblePresetPrompt(
   }
   const injectionGroups = prepareInjectionGroups(
     inChatEntries,
-    macro,
-    stMacroState,
-    lastUserRaw,
+    entry => inChatContent.get(entry.id) ?? '',
   );
   let inlinePromptInstruction = '';
   if (settings.image_gen?.enabled && settings.image_gen?.inline_prompt) {
@@ -442,9 +463,6 @@ export async function assemblePresetPrompt(
   );
   const hasStoryHistoryClose = relativeEntries.some(
     e => e.marker_key == null && e.content.trim() === '</story_history>',
-  );
-  const usesLastUserMessageMacro = [...relativeEntries, ...inChatEntries].some(
-    e => e.marker_key == null && /\{\{lastUserMessage\}\}/.test(e.content),
   );
   const useRongSingleBlockHistory = hasChatHistoryMarker
     && hasStoryHistoryOpen

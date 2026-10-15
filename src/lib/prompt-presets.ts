@@ -13,7 +13,11 @@
 
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
-import { stripTagRulesSchema } from '@/lib/schemas';
+import {
+  presetImportWarningsSchema,
+  presetInjectionTriggerSchema,
+  stripTagRulesSchema,
+} from '@/lib/schemas';
 import {
   Character,
   CharacterModelPresetBinding,
@@ -41,6 +45,15 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function parseStoredJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 function rowToPreset(row: Record<string, unknown>): PromptPreset {
   const stripTagsRaw = row.strip_tags;
   let stripTags: string[] = [];
@@ -60,6 +73,7 @@ function rowToPreset(row: Record<string, unknown>): PromptPreset {
     is_built_in: (row.is_built_in as number) === 1,
     story_plot_strip: (row.story_plot_strip as number | null | undefined) === 1,
     strip_tags: stripTags,
+    import_warnings: presetImportWarningsSchema.safeParse(parseStoredJson(row.import_warnings)).data ?? [],
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };
@@ -79,6 +93,7 @@ function rowToEntry(row: Record<string, unknown>): PresetEntry {
     injection_depth: (row.injection_depth as number) ?? 4,
     injection_order: (row.injection_order as number) ?? 100,
     forbid_overrides: (row.forbid_overrides as number) === 1,
+    injection_trigger: presetInjectionTriggerSchema.safeParse(parseStoredJson(row.injection_trigger)).data ?? [],
     enabled: (row.enabled as number) === 1,
     sort_order: (row.sort_order as number) ?? 0,
     created_at: row.created_at as string,
@@ -115,23 +130,28 @@ export function getPreset(id: string): PromptPreset | null {
   return row ? rowToPreset(row) : null;
 }
 
-export function createPreset(input: { name: string; description?: string; id?: string; story_plot_strip?: boolean; strip_tags?: string[] }): PromptPreset {
+export function createPreset(input: {
+  name: string; description?: string; id?: string; story_plot_strip?: boolean; strip_tags?: string[];
+  import_warnings?: string[];
+}): PromptPreset {
   const db = getDb();
   const id = input.id ?? genId();
   const now = nowIso();
   const stripTags = parseStripTags(input.strip_tags ?? []);
+  const warnings = presetImportWarningsSchema.parse(input.import_warnings ?? []);
   db.prepare(`
     INSERT INTO prompt_presets (
       id, name, description, is_built_in, story_plot_strip,
-      strip_tags, created_at, updated_at
+      strip_tags, import_warnings, created_at, updated_at
     )
-    VALUES (?, ?, ?, 0, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.name.trim() || '未命名预设',
     input.description ?? '',
     (input.story_plot_strip ?? false) ? 1 : 0,
     JSON.stringify(stripTags),
+    JSON.stringify(warnings),
     now,
     now,
   );
@@ -142,6 +162,7 @@ export function createPreset(input: { name: string; description?: string; id?: s
     is_built_in: false,
     story_plot_strip: input.story_plot_strip ?? false,
     strip_tags: stripTags,
+    import_warnings: warnings,
     created_at: now,
     updated_at: now,
   };
@@ -214,6 +235,7 @@ export interface UpsertEntryInput {
   injection_depth?: number;
   injection_order?: number;
   forbid_overrides?: boolean;
+  injection_trigger?: string[];
   enabled?: boolean;
   sort_order?: number;
 }
@@ -221,6 +243,8 @@ export interface UpsertEntryInput {
 export function upsertEntry(input: UpsertEntryInput): PresetEntry {
   const db = getDb();
   const now = nowIso();
+  const triggers = input.injection_trigger === undefined
+    ? undefined : presetInjectionTriggerSchema.parse(input.injection_trigger);
 
   if (input.id) {
     const existing = getEntry(input.id);
@@ -229,7 +253,7 @@ export function upsertEntry(input: UpsertEntryInput): PresetEntry {
         UPDATE prompt_preset_entries SET
           name = ?, role = ?, content = ?, is_marker = ?, marker_key = ?,
           is_system_prompt = ?, injection_position = ?, injection_depth = ?, injection_order = ?,
-          forbid_overrides = ?, enabled = ?, sort_order = ?, updated_at = ?
+          forbid_overrides = ?, injection_trigger = ?, enabled = ?, sort_order = ?, updated_at = ?
         WHERE id = ?
       `).run(
         input.name,
@@ -242,6 +266,7 @@ export function upsertEntry(input: UpsertEntryInput): PresetEntry {
         input.injection_depth ?? existing.injection_depth,
         input.injection_order ?? existing.injection_order,
         (input.forbid_overrides ?? existing.forbid_overrides) ? 1 : 0,
+        JSON.stringify(triggers ?? existing.injection_trigger ?? []),
         (input.enabled ?? existing.enabled) ? 1 : 0,
         input.sort_order ?? existing.sort_order,
         now,
@@ -256,8 +281,8 @@ export function upsertEntry(input: UpsertEntryInput): PresetEntry {
     INSERT INTO prompt_preset_entries (
       id, preset_id, name, role, content, is_marker, marker_key,
       is_system_prompt, injection_position, injection_depth, injection_order,
-      forbid_overrides, enabled, sort_order, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      forbid_overrides, injection_trigger, enabled, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     newId,
     input.preset_id,
@@ -271,6 +296,7 @@ export function upsertEntry(input: UpsertEntryInput): PresetEntry {
     input.injection_depth ?? 4,
     input.injection_order ?? 100,
     (input.forbid_overrides ?? false) ? 1 : 0,
+    JSON.stringify(triggers ?? []),
     (input.enabled ?? true) ? 1 : 0,
     input.sort_order ?? 0,
     now,

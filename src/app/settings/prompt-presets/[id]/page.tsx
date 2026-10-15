@@ -10,6 +10,8 @@ import { formatTemplate } from '@/lib/i18n';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, CheckIcon, PencilIcon, XIcon } from '@/components/ui/icons';
 import { LEGACY_STORY_PLOT_TAGS, usesLegacyStoryPlotRules } from '@/lib/story-plot-strip';
+import PresetCompatibilityReport from '@/components/ui/PresetCompatibilityReport';
+import type { PromptPreset } from '@/types';
 
 interface PresetEntry {
   id: string;
@@ -143,7 +145,9 @@ export default function PresetDetailPage({ params }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
 
-  const [preset, setPreset] = useState<{ id: string; name: string; description: string; story_plot_strip: boolean; strip_tags: string[] } | null>(null);
+  const [preset, setPreset] = useState<Pick<PromptPreset,
+    'id' | 'name' | 'description' | 'story_plot_strip' | 'strip_tags' | 'import_warnings'
+  > | null>(null);
   const [newTagInput, setNewTagInput] = useState('');
   const [entries, setEntries] = useState<PresetEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -531,6 +535,13 @@ export default function PresetDetailPage({ params }: Props) {
             {t('preset.loadError')}: {loadError}
           </p>
         )}
+
+        <PresetCompatibilityReport
+          total={entries.length}
+          enabled={entries.filter(entry => entry.enabled).length}
+          warnings={preset.import_warnings}
+          t={t}
+        />
 
         <section className="surface-panel p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">

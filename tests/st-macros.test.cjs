@@ -27,7 +27,7 @@ require.extensions['.ts'] = function (module, filename) {
   module._compile(output.outputText, filename);
 };
 
-const { applyTrimMacro, collectSetAndAddVars, createStMacroState, expandGetVars, processStMacrosOnce } = require(path.join(root, 'src', 'lib', 'st-macros.ts'));
+const { applyTrimMacro, collectSetAndAddVars, createStMacroState, expandGetVars, processStMacrosOnce, renderStMacros, findUnsupportedStMacros } = require(path.join(root, 'src', 'lib', 'st-macros.ts'));
 
 test('setvar 收集 + 从 content 中剥离', () => {
   const state = createStMacroState();
@@ -171,4 +171,82 @@ test('{{trim}} 与 getvar / lastUserMessage 同管线生效', () => {
   assert.equal(expandGetVars('A\n{{trim}}\n{{getvar::v}}\n{{lastUserMessage}}', state, 'hi'),
     'AX\nhi');
   assert.equal(expandGetVars('{{trim}}{{getvar::v}}', state, 'hi'), 'X');
+});
+
+test('嵌套及作用域注释不输出文本，也不执行内部变量指令', () => {
+  const state = createStMacroState();
+  assert.equal(processStMacrosOnce('A{{// 隐藏 {{setvar::x::bad}}}}B{{//}}隐藏{{setvar::y::bad}}{{///}}C', state, ''), 'ABC');
+  assert.equal(state.variables.size, 0);
+});
+
+test('trim 跨不输出文本的初始化指令清除模板换行，但不裁剪用户数据', () => {
+  const state = createStMacroState();
+  assert.equal(processStMacrosOnce('\n\n{{setvar::x::a}}\n{{trim}}\nTEXT', state, ''), 'TEXT');
+  assert.equal(processStMacrosOnce('TEXT\n{{trim}}{{noop}}{{setvar::x::b}}\n\nEND', state, ''), 'TEXTEND');
+  assert.equal(processStMacrosOnce('{{lastUserMessage}}{{trim}}\nEND', state, '原始正文\n\n'), '原始正文\n\nEND');
+});
+
+test('变量按文本顺序读取，后置赋值不覆盖前置 consumer', () => {
+  const state = createStMacroState();
+  assert.equal(processStMacrosOnce('{{SETVAR::x::first}}{{GETVAR::x}}{{setvar::x::second}}{{getvar::x}}', state, ''), 'firstsecond');
+  assert.equal(processStMacrosOnce('{{getvar::x}}{{setvar::x::third}}', state, ''), 'second');
+  assert.equal(processStMacrosOnce('{{getvar::x}}', state, ''), 'third');
+});
+
+test('变量名和值中的嵌套 getvar 在赋值时读取', () => {
+  const state = createStMacroState();
+  const content = '{{setvar::key::x}}{{setvar::x::A}}{{setvar::copy::{{getvar::{{getvar::key}}}}}}{{setvar::x::B}}{{getvar::copy}}';
+  assert.equal(processStMacrosOnce(content, state, ''), 'A');
+});
+
+test('addvar 对数字相加，对 JSON 数组追加，对文本保持拼接', () => {
+  const state = createStMacroState();
+  assert.equal(processStMacrosOnce('{{setvar::n::2}}{{addvar::n::3}}{{getvar::n}}', state, ''), '5');
+  assert.equal(processStMacrosOnce('{{setvar::a::["one"]}}{{addvar::a::two}}{{getvar::a}}', state, ''), '["one","two"]');
+  assert.equal(processStMacrosOnce('{{setvar::s::A}}{{addvar::s::B}}{{getvar::s}}', state, ''), 'AB');
+});
+
+test('常用静态内容宏与历史宏大小写不敏感', () => {
+  const state = createStMacroState();
+  const context = { user: '主人', char: '露米', description: '角色描述', personality: '角色性格', scenario: '场景', mesExamples: '示例', mesExamplesRaw: '原始示例', lastUserMessage: '提问', lastCharMessage: '回答', lastMessage: '最后消息' };
+  assert.equal(renderStMacros('{{USER}}/{{char}}/{{description}}/{{personality}}/{{scenario}}/{{mesExamples}}/{{mesExamplesRaw}}/{{lastUserMessage}}/{{LASTCHARMESSAGE}}/{{lastMessage}}{{noop}}{{newline}}', state, context).content,
+    '主人/露米/角色描述/角色性格/场景/示例/原始示例/提问/回答/最后消息\n');
+});
+
+test('用户原文及 getvar 返回值不重新当宏执行，美元符号按字面插入', () => {
+  const state = createStMacroState();
+  const input = '{{char}}{{setvar::pwned::yes}}{{trim}} $& $$ $` $\'';
+  const context = { char: '露米', lastUserMessage: input };
+  const output = renderStMacros('{{setvar::captured::{{lastUserMessage}}}}{{getvar::captured}}', state, context);
+  assert.equal(output.content, input);
+  assert.equal(output.usesLastUserMessage, true);
+  assert.equal(state.variables.has('pwned'), false);
+  state.variables.set('cycle', '{{getvar::cycle}}');
+  assert.equal(processStMacrosOnce('{{getvar::cycle}}', state, ''), '{{getvar::cycle}}');
+  assert.equal(renderStMacros('{{setvar::captured::{{lastUserMessage}}}}{{getvar::captured}}', state, { lastUserMessage: '001' }).content, '001');
+});
+
+test('被注释或仅赋值未输出的 lastUserMessage 不标记为实际注入', () => {
+  const state = createStMacroState();
+  const context = { lastUserMessage: '当前问题' };
+  assert.equal(renderStMacros('{{// {{lastUserMessage}}}}{{setvar::x::{{lastUserMessage}}}}', state, context).usesLastUserMessage, false);
+  assert.equal(renderStMacros('{{getvar::x}}', state, context).usesLastUserMessage, true);
+});
+
+test('未知及无效宏保留原文，不执行其中嵌套指令，并报告兼容警告', () => {
+  const state = createStMacroState();
+  const source = '{{random::A::B}}{{custom::{{setvar::x::bad}}}}{{getvar}}{{setvar::unfinished';
+  assert.equal(processStMacrosOnce(source, state, ''), source);
+  assert.equal(state.variables.size, 0);
+  assert.deepEqual(findUnsupportedStMacros(source), ['random', 'custom', 'getvar', 'setvar']);
+  assert.deepEqual(findUnsupportedStMacros('{{// {{plugin::bad}}}}{{setvar::x::{{pick::A::B}}}}{{USER}}{{getvar::x}}'), ['pick']);
+});
+
+test('未闭合的 {{ 原文保留，其后的宏仍正常解析', () => {
+  const context = { user: 'Alice', char: 'Bob' };
+  assert.equal(renderStMacros('typo {{user} then {{char}} and {{user}}', createStMacroState(), context).content,
+    'typo {{user} then Bob and Alice');
+  assert.equal(renderStMacros('stray {{ brace {{setvar::x::1}}{{getvar::x}}', createStMacroState(), context).content,
+    'stray {{ brace 1');
+  assert.deepEqual(findUnsupportedStMacros('typo {{user} then {{random::a::b}}'), ['user', 'random']);
 });

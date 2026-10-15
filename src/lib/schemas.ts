@@ -436,6 +436,9 @@ export const promptPresetCreateSchema = z.object({
 });
 export type PromptPresetCreate = z.infer<typeof promptPresetCreateSchema>;
 
+export const presetImportWarningsSchema = z.array(z.string());
+export const presetInjectionTriggerSchema = z.array(z.string().min(1));
+
 export const promptPresetUpdateSchema = z.object({
   name: z.string().min(1).max(MAX_NAME).optional(),
   description: z.string().max(MAX_SHORT_SETTING).optional(),
@@ -455,6 +458,7 @@ export const promptPresetEntryUpsertSchema = z.object({
   injection_depth: z.number().int().nonnegative().optional(),
   injection_order: z.number().int().optional(),
   forbid_overrides: z.boolean().optional(),
+  injection_trigger: presetInjectionTriggerSchema.optional(),
   enabled: z.boolean().optional(),
   sort_order: z.number().int().optional(),
 });

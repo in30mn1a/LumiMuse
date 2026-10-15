@@ -5,7 +5,6 @@
  */
 
 import { listEntries, getPreset } from '@/lib/prompt-presets';
-import { PresetEntry, PromptPreset } from '@/types';
 
 /** LumiMuse native：完整保真（含 enabled/sort_order/story_plot_strip/strip_tags/MarkerKey/is_marker） */
 export interface LumiMusePresetExport {
@@ -16,6 +15,7 @@ export interface LumiMusePresetExport {
     description: string;
     story_plot_strip: boolean;
     strip_tags: string[];
+    import_warnings: string[];
   };
   entries: Array<{
     name: string;
@@ -28,6 +28,7 @@ export interface LumiMusePresetExport {
     injection_depth: number;
     injection_order: number;
     forbid_overrides: boolean;
+    injection_trigger: string[];
     enabled: boolean;
     sort_order: number;
   }>;
@@ -45,6 +46,7 @@ export function buildLumiMusePresetExport(presetId: string): LumiMusePresetExpor
       description: preset.description,
       story_plot_strip: preset.story_plot_strip,
       strip_tags: preset.strip_tags,
+      import_warnings: preset.import_warnings ?? [],
     },
     entries: entries.map(e => ({
       name: e.name,
@@ -57,6 +59,7 @@ export function buildLumiMusePresetExport(presetId: string): LumiMusePresetExpor
       injection_depth: e.injection_depth,
       injection_order: e.injection_order,
       forbid_overrides: e.forbid_overrides,
+      injection_trigger: e.injection_trigger ?? [],
       enabled: e.enabled,
       sort_order: e.sort_order,
     })),
@@ -95,6 +98,7 @@ export interface StPresetExport {
     order: Array<{ identifier: string; enabled: boolean }>;
   }>;
   lumimuse_story_plot_strip?: boolean;
+  lumimuse_import_warnings?: string[];
 }
 
 export function buildSillyTavernPresetExport(presetId: string): StPresetExport | null {
@@ -122,7 +126,7 @@ export function buildSillyTavernPresetExport(presetId: string): StPresetExport |
       injection_depth: e.injection_depth,
       injection_order: e.injection_order,
       forbid_overrides: e.forbid_overrides,
-      injection_trigger: [],
+      injection_trigger: e.injection_trigger ?? [],
       enabled: e.enabled,
       marker: e.is_marker,
     });
@@ -133,5 +137,6 @@ export function buildSillyTavernPresetExport(presetId: string): StPresetExport |
     prompts,
     prompt_order: [{ character_id: 100001, order }],
     lumimuse_story_plot_strip: preset.story_plot_strip,
+    lumimuse_import_warnings: preset.import_warnings ?? [],
   };
 }

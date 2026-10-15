@@ -71,9 +71,12 @@ test('partial legacy preset schema with rows is upgraded before the composite in
     );
     assert.ok(presetColumns.has('created_at'));
     assert.ok(presetColumns.has('updated_at'));
+    assert.equal(presetColumns.has('sampling_params'), false);
+    assert.ok(presetColumns.has('import_warnings'));
     assert.ok(entryColumns.has('sort_order'));
     assert.ok(entryColumns.has('created_at'));
     assert.ok(entryColumns.has('updated_at'));
+    assert.ok(entryColumns.has('injection_trigger'));
 
     const preset = db.prepare(
       'SELECT created_at, updated_at FROM prompt_presets WHERE id = ?'
@@ -91,6 +94,34 @@ test('partial legacy preset schema with rows is upgraded before the composite in
       'PRAGMA index_info(idx_prompt_preset_entries_preset)'
     ).all().map(column => column.name);
     assert.deepEqual(indexColumns, ['preset_id', 'sort_order']);
+    dbModule.__migrateForTests(db);
+    assert.deepEqual(db.prepare('SELECT import_warnings FROM prompt_presets').get(), {
+      import_warnings: '[]',
+    });
+    assert.equal(db.prepare('SELECT injection_trigger FROM prompt_preset_entries').get().injection_trigger, '[]');
+  } finally {
+    db.close();
+  }
+});
+
+test('migration preserves an existing unused sampling column and its raw values', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE prompt_presets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        sampling_params TEXT NOT NULL DEFAULT '{}'
+      );
+      INSERT INTO prompt_presets (id, name, sampling_params)
+      VALUES ('preset-legacy-sampling', 'Legacy sampling', '{broken');
+    `);
+    const dbModule = require(path.join(root, 'src', 'lib', 'db.ts'));
+    dbModule.__migrateForTests(db);
+    dbModule.__migrateForTests(db);
+    assert.deepEqual(db.prepare('SELECT sampling_params, import_warnings FROM prompt_presets').get(), {
+      sampling_params: '{broken', import_warnings: '[]',
+    });
   } finally {
     db.close();
   }

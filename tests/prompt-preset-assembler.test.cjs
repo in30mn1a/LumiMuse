@@ -104,6 +104,88 @@ test.afterEach(() => {
   try { db && db.close(); } catch {}
 });
 
+test('标准内容宏映射角色字段及最近消息，用户宏样式正文保持原文', async () => {
+  const preset = lib.createPreset({ name: 'standard-macros' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Content', role: 'system', content: '{{description}}|{{personality}}|{{scenario}}|{{mesExamples}}|{{mesExamplesRaw}}|{{lastCharMessage}}', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', is_marker: true, marker_key: 'chatHistory', sort_order: 20 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Current', role: 'user', content: '<input>{{LASTUSERMESSAGE}}</input>', sort_order: 30 });
+  const input = '原始 {{char}} {{setvar::userOwned::value}} $&';
+  const result = await assembler.assemblePresetPrompt(makeCharacter({ example_dialogue: '{{user}}: EXAMPLE\n{{char}}: REPLY' }), [makeMessage(1, 'assistant', 'PREVIOUS_REPLY'), makeMessage(2, 'user', input)], { ...DEFAULT_SETTINGS, show_timestamps: false }, '### 本轮相关回忆\n- MEMORY_UNIQUE', undefined, preset, lib.loadEnabledEntries(preset.id));
+  const text = result.map(message => message.content).join('\n');
+  assert.match(text, /你是露米，一位两百岁的吸血鬼。\n\n一位年长的吸血鬼\|沉稳又话多\|夜晚的书房/);
+  assert.match(text, /用户: EXAMPLE\n露米: REPLY/);
+  assert.match(text, /PREVIOUS_REPLY/);
+  assert.equal(text.split(input).length - 1, 1);
+  assert.ok(text.includes(`<input>${input}</input>`));
+  assert.ok(text.includes('MEMORY_UNIQUE'));
+});
+
+test('注释或未输出变量内的 lastUserMessage 不会删除当前历史正文', async () => {
+  const preset = lib.createPreset({ name: 'hidden-current-macro' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Hidden', role: 'system', content: '{{// {{lastUserMessage}}}}{{setvar::unused::{{lastUserMessage}}}}', sort_order: 10 });
+  const result = await assembler.assemblePresetPrompt(makeCharacter(), [makeMessage(1, 'user', 'CURRENT_UNIQUE')], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, lib.loadEnabledEntries(preset.id));
+  assert.equal(result.map(message => message.content).join('\n').split('CURRENT_UNIQUE').length - 1, 1);
+});
+
+test('lastUserMessage 经变量输出仍只出现一次，数值变换不能替代原始用户输入', async () => {
+  const preset = lib.createPreset({ name: 'variable-current-macro' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Captured', role: 'system', content: '{{setvar::x::{{lastUserMessage}}}}', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Consumer', role: 'user', content: '<input>{{getvar::x}}</input>', sort_order: 20 });
+  const entries = lib.loadEnabledEntries(preset.id);
+  const result = await assembler.assemblePresetPrompt(makeCharacter(), [makeMessage(1, 'user', '001')], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, entries);
+  assert.equal(result.map(message => message.content).join('\n').split('001').length - 1, 1);
+  assert.ok(result.some(message => String(message.content).includes('<input>001</input>')));
+  const transformed = entries.map(entry => entry.name === 'Consumer' ? { ...entry, content: '{{addvar::x::1}}<input>{{getvar::x}}</input>' } : entry);
+  const transformedResult = await assembler.assemblePresetPrompt(makeCharacter(), [makeMessage(1, 'user', '001')], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, transformed);
+  const text = transformedResult.map(message => message.content).join('\n');
+  assert.ok(text.includes('<input>2</input>'));
+  assert.ok(text.includes('001'));
+});
+
+test('变量跨条目保持顺序，in-chat 能读取 relative 状态', async () => {
+  const preset = lib.createPreset({ name: 'sequential-vars' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'First', role: 'system', content: '{{setvar::x::FIRST}}{{getvar::x}}', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Second', role: 'system', content: '{{getvar::x}}{{setvar::x::SECOND}}', sort_order: 20 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Injected', role: 'system', content: '{{getvar::x}}', sort_order: 30, injection_position: 1, injection_depth: 0 });
+  const result = await assembler.assemblePresetPrompt(makeCharacter(), [makeMessage(1, 'user', 'CURRENT')], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, lib.loadEnabledEntries(preset.id));
+  assert.equal(result[0].content, 'FIRST');
+  assert.equal(result[1].content, 'FIRST');
+  assert.ok(result.some(message => String(message.content).includes('SECOND')));
+});
+
+test('prompt_order交错的 relative/in-chat 变量只按排序求值一次，布局仍按深度注入', async () => {
+  const preset = lib.createPreset({ name: 'interleaved-macro-order' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Initialize', role: 'system', content: '{{setvar::x::FIRST}}{{setvar::count::0}}<first>{{getvar::x}}</first>', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Injected', role: 'system', content: '<inchat>{{getvar::x}}</inchat>{{setvar::x::SECOND}}{{addvar::count::1}}', sort_order: 20, injection_position: 1, injection_depth: 1 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Consumer', role: 'system', content: '<late>{{getvar::x}}</late><count>{{getvar::count}}</count>', sort_order: 30 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', is_marker: true, marker_key: 'chatHistory', sort_order: 40 });
+  const result = await assembler.assemblePresetPrompt(makeCharacter(), [makeMessage(1, 'assistant', 'PREVIOUS_REPLY'), makeMessage(2, 'user', 'CURRENT_INPUT')], { ...DEFAULT_SETTINGS, show_timestamps: false }, '### 本轮相关回忆\n- MEMORY_UNIQUE', undefined, preset, lib.loadEnabledEntries(preset.id));
+  const text = result.map(message => message.content).join('\n');
+  assert.ok(text.includes('<first>FIRST</first>'));
+  assert.ok(text.includes('<late>SECOND</late><count>1</count>'));
+  assert.ok(text.includes('<inchat>FIRST</inchat>'));
+  assert.ok(text.indexOf('PREVIOUS_REPLY') < text.indexOf('<inchat>'));
+  assert.ok(text.indexOf('<inchat>') < text.indexOf('CURRENT_INPUT'));
+  assert.ok(text.includes('MEMORY_UNIQUE'));
+});
+
+for (const generationType of ['normal', 'regenerate']) {
+  test(`injection_trigger 在 ${generationType} 过滤 relative/in-chat 且不执行被排除变量`, async () => {
+    const preset = lib.createPreset({ name: `triggers-${generationType}` });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Normal', role: 'system', content: 'NORMAL_ONLY{{setvar::x::NORMAL_SIDE_EFFECT}}', sort_order: 10 });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Regenerate', role: 'system', content: 'REGENERATE_ONLY{{setvar::x::REGENERATE_SIDE_EFFECT}}', sort_order: 20, injection_position: 1, injection_depth: 0 });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Default', role: 'system', content: 'ANY_GENERATION', sort_order: 30 });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Getter', role: 'system', content: '{{getvar::x}}', sort_order: 40, injection_position: 1, injection_depth: 0 });
+    const entries = lib.loadEnabledEntries(preset.id).map(entry => ({ ...entry, injection_trigger: entry.name === 'Normal' ? ['normal'] : entry.name === 'Regenerate' ? ['regenerate'] : [] }));
+    const result = await assembler.assemblePresetPrompt(makeCharacter(), [makeMessage(1, 'user', 'CURRENT')], { ...DEFAULT_SETTINGS, show_timestamps: false }, '', undefined, preset, entries, { generationType });
+    const text = result.map(message => message.content).join('\n');
+    assert.ok(text.includes('ANY_GENERATION'));
+    assert.ok(text.includes(generationType === 'normal' ? 'NORMAL_ONLY' : 'REGENERATE_ONLY'));
+    assert.ok(!text.includes(generationType === 'normal' ? 'REGENERATE_ONLY' : 'NORMAL_ONLY'));
+    assert.ok(!text.includes(generationType === 'normal' ? 'REGENERATE_SIDE_EFFECT' : 'NORMAL_SIDE_EFFECT'));
+  });
+}
+
 // ============================================================
 // TASK-ASSEMBLER-CORE：relative 排序 / marker 渲染
 // ============================================================

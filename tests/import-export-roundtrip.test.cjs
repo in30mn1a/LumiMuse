@@ -240,6 +240,118 @@ function createImportDb() {
   return db;
 }
 
+function createPresetRoundtripDb() {
+  const db = new Database(':memory:');
+  const dbModule = require('../src/lib/db.ts');
+  dbModule.__migrateForTests(db);
+  return db;
+}
+
+test('/api/export and /api/import preserve preset warnings and trigger with binding remaps but ignore legacy sampling', async (t) => {
+  for (const type of ['all', 'character']) {
+    await t.test(type, async () => {
+      const source = createPresetRoundtripDb();
+      const target = createPresetRoundtripDb();
+      try {
+        source.prepare('INSERT INTO characters (id, name, active_preset_id) VALUES (?, ?, ?)')
+          .run('preset-char', '往返角色', 'preset-source');
+        const warnings = ['未执行工具 game_content', '<script>不执行</script>'];
+        source.prepare(`INSERT INTO prompt_presets (id, name, import_warnings)
+          VALUES (?, ?, ?)`).run('preset-source', '标准预设', JSON.stringify(warnings));
+        source.prepare(`INSERT INTO prompt_preset_entries
+          (id, preset_id, name, role, content, injection_trigger) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run('entry-source', 'preset-source', '普通聊天', 'user', '完整正文', '["normal","future-scene"]');
+        source.prepare(`INSERT INTO character_model_preset_bindings (character_id, model, preset_id, created_at, updated_at)
+          VALUES (?, ?, ?, datetime('now'), datetime('now'))`).run('preset-char', 'test-model', 'preset-source');
+        const response = await loadExportRoute(source).GET({
+          nextUrl: new URL(`http://test.local/api/export?type=${type}${type === 'character' ? '&id=preset-char' : ''}`),
+        });
+        const payload = await response.json();
+        assert.equal(Object.hasOwn(payload.prompt_presets[0], 'sampling_params'), false);
+        payload.prompt_presets[0].sampling_params = '{broken-legacy-sampling';
+        const imported = await loadImportRoute(target).POST(importRequest(payload));
+        assert.equal(imported.status, 200);
+        const preset = target.prepare('SELECT * FROM prompt_presets').get();
+        const entry = target.prepare('SELECT * FROM prompt_preset_entries').get();
+        const character = target.prepare('SELECT * FROM characters').get();
+        const binding = target.prepare('SELECT * FROM character_model_preset_bindings').get();
+        assert.notEqual(preset.id, 'preset-source');
+        assert.equal(Object.hasOwn(preset, 'sampling_params'), false);
+        assert.deepEqual(JSON.parse(preset.import_warnings), warnings);
+        assert.deepEqual(JSON.parse(entry.injection_trigger), ['normal', 'future-scene']);
+        assert.equal(entry.preset_id, preset.id);
+        assert.equal(character.active_preset_id, preset.id);
+        assert.equal(binding.preset_id, preset.id);
+        assert.equal(binding.character_id, character.id);
+      } finally {
+        source.close();
+        target.close();
+      }
+    });
+  }
+});
+
+test('/api/import rejects malformed preset JSON fields before writing any preset or character', async () => {
+  const target = createPresetRoundtripDb();
+  try {
+    const payload = {
+      version: 3,
+      characters: [{ id: 'source-char', name: '非法预设角色', active_preset_id: 'source-preset' }],
+      prompt_presets: [{ id: 'source-preset', name: '非法预设' }],
+      prompt_preset_entries: [{ id: 'source-entry', preset_id: 'source-preset', name: '正文', role: 'user', content: '正文' }],
+    };
+    for (const [collection, key, value] of [
+      ['prompt_presets', 'import_warnings', [false]],
+      ['prompt_preset_entries', 'injection_trigger', null],
+    ]) {
+      const invalid = structuredClone(payload);
+      invalid[collection][0][key] = value;
+      const response = await loadImportRoute(target).POST(importRequest(invalid));
+      assert.equal(response.status, 400);
+      assert.equal(target.prepare('SELECT COUNT(*) AS count FROM prompt_presets').get().count, 0);
+      assert.equal(target.prepare('SELECT COUNT(*) AS count FROM characters').get().count, 0);
+    }
+    const legacy = await loadImportRoute(target).POST(importRequest(payload));
+    assert.equal(legacy.status, 200);
+    assert.deepEqual(target.prepare('SELECT import_warnings FROM prompt_presets').get(), {
+      import_warnings: '[]',
+    });
+    assert.equal(target.prepare('SELECT injection_trigger FROM prompt_preset_entries').get().injection_trigger, '[]');
+  } finally {
+    target.close();
+  }
+});
+
+test('/api/import ignores old backup sampling values without clearing existing unused columns or data', async (t) => {
+  for (const sampling of ['{broken', null, { api_key: 'must-not-overwrite', model: 'other', max_tokens: -1 }]) {
+    await t.test(JSON.stringify(sampling), async () => {
+      const target = createPresetRoundtripDb();
+      try {
+        target.exec("ALTER TABLE prompt_presets ADD COLUMN sampling_params TEXT NOT NULL DEFAULT '{}'");
+        target.prepare('INSERT INTO prompt_presets (id, name, sampling_params) VALUES (?, ?, ?)')
+          .run('existing-preset', '保留原记录', 'keep-original-sampling');
+        const payload = {
+          version: 3,
+          prompt_presets: [{ id: 'source-preset', name: '旧预设备份', sampling_params: sampling, import_warnings: ['保留说明'] }],
+          prompt_preset_entries: [{ id: 'source-entry', preset_id: 'source-preset', name: '正文', role: 'user', content: '完整正文', injection_trigger: ['regenerate'] }],
+        };
+        const response = await loadImportRoute(target).POST(importRequest(payload));
+        assert.equal(response.status, 200);
+        assert.equal(target.prepare('SELECT sampling_params FROM prompt_presets WHERE id = ?').get('existing-preset').sampling_params, 'keep-original-sampling');
+        const imported = target.prepare('SELECT * FROM prompt_presets WHERE id != ?').get('existing-preset');
+        assert.equal(imported.sampling_params, '{}');
+        assert.deepEqual(JSON.parse(imported.import_warnings), ['保留说明']);
+        const entry = target.prepare('SELECT * FROM prompt_preset_entries').get();
+        assert.equal(entry.content, '完整正文');
+        assert.equal(entry.preset_id, imported.id);
+        assert.deepEqual(JSON.parse(entry.injection_trigger), ['regenerate']);
+      } finally {
+        target.close();
+      }
+    });
+  }
+});
+
 function loadImportRoute(db, useRealCardNormalizer = false) {
   const mocks = {
     'next/server': jsonResponseMock(),

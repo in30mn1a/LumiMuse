@@ -177,3 +177,29 @@ test('preset PATCH rejects invalid and conflicting strip_tags', async () => {
 
   assert.deepEqual(presetLib.getPreset(preset.id).strip_tags, []);
 });
+
+test('entry POST/PATCH save trigger lists and PATCH omission preserves the existing list', async () => {
+  const preset = presetLib.createPreset({ name: 'Generation triggers' });
+  const entriesRoute = require(path.join(root, 'src', 'app', 'api', 'prompt-presets', '[id]', 'entries', 'route.ts'));
+  const created = await entriesRoute.POST(new NextRequest(
+    `http://localhost/api/prompt-presets/${preset.id}/entries`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Triggered', role: 'user', content: '正文', injection_trigger: ['normal'] }),
+    },
+  ), { params: Promise.resolve({ id: preset.id }) });
+  assert.equal(created.status, 201);
+  const entry = await created.json();
+  assert.deepEqual(entry.injection_trigger, ['normal']);
+  const params = { params: Promise.resolve({ id: preset.id, entryId: entry.id }) };
+  const patch = body => entryRoute.PATCH(new NextRequest(
+    `http://localhost/api/prompt-presets/${preset.id}/entries/${entry.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    },
+  ), params);
+  assert.equal((await patch({ injection_trigger: ['regenerate', 'future-scene'] })).status, 200);
+  assert.deepEqual(presetLib.getEntry(entry.id).injection_trigger, ['regenerate', 'future-scene']);
+  assert.equal((await patch({ content: '新正文' })).status, 200);
+  assert.deepEqual(presetLib.getEntry(entry.id).injection_trigger, ['regenerate', 'future-scene']);
+  assert.equal((await patch({ injection_trigger: [false] })).status, 400);
+  assert.deepEqual(presetLib.getEntry(entry.id).injection_trigger, ['regenerate', 'future-scene']);
+});

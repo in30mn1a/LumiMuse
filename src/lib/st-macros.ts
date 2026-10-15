@@ -1,165 +1,255 @@
-/**
- * SillyTavern 宏子集处理（RONG / 可待风格预设依赖的关键宏）。
- *
- * 支持 5 类核心宏：
- *   - {{setvar::name::value}}   定义变量；该条目本身**不输出文本**（但保留同条目中其余文本）
- *   - {{addvar::name::value}}   append 到变量
- *   - {{getvar::name}}          替换为当前变量值（空字符串若未定义）
- *   - {{lastUserMessage}}       替换为最新 user 消息原文（去时间戳）
- *   - {{trim}}                  删除宏周围连续换行，保留普通水平空格
- *
- * 用法（与 prompt-preset-assembler 集成）：
- *   1. 第一遍扫所有 relative 启用条目：逐条处理其中出现的 setvar/addvar → 累积 variables map。
- *      （同时**剔除**这些宏指令，得到该条目的 final content。）
- *   2. 第二遍所有 relative + in-chat 内容做 getvar/lastUserMessage 替换。
- *
- * 与酒馆 exact 行为差异：RONG 风格预设把 setvar/addvar/getvar 都写在"普通条目"的内容里——
- * 酒馆是把 setvar/addvar 写在独立条目作为"占位指令"（内容渲染前被吃掉），getvar 写在 consumer 条目。
- * 上面算法对该预设能产生等价效果。
- */
-
+/** SillyTavern 常用宏。按模板顺序求值，替换得到的数据不再当模板执行。 */
 export interface StMacroState {
   variables: Map<string, string>;
+  lastUserVariables: Set<string>;
+}
+
+export interface StMacroContext {
+  user?: string;
+  char?: string;
+  description?: string;
+  personality?: string;
+  scenario?: string;
+  mesExamples?: string;
+  mesExamplesRaw?: string;
+  lastUserMessage?: string;
+  lastCharMessage?: string;
+  lastMessage?: string;
+}
+
+export interface StMacroResult {
+  content: string;
+  usesLastUserMessage: boolean;
 }
 
 export function createStMacroState(): StMacroState {
-  return { variables: new Map() };
+  return { variables: new Map(), lastUserVariables: new Set() };
 }
 
-/**
- * 处理一段 content：
- *   - 移除 setvar/addvar 指令并更新 state.variables
- *   - 不做 getvar/lastUserMessage 替换（留给 expandPass）
- *
- * 返回剥离 setvar/addvar 之后的 content（可能为空）。
- */
-const SETVAR_OPEN = /\{\{(setvar|addvar)::/g;
-
-/**
- * 找到一个宏调用（{{setvar::...}} 或 {{addvar::...}}）从 startIndex 开始的范围。
- * 处理嵌套：value 部分可能含 {{user}}/{{char}} 等其它宏的 "}}" 闭合。
- * 返回 { start, end, kind, name, value } 或 null（没找到/未闭合）。
- *
- * 用 brace-depth 扫描：遇到 "{{" 深度 +1，遇到 "}}" 深度 -1，深度回到 0 的 "}}" 即结束。
- * startIndex 必须正好指向某个 "{{"（kind setvar/addvar 之一）。
- */
-function parseMacroBlock(source: string, startIndex: number): {
-  kind: 'setvar' | 'addvar';
+interface MacroBlock {
   name: string;
-  value: string;
-  startIndex: number;
+  tail: string;
   endIndex: number;
-} | null {
-  // 找最近的宏起始（{{setvar:: 或 {{addvar::）
-  const head = source.slice(startIndex).match(/^\{\{(setvar|addvar)::/);
-  if (!head) return null;
-  const kind = head[1] as 'setvar' | 'addvar';
-  const afterKind = startIndex + head[0].length;
+}
 
-  // name 从这里到下一个 ::
-  const nameEnd = source.indexOf('::', afterKind);
-  if (nameEnd < 0) return null;
-  const name = source.slice(afterKind, nameEnd);
+const CONTENT_MACROS = new Set([
+  'user', 'char', 'description', 'personality', 'scenario', 'mesexamples',
+  'mesexamplesraw', 'lastusermessage', 'lastcharmessage', 'lastmessage',
+  'trim', 'noop', 'newline',
+]);
 
-  // value 从下一个字符开始；深度扫描找配对的 }}
-  let depth = 2; // 已经是 2 个嵌套 {{ + {{ ?—— 不，整个宏本身是 1 个 { 层；text 内嵌套才 +1
-  depth = 1;
-  let i = nameEnd + 2;
-  const valueStart = i;
-  while (i < source.length) {
+function readMacro(source: string, startIndex: number): MacroBlock | null {
+  let depth = 1;
+  for (let i = startIndex + 2; i < source.length;) {
     if (source.startsWith('{{', i)) {
       depth += 1;
       i += 2;
-      continue;
-    }
-    if (source.startsWith('}}', i)) {
+    } else if (source.startsWith('}}', i)) {
       depth -= 1;
       if (depth === 0) {
-        const value = source.slice(valueStart, i);
-        return { kind, name: name.trim(), value, startIndex, endIndex: i + 2 };
+        const inner = source.slice(startIndex + 2, i);
+        const head = inner.match(/^\s*(\/\/\/|\/\/|\/?[\w]+)([\s\S]*)$/);
+        return { name: head?.[1].toLowerCase() ?? inner.trim(), tail: head?.[2] ?? '', endIndex: i + 2 };
       }
       i += 2;
-      continue;
-    }
-    i += 1;
-  }
-  return null; // 未闭合
-}
-
-/**
- * 处理一段 content：
- *   - 移除 setvar/addvar 指令并更新 state.variables
- *   - 不做 getvar/lastUserMessage 替换（留给 expandPass）
- *
- * 返回剥离 setvar/addvar 之后的 content（可能为空）。
- */
-export function collectSetAndAddVars(content: string, state: StMacroState): string {
-  const out: string[] = [];
-  let cursor = 0;
-
-  while (cursor < content.length) {
-    // 找下一处 {{setvar:: 或 {{addvar::
-    SETVAR_OPEN.lastIndex = cursor;
-    const m = SETVAR_OPEN.exec(content);
-    if (!m) break;
-    const startIndex = m.index;
-    out.push(content.slice(cursor, startIndex));
-
-    const block = parseMacroBlock(content, startIndex);
-    if (!block) {
-      // 未闭合：把 "{{" 头按原文输出，从 startIndex+2 继续找
-      out.push(content.slice(startIndex, startIndex + 2));
-      cursor = startIndex + 2;
-      continue;
-    }
-
-    const name = block.name;
-    if (block.kind === 'setvar') {
-      state.variables.set(name, block.value);
     } else {
-      const prev = state.variables.get(name);
-      state.variables.set(name, (prev ?? '') + block.value);
+      i += 1;
     }
-    cursor = block.endIndex;
   }
-  out.push(content.slice(cursor));
-  return out.join('');
+  return null;
 }
 
-/**
- * 对齐 SillyTavern 的非 scoped {{trim}}：删除宏自身及其前后连续换行，
- * 但保留普通水平空格；宏名大小写不敏感。
- * 官方实现位于 public/scripts/macros.js，正则 source 为
- * `(?:\r?\n)*{{trim}}(?:\r?\n)*`，flags 为 `gi`。
- */
+function variableArgs(block: MacroBlock): string[] | null {
+  const tail = block.tail.trimStart();
+  if (!tail.startsWith('::')) return null;
+  const args = tail.slice(2);
+  if (block.name === 'getvar') return args.trim() ? [args] : null;
+  let depth = 0;
+  for (let i = 0; i < args.length;) {
+    if (args.startsWith('{{', i)) {
+      depth += 1;
+      i += 2;
+    } else if (args.startsWith('}}', i)) {
+      depth -= 1;
+      i += 2;
+    } else if (depth === 0 && args.startsWith('::', i)) {
+      return args.slice(0, i).trim() ? [args.slice(0, i), args.slice(i + 2)] : null;
+    } else {
+      i += 1;
+    }
+  }
+  return null;
+}
+
+function supportsMacro(block: MacroBlock): boolean {
+  if (block.name === '//' || block.name === 'comment') return true;
+  if (['setvar', 'addvar', 'getvar'].includes(block.name)) return variableArgs(block) !== null;
+  return CONTENT_MACROS.has(block.name) && block.tail.trim() === '';
+}
+
+function commentEnd(source: string, block: MacroBlock): number {
+  if (block.name !== '//' || block.tail.trim()) return block.endIndex;
+  let depth = 1;
+  for (let cursor = block.endIndex; cursor < source.length;) {
+    const start = source.indexOf('{{', cursor);
+    if (start < 0) break;
+    const next = readMacro(source, start);
+    if (!next) break;
+    if (next.name === '//' && !next.tail.trim()) depth += 1;
+    if (next.name === '///' && !next.tail.trim()) {
+      depth -= 1;
+      if (depth === 0) return next.endIndex;
+    }
+    cursor = next.endIndex;
+  }
+  return block.endIndex;
+}
+
+/** 导入器使用纯扫描结果提示未知宏及不支持的写法；注释内容不参与检测。 */
+export function findUnsupportedStMacros(content: string): string[] {
+  const unsupported = new Set<string>();
+  function scan(source: string): void {
+    for (let cursor = 0; cursor < source.length;) {
+      const start = source.indexOf('{{', cursor);
+      if (start < 0) break;
+      const block = readMacro(source, start);
+      if (!block) {
+        unsupported.add(source.slice(start + 2).match(/^\s*([^\s:{}]+)/)?.[1].toLowerCase() ?? '未闭合宏');
+        cursor = start + 2;
+        continue;
+      }
+      if (block.name === '//' || block.name === 'comment') {
+        cursor = commentEnd(source, block);
+        continue;
+      }
+      if (!supportsMacro(block)) unsupported.add(block.name || '无效宏');
+      scan(block.tail);
+      cursor = block.endIndex;
+    }
+  }
+  scan(content);
+  return [...unsupported];
+}
+
+function getVariable(state: StMacroState, name: string): string {
+  const value = state.variables.get(name) ?? '';
+  if (state.lastUserVariables.has(name)) return value;
+  return value.trim() && !Number.isNaN(Number(value)) ? String(Number(value)) : value;
+}
+
+function addVariable(previous: string, value: string): string {
+  try {
+    const parsed: unknown = JSON.parse(previous);
+    if (Array.isArray(parsed)) return JSON.stringify([...parsed, value]);
+  } catch {
+    // 非数组变量按数值相加或字符串拼接处理。
+  }
+  return !Number.isNaN(Number(previous)) && !Number.isNaN(Number(value))
+    ? String(Number(previous) + Number(value))
+    : previous + value;
+}
+
+type RenderMode = 'all' | 'collect' | 'expand';
+
+function renderTemplate(
+  source: string,
+  state: StMacroState,
+  context: Map<string, string | undefined>,
+  mode: RenderMode,
+): StMacroResult {
+  const output: string[] = [];
+  const trimIndexes: number[] = [];
+  const dataIndexes = new Set<number>();
+  let usesLastUserMessage = false;
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = source.indexOf('{{', cursor);
+    if (start < 0) break;
+    const block = readMacro(source, start);
+    if (!block) {
+      // 未闭合的 {{ 按原文保留并继续扫描，避免一处笔误让同条目后续的宏全部失效。
+      output.push(source.slice(cursor, start + 2));
+      cursor = start + 2;
+      continue;
+    }
+    output.push(source.slice(cursor, start));
+    const raw = source.slice(start, block.endIndex);
+    cursor = block.endIndex;
+    if (!supportsMacro(block)) {
+      output.push(raw);
+      continue;
+    }
+    if (block.name === '//' || block.name === 'comment') {
+      cursor = commentEnd(source, block);
+      continue;
+    }
+    const isSetter = block.name === 'setvar' || block.name === 'addvar';
+    if (isSetter && mode !== 'expand') {
+      const args = variableArgs(block)!;
+      const name = renderTemplate(args[0], state, context, 'all').content.trim();
+      if (!name) {
+        output.push(raw);
+        continue;
+      }
+      const value = renderTemplate(args[1], state, context, 'all');
+      const append = block.name === 'addvar';
+      state.variables.set(name, append ? addVariable(getVariable(state, name), value.content) : value.content);
+      if (value.usesLastUserMessage || (append && state.lastUserVariables.has(name))) state.lastUserVariables.add(name);
+      else state.lastUserVariables.delete(name);
+      continue;
+    }
+    if (isSetter || mode === 'collect') {
+      output.push(raw);
+      continue;
+    }
+    if (block.name === 'getvar') {
+      const name = renderTemplate(variableArgs(block)![0], state, context, mode).content.trim();
+      dataIndexes.add(output.length);
+      output.push(getVariable(state, name));
+      usesLastUserMessage ||= state.lastUserVariables.has(name);
+    } else if (block.name === 'trim') {
+      trimIndexes.push(output.length);
+      output.push('');
+    } else if (block.name === 'newline') {
+      output.push('\n');
+    } else if (block.name !== 'noop') {
+      const value = context.get(block.name);
+      dataIndexes.add(output.length);
+      output.push(value ?? raw);
+      usesLastUserMessage ||= block.name === 'lastusermessage' && value !== undefined;
+    }
+  }
+  output.push(source.slice(cursor));
+  // 先吃掉不输出文本的指令，再按 trim 清除相邻模板换行；不裁剪插入的数据正文。
+  for (const trimIndex of trimIndexes) {
+    for (const direction of [-1, 1]) {
+      for (let i = trimIndex + direction; i >= 0 && i < output.length; i += direction) {
+        if (dataIndexes.has(i) && output[i]) break;
+        output[i] = output[i].replace(direction < 0 ? /(?:\r?\n)*$/ : /^(?:\r?\n)*/, '');
+        if (output[i]) break;
+      }
+    }
+  }
+  return { content: output.join(''), usesLastUserMessage };
+}
+
+export function renderStMacros(content: string, state: StMacroState, context: StMacroContext = {}): StMacroResult {
+  return renderTemplate(content, state, new Map(Object.entries(context).map(([name, value]) => [name.toLowerCase(), value])), 'all');
+}
+
+/** 兼容已有两阶段调用；完整渲染使用 renderStMacros，以保持同条目内的读写顺序。 */
+export function collectSetAndAddVars(content: string, state: StMacroState): string {
+  return renderTemplate(content, state, new Map(), 'collect').content;
+}
+
 export function applyTrimMacro(content: string): string {
   return content.replace(/(?:\r?\n)*\{\{trim\}\}(?:\r?\n)*/gi, '');
 }
 
-/**
- * 处理一段 content：
- *   - {{getvar::name}} 替换为 state.variables.get(name) ?? ''
- *   - {{lastUserMessage}} 替换为 lastUserMessage
- */
-export function expandGetVars(
-  content: string,
-  state: StMacroState,
-  lastUserMessage: string,
-): string {
-  return applyTrimMacro(content)
-    .replace(/\{\{getvar::([^}:]+)\}\}/g, (match, name: string) => state.variables.get(name.trim()) ?? '')
-    .replace(/\{\{lastUserMessage\}\}/g, () => lastUserMessage);
+export function expandGetVars(content: string, state: StMacroState, lastUserMessage: string): string {
+  return renderTemplate(content, state, new Map([['lastusermessage', lastUserMessage]]), 'expand').content;
 }
 
-/**
- * 单段 convenience API：先 collect 再 expand。
- * 用于单条 entry.content 处理（不需要跨条目聚合时）。
- */
-export function processStMacrosOnce(
-  content: string,
-  state: StMacroState,
-  lastUserMessage: string,
-): string {
-  const collected = collectSetAndAddVars(content, state);
-  return expandGetVars(collected, state, lastUserMessage);
+export function processStMacrosOnce(content: string, state: StMacroState, lastUserMessage: string): string {
+  return renderStMacros(content, state, { lastUserMessage }).content;
 }

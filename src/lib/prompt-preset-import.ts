@@ -1,9 +1,8 @@
 /**
  * SillyTavern preset JSON 一键导入。
  *
- * 仅消费 preset JSON 中的 `prompts` + `prompt_order` 两个字段；
- * 顶层其他字段（temperature、wi_format、impersonation_prompt、extensions、media_inlining、stream_openai、feature 等）
- * 一律静默忽略（Q6a 决策：不导入采样参数）。
+ * 标准 prompts/order 与官方 Prompt Manager 导出统一校验后导入。
+ * 仅导入提示词相关设置；预设参数不导入，扩展配置不执行，并以兼容说明报告。
  *
  * 映射规则：
  *   - 条目 identifier 是 uuid → 普通文本条目（is_marker=false）
@@ -14,17 +13,23 @@
  *   - marker 判据取条目自带的 `marker` 字段：酒馆的 marker 是无正文占位符，而 main/nsfw/
  *     jailbreak/enhanceDefinitions 是**有正文的普通内建条目**，按普通文本条目导入
  *   - prompt_order.entry.enabled 优先于 prompt.enabled（Q2 单层：合并到 entries.enabled）
- *   - prompt_order 缺失的 prompt：追加到末尾并强制 disabled（酒馆不渲染未列入 order 的条目）
- *   - prompt_order 引用不存在的 prompt：剔除
- *   - injection_trigger 字段忽略（Q6b 决策）
+ *   - 有排序时未列入的 prompt 追加并禁用；无排序配置时按 prompts 顺序和 enabled 导入
+ *   - 排序引用省略的核心动态 marker 时重建空占位，其他悬空引用报告后剔除
+ *   - injection_trigger 保留，仅 normal/regenerate 场景可实际执行
  *   - sort_order = order 数组下标 * 10
  *
  * 事务包裹：preset + entries 一次性入库；任何一步失败回滚。
  */
 
 import * as crypto from 'crypto';
+import { z } from 'zod';
 import { getDb } from '@/lib/db';
-import { stripTagRulesSchema } from '@/lib/schemas';
+import {
+  presetImportWarningsSchema,
+  presetInjectionTriggerSchema,
+  stripTagRulesSchema,
+} from '@/lib/schemas';
+import { findUnsupportedStMacros } from '@/lib/st-macros';
 import { PresetImportReport, PresetMarkerKey } from '@/types';
 
 /** 酒馆内建 marker → LumiMuse 6 条核心 marker 的映射（Q3）。 */
@@ -51,7 +56,7 @@ interface RawPrompt {
   injection_depth?: number;
   injection_order?: number;
   forbid_overrides?: boolean;
-  injection_trigger?: unknown;
+  injection_trigger?: string[];
 }
 
 interface RawOrderEntry {
@@ -64,13 +69,6 @@ interface RawOrderBlock {
   order: RawOrderEntry[];
 }
 
-interface RawPreset {
-  prompts?: RawPrompt[];
-  prompt_order?: RawOrderBlock[];
-  name?: string;
-  [key: string]: unknown;
-}
-
 interface RawLumiMusePreset {
   version: 1;
   format: 'lumimuse-prompt-preset';
@@ -79,6 +77,7 @@ interface RawLumiMusePreset {
     description: string;
     story_plot_strip: boolean;
     strip_tags?: string[];
+    import_warnings: string[];
   };
   entries: RawLumiMusePresetEntry[];
 }
@@ -94,6 +93,7 @@ interface RawLumiMusePresetEntry {
   injection_depth: number;
   injection_order: number;
   forbid_overrides: boolean;
+  injection_trigger: string[];
   enabled: boolean;
   sort_order: number;
 }
@@ -126,6 +126,118 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const identifierSchema = z.string().refine(value => value.trim().length > 0, 'identifier 不能为空');
+const stPromptSchema = z.looseObject({
+  identifier: identifierSchema,
+  name: z.string().optional(),
+  enabled: z.boolean().optional(),
+  role: z.enum(['system', 'user', 'assistant']).optional(),
+  content: z.string().optional(),
+  marker: z.boolean().optional(),
+  system_prompt: z.boolean().optional(),
+  injection_position: z.union([z.literal(0), z.literal(1)]).optional(),
+  injection_depth: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  injection_order: z.number().int().min(Number.MIN_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER).optional(),
+  forbid_overrides: z.boolean().optional(),
+  injection_trigger: presetInjectionTriggerSchema.optional(),
+});
+const stOrderEntrySchema = z.object({ identifier: identifierSchema, enabled: z.boolean().optional() });
+
+function validateImportField<T>(schema: z.ZodType<T>, value: unknown, field: string): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`导入失败：${field} 无效 - ${parsed.error.issues.map(issue => issue.message).join('; ')}`);
+  }
+  return parsed.data;
+}
+
+function assertUniqueIdentifiers(values: Array<{ identifier: string }>, field: string): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value.identifier)) throw new Error(`导入失败：${field} identifier 重复：${value.identifier}`);
+    seen.add(value.identifier);
+  }
+}
+
+function parseStOrder(data: Record<string, unknown>, directEmpty: boolean, warnings: Set<string>): RawOrderEntry[] | null {
+  if (data.prompt_order == null) return null;
+  if (!Array.isArray(data.prompt_order)) throw new Error('导入失败：prompt_order 必须是数组');
+  if (data.prompt_order.length === 0) return directEmpty ? [] : null;
+  const first = asRecord(data.prompt_order[0]);
+  if (first && Object.hasOwn(first, 'identifier')) {
+    const entries = validateImportField(z.array(stOrderEntrySchema), data.prompt_order, 'prompt_order');
+    assertUniqueIdentifiers(entries, 'prompt_order');
+    return entries;
+  }
+  const blocks: RawOrderBlock[] = [];
+  const seen = new Set<string>();
+  for (const [index, value] of data.prompt_order.entries()) {
+    const block = asRecord(value);
+    if (!block || (typeof block.character_id !== 'number' && typeof block.character_id !== 'string')
+      || (typeof block.character_id === 'number' && !Number.isSafeInteger(block.character_id))
+      || (typeof block.character_id === 'string' && !/^\d+$/.test(block.character_id))) {
+      throw new Error(`导入失败：prompt_order[${index}] 排序组无效`);
+    }
+    const characterId = Number(block.character_id);
+    if (!Number.isSafeInteger(characterId) || seen.has(String(characterId))) {
+      throw new Error(`导入失败：prompt_order character_id 无效或重复：${String(block.character_id)}`);
+    }
+    seen.add(String(characterId));
+    const order = validateImportField(z.array(stOrderEntrySchema), block.order, `prompt_order[${index}].order`);
+    assertUniqueIdentifiers(order, `prompt_order[${index}].order`);
+    blocks.push({ character_id: characterId, order });
+  }
+  const chosen = blocks.find(block => block.character_id === 100001)
+    ?? blocks.find(block => block.order.length > 0) ?? blocks[0];
+  if (chosen.character_id !== 100001) {
+    warnings.add(`没有 character_id=100001 排序组，已回退到 character_id=${chosen.character_id}。`);
+  }
+  return chosen.order;
+}
+
+const ST_IGNORED_PARAMETER_KEYS = [
+  'temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty',
+  'repetition_penalty', 'seed', 'reasoning_effort', 'openai_max_tokens', 'stream_openai',
+  'sampling_params', 'max_tokens', 'streaming', 'openai_max_context', 'context_window',
+  'top_a', 'min_p', 'typical_p', 'tfs', 'epsilon_cutoff', 'eta_cutoff',
+  'mirostat', 'mirostat_tau', 'mirostat_eta', 'n',
+] as const;
+
+function isActiveSetting(value: unknown): boolean {
+  if (value == null || value === false || value === 0 || value === '') return false;
+  if (Array.isArray(value)) return value.length > 0;
+  const object = asRecord(value);
+  return object ? Object.keys(object).length > 0 : true;
+}
+
+function collectStWarnings(data: Record<string, unknown>, warnings: Set<string>): void {
+  const handled = new Set<string>([
+    'prompts', 'prompt_order', 'name', 'extensions', 'lumimuse_story_plot_strip',
+    'lumimuse_import_warnings', ...ST_IGNORED_PARAMETER_KEYS,
+  ]);
+  if (ST_IGNORED_PARAMETER_KEYS.some(key => Object.hasOwn(data, key))) {
+    warnings.add('预设参数不导入，聊天沿用 LumiMuse 自身设置。');
+  }
+  for (const [key, value] of Object.entries(data)) {
+    if (!handled.has(key) && isActiveSetting(value)) {
+      warnings.add(`未支持的预设字段 ${key} 未应用；不改变 LumiMuse 全局、上下文或后台设置。`);
+    }
+  }
+  if (isActiveSetting(data.extensions)) {
+    warnings.add('检测到第三方插件配置；不执行脚本、正则、界面、历史处理或工具绑定。原提示词正文保持不变。');
+    const spreset = asRecord(asRecord(data.extensions)?.SPreset);
+    const bindings = spreset?.ToolBindings;
+    const tools = Array.isArray(bindings) ? bindings : Object.values(asRecord(bindings) ?? {});
+    for (const value of tools) {
+      const tool = asRecord(value);
+      if (!tool || tool.enabled === false) continue;
+      const name = typeof tool.resolvedName === 'string' ? tool.resolvedName
+        : typeof tool.name === 'string' ? tool.name : '未命名工具';
+      warnings.add(`预设依赖 SPreset.ToolBindings 工具 ${name}；LumiMuse 不发送或执行此插件工具，要求调用它的正文可能无法正常产生聊天回复。`);
+    }
+  }
+}
+
 function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset | null {
   if (data.format !== 'lumimuse-prompt-preset') return null;
   const preset = asRecord(data.preset);
@@ -153,14 +265,14 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
       || typeof entry.is_system_prompt !== 'boolean'
       || (entry.injection_position !== 0 && entry.injection_position !== 1)
       || typeof entry.injection_depth !== 'number'
-      || !Number.isInteger(entry.injection_depth)
+      || !Number.isSafeInteger(entry.injection_depth)
       || entry.injection_depth < 0
       || typeof entry.injection_order !== 'number'
-      || !Number.isInteger(entry.injection_order)
+      || !Number.isSafeInteger(entry.injection_order)
       || typeof entry.forbid_overrides !== 'boolean'
       || typeof entry.enabled !== 'boolean'
       || typeof entry.sort_order !== 'number'
-      || !Number.isInteger(entry.sort_order)
+      || !Number.isSafeInteger(entry.sort_order)
     ) {
       throw new Error(`导入失败：LumiMuse 条目 ${index + 1} 字段无效`);
     }
@@ -184,6 +296,8 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
       injection_depth: entry.injection_depth,
       injection_order: entry.injection_order,
       forbid_overrides: entry.forbid_overrides,
+      injection_trigger: validateImportField(presetInjectionTriggerSchema,
+        Object.hasOwn(entry, 'injection_trigger') ? entry.injection_trigger : [], `条目 ${index + 1} injection_trigger`),
       enabled: entry.enabled,
       sort_order: entry.sort_order,
     } satisfies RawLumiMusePresetEntry;
@@ -208,6 +322,8 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
       description: preset.description,
       story_plot_strip: preset.story_plot_strip,
       strip_tags: stripTags,
+      import_warnings: validateImportField(presetImportWarningsSchema,
+        Object.hasOwn(preset, 'import_warnings') ? preset.import_warnings : [], 'import_warnings'),
     },
     entries,
   };
@@ -225,7 +341,7 @@ export function importSillyTavernPreset(
 ): PresetImportReport {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(jsonText) as unknown;
+    parsed = JSON.parse(jsonText.replace(/^\uFEFF/, '')) as unknown;
   } catch (err) {
     throw new Error(`导入失败：JSON 解析失败 - ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -239,12 +355,33 @@ export function importSillyTavernPreset(
     return importLumiMusePreset(nativePreset, opts);
   }
 
-  const data = parsedRecord as RawPreset;
-  const rawPrompts = Array.isArray(data.prompts) ? data.prompts : [];
-  const rawOrders: RawOrderEntry[] =
-    Array.isArray(data.prompt_order) && data.prompt_order.length > 0 && Array.isArray(data.prompt_order[0]?.order)
-      ? data.prompt_order[0].order
-      : [];
+  const wrapped = parsedRecord.version === 1
+    && (parsedRecord.type === 'full' || parsedRecord.type === 'character');
+  const data = wrapped ? asRecord(parsedRecord.data) : parsedRecord;
+  if (!data) throw new Error('导入失败：Prompt Manager data 必须是对象');
+  const rawPrompts: RawPrompt[] = validateImportField(z.array(stPromptSchema), data.prompts, 'prompts');
+  assertUniqueIdentifiers(rawPrompts, 'prompts');
+  if (Object.hasOwn(data, 'name') && typeof data.name !== 'string') {
+    throw new Error('导入失败：name 必须是字符串');
+  }
+  const warnings = new Set(validateImportField(
+    presetImportWarningsSchema,
+    Object.hasOwn(data, 'lumimuse_import_warnings') ? data.lumimuse_import_warnings : [],
+    'lumimuse_import_warnings',
+  ));
+  const selectedOrder = parseStOrder(data, wrapped, warnings);
+  const rawOrders = selectedOrder ?? rawPrompts.map(prompt => ({
+    identifier: prompt.identifier, enabled: prompt.enabled ?? true,
+  }));
+  collectStWarnings(data, warnings);
+
+  for (const prompt of rawPrompts) {
+    for (const trigger of prompt.injection_trigger ?? []) {
+      if (trigger !== 'normal' && trigger !== 'regenerate') {
+        warnings.add(`条目 ${prompt.name || prompt.identifier} 的生成场景 ${trigger} 已保留，但 LumiMuse 当前仅执行 normal/regenerate 场景。`);
+      }
+    }
+  }
 
   const presetName = (opts.presetName && opts.presetName.trim())
     || (typeof data.name === 'string' && data.name.trim())
@@ -293,17 +430,17 @@ export function importSillyTavernPreset(
     db.prepare(`
       INSERT INTO prompt_presets (
         id, name, description, is_built_in, story_plot_strip,
-        strip_tags, created_at, updated_at
+        strip_tags, import_warnings, created_at, updated_at
       )
-      VALUES (?, ?, '', 0, ?, ?, ?, ?)
-    `).run(presetId, presetName, storyPlotStrip ? 1 : 0, JSON.stringify(defaultStripTags), now, now);
+      VALUES (?, ?, '', 0, ?, ?, ?, ?, ?)
+    `).run(presetId, presetName, storyPlotStrip ? 1 : 0, JSON.stringify(defaultStripTags), '[]', now, now);
 
     const insertEntry = db.prepare(`
       INSERT INTO prompt_preset_entries (
         id, preset_id, name, role, content, is_marker, marker_key,
         is_system_prompt, injection_position, injection_depth, injection_order,
-        forbid_overrides, enabled, sort_order, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        forbid_overrides, injection_trigger, enabled, sort_order, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     // 预先建立 identifier → prompt 索引，避免 order × prompts 的二次扫描。
@@ -328,8 +465,14 @@ export function importSillyTavernPreset(
       const identifier = o.identifier;
       if (handledIdentifiers.has(identifier)) continue;
 
-      const prompt = promptByIdentifier.get(identifier);
-      if (!prompt) continue; // 悬空 order 剔除
+      let prompt = promptByIdentifier.get(identifier);
+      if (!prompt && Object.hasOwn(CORE_MARKER_MAP, identifier)) {
+        prompt = { identifier, name: identifier, marker: true, system_prompt: true, role: 'system' };
+      }
+      if (!prompt) {
+        warnings.add(`排序引用 ${identifier} 没有对应提示词正文，已跳过；不会伪造缺失内容。`);
+        continue;
+      }
 
       handledIdentifiers.add(identifier);
       const sortOrder = orderIndex * 10;
@@ -397,6 +540,12 @@ export function importSillyTavernPreset(
         content = '';
         enabled = false;
         markersDisabled += 1;
+        warnings.add(`条目 ${prompt.name || identifier} (${identifier}) 缺少对应世界书、用户人设或其他动态数据，已保留为空占位并禁用。`);
+      }
+      if (enabled && content) {
+        for (const macro of findUnsupportedStMacros(content)) {
+          warnings.add(`条目 ${prompt.name || identifier} 包含未支持的宏或宏写法 {{${macro}}}，不会假装已完整解析。`);
+        }
       }
 
       const entryId = crypto.randomUUID();
@@ -413,6 +562,7 @@ export function importSillyTavernPreset(
         normalizeInjectionDepth(prompt.injection_depth, 4),
         normalizeInteger(prompt.injection_order, 100),
         prompt.forbid_overrides ? 1 : 0,
+        JSON.stringify(prompt.injection_trigger ?? []),
         enabled ? 1 : 0,
         sortOrder,
         now,
@@ -421,6 +571,9 @@ export function importSillyTavernPreset(
       total += 1;
       if (enabled) enabledCount += 1;
     }
+    if (enabledCount === 0) warnings.add('当前启用条目为 0；预设已保存，但这些条目不会参与聊天。');
+    db.prepare('UPDATE prompt_presets SET import_warnings = ? WHERE id = ?')
+      .run(JSON.stringify([...warnings]), presetId);
   })();
 
   return {
@@ -431,6 +584,7 @@ export function importSillyTavernPreset(
     markers_recognized: markersRecognized,
     markers_disabled: markersDisabled,
     story_plot_strip: storyPlotStrip,
+    warnings: [...warnings],
   };
 }
 
@@ -456,17 +610,18 @@ function importLumiMusePreset(
     db.prepare(`
       INSERT INTO prompt_presets (
         id, name, description, is_built_in, story_plot_strip,
-        strip_tags, created_at, updated_at
+        strip_tags, import_warnings, created_at, updated_at
       )
-      VALUES (?, ?, ?, 0, ?, ?, ?, ?)
-    `).run(presetId, presetName, description, storyPlotStrip ? 1 : 0, JSON.stringify(stripTags), now, now);
+      VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+    `).run(presetId, presetName, description, storyPlotStrip ? 1 : 0, JSON.stringify(stripTags),
+      JSON.stringify(data.preset.import_warnings), now, now);
 
     const insertEntry = db.prepare(`
       INSERT INTO prompt_preset_entries (
         id, preset_id, name, role, content, is_marker, marker_key,
         is_system_prompt, injection_position, injection_depth, injection_order,
-        forbid_overrides, enabled, sort_order, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        forbid_overrides, injection_trigger, enabled, sort_order, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (let index = 0; index < data.entries.length; index += 1) {
@@ -484,6 +639,7 @@ function importLumiMusePreset(
         raw.injection_depth,
         raw.injection_order,
         raw.forbid_overrides ? 1 : 0,
+        JSON.stringify(raw.injection_trigger),
         raw.enabled ? 1 : 0,
         raw.sort_order,
         now,
@@ -503,5 +659,6 @@ function importLumiMusePreset(
     markers_recognized: markersRecognized,
     markers_disabled: 0,
     story_plot_strip: storyPlotStrip,
+    warnings: data.preset.import_warnings,
   };
 }

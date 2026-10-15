@@ -69,9 +69,9 @@ function formatTemplate(template, values) {
   );
 }
 
-function loadUiModule(relativePath, { unwrapParams = false } = {}) {
+function loadUiModule(relativePath, { unwrapParams = false, translations = {} } = {}) {
   const toastCalls = [];
-  const translate = key => key;
+  const translate = key => translations[key] ?? key;
   const showToast = (...args) => toastCalls.push(args);
   const reactForPage = unwrapParams
     ? { ...React, use: value => value.value }
@@ -132,6 +132,26 @@ const ENTRY = {
   enabled: true,
   sort_order: 10,
 };
+
+const REPORT_TRANSLATIONS = {
+  'preset.importReport': 'Import report',
+  'preset.importReportName': 'Imported "{name}"',
+  'preset.importSuccess': 'Imported: {total} entries, {enabled} enabled',
+  'preset.entryCount': '{total} entries, {enabled} enabled',
+  'preset.compatibilityReport': 'Preset compatibility',
+  'preset.importWarnings': 'Import compatibility notes',
+  'preset.importWarningsHint': 'These notes describe the import, not a new analysis of edited entries.',
+  'preset.noEnabledEntries': 'No entries are enabled. These entries will not participate in chat.',
+};
+
+function selectImportFile(view, name = 'Standard.json') {
+  const input = view.container.querySelector('input[type="file"]');
+  assert.ok(input, 'import input exists');
+  fireEvent.change(input, {
+    target: { files: [{ name, text: async () => JSON.stringify({ prompts: [] }) }] },
+  });
+  return input;
+}
 
 test.afterEach(() => {
   cleanup();
@@ -766,4 +786,220 @@ test('预设响应缺 strip_tags 时详情页仍能增删规则（入口归一�
   // 归一化前这里会 TypeError: Cannot read properties of undefined (reading 'includes')
   await waitFor(() => assert.deepEqual(patchBody, { strip_tags: ['content'] }));
   await waitFor(() => assert.equal(input.value, ''));
+});
+
+test('导入报告持续显示0启用及兼容警告，刷新列表失败也不会只留下成功toast', async () => {
+  let reads = 0;
+  global.fetch = async (url, init = {}) => {
+    if (String(url) === '/api/prompt-presets/import') {
+      return jsonResponse({
+        preset_id: 'imported-zero',
+        preset_name: 'Zero preset',
+        total: 3,
+        enabled: 0,
+        markers_recognized: 0,
+        markers_disabled: 3,
+        warnings: ['No worldbook data is available.', 'Plugin scripts are not executed.'],
+      }, 201);
+    }
+    if (String(url) === '/api/prompt-presets' && !init.method) {
+      reads += 1;
+      return reads === 1 ? jsonResponse({ presets: [] }) : jsonResponse({ error: 'offline' }, 503);
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  const { Component, toastCalls } = loadUiModule('src/app/settings/prompt-presets/page.tsx', {
+    translations: REPORT_TRANSLATIONS,
+  });
+  const view = render(React.createElement(Component));
+  await view.findByText('preset.empty');
+  const input = selectImportFile(view);
+
+  await view.findByRole('heading', { name: 'Import report' });
+  assert.ok(view.getByRole('status', { name: 'Import report' }));
+  await view.findByText('preset.loadError: /api/prompt-presets: HTTP 503');
+  assert.ok(view.getByText('Imported "Zero preset"'));
+  assert.ok(view.getByText('3 entries, 0 enabled'));
+  assert.ok(view.getByText(REPORT_TRANSLATIONS['preset.noEnabledEntries']));
+  assert.ok(view.getByText('No worldbook data is available.'));
+  assert.ok(view.getByText('Plugin scripts are not executed.'));
+  assert.equal(view.getByRole('link', { name: 'preset.manage' }).getAttribute('href'), '/settings/prompt-presets/imported-zero');
+  assert.ok(toastCalls.some(([message, type]) => message === 'Imported: 3 entries, 0 enabled' && type === 'info'));
+  assert.ok(!toastCalls.some(([, type]) => type === 'success'));
+  await waitFor(() => assert.equal(input.disabled, false));
+});
+
+test('有启用条目但有兼容警告时使用info提示，下一次无警告导入替换旧报告', async () => {
+  let imports = 0;
+  global.fetch = async url => {
+    if (String(url) === '/api/prompt-presets/import') {
+      imports += 1;
+      return jsonResponse({
+        preset_id: `imported-${imports}`,
+        preset_name: imports === 1 ? 'Warning preset' : 'Clean preset',
+        total: 2,
+        enabled: 2,
+        markers_recognized: 0,
+        markers_disabled: 0,
+        ...(imports === 1 ? { warnings: ['Unsupported macro remains as text.'] } : {}),
+      }, 201);
+    }
+    if (String(url) === '/api/prompt-presets') return jsonResponse({ presets: [] });
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  const { Component, toastCalls } = loadUiModule('src/app/settings/prompt-presets/page.tsx', {
+    translations: REPORT_TRANSLATIONS,
+  });
+  const view = render(React.createElement(Component));
+  await view.findByText('preset.empty');
+  const input = selectImportFile(view);
+
+  await view.findByText('Unsupported macro remains as text.');
+  await waitFor(() => assert.equal(input.disabled, false));
+  assert.ok(toastCalls.some(([message, type]) => message === 'Imported: 2 entries, 2 enabled' && type === 'info'));
+
+  selectImportFile(view, 'Clean.json');
+  await view.findByText('Imported "Clean preset"');
+  await waitFor(() => assert.equal(input.disabled, false));
+  assert.ok(!view.queryByText('Unsupported macro remains as text.'));
+  assert.ok(!view.queryByText('Imported "Warning preset"'));
+  assert.ok(!view.queryByText(REPORT_TRANSLATIONS['preset.noEnabledEntries']));
+  assert.ok(toastCalls.some(([message, type]) => message === 'Imported: 2 entries, 2 enabled' && type === 'success'));
+});
+
+test('导入期间同步guard阻止重复POST，报告保留服务端实际启用数', async () => {
+  const importing = deferred();
+  let imports = 0;
+  global.fetch = async url => {
+    if (String(url) === '/api/prompt-presets/import') {
+      imports += 1;
+      return importing.promise;
+    }
+    if (String(url) === '/api/prompt-presets') return jsonResponse({ presets: [] });
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/page.tsx', {
+    translations: REPORT_TRANSLATIONS,
+  });
+  const view = render(React.createElement(Component));
+  await view.findByText('preset.empty');
+  const input = selectImportFile(view);
+  selectImportFile(view);
+  await waitFor(() => assert.equal(imports, 1));
+  assert.equal(input.disabled, true);
+  await act(async () => {
+    importing.resolve(jsonResponse({ preset_id: 'guarded', preset_name: 'Guarded preset', total: 7, enabled: 4 }, 201));
+    await importing.promise;
+  });
+  await view.findByText('7 entries, 4 enabled');
+  await waitFor(() => assert.equal(input.disabled, false));
+});
+
+test('详情直接加载及重新挂载仍显示导入警告，脚本样式内容只作为文字', async () => {
+  const scriptText = '<script>window.__presetExecuted = true</script><img src=x onerror="alert(1)">';
+  global.fetch = async url => {
+    if (String(url).endsWith('/entries')) return jsonResponse({ entries: [ENTRY] });
+    return jsonResponse({ ...PRESET, import_warnings: [scriptText, 'game_content tools are not supported.'] });
+  };
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/[id]/page.tsx', {
+    unwrapParams: true,
+    translations: REPORT_TRANSLATIONS,
+  });
+  const props = { params: { value: { id: PRESET.id } } };
+  const firstView = render(React.createElement(Component, props));
+  await firstView.findByText(scriptText);
+  assert.ok(firstView.getByText('game_content tools are not supported.'));
+  assert.ok(firstView.getByText(REPORT_TRANSLATIONS['preset.importWarningsHint']));
+  assert.ok(!firstView.container.querySelector('script, img'));
+  assert.equal(window.__presetExecuted, undefined);
+  firstView.unmount();
+
+  const reloadedView = render(React.createElement(Component, props));
+  await reloadedView.findByText(scriptText);
+  assert.ok(reloadedView.getByRole('heading', { name: 'Preset compatibility' }));
+  assert.ok(!reloadedView.container.querySelector('script, img'));
+});
+
+test('详情0启用提示随切换更新，但不重写导入兼容快照或其他条目', async () => {
+  const dormantEntry = { ...ENTRY, id: 'dormant', name: 'Dormant entry', enabled: false, sort_order: 20 };
+  const patches = [];
+  global.fetch = async (url, init = {}) => {
+    if (init.method === 'PATCH') {
+      patches.push({ url: String(url), body: JSON.parse(init.body) });
+      return jsonResponse({ ok: true });
+    }
+    if (String(url).endsWith('/entries')) return jsonResponse({ entries: [ENTRY, dormantEntry] });
+    return jsonResponse({ ...PRESET, import_warnings: ['Import snapshot warning.'] });
+  };
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/[id]/page.tsx', {
+    unwrapParams: true,
+    translations: REPORT_TRANSLATIONS,
+  });
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  const toggle = await view.findByRole('button', { name: 'preset.enabled: Entry A' });
+  assert.ok(!view.queryByText(REPORT_TRANSLATIONS['preset.noEnabledEntries']));
+  fireEvent.click(toggle);
+  await view.findByText(REPORT_TRANSLATIONS['preset.noEnabledEntries']);
+  assert.ok(view.getByText('2 entries, 0 enabled'));
+  assert.ok(view.getByText('Import snapshot warning.'));
+  fireEvent.click(view.getByRole('button', { name: 'preset.disabled: Entry A' }));
+  await waitFor(() => assert.ok(!view.queryByText(REPORT_TRANSLATIONS['preset.noEnabledEntries']), '0-enabled notice is removed'));
+  assert.ok(view.getByText('2 entries, 1 enabled'));
+  assert.deepEqual(patches, [
+    { url: `/api/prompt-presets/${PRESET.id}/entries/${ENTRY.id}`, body: { enabled: false } },
+    { url: `/api/prompt-presets/${PRESET.id}/entries/${ENTRY.id}`, body: { enabled: true } },
+  ]);
+  assert.equal(view.getByRole('button', { name: 'preset.disabled: Dormant entry' }).getAttribute('aria-pressed'), 'false');
+});
+
+test('详情忽略旧响应中的采样参数，不显示参数覆盖面板或文案', async () => {
+  global.fetch = async url => {
+    if (String(url).endsWith('/entries')) return jsonResponse({ entries: [ENTRY] });
+    return jsonResponse({
+      ...PRESET,
+      import_warnings: ['Legacy preset compatibility note.'],
+      sampling_params: { temperature: 0, top_p: 0.8, max_tokens: 2048, streaming: false, seed: null },
+    });
+  };
+  const { Component } = loadUiModule('src/app/settings/prompt-presets/[id]/page.tsx', {
+    unwrapParams: true,
+    translations: REPORT_TRANSLATIONS,
+  });
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  await view.findByText('Legacy preset compatibility note.');
+  assert.ok(view.getByRole('heading', { name: 'Preset compatibility' }));
+  assert.ok(view.getByText('1 entries, 1 enabled'));
+  assert.ok(!view.container.querySelector('dl'), 'legacy sampling parameters have no display panel');
+  assert.doesNotMatch(view.container.textContent, /temperature|max_tokens|Chat parameters for this preset|Only overrides|preset\.samplingParams/);
+});
+
+test('导入报告忽略旧响应中的采样参数，保留兼容说明和管理链接', async () => {
+  global.fetch = async url => {
+    if (String(url) === '/api/prompt-presets/import') {
+      return jsonResponse({
+        preset_id: 'legacy-sampling',
+        preset_name: 'Legacy preset',
+        total: 2,
+        enabled: 1,
+        warnings: ['Legacy import compatibility note.'],
+        sampling_params: { temperature: 0, max_tokens: 2048, streaming: false },
+      }, 201);
+    }
+    if (String(url) === '/api/prompt-presets') return jsonResponse({ presets: [] });
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  const { Component, toastCalls } = loadUiModule('src/app/settings/prompt-presets/page.tsx', {
+    translations: REPORT_TRANSLATIONS,
+  });
+  const view = render(React.createElement(Component));
+  await view.findByText('preset.empty');
+  selectImportFile(view);
+
+  await view.findByText('Legacy import compatibility note.');
+  assert.ok(view.getByText('Imported "Legacy preset"'));
+  assert.ok(view.getByText('2 entries, 1 enabled'));
+  assert.equal(view.getByRole('link', { name: 'preset.manage' }).getAttribute('href'), '/settings/prompt-presets/legacy-sampling');
+  assert.ok(toastCalls.some(([message, type]) => message === 'Imported: 2 entries, 1 enabled' && type === 'info'));
+  assert.ok(!view.container.querySelector('dl'), 'legacy import sampling parameters have no display panel');
+  assert.doesNotMatch(view.container.textContent, /temperature|max_tokens|Chat parameters for this preset|Only overrides|preset\.samplingParams/);
 });

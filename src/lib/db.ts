@@ -873,6 +873,7 @@ function migrate(db: Database.Database): void {
       is_built_in INTEGER NOT NULL DEFAULT 0,
       story_plot_strip INTEGER NOT NULL DEFAULT 0,
       strip_tags TEXT NOT NULL DEFAULT '[]',
+      import_warnings TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -890,6 +891,7 @@ function migrate(db: Database.Database): void {
       injection_depth INTEGER NOT NULL DEFAULT 4,
       injection_order INTEGER NOT NULL DEFAULT 100,
       forbid_overrides INTEGER NOT NULL DEFAULT 0,
+      injection_trigger TEXT NOT NULL DEFAULT '[]',
       enabled INTEGER NOT NULL DEFAULT 1,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -923,6 +925,7 @@ function migrate(db: Database.Database): void {
         is_built_in INTEGER NOT NULL DEFAULT 0,
         story_plot_strip INTEGER NOT NULL DEFAULT 0,
         strip_tags TEXT NOT NULL DEFAULT '[]',
+        import_warnings TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
@@ -939,6 +942,7 @@ function migrate(db: Database.Database): void {
         injection_depth INTEGER NOT NULL DEFAULT 4,
         injection_order INTEGER NOT NULL DEFAULT 100,
         forbid_overrides INTEGER NOT NULL DEFAULT 0,
+        injection_trigger TEXT NOT NULL DEFAULT '[]',
         enabled INTEGER NOT NULL DEFAULT 1,
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -961,6 +965,9 @@ function migrate(db: Database.Database): void {
   }
   if (presetCols.length > 0 && !presetCols.some(c => c.name === 'strip_tags')) {
     db.exec(`ALTER TABLE prompt_presets ADD COLUMN strip_tags TEXT NOT NULL DEFAULT '[]'`);
+  }
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'import_warnings')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN import_warnings TEXT NOT NULL DEFAULT '[]'`);
   }
   if (presetCols.length > 0 && !presetCols.some(c => c.name === 'created_at')) {
     db.exec(`ALTER TABLE prompt_presets ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`);
@@ -992,6 +999,9 @@ function migrate(db: Database.Database): void {
   }
   if (presetEntryCols.length > 0 && !entryCol('forbid_overrides')) {
     db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN forbid_overrides INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (presetEntryCols.length > 0 && !entryCol('injection_trigger')) {
+    db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN injection_trigger TEXT NOT NULL DEFAULT '[]'`);
   }
   if (presetEntryCols.length > 0 && !entryCol('enabled')) {
     db.exec(`ALTER TABLE prompt_preset_entries ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`);

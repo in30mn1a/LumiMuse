@@ -56,6 +56,7 @@ export async function PATCH(
     injection_depth: body.injection_depth,
     injection_order: body.injection_order,
     forbid_overrides: body.forbid_overrides,
+    injection_trigger: body.injection_trigger,
     enabled: body.enabled,
     sort_order: body.sort_order,
   });

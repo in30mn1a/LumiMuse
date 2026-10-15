@@ -7,6 +7,8 @@ import { formatTemplate } from '@/lib/i18n';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, SparkIcon, TrashIcon } from '@/components/ui/icons';
 import ContentState from '@/components/ui/ContentState';
+import PresetCompatibilityReport from '@/components/ui/PresetCompatibilityReport';
+import type { PresetImportReport } from '@/types';
 
 interface PresetSummary {
   id: string;
@@ -26,6 +28,7 @@ export default function PromptPresetsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [importReport, setImportReport] = useState<PresetImportReport | null>(null);
   const loadRequestRef = useRef<{ controller: AbortController; sequence: number } | null>(null);
   const loadSequenceRef = useRef(0);
   const pendingActionRef = useRef<string | null>(null);
@@ -144,13 +147,14 @@ export default function PromptPresetsPage() {
       if (!res.ok) {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
+      const report: PresetImportReport = data;
+      setImportReport(report);
       showToast(
         formatTemplate(t('preset.importSuccess'), {
-          total: data.total,
-          markers: data.markers_recognized,
-          disabled: data.markers_disabled,
+          total: report.total,
+          enabled: report.enabled,
         }),
-        'success',
+        report.enabled === 0 || report.warnings?.length ? 'info' : 'success',
       );
       await load();
     } catch (err) {
@@ -206,6 +210,16 @@ export default function PromptPresetsPage() {
             </label>
           </div>
         </section>
+
+        {importReport && (
+          <PresetCompatibilityReport
+            total={importReport.total}
+            enabled={importReport.enabled}
+            warnings={importReport.warnings}
+            importedPreset={{ id: importReport.preset_id, name: importReport.preset_name }}
+            t={t}
+          />
+        )}
 
         <section className="surface-panel p-5" aria-busy={loading}>
           <h2 className="mb-3 text-base font-semibold text-text-primary">{t('preset.list')}</h2>

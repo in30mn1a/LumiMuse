@@ -414,6 +414,7 @@ export interface PromptPreset {
    * '#story_plot' 仍按通用 drop 规则处理。
    */
   strip_tags: string[];
+  import_warnings?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -434,6 +435,8 @@ export interface PresetEntry {
   /** 同 depth 内排序：值越小越靠近原历史中的最新消息 */
   injection_order: number;
   forbid_overrides: boolean;
+  /** 空数组不限制场景；保留未知场景值以便兼容报告和往返。 */
+  injection_trigger?: string[];
   /** 单层启用（Q2 决策）：直接决定该条目是否启用 */
   enabled: boolean;
   /** 在预设中的顺序（Q2：替代酒馆 prompt_order 数组） */
@@ -449,6 +452,7 @@ export interface PresetImportReport {
   enabled: number;
   markers_recognized: number;
   markers_disabled: number;
+  warnings?: string[];
   story_plot_strip: boolean;
 }
 

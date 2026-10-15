@@ -138,6 +138,7 @@ for (const type of ['all', 'character']) {
         .filter(entry => entry.preset_id === preset.id).map(entry => ({
           ...entry, is_marker: Boolean(entry.is_marker), is_system_prompt: Boolean(entry.is_system_prompt),
           forbid_overrides: Boolean(entry.forbid_overrides), enabled: Boolean(entry.enabled),
+          injection_trigger: JSON.parse(entry.injection_trigger),
         })).map(normalizedEntry));
       const after = await assemblePresetPrompt(imported, [], settings, '', undefined, resolved, presets.loadEnabledEntries(resolved.id));
       assert.deepEqual(after, before);

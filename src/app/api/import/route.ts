@@ -11,6 +11,7 @@ import { EXPORT_VERSION } from '@/lib/export-version';
 import { MEMORY_KINDS, MEMORY_STATUSES } from '@/types';
 import { parseMessageMetadata } from '@/lib/messages';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
+import { presetImportWarningsSchema, presetInjectionTriggerSchema } from '@/lib/schemas';
 
 interface ImportPayload {
   version?: number;
@@ -499,6 +500,28 @@ export async function POST(request: NextRequest) {
       || !MESSAGE_ROLES.includes(row.role as typeof MESSAGE_ROLES[number]))) {
     return NextResponse.json({ error: '导入数据包含非法预设或预设条目' }, { status: 400 });
   }
+  // 备份保存的是数据库 JSON 列；同时接受原生对象，拒绝损坏字段以免丢失导入说明或触发条件。
+  const presetJsonFields = [
+    { rows: presetsToImport, key: 'import_warnings', schema: presetImportWarningsSchema, fallback: [] },
+    { rows: presetEntriesToImport, key: 'injection_trigger', schema: presetInjectionTriggerSchema, fallback: [] },
+  ];
+  for (const field of presetJsonFields) {
+    for (const [index, row] of field.rows.entries()) {
+      let value: unknown = Object.hasOwn(row, field.key) ? row[field.key] : field.fallback;
+      if (typeof value === 'string') {
+        try {
+          value = JSON.parse(value) as unknown;
+        } catch {
+          return NextResponse.json({ error: `导入数据 ${field.key}[${index}] JSON 无效` }, { status: 400 });
+        }
+      }
+      const validated = field.schema.safeParse(value);
+      if (!validated.success) {
+        return NextResponse.json({ error: `导入数据 ${field.key}[${index}] 字段无效` }, { status: 400 });
+      }
+      row[field.key] = JSON.stringify(validated.data);
+    }
+  }
 
   const enumValidationError = findImportEnumValidationError(conversationsToImport, memoriesToImport);
   if (enumValidationError) {
@@ -744,9 +767,10 @@ function importPayload({
       const newId = crypto.randomUUID();
       presetIdMap.set(asString(preset.id), newId);
       db.prepare(`INSERT INTO prompt_presets
-        (id, name, description, is_built_in, story_plot_strip, strip_tags, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, asString(preset.name), asString(preset.description),
+        (id, name, description, is_built_in, story_plot_strip, strip_tags, import_warnings, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, asString(preset.name), asString(preset.description),
           asFlag(preset.is_built_in), asFlag(preset.story_plot_strip), jsonArrayString(preset.strip_tags),
+          asString(preset.import_warnings),
           asString(preset.created_at) || now, asString(preset.updated_at) || now);
     }
     // 条目排序以 sort_order、id 为准；重新分配 UUID 时保留原 ID 的相对顺序，
@@ -760,14 +784,14 @@ function importPayload({
     for (const [index, entry] of orderedEntries.entries()) {
       db.prepare(`INSERT INTO prompt_preset_entries
         (id, preset_id, name, role, content, is_marker, marker_key, is_system_prompt,
-         injection_position, injection_depth, injection_order, forbid_overrides, enabled,
+         injection_position, injection_depth, injection_order, forbid_overrides, injection_trigger, enabled,
          sort_order, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
           entryIds[index], presetIdMap.get(asString(entry.preset_id)), asString(entry.name), asString(entry.role),
           asString(entry.content), asFlag(entry.is_marker), asString(entry.marker_key) || null,
           asFlag(entry.is_system_prompt), asNumber(entry.injection_position) ?? 0,
           asNumber(entry.injection_depth) ?? 4, asNumber(entry.injection_order) ?? 100,
-          asFlag(entry.forbid_overrides), entry.enabled === undefined ? 1 : asFlag(entry.enabled),
+          asFlag(entry.forbid_overrides), asString(entry.injection_trigger), entry.enabled === undefined ? 1 : asFlag(entry.enabled),
           asNumber(entry.sort_order) ?? 0, asString(entry.created_at) || now, asString(entry.updated_at) || now);
     }
     // ── 导入角色 ────────────────────────────────────────────────

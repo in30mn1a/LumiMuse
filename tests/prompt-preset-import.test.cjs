@@ -460,7 +460,7 @@ test('LumiMuse native export can be imported with all preset and entry fields pr
     name: '原生往返',
     description: '完整描述',
     story_plot_strip: true,
-    strip_tags: ['content', 'scene', '#think'],
+    strip_tags: ['content', 'scene', '#think', '#think_nya~'],
   });
   presetLib.upsertEntry({
     preset_id: source.id,

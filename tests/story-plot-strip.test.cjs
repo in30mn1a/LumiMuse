@@ -299,6 +299,19 @@ test('stripByPresetRules 可待完整列表：block 保内部 + drop 整段丢',
   );
 });
 
+test('包含 ~ 的规则支持 block/drop、大小写匹配，且不误匹配不带 ~ 的标签', () => {
+  const text = '<think_nya~>draft</think_nya~><content>reply</content>';
+  assert.equal(stripByPresetRules(text, ['#think_nya~', 'content']), 'reply');
+  assert.equal(stripByPresetRules(text, ['think_nya~', 'content']), 'draftreply');
+  assert.equal(
+    stripByPresetRules('<THINK_NYA~>draft</THINK_NYA~>reply', ['#think_nya~']),
+    'reply',
+  );
+  const otherTag = '<think_nya>keep</think_nya>';
+  assert.equal(stripByPresetRules(otherTag, ['#think_nya~']), otherTag);
+  assert.equal(stripByPresetRules(text, ['#think_nya']), text);
+});
+
 test('stripByPresetRules 可待完整列表：块与块之间带换行的自然情况（块间单换行）', () => {
   const text = '<output-template>TODO</output-template>\n\n<scene>客厅</scene>\n\n<content>正文</content>\n\n<thinking>草稿</thinking>';
   // block 剥开后紧邻容器内部的换行被吸收（`<scene>X</scene>\n\n<content>Y</content>` → `X\n\nY`）
@@ -429,6 +442,24 @@ test('流式参数化：逐字符和任意 chunk 的 length-delta 严格单调�
     const final = stripByPresetRules(full, rules);
     assert.equal(collectLengthDeltas(full, rules, [1]), final);
     assert.equal(collectLengthDeltas(full, rules, [2, 7, 1, 9, 3]), final);
+  }
+});
+
+test('包含 ~ 的 drop 规则逐字符流式不泄漏草稿，未闭合或半截标签也不落库', () => {
+  const rules = ['content', '#think_nya~'];
+  const cases = [
+    ['<think_nya~>private draft</think_nya~><content>reply</content>', 'reply'],
+    ['<content>reply</content><think_nya~>private draft</think_nya~>', 'reply'],
+    ['<THINK_NYA~>draft</THINK_NYA~><content>reply</content>', 'reply'],
+    ['<think_nya~>unfinished draft', ''],
+    ['<think_nya~>draft</think_nya', ''],
+    ['<think_nya~', ''],
+    ['<think_nya~/><content>reply</content>', 'reply'],
+  ];
+  for (const [full, expected] of cases) {
+    assert.equal(stripByPresetRules(full, rules), expected);
+    assert.equal(collectLengthDeltas(full, rules, [1]), expected);
+    assert.equal(collectLengthDeltas(full, rules, [2, 7, 1, 9, 3]), expected);
   }
 });
 

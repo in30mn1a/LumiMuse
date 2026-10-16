@@ -162,7 +162,11 @@ test('preset PATCH rejects invalid and conflicting strip_tags', async () => {
   const preset = presetLib.createPreset({ name: 'Rules' });
   const params = { params: Promise.resolve({ id: preset.id }) };
 
-  for (const strip_tags of [['#'], ['content', '#CONTENT']]) {
+  for (const strip_tags of [
+    ['#'], [''], ['content', '#CONTENT'],
+    ['#think_nya~', '#THINK_NYA~'], ['think_nya~', '#THINK_NYA~'],
+    ['#think_nya~>'], ['<think_nya~>'], ['#think nya~'], ['#think_nya~/'], ['#~think'],
+  ]) {
     const request = new NextRequest(
       `http://localhost/api/prompt-presets/${preset.id}`,
       {
@@ -176,6 +180,35 @@ test('preset PATCH rejects invalid and conflicting strip_tags', async () => {
   }
 
   assert.deepEqual(presetLib.getPreset(preset.id).strip_tags, []);
+});
+
+test('preset PATCH saves tilde strip tags that GET and the reply stripper can use', async () => {
+  const preset = presetLib.createPreset({ name: 'Tilde rules' });
+  const params = { params: Promise.resolve({ id: preset.id }) };
+  const strip_tags = ['content', '#think_nya~'];
+  const response = await presetRoute.PATCH(new NextRequest(
+    `http://localhost/api/prompt-presets/${preset.id}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ story_plot_strip: true, strip_tags }),
+    },
+  ), params);
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).strip_tags, strip_tags);
+
+  const reloaded = await presetRoute.GET({}, params);
+  assert.equal(reloaded.status, 200);
+  const saved = await reloaded.json();
+  assert.equal(saved.story_plot_strip, true);
+  assert.deepEqual(saved.strip_tags, strip_tags);
+  assert.deepEqual(JSON.parse(db.prepare('SELECT strip_tags FROM prompt_presets WHERE id = ?').get(preset.id).strip_tags), strip_tags);
+
+  const { stripByPresetRules } = require(path.join(root, 'src', 'lib', 'story-plot-strip.ts'));
+  assert.equal(
+    stripByPresetRules('<think_nya~>private draft</think_nya~><content>reply</content>', saved.strip_tags),
+    'reply',
+  );
 });
 
 test('entry POST/PATCH save trigger lists and PATCH omission preserves the existing list', async () => {

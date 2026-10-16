@@ -20,7 +20,7 @@
 
 const DROP_PREFIX = '#';
 
-const RAW_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+const RAW_NAME_RE = /^[A-Za-z][A-Za-z0-9_~-]*$/;
 
 /** 解析单条 tag 规则，返回 [mode, name]；非法返回 null。 */
 function parseTagEntry(raw: unknown): { mode: 'block' | 'drop'; name: string } | null {

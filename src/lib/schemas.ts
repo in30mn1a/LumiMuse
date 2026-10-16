@@ -399,8 +399,8 @@ const presetMarkerKeySchema = z.enum([
 const stripTagRuleSchema = z.string()
   .max(64)
   .regex(
-    /^#?[A-Za-z][A-Za-z0-9_-]*$/,
-    'must be an optional # followed by a valid tag name',
+    /^#?[A-Za-z][A-Za-z0-9_~-]*$/,
+    'tag name must start with a letter and contain only letters, digits, _, -, or ~ (optional # prefix)',
   );
 
 /**

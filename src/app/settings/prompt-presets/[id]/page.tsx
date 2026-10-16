@@ -205,12 +205,28 @@ export default function PresetDetailPage({ params }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ strip_tags: nextTags }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const errorBody: unknown = await res.json().catch(() => null);
+        let detail = `HTTP ${res.status}`;
+        if (errorBody && typeof errorBody === 'object') {
+          const { error, fieldErrors } = errorBody as { error?: unknown; fieldErrors?: unknown };
+          const stripTagErrors = fieldErrors && typeof fieldErrors === 'object'
+            ? (fieldErrors as { strip_tags?: unknown }).strip_tags
+            : undefined;
+          if (Array.isArray(stripTagErrors) && stripTagErrors.length > 0
+            && stripTagErrors.every(message => typeof message === 'string')) {
+            detail = stripTagErrors.join('; ');
+          } else if (typeof error === 'string' && error) {
+            detail = error;
+          }
+        }
+        throw new Error(detail);
+      }
       setPreset(current => current?.id === preset.id ? { ...current, strip_tags: nextTags } : current);
       showToast(t('preset.stripTagsUpdateSuccess'), 'success');
       return true;
     } catch (err) {
-      showToast(`${t('preset.toggleError')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(`${t('preset.stripTagsUpdateError')}: ${err instanceof Error ? err.message : String(err)}`, 'error');
       return false;
     } finally {
       finishAction();

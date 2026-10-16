@@ -418,7 +418,7 @@ test('预设详情新增 strip tag：PATCH 失败保留输入，重试成功后�
   fireEvent.click(addButton);
 
   await waitFor(() => assert.deepEqual(toastCalls.at(-1), [
-    'preset.toggleError: HTTP 500',
+    'preset.stripTagsUpdateError: write failed',
     'error',
   ]));
   assert.equal(input.value, 'content', '失败后应保留输入，允许原样重试');
@@ -433,6 +433,113 @@ test('预设详情新增 strip tag：PATCH 失败保留输入，重试成功后�
     'preset.stripTagsUpdateSuccess',
     'success',
   ]);
+});
+
+test('剥离规则保存失败优先展示字段原因，并保留输入与原规则', async () => {
+  const originalTags = ['content'];
+  let patchBody = null;
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && !init.method) {
+      return jsonResponse({ ...PRESET, story_plot_strip: true, strip_tags: originalTags });
+    }
+    if (requestUrl.endsWith('/entries') && !init.method) return jsonResponse({ entries: [] });
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && init.method === 'PATCH') {
+      patchBody = JSON.parse(init.body);
+      return jsonResponse({
+        error: 'Invalid request body',
+        fieldErrors: { strip_tags: ['Invalid tag name', 'Conflicting strip rule'] },
+      }, 400);
+    }
+    throw new Error(`unexpected fetch: ${requestUrl}`);
+  };
+
+  const { Component, toastCalls } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  const input = await view.findByPlaceholderText('preset.stripTagPlaceholder');
+  const addButton = view.getByRole('button', { name: 'preset.stripTagAdd' });
+  fireEvent.change(input, { target: { value: '#bad tag' } });
+  fireEvent.click(addButton);
+
+  await waitFor(() => assert.deepEqual(toastCalls.at(-1), [
+    'preset.stripTagsUpdateError: Invalid tag name; Conflicting strip rule',
+    'error',
+  ]));
+  assert.deepEqual(patchBody, { strip_tags: ['content', '#bad tag'] });
+  assert.equal(input.value, '#bad tag');
+  assert.ok(view.getByText('content'), '失败后应保留已保存的规则');
+  assert.equal(view.queryByText('#bad tag'), null, '失败规则不应显示为已保存');
+  assert.equal(addButton.disabled, false);
+});
+
+test('剥离规则保存返回非 JSON 时回退 HTTP 状态并保留重试输入', async () => {
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && !init.method) {
+      return jsonResponse({ ...PRESET, story_plot_strip: true, strip_tags: [] });
+    }
+    if (requestUrl.endsWith('/entries') && !init.method) return jsonResponse({ entries: [] });
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && init.method === 'PATCH') {
+      return new Response('<html>Bad gateway</html>', { status: 502 });
+    }
+    throw new Error(`unexpected fetch: ${requestUrl}`);
+  };
+
+  const { Component, toastCalls } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  const input = await view.findByPlaceholderText('preset.stripTagPlaceholder');
+  fireEvent.change(input, { target: { value: '#think_nya~' } });
+  fireEvent.click(view.getByRole('button', { name: 'preset.stripTagAdd' }));
+
+  await waitFor(() => assert.deepEqual(toastCalls.at(-1), [
+    'preset.stripTagsUpdateError: HTTP 502',
+    'error',
+  ]));
+  assert.equal(input.value, '#think_nya~');
+  assert.equal(view.queryByText('#think_nya~'), null);
+});
+
+test('剥离规则输入保留波浪号，并通过真实更新 schema 后才显示保存成功', async () => {
+  const { promptPresetUpdateSchema, formatZodFieldErrors } = require('../src/lib/schemas.ts');
+  let patchBody = null;
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && !init.method) {
+      return jsonResponse({ ...PRESET, story_plot_strip: true, strip_tags: [] });
+    }
+    if (requestUrl.endsWith('/entries') && !init.method) return jsonResponse({ entries: [] });
+    if (requestUrl === `/api/prompt-presets/${PRESET.id}` && init.method === 'PATCH') {
+      patchBody = JSON.parse(init.body);
+      const parsed = promptPresetUpdateSchema.safeParse(patchBody);
+      return parsed.success
+        ? jsonResponse({ ...PRESET, ...parsed.data })
+        : jsonResponse({ error: 'Invalid request body', fieldErrors: formatZodFieldErrors(parsed.error) }, 400);
+    }
+    throw new Error(`unexpected fetch: ${requestUrl}`);
+  };
+
+  const { Component, toastCalls } = loadUiModule(
+    'src/app/settings/prompt-presets/[id]/page.tsx',
+    { unwrapParams: true },
+  );
+  const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
+  const input = await view.findByPlaceholderText('preset.stripTagPlaceholder');
+  fireEvent.change(input, { target: { value: '  #think_nya~  ' } });
+  fireEvent.click(view.getByRole('button', { name: 'preset.stripTagAdd' }));
+
+  await waitFor(() => assert.deepEqual(toastCalls.at(-1), [
+    'preset.stripTagsUpdateSuccess',
+    'success',
+  ]));
+  assert.deepEqual(patchBody, { strip_tags: ['#think_nya~'] });
+  assert.equal(input.value, '');
+  assert.ok(view.getByText('#think_nya~'));
 });
 
 test('预设详情新增和保存都用 pending guard 防止重复写请求', async () => {

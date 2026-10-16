@@ -44,23 +44,29 @@ function makeBuildOutput(t) {
   return { root, write, standalone: (...parts) => path.join(root, '.next', 'standalone', ...parts) };
 }
 
-test('prepareStandaloneAssets leaves runtime user media out of the standalone output', async (t) => {
-  const { root, write, standalone } = makeBuildOutput(t);
-  write('public/generated/char-1/private.png');
-  write('public/avatars/me.png');
-  write('public/attachments/upload.png');
-  // 只有 public 顶层的三个用户媒体目录不随包分发，静态资源里的同名子目录不受影响
-  write('public/icons/generated/logo.png');
+for (const namespaced of [false, true]) {
+  test(`prepareStandaloneAssets excludes runtime user media with a ${namespaced ? 'namespaced' : 'regular'} build root`, {
+    skip: namespaced && process.platform !== 'win32',
+  }, async (t) => {
+    const { root, write, standalone } = makeBuildOutput(t);
+    const mediaFiles = ['generated/char-1/private.png', 'avatars/me.png', 'attachments/upload.png'];
+    for (const file of mediaFiles) write(`public/${file}`, 'private media');
+    // 只有 public 顶层的三个用户媒体目录不随包分发，静态资源里的同名子目录不受影响
+    for (const dir of ['generated', 'avatars', 'attachments']) write(`public/icons/${dir}/logo.png`);
 
-  await prepareStandaloneAssets(root, { log: () => {} });
+    await prepareStandaloneAssets(namespaced ? path.toNamespacedPath(root) : root, { log: () => {} });
 
-  assert.ok(fs.existsSync(standalone('public', 'favicon.ico')));
-  assert.ok(fs.existsSync(standalone('public', 'icons', 'generated', 'logo.png')));
-  // 目录本身要在（就绪检查要求可写），里面的用户文件一个都不能带
-  for (const dir of ['generated', 'avatars', 'attachments']) {
-    assert.deepEqual(fs.readdirSync(standalone('public', dir)), [], `public/${dir} must ship empty`);
-  }
-});
+    assert.ok(fs.existsSync(standalone('public', 'favicon.ico')));
+    // 目录本身要在（就绪检查要求可写），里面的用户文件一个都不能带
+    for (const dir of ['generated', 'avatars', 'attachments']) {
+      assert.deepEqual(fs.readdirSync(standalone('public', dir)), [], `public/${dir} must ship empty`);
+      assert.ok(fs.existsSync(standalone('public', 'icons', dir, 'logo.png')));
+    }
+    for (const file of mediaFiles) {
+      assert.equal(fs.readFileSync(path.join(root, 'public', file), 'utf8'), 'private media');
+    }
+  });
+}
 
 test('prepareStandaloneAssets strips workspace files that file tracing copied into the standalone output', async (t) => {
   const { root, write, standalone } = makeBuildOutput(t);

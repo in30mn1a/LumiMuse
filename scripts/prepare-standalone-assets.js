@@ -36,6 +36,8 @@ async function prepareStandaloneAssets(root = process.cwd(), logger = console) {
   const standaloneDir = path.join(nextDir, 'standalone');
   const staticDir = path.join(nextDir, 'static');
   const publicDir = path.join(root, 'public');
+  // Windows Node 20 的 fs.cp 会向 filter 传入 namespaced 路径，比较前统一路径形式。
+  const normalizedPublicDir = path.toNamespacedPath(publicDir);
 
   await assertDirectory(standaloneDir, '.next/standalone');
   await assertDirectory(staticDir, '.next/static');
@@ -45,7 +47,7 @@ async function prepareStandaloneAssets(root = process.cwd(), logger = console) {
   await copyDirectory(
     publicDir,
     path.join(standaloneDir, 'public'),
-    (source) => !USER_MEDIA_DIRS.includes(path.relative(publicDir, source)),
+    (source) => !USER_MEDIA_DIRS.includes(path.relative(normalizedPublicDir, path.toNamespacedPath(source))),
   );
   await Promise.all(USER_MEDIA_DIRS.map((dir) => (
     fs.mkdir(path.join(standaloneDir, 'public', dir), { recursive: true })

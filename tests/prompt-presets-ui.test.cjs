@@ -6,6 +6,7 @@ const Module = require('node:module');
 const React = require('react');
 const ts = require('typescript');
 const { installDomTestEnvironment } = require('./helpers/dom-test-environment.cjs');
+const { cleanupReactDomTestEnvironment } = require('./helpers/react-dom-teardown.cjs');
 
 const restoreDom = installDomTestEnvironment();
 global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -159,14 +160,13 @@ test.afterEach(() => {
   window.confirm = () => true;
 });
 
-test.after(() => {
+test.after(async () => {
   Module._resolveFilename = originalResolveFilename;
   Module._load = originalLoad;
   delete require.extensions['.ts'];
   delete require.extensions['.tsx'];
   window.scrollTo = originalScrollTo;
-  delete global.IS_REACT_ACT_ENVIRONMENT;
-  restoreDom();
+  await cleanupReactDomTestEnvironment(restoreDom);
 });
 
 test('预设列表把非 2xx 加载失败显示在页面上，而不是伪装成空列表', async () => {

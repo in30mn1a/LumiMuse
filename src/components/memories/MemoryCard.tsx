@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Memory, MEMORY_CATEGORIES, MEMORY_KINDS, MEMORY_STATUSES } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { PencilIcon, PinIcon, TrashIcon } from '@/components/ui/icons';
@@ -131,11 +131,11 @@ export default function MemoryCard({ memory, onUpdate, onDelete, initialEditing 
     setExpanded(false);
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     memoryRef.current = memory;
   }, [memory]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (selectMode) {
       const currentMemory = memoryRef.current;
       syncEditDraft(currentMemory);

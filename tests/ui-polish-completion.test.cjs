@@ -6,6 +6,7 @@ const Module = require('node:module');
 const React = require('react');
 const ts = require('typescript');
 const { installDomTestEnvironment } = require('./helpers/dom-test-environment.cjs');
+const { cleanupReactDomTestEnvironment } = require('./helpers/react-dom-teardown.cjs');
 
 const restoreDom = installDomTestEnvironment();
 global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -50,13 +51,12 @@ const ContentState = require('../src/components/ui/ContentState.tsx').default;
 const MemoryList = require('../src/components/memories/MemoryList.tsx').default;
 
 test.afterEach(() => { cleanup(); delete global.fetch; replacements.length = 0; });
-test.after(() => {
+test.after(async () => {
   Module._resolveFilename = originalResolve;
   Module._load = originalLoad;
   if (previousTs) require.extensions['.ts'] = previousTs; else delete require.extensions['.ts'];
   if (previousTsx) require.extensions['.tsx'] = previousTsx; else delete require.extensions['.tsx'];
-  delete global.IS_REACT_ACT_ENVIRONMENT;
-  restoreDom();
+  await cleanupReactDomTestEnvironment(restoreDom);
 });
 
 test('login provides a visible password label, loading name and linked inline errors', async () => {

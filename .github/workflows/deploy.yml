@@ -1,6 +1,7 @@
 name: Deploy
 
 # CI 在 master push 上全部通过后，构建镜像推送到 GHCR，再通过受限 SSH 密钥触发服务器上的 deploy.sh。
+# 健康检查失败时 deploy.sh 自动回滚；手动回滚：在服务器执行 /opt/stack/deploy.sh rollback lumimuse [sha]。
 on:
   workflow_run:
     workflows: [CI]

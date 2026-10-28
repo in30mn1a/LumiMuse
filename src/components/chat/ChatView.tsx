@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Character, Message, ReasoningEffort, Settings } from '@/types';
+import { Character, Memory, Message, ReasoningEffort, Settings } from '@/types';
 import {
   planModelReasoningSwitch,
   rememberReasoningEffortForModel,
@@ -35,7 +35,7 @@ import { countSummaryContextTokens } from '@/lib/summary-context-tokens';
 import type { TextHighlightRange } from '@/lib/text-highlight';
 import { getVersionInfo } from '@/lib/chat-view-utils';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
-import { expectOkResponse, getErrorMessage, HttpResponseError, parseJsonResponse } from '@/lib/http';
+import { expectOkResponse, getErrorMessage, HttpResponseError, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
 import { fetchMessagesPage } from '@/lib/chat-stream-client';
 import {
   clearCachedMessages,
@@ -46,6 +46,7 @@ import {
   patchCharacterConversation,
   prependCharacterConversation,
   removeCharacterConversation,
+  updateCharacterMemories,
 } from '@/lib/character-context-cache';
 import { loadCharacterImageList } from '@/lib/character-image-list-cache';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
@@ -60,6 +61,7 @@ const PAGE_SIZE = 60; // 每次从后端加载的消息数
 const ResetExtractionModal = dynamic(() => import('./ResetExtractionModal'));
 const ImageManagerModal = dynamic(() => import('./ImageManagerModal'));
 const TokenBreakdownModal = dynamic(() => import('./TokenBreakdownModal'));
+const CharacterMemoriesModal = dynamic(() => import('./CharacterMemoriesModal'));
 const prefetchImageManagerModal = () => import('./ImageManagerModal');
 
 interface Props {
@@ -126,6 +128,8 @@ export default function ChatView({
   const [duplicateOpen, setDuplicateOpen] = useState(false);
   // 重置提取状态弹窗
   const [resetExtractionOpen, setResetExtractionOpen] = useState(false);
+  // 当前角色记忆弹窗
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
   // 对话切换抽屉：全断点渲染（<lg 底部抽屉，lg+ 居中弹窗），跨断点仍可见，无需强制关闭
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
   // 移动/平板竖屏工具栏二级操作：默认展开，可手动收起
@@ -783,6 +787,25 @@ export default function ChatView({
     }
   };
 
+  // 关闭记忆弹窗：弹窗内可能增删改过记忆，重拉一次以同步顶栏记忆数与 token 估算
+  const handleCloseMemories = () => {
+    setMemoriesOpen(false);
+    const charId = characterRef.current?.id;
+    if (!charId) return;
+    void (async () => {
+      try {
+        const list = await parseJsonArrayResponse<Memory>(
+          await fetch(`/api/memories?character_id=${encodeURIComponent(charId)}`),
+        );
+        if (characterRef.current?.id !== charId) return;
+        setMemories(list);
+        updateCharacterMemories(charId, list);
+      } catch {
+        // 静默：仅影响顶栏计数，下次提取完成或切换角色时会重新加载
+      }
+    })();
+  };
+
   // 手动触发记忆提取
   const handleManualExtract = async () => {
     if (!activeConvId || memoryExtractStatus === 'extracting') return;
@@ -951,6 +974,7 @@ export default function ChatView({
             tokenCount={tokenCount}
             isRealTokenCount={!!lastRealUsage}
             onOpenResetExtraction={() => setResetExtractionOpen(true)}
+            onOpenMemories={() => setMemoriesOpen(true)}
             onOpenTokenBreakdown={() => setTokenBreakdownOpen(true)}
           />
         )}
@@ -1138,6 +1162,15 @@ export default function ChatView({
               if (activeConvId) await refreshMessages();
             }}
             showToast={showToast}
+          />
+        )}
+
+        {/* 当前角色记忆弹窗 */}
+        {memoriesOpen && (
+          <CharacterMemoriesModal
+            characterId={activeCharacter.id}
+            characterName={activeCharacter.name}
+            onClose={handleCloseMemories}
           />
         )}
 

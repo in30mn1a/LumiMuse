@@ -12,6 +12,8 @@ import ContentState from '@/components/ui/ContentState';
 interface Props {
   characterId: string | null;
   refreshNonce?: number;
+  /** 内部确认弹窗开合时通知外层；外层自身是 Modal 时据此 suspend，避免 ESC / 焦点陷阱穿透 */
+  onNestedModalChange?: (open: boolean) => void;
 }
 
 type SortOrder = 'newest' | 'oldest';
@@ -23,7 +25,7 @@ interface MemoriesResponse {
   hasMore: boolean;
 }
 
-export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
+export default function MemoryList({ characterId, refreshNonce = 0, onNestedModalChange }: Props) {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [totalMemories, setTotalMemories] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -66,6 +68,10 @@ export default function MemoryList({ characterId, refreshNonce = 0 }: Props) {
     return () => { scopeRef.current += 1; };
   }, [characterId, categoryFilter, tagFilters, keyword, sortOrder, showArchived]);
   const { t } = useTranslation();
+
+  useEffect(() => {
+    onNestedModalChange?.(batchDeleteConfirmOpen);
+  }, [batchDeleteConfirmOpen, onNestedModalChange]);
 
   // 只保留当前页面中存在的选中 ID（切换角色/筛选后旧 ID 自动失效）
   const validSelectedIds = useMemo(() => {

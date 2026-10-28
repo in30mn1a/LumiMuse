@@ -2,6 +2,7 @@
 
 import { memo } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
+import { MemoryIcon } from '@/components/ui/icons';
 import type { Conversation } from '@/types';
 
 type ExtractStatus = 'idle' | 'extracting' | 'done' | 'failed';
@@ -14,12 +15,13 @@ interface Props {
   /** true 表示 tokenCount 是模型返回的真实值（不带 ≈）；false 表示是估算值（带 ≈） */
   isRealTokenCount?: boolean;
   onOpenResetExtraction: () => void;
+  onOpenMemories: () => void;
   onOpenTokenBreakdown: () => void;
 }
 
 /**
  * 顶栏状态条（由 ChatHeader 的 status 插槽摆放）：
- * 提取状态 chip 在左，token 估算在右；<lg 是顶栏下方的一条细条，lg+ 并入顶栏同一行。
+ * 提取状态 chip 与「记忆」入口在左，token 估算在右；<lg 是顶栏下方的一条细条，lg+ 并入顶栏同一行。
  * 「已忽略提取 / N 待提取 / 提取管理」三态由 conversation.ignore_memory + unextractedCount 决定。
  */
 function ChatToolbarImpl({
@@ -29,6 +31,7 @@ function ChatToolbarImpl({
   tokenCount,
   isRealTokenCount,
   onOpenResetExtraction,
+  onOpenMemories,
   onOpenTokenBreakdown,
 }: Props) {
   const { t } = useTranslation();
@@ -60,6 +63,17 @@ function ChatToolbarImpl({
           {t('chat.manageExtraction')}
         </button>
       )}
+      <button
+        type="button"
+        onClick={onOpenMemories}
+        className="chip cursor-pointer text-xs hover:bg-surface/80"
+        title={t('chat.viewMemoriesTitle')}
+        aria-label={t('chat.viewMemoriesTitle')}
+      >
+        <MemoryIcon className="h-3.5 w-3.5 shrink-0" />
+        {/* 提取状态 chip 出现期间，<sm 一行放不下（待提取数 + 状态 + 大 token 数），文字暂时让位成纯图标 */}
+        <span className={memoryExtractStatus !== 'idle' ? 'max-sm:hidden' : undefined}>{t('chat.viewMemories')}</span>
+      </button>
       {memoryExtractStatus !== 'idle' && (
         <span role="status" aria-live="polite" aria-atomic="true" className={`chip text-xs transition-opacity ${
           memoryExtractStatus === 'extracting'

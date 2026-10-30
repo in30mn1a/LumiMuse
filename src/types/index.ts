@@ -415,6 +415,11 @@ export interface PromptPreset {
    */
   strip_tags: string[];
   import_warnings?: PresetImportWarning[];
+  /**
+   * 预设携带的酒馆插件配置（`extensions.*`，原样落库的 JSON）。
+   * SPreset 一系预设靠它驱动请求改写 / 工具绑定 / 输出处理；空对象表示该预设无插件。
+   */
+  extensions: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

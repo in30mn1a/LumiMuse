@@ -55,6 +55,13 @@ function parseStoredJson(value: unknown): unknown {
   }
 }
 
+/** 插件配置读回：非法/缺省一律当空对象，预设其余部分照常可用。 */
+function asExtensionConfig(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 function rowToPreset(row: Record<string, unknown>): PromptPreset {
   const stripTagsRaw = row.strip_tags;
   let stripTags: string[] = [];
@@ -75,6 +82,7 @@ function rowToPreset(row: Record<string, unknown>): PromptPreset {
     story_plot_strip: (row.story_plot_strip as number | null | undefined) === 1,
     strip_tags: stripTags,
     import_warnings: presetImportWarningsSchema.safeParse(parseStoredJson(row.import_warnings)).data ?? [],
+    extensions: asExtensionConfig(parseStoredJson(row.extensions)),
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };
@@ -133,19 +141,20 @@ export function getPreset(id: string): PromptPreset | null {
 
 export function createPreset(input: {
   name: string; description?: string; id?: string; story_plot_strip?: boolean; strip_tags?: string[];
-  import_warnings?: PresetImportWarning[];
+  import_warnings?: PresetImportWarning[]; extensions?: Record<string, unknown>;
 }): PromptPreset {
   const db = getDb();
   const id = input.id ?? genId();
   const now = nowIso();
   const stripTags = parseStripTags(input.strip_tags ?? []);
   const warnings = presetImportWarningsSchema.parse(input.import_warnings ?? []);
+  const extensions = asExtensionConfig(input.extensions);
   db.prepare(`
     INSERT INTO prompt_presets (
       id, name, description, is_built_in, story_plot_strip,
-      strip_tags, import_warnings, created_at, updated_at
+      strip_tags, import_warnings, extensions, created_at, updated_at
     )
-    VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.name.trim() || '未命名预设',
@@ -153,6 +162,7 @@ export function createPreset(input: {
     (input.story_plot_strip ?? false) ? 1 : 0,
     JSON.stringify(stripTags),
     JSON.stringify(warnings),
+    JSON.stringify(extensions),
     now,
     now,
   );
@@ -164,6 +174,7 @@ export function createPreset(input: {
     story_plot_strip: input.story_plot_strip ?? false,
     strip_tags: stripTags,
     import_warnings: warnings,
+    extensions,
     created_at: now,
     updated_at: now,
   };

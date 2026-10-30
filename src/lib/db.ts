@@ -874,6 +874,7 @@ function migrate(db: Database.Database): void {
       story_plot_strip INTEGER NOT NULL DEFAULT 0,
       strip_tags TEXT NOT NULL DEFAULT '[]',
       import_warnings TEXT NOT NULL DEFAULT '[]',
+      extensions TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -968,6 +969,10 @@ function migrate(db: Database.Database): void {
   }
   if (presetCols.length > 0 && !presetCols.some(c => c.name === 'import_warnings')) {
     db.exec(`ALTER TABLE prompt_presets ADD COLUMN import_warnings TEXT NOT NULL DEFAULT '[]'`);
+  }
+  // 预设插件配置（酒馆 `extensions.*`，SPreset 运行时靠它驱动）。旧库补列时默认空对象。
+  if (presetCols.length > 0 && !presetCols.some(c => c.name === 'extensions')) {
+    db.exec(`ALTER TABLE prompt_presets ADD COLUMN extensions TEXT NOT NULL DEFAULT '{}'`);
   }
   if (presetCols.length > 0 && !presetCols.some(c => c.name === 'created_at')) {
     db.exec(`ALTER TABLE prompt_presets ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`);

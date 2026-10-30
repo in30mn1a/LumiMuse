@@ -33,7 +33,7 @@ function presetSource(overrides = {}) {
   };
 }
 
-async function fixture(run, overrides = {}) {
+async function fixture(run, overrides = {}, respond) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   dbModule.__migrateForTests(db);
@@ -79,6 +79,7 @@ async function fixture(run, overrides = {}) {
     assert.equal(init.headers.Authorization, `Bearer ${settings.api_key}`);
     const body = JSON.parse(init.body);
     requests.push(body);
+    if (respond) return respond(body);
     if (body.stream) {
       return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Generated response' } }] })}\n\ndata: [DONE]\n\n`);
     }
@@ -89,7 +90,7 @@ async function fixture(run, overrides = {}) {
     if (request === '@/lib/ssrf-guard' || request === './ssrf-guard') return { safeFetch };
     return originalLoad.call(this, request, parent, isMain);
   };
-  for (const file of ['api-client', 'chat-engine', 'prompt-preset-assembler']) {
+  for (const file of ['api-client', 'chat-engine', 'prompt-preset-assembler', 'spreset/runtime']) {
     delete require.cache[require.resolve(`../src/lib/${file}.ts`)];
   }
   try {
@@ -101,14 +102,15 @@ async function fixture(run, overrides = {}) {
       db.prepare("UPDATE characters SET active_preset_id=? WHERE id='char'").run(report.preset_id);
       return report;
     };
+    const chunks = [];
     const chat = async (content = 'CURRENT_MESSAGE', options) => {
       await runChat('conv', content, settings, {
-        onChunk() {},
+        onChunk(text) { chunks.push(text); },
         onDone() {},
         onError(error) { throw error; },
       }, options);
     };
-    await run({ db, settings, unchangedSettings, requests, retrievalSettings, bind, chat, presets });
+    await run({ db, settings, unchangedSettings, requests, retrievalSettings, bind, chat, chunks, runChat, presets });
   } finally {
     Module._load = originalLoad;
     dbModule.__resetDbForTests();
@@ -210,4 +212,168 @@ test('legacy sampling columns are neither applied nor exposed by an active prese
     assert.equal(h.requests[0].stream, h.settings.streaming);
     assert.equal(h.db.prepare('SELECT sampling_params FROM prompt_presets WHERE id=?').get(report.preset_id).sampling_params, legacy);
   });
+});
+
+for (const streaming of [false, true]) {
+  test(`plugin request and output scripts reach the real ${streaming ? 'streaming' : 'non-streaming'} save path`, async () => {
+    await fixture(async h => {
+      h.bind(presetSource({
+        extensions: {
+          SPreset: {
+            FinalRequestProcessing: {
+              enabled: true,
+              script: '({request}) => ({...request, messages:[{role:"user",content:"PLUGIN_REQUEST"}]})',
+            },
+            OutputPreprocessing: {
+              enabled: true,
+              script: '({buffer}) => ({output:buffer.replace("Generated response","PLUGIN_RESPONSE"),hold:"",state:{}})',
+            },
+          },
+        },
+      }));
+      await h.chat();
+      assert.deepEqual(h.requests[0].messages, [{ role: 'user', content: 'PLUGIN_REQUEST' }]);
+      assert.equal(h.requests[0].stream, streaming);
+      assert.equal(h.db.prepare("SELECT content FROM messages WHERE role='assistant'").get().content, 'PLUGIN_RESPONSE');
+      assert.deepEqual(h.settings, h.unchangedSettings);
+    }, { streaming });
+  });
+}
+
+test('a rewritten request may omit stream and still save its JSON response', async () => {
+  await fixture(async h => {
+    h.bind(presetSource({
+      extensions: { SPreset: { FinalRequestProcessing: {
+        enabled: true,
+        script: '({request}) => { delete request.stream; return request; }',
+      } } },
+    }));
+    await h.chat();
+    assert.equal(Object.hasOwn(h.requests[0], 'stream'), false);
+    assert.equal(h.db.prepare("SELECT content FROM messages WHERE role='assistant'").get().content, 'Generated response');
+  }, { streaming: true });
+});
+
+const assistantRows = h => h.db.prepare("SELECT content FROM messages WHERE role='assistant'").all();
+const RUNAWAY_SCRIPT = '() => { const f = () => f() + 1; return f(); }';
+
+for (const streaming of [false, true]) {
+  test(`${streaming ? 'streaming' : 'non-streaming'} runtime chunks go through strip_tags like the plain path`, async () => {
+    await fixture(async h => {
+      const report = h.bind(presetSource({
+        extensions: { SPreset: { OutputPreprocessing: {
+          enabled: true,
+          script: '({ buffer }) => ({ output: buffer, hold: "", state: {} })',
+        } } },
+      }));
+      h.db.prepare('UPDATE prompt_presets SET story_plot_strip=1, strip_tags=? WHERE id=?')
+        .run(JSON.stringify(['story_plot']), report.preset_id);
+      await h.chat();
+      const visible = h.chunks.join('');
+      assert.equal(visible.includes('story_plot'), false);
+      assert.ok(visible.includes('INNER'));
+      assert.equal(assistantRows(h).length, 1);
+    }, { streaming }, body => {
+      const text = '<story_plot>INNER</story_plot>';
+      if (body.stream) return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`);
+      return Response.json({ choices: [{ message: { content: text } }] });
+    });
+  });
+}
+
+test('a failing request script falls back to a clean assembly that keeps the real user message', async () => {
+  await fixture(async h => {
+    h.bind(presetSource({
+      prompts: [
+        { identifier: 'instruction', name: 'Instruction', role: 'system', content: '<<<|catgodml|setLastMessage:{{lastUserMessage}}>>>PRESET_INSTRUCTION' },
+        { identifier: 'chatHistory', name: 'History', role: 'system', marker: true },
+      ],
+      prompt_order: [
+        { character_id: 100001, order: ['instruction', 'chatHistory'].map(identifier => ({ identifier, enabled: true })) },
+      ],
+      extensions: { SPreset: { FinalRequestProcessing: { enabled: true, script: '() => { throw new Error("boom"); }' } } },
+    }));
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      await h.chat();
+    } finally {
+      console.warn = warn;
+    }
+    const { messages } = h.requests[0];
+    assert.ok(messages.some(message => message.role === 'user' && String(message.content).includes('CURRENT_MESSAGE')));
+    assert.equal(JSON.stringify(messages).includes('catgodml'), false);
+    assert.ok(JSON.stringify(messages).includes('PRESET_INSTRUCTION'));
+    assert.equal(assistantRows(h).length, 1);
+  });
+});
+
+for (const streaming of [false, true]) {
+  test(`runaway plugin scripts keep the ${streaming ? 'streaming' : 'non-streaming'} reply intact`, async () => {
+    await fixture(async h => {
+      h.bind(presetSource({
+        extensions: { SPreset: {
+          FinalRequestProcessing: { enabled: true, script: RUNAWAY_SCRIPT },
+          OutputPreprocessing: { enabled: true, script: RUNAWAY_SCRIPT },
+        } },
+      }));
+      const warn = console.warn;
+      console.warn = () => {};
+      try {
+        await h.chat();
+      } finally {
+        console.warn = warn;
+      }
+      assert.ok(JSON.stringify(h.requests[0].messages).includes('CURRENT_MESSAGE'));
+      assert.deepEqual(assistantRows(h).map(row => row.content), ['Generated response']);
+    }, { streaming });
+  });
+}
+
+test('a failed downstream onDone does not store the reply twice', async () => {
+  await fixture(async h => {
+    h.bind(presetSource({
+      extensions: { SPreset: { OutputPreprocessing: {
+        enabled: true,
+        script: '({ buffer }) => ({ output: buffer, hold: "", state: {} })',
+      } } },
+    }));
+    const errors = [];
+    await assert.rejects(h.runChat('conv', 'CURRENT_MESSAGE', h.settings, {
+      onChunk() {},
+      onDone() { throw new Error('client gone'); },
+      onError(error) { errors.push(error); },
+    }), /client gone/);
+    assert.deepEqual(errors, []);
+    assert.equal(assistantRows(h).length, 1);
+  });
+});
+
+test('stopping a real SSE tool stream never stores incomplete arguments as assistant text', async () => {
+  const abort = new AbortController();
+  await fixture(async h => {
+    h.bind(presetSource({
+      extensions: { SPreset: {
+        ToolBindings: { instruction: {
+          enabled: true, valid: true, resolvedName: 'reply', code: 'return {name:"reply"}',
+        } },
+        OutputPreprocessing: {
+          enabled: true, consumeToolCalls: true,
+          toolCallFormatter: { enabled: true, script: '({calls}) => JSON.parse(calls[0].arguments).content' },
+        },
+      } },
+    }));
+    await h.chat('CURRENT_MESSAGE', { signal: abort.signal });
+    assert.equal(abort.signal.aborted, true);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role='assistant'").get().n, 0);
+  }, { streaming: true }, () => new Response(new ReadableStream({
+    start(controller) {
+      const chunk = { choices: [{ delta: { tool_calls: [{
+        index: 0, id: 'call-1', function: { name: 'reply', arguments: '{"content":"partial' },
+      }] } }] };
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      setImmediate(() => abort.abort());
+    },
+  })));
 });

@@ -788,6 +788,8 @@ export async function runChat(
   //   - 当前模型命中角色的模型绑定，或角色默认 active_preset_id 为具体预设 id → 走预设组装管线
   //   - 绑定/默认为 null / '' / '__none__' → 走原 assemblePrompt 骨架
   let chatMessages: ChatMessage[];
+  // 预设插件运行时（SPreset 一系）：有配置时，请求改写 / 工具调用 / 输出处理都交给它。
+  let presetRuntime: Awaited<ReturnType<typeof import('@/lib/spreset/runtime').createPresetRuntime>> = null;
   const { resolveActivePreset, loadEnabledEntries } = await import('@/lib/prompt-presets');
   const activePreset = resolveActivePreset(character, settings.model);
   if (activePreset) {
@@ -796,16 +798,25 @@ export async function runChat(
     const presetMemoryText = chatSettings.memory_inject
       ? (typeof memoryContents === 'string' ? memoryContents.trim() : renderLegacyMemoryContext(memoryContents, chatSettings))
       : '';
-    chatMessages = await assemblePresetPrompt(
+    const preset = activePreset;
+    const assemble = (ignoreRequestProcessor: boolean) => assemblePresetPrompt(
       character,
       contextMessages,
       chatSettings,
       presetMemoryText,
       effectiveTimeContext,
-      activePreset,
+      preset,
       presetEntries,
-      { generationType: options?.regenerateAssistantId ? 'regenerate' : 'normal' },
+      { generationType: options?.regenerateAssistantId ? 'regenerate' : 'normal', ignoreRequestProcessor },
     );
+    chatMessages = await assemble(false);
+    const { createPresetRuntime } = await import('@/lib/spreset/runtime');
+    const { hasSpresetRuntime, parseSpresetConfig } = await import('@/lib/spreset/config');
+    if (hasSpresetRuntime(parseSpresetConfig(activePreset.extensions))) {
+      const { initializeSandbox } = await import('@/lib/spreset/sandbox');
+      await initializeSandbox();
+    }
+    presetRuntime = createPresetRuntime(activePreset, presetEntries, { fallbackMessages: () => assemble(true) });
   } else {
     chatMessages = await assemblePrompt(character, contextMessages, chatSettings, memoryContents, effectiveTimeContext, memoryIsStable);
   }
@@ -957,7 +968,8 @@ export async function runChat(
     }
   };
 
-  if (settings.streaming) {
+  // 预设运行时把正文按 chunk 交回来，非流式设置下也要走同一套剥离。
+  if (settings.streaming || presetRuntime) {
     // story_plot_strip 流式剥离：每收到 chunk 累积后即时剥开预设 strip_tags 声明的容器 tag，
     // 同步发给前端的 chunk 是干净正文，避免 UI 出现包装标签闪烁。
     // 最终 saveAssistantMessage 仍会跑完整 stripByPresetRules（处理闭合 tag 末尾残留）。
@@ -965,8 +977,8 @@ export async function runChat(
     const stripTags = activePreset?.strip_tags ?? [];
     let streamBuffer = '';
     let streamBufferFlushedLen = 0;
-    await chatCompletionStream(settings, chatMessages, {
-      onChunk: (text) => {
+    const streamCallbacks = {
+      onChunk: (text: string) => {
         if (!isStoryStrip) {
           callbacks.onChunk(text);
           return;
@@ -979,7 +991,7 @@ export async function runChat(
           streamBufferFlushedLen = stripped.length;
         }
       },
-      onDone: async (rawText) => {
+      onDone: async (rawText: string) => {
         if (isStoryStrip) {
           // 流式扫描器会暂存尾部空白或可能跨 chunk 的协议前缀；EOF/abort 时用最终
           // 剥离结果补发仍未发送的安全后缀，保证前端累积文本与最终落库内容一致。
@@ -996,11 +1008,23 @@ export async function runChat(
         }
         await saveAssistantMessage(rawText);
       },
-      onPartial: (rawText) => saveAssistantMessage(rawText, true),
+      onPartial: (rawText: string) => saveAssistantMessage(rawText, true),
       onError: callbacks.onError,
-      onUsage: (usage) => { capturedUsage = usage; },
+      onUsage: (usage: LlmUsage) => { capturedUsage = usage; },
       signal: options?.signal,
-    });
+    };
+    if (presetRuntime) {
+      // 预设运行时接管请求形态与工具循环；正文仍回到同一套回调，剥离/落库行为不变。
+      const { runPresetChat } = await import('@/lib/spreset/runtime');
+      await runPresetChat({
+        runtime: presetRuntime,
+        messages: chatMessages,
+        settings,
+        callbacks: streamCallbacks,
+      });
+    } else {
+      await chatCompletionStream(settings, chatMessages, streamCallbacks);
+    }
   } else {
     try {
       const fullText = await chatCompletion(

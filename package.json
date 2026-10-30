@@ -25,6 +25,7 @@
     "js-tiktoken": "^1.0.21",
     "jszip": "^3.10.2",
     "next": "^16.3.8",
+    "quickjs-emscripten": "0.32.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "9.1.0",

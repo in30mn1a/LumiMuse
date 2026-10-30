@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
+import { remapPresetExtensions } from '@/lib/preset-extensions';
 import { inferMemoryDefaults, normalizeMemoryCategory } from '@/lib/memory-category';
 import { serializePromptMap, serializeReasoningMap } from '@/lib/character-task-models';
 import { normalizeCharacterCard, type CharacterDraft } from '@/lib/character-card-import';
@@ -522,6 +523,20 @@ export async function POST(request: NextRequest) {
       row[field.key] = JSON.stringify(validated.data);
     }
   }
+  for (const [index, preset] of presetsToImport.entries()) {
+    let extensions: unknown = Object.hasOwn(preset, 'extensions') ? preset.extensions : {};
+    if (typeof extensions === 'string') {
+      try {
+        extensions = JSON.parse(extensions) as unknown;
+      } catch {
+        return NextResponse.json({ error: `导入数据 extensions[${index}] JSON 无效` }, { status: 400 });
+      }
+    }
+    if (!asRecord(extensions)) {
+      return NextResponse.json({ error: `导入数据 extensions[${index}] 字段无效` }, { status: 400 });
+    }
+    preset.extensions = extensions;
+  }
 
   const enumValidationError = findImportEnumValidationError(conversationsToImport, memoriesToImport);
   if (enumValidationError) {
@@ -762,25 +777,27 @@ function importPayload({
   `);
 
   const importAll = db.transaction(() => {
-    // 先恢复预设再写角色选择；创建独立 ID，避免覆盖目标实例同 ID 的预设。
-    for (const preset of presetsToImport) {
-      const newId = crypto.randomUUID();
-      presetIdMap.set(asString(preset.id), newId);
-      db.prepare(`INSERT INTO prompt_presets
-        (id, name, description, is_built_in, story_plot_strip, strip_tags, import_warnings, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, asString(preset.name), asString(preset.description),
-          asFlag(preset.is_built_in), asFlag(preset.story_plot_strip), jsonArrayString(preset.strip_tags),
-          asString(preset.import_warnings),
-          asString(preset.created_at) || now, asString(preset.updated_at) || now);
-    }
-    // 条目排序以 sort_order、id 为准；重新分配 UUID 时保留原 ID 的相对顺序，
-    // 避免相同 sort_order 的条目在恢复后随机换序，改变角色指令。
+    // 新 ID 保留旧条目的相对顺序，同时用于恢复插件绑定。
     const orderedEntries = [...presetEntriesToImport].sort((a, b) => {
       const left = asString(a.id);
       const right = asString(b.id);
       return left < right ? -1 : left > right ? 1 : 0;
     });
     const entryIds = orderedEntries.map(() => crypto.randomUUID()).sort();
+    const entryIdMap = new Map(orderedEntries.map((entry, index) => [asString(entry.id), entryIds[index]]));
+    // 先恢复预设再写角色选择；创建独立 ID，避免覆盖目标实例同 ID 的预设。
+    for (const preset of presetsToImport) {
+      const newId = crypto.randomUUID();
+      presetIdMap.set(asString(preset.id), newId);
+      db.prepare(`INSERT INTO prompt_presets
+        (id, name, description, is_built_in, story_plot_strip, strip_tags, import_warnings, extensions, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, asString(preset.name), asString(preset.description),
+          asFlag(preset.is_built_in), asFlag(preset.story_plot_strip), jsonArrayString(preset.strip_tags),
+          asString(preset.import_warnings), JSON.stringify(remapPresetExtensions(preset.extensions, entryIdMap)),
+          asString(preset.created_at) || now, asString(preset.updated_at) || now);
+    }
+    // 条目排序以 sort_order、id 为准；重新分配 UUID 时保留原 ID 的相对顺序，
+    // 避免相同 sort_order 的条目在恢复后随机换序，改变角色指令。
     for (const [index, entry] of orderedEntries.entries()) {
       db.prepare(`INSERT INTO prompt_preset_entries
         (id, preset_id, name, role, content, is_marker, marker_key, is_system_prompt,

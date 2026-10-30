@@ -75,6 +75,111 @@ function requireFreshWithMocks(modulePath, mocks) {
   }
 }
 
+for (const stream of [undefined, false]) {
+  test(`completeRequest parses JSON when stream is ${String(stream)}`, async () => {
+    const { completeRequest } = requireFreshWithMocks('../src/lib/api-client.ts', {
+      './ssrf-guard': {
+        safeFetch: async () => Response.json({
+          choices: [{
+            finish_reason: 'tool_calls',
+            message: {
+              content: 'visible',
+              tool_calls: [{ id: 'call-1', function: { name: 'reply', arguments: '{"content":"ok"}' } }],
+            },
+          }],
+          usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+        }),
+      },
+    });
+    const text = [];
+    const usage = [];
+    const body = { model: 'fixture', messages: [] };
+    if (stream !== undefined) body.stream = stream;
+    const result = await completeRequest(
+      { api_base: 'https://fixture.invalid/v1', api_key: '' },
+      body,
+      { onText: value => text.push(value), onUsage: value => usage.push(value) },
+    );
+    assert.equal(result.text, 'visible');
+    assert.deepEqual(result.toolCalls, [{ id: 'call-1', name: 'reply', arguments: '{"content":"ok"}' }]);
+    assert.equal(result.finishReason, 'tool_calls');
+    assert.deepEqual(text, ['visible']);
+    assert.equal(usage[0].total_tokens, 7);
+  });
+}
+
+test('completeRequest accumulates fragmented tool arguments when stream is true', async () => {
+  const chunks = [
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-1', function: { name: 'reply', arguments: '{"content":' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"ok"}' } }] }, finish_reason: 'tool_calls' }] },
+  ];
+  const { completeRequest } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': { safeFetch: async () => new Response(chunks.map(value => `data: ${JSON.stringify(value)}\n\n`).join('')) },
+  });
+  const result = await completeRequest(
+    { api_base: 'https://fixture.invalid/v1', api_key: '' },
+    { stream: true },
+  );
+  assert.deepEqual(result.toolCalls, [{ id: 'call-1', name: 'reply', arguments: '{"content":"ok"}' }]);
+  assert.equal(result.finishReason, 'tool_calls');
+});
+
+test('completeRequest keeps replay fields from a JSON response', async () => {
+  const { completeRequest } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': {
+      safeFetch: async () => Response.json({
+        choices: [{
+          message: {
+            content: '',
+            reasoning_content: 'THINK',
+            reasoning_details: [{ type: 'reasoning.encrypted', data: 'D' }],
+            unknown_field: 'dropped',
+            tool_calls: [{
+              id: 'call-1',
+              function: { name: 'reply', arguments: '{}' },
+              extra_content: { google: { thought_signature: 'SIG' } },
+            }],
+          },
+        }],
+      }),
+    },
+  });
+  const result = await completeRequest({ api_base: 'https://fixture.invalid/v1', api_key: '' }, {});
+  assert.deepEqual(result.assistantFields, {
+    reasoning_content: 'THINK',
+    reasoning_details: [{ type: 'reasoning.encrypted', data: 'D' }],
+  });
+  assert.deepEqual(result.toolCalls[0].extra_content, { google: { thought_signature: 'SIG' } });
+});
+
+test('completeRequest accumulates replay fields across SSE chunks', async () => {
+  const chunks = [
+    { choices: [{ delta: { reasoning_content: 'TH', reasoning_details: [{ text: 'a' }] } }] },
+    { choices: [{ delta: { reasoning_content: 'INK', reasoning_details: [{ text: 'b' }] } }] },
+    { choices: [{ delta: { tool_calls: [{
+      index: 0, id: 'call-1', function: { name: 'reply', arguments: '{}' },
+      extra_content: { google: { thought_signature: 'SIG' } },
+    }] } }] },
+  ];
+  const { completeRequest } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': { safeFetch: async () => new Response(chunks.map(value => `data: ${JSON.stringify(value)}\n\n`).join('')) },
+  });
+  const result = await completeRequest({ api_base: 'https://fixture.invalid/v1', api_key: '' }, { stream: true });
+  assert.deepEqual(result.assistantFields, {
+    reasoning_content: 'THINK',
+    reasoning_details: [{ text: 'a' }, { text: 'b' }],
+  });
+  assert.deepEqual(result.toolCalls[0].extra_content, { google: { thought_signature: 'SIG' } });
+});
+
+test('completeRequest omits replay fields the upstream did not send', async () => {
+  const { completeRequest } = requireFreshWithMocks('../src/lib/api-client.ts', {
+    './ssrf-guard': { safeFetch: async () => Response.json({ choices: [{ message: { content: 'plain' } }] }) },
+  });
+  const result = await completeRequest({ api_base: 'https://fixture.invalid/v1', api_key: '' }, {});
+  assert.equal(Object.hasOwn(result, 'assistantFields'), false);
+});
+
 test('chatCompletion merges extra request body into non-streaming completion requests', async () => {
   let capturedBody = null;
 

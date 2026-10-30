@@ -5,6 +5,7 @@
  */
 
 import { listEntries, getPreset } from '@/lib/prompt-presets';
+import { remapPresetExtensions } from '@/lib/preset-extensions';
 import type { PresetImportWarning } from '@/types';
 
 /** LumiMuse native：完整保真（含 enabled/sort_order/story_plot_strip/strip_tags/MarkerKey/is_marker） */
@@ -17,8 +18,12 @@ export interface LumiMusePresetExport {
     story_plot_strip: boolean;
     strip_tags: string[];
     import_warnings: PresetImportWarning[];
+    /** 插件配置：有内容时才输出，保持旧导出文件的形状不变。 */
+    extensions?: Record<string, unknown>;
   };
   entries: Array<{
+    /** 源条目标识仅用于导入时重映射插件关联，不复用为新条目 ID。 */
+    id?: string;
     name: string;
     role: 'system' | 'user' | 'assistant';
     content: string;
@@ -48,8 +53,12 @@ export function buildLumiMusePresetExport(presetId: string): LumiMusePresetExpor
       story_plot_strip: preset.story_plot_strip,
       strip_tags: preset.strip_tags,
       import_warnings: preset.import_warnings ?? [],
+      ...(preset.extensions && Object.keys(preset.extensions).length > 0
+        ? { extensions: preset.extensions }
+        : {}),
     },
     entries: entries.map(e => ({
+      id: e.id,
       name: e.name,
       role: e.role,
       content: e.content,
@@ -100,6 +109,8 @@ export interface StPresetExport {
   }>;
   lumimuse_story_plot_strip?: boolean;
   lumimuse_import_warnings?: PresetImportWarning[];
+  /** 插件配置：导出回酒馆时一并带回去（酒馆原样识别 `extensions`）。 */
+  extensions?: Record<string, unknown>;
 }
 
 export function buildSillyTavernPresetExport(presetId: string): StPresetExport | null {
@@ -109,10 +120,12 @@ export function buildSillyTavernPresetExport(presetId: string): StPresetExport |
 
   const prompts: StPresetExportPrompt[] = [];
   const order: Array<{ identifier: string; enabled: boolean }> = [];
+  const identifierMap = new Map<string, string>();
 
   for (const e of entries) {
     // 用 entry.id 作为 identifier；marker 用 marker_key 作为标识符以匹配酒馆内建 marker 集
     const identifier = e.is_marker && e.marker_key ? e.marker_key : e.id;
+    identifierMap.set(e.id, identifier);
 
     // 酒馆 export 不包含 marker 的内容（内容来自动态替换）
     const content = e.content;
@@ -134,10 +147,14 @@ export function buildSillyTavernPresetExport(presetId: string): StPresetExport |
     order.push({ identifier, enabled: e.enabled });
   }
 
+  const extensions = remapPresetExtensions(preset.extensions, identifierMap);
   return {
     prompts,
     prompt_order: [{ character_id: 100001, order }],
     lumimuse_story_plot_strip: preset.story_plot_strip,
     lumimuse_import_warnings: preset.import_warnings ?? [],
+    ...(Object.keys(extensions).length > 0
+      ? { extensions }
+      : {}),
   };
 }

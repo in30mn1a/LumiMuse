@@ -18,18 +18,31 @@
  *   - injection_trigger 保留，仅 normal/regenerate 场景可实际执行
  *   - sort_order = order 数组下标 * 10
  *
+ * SPreset（类脑）插件协议预设（正文含 `<<<|catgodml|...>>>`）额外走兼容层：
+ *   - 原文照常入库（作者正文字不改），控制指令在渲染期剥离
+ *   - strip_tags 由 registerPart 分区标签 + 工具参数里当思考草稿的标签推出
+ *   - 追加一条「（兼容）工具协议转换」条目，替模型解释「不用调工具、直接输出标签正文」
+ *
  * 事务包裹：preset + entries 一次性入库；任何一步失败回滚。
  */
 
 import * as crypto from 'crypto';
 import { z } from 'zod';
 import { getDb } from '@/lib/db';
+import { remapPresetExtensions } from '@/lib/preset-extensions';
 import {
   presetImportWarningsSchema,
   presetInjectionTriggerSchema,
   stripTagRulesSchema,
 } from '@/lib/schemas';
 import { findUnsupportedStMacros } from '@/lib/st-macros';
+import { hasSpresetRuntime, parseSpresetConfig } from '@/lib/spreset/config';
+import {
+  SPRESET_COMPAT_ENTRY_NAME,
+  buildSpresetCompatContent,
+  hasSpresetProtocol,
+  planSpresetCompat,
+} from '@/lib/spreset-protocol';
 import { PresetImportReport, PresetImportWarning, PresetMarkerKey } from '@/types';
 
 /** 酒馆内建 marker → LumiMuse 6 条核心 marker 的映射（Q3）。 */
@@ -78,11 +91,14 @@ interface RawLumiMusePreset {
     story_plot_strip: boolean;
     strip_tags?: string[];
     import_warnings: PresetImportWarning[];
+    /** 往返保真：导入时原样落库的插件配置。 */
+    extensions?: Record<string, unknown>;
   };
   entries: RawLumiMusePresetEntry[];
 }
 
 interface RawLumiMusePresetEntry {
+  id?: string;
   name: string;
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -213,7 +229,11 @@ function isActiveSetting(value: unknown): boolean {
   return object ? Object.keys(object).length > 0 : true;
 }
 
-function collectStWarnings(data: Record<string, unknown>, warn: WarnFn): void {
+function collectStWarnings(
+  data: Record<string, unknown>,
+  warn: WarnFn,
+  options: { spresetCompat?: boolean; spresetRuntime?: boolean } = {},
+): void {
   const handled = new Set<string>([
     'prompts', 'prompt_order', 'name', 'extensions', 'lumimuse_story_plot_strip',
     'lumimuse_import_warnings', ...ST_IGNORED_PARAMETER_KEYS,
@@ -225,16 +245,21 @@ function collectStWarnings(data: Record<string, unknown>, warn: WarnFn): void {
     .map(([key]) => key);
   if (unsupportedFields.length > 0) warn('unsupported_fields', { fields: unsupportedFields.join(', ') });
   if (isActiveSetting(data.extensions)) {
-    warn('extensions_ignored');
-    const spreset = asRecord(asRecord(data.extensions)?.SPreset);
-    const bindings = spreset?.ToolBindings;
-    const tools = Array.isArray(bindings) ? bindings : Object.values(asRecord(bindings) ?? {});
-    for (const [index, value] of tools.entries()) {
-      const tool = asRecord(value);
-      if (!tool || tool.enabled === false) continue;
-      const name = typeof tool.resolvedName === 'string' ? tool.resolvedName
-        : typeof tool.name === 'string' ? tool.name : `#${index + 1}`;
-      warn('tool_binding', { tool: name });
+    // 运行时预设的脚本会执行，由 spreset_runtime 说明，「未执行」的提示不再成立。
+    if (!options.spresetRuntime) warn('extensions_ignored');
+    // SPreset 预设的插件工具由兼容层接管（渲染期剥指令 + 追加兼容条目），
+    // 此时逐条报「要求调用工具可能无法正常回复」只会误导。
+    if (!options.spresetCompat) {
+      const spreset = asRecord(asRecord(data.extensions)?.SPreset);
+      const bindings = spreset?.ToolBindings;
+      const tools = Array.isArray(bindings) ? bindings : Object.values(asRecord(bindings) ?? {});
+      for (const [index, value] of tools.entries()) {
+        const tool = asRecord(value);
+        if (!tool || tool.enabled === false) continue;
+        const name = typeof tool.resolvedName === 'string' ? tool.resolvedName
+          : typeof tool.name === 'string' ? tool.name : `#${index + 1}`;
+        warn('tool_binding', { tool: name });
+      }
     }
   }
 }
@@ -253,10 +278,16 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
     throw new Error('导入失败：LumiMuse 预设元数据不完整');
   }
 
+  const sourceEntryIds = new Set<string>();
   const entries = data.entries.map((value, index) => {
     const entry = asRecord(value);
     if (!entry) {
       throw new Error(`导入失败：LumiMuse 条目 ${index + 1} 必须是对象`);
+    }
+    if (Object.hasOwn(entry, 'id')) {
+      const id = validateImportField(identifierSchema, entry.id, `条目 ${index + 1} id`);
+      if (sourceEntryIds.has(id)) throw new Error(`导入失败：LumiMuse 条目 id 重复：${id}`);
+      sourceEntryIds.add(id);
     }
     if (
       typeof entry.name !== 'string'
@@ -287,6 +318,7 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
     }
 
     return {
+      ...(typeof entry.id === 'string' ? { id: entry.id } : {}),
       name: entry.name,
       role: entry.role as RawLumiMusePresetEntry['role'],
       content: entry.content,
@@ -325,6 +357,8 @@ function parseLumiMusePreset(data: Record<string, unknown>): RawLumiMusePreset |
       strip_tags: stripTags,
       import_warnings: validateImportField(presetImportWarningsSchema,
         Object.hasOwn(preset, 'import_warnings') ? preset.import_warnings : [], 'import_warnings'),
+      // 插件配置：往返保真。非对象一律当没有（不因为可选字段判整份预设无效）。
+      extensions: asRecord(preset.extensions) ?? undefined,
     },
     entries,
   };
@@ -378,7 +412,30 @@ export function importSillyTavernPreset(
   const rawOrders = selectedOrder ?? rawPrompts.map(prompt => ({
     identifier: prompt.identifier, enabled: prompt.enabled ?? true,
   }));
-  collectStWarnings(data, warn);
+  // 协议探测必须在 collectStWarnings 之前：SPreset 预设的插件工具依赖由兼容层接管，
+  // 不再逐条报「要求调用工具可能无法正常回复」。
+  // 按酒馆的渲染顺序（prompt_order 优先）读协议，分区列表顺序才与模型看到的顺序一致。
+  const contentByIdentifier = new Map(rawPrompts.map(prompt => [
+    prompt.identifier,
+    typeof prompt.content === 'string' ? prompt.content : '',
+  ]));
+  const listedIdentifiers = new Set(rawOrders.map(entry => entry.identifier));
+  const allContents = [
+    ...rawOrders.map(entry => contentByIdentifier.get(entry.identifier) ?? ''),
+    ...rawPrompts
+      .filter(prompt => !listedIdentifiers.has(prompt.identifier))
+      .map(prompt => contentByIdentifier.get(prompt.identifier) ?? ''),
+  ].filter(content => content.length > 0);
+  const spresetPlan = hasSpresetProtocol(allContents) ? planSpresetCompat(allContents, data) : null;
+  // 有插件运行时（FinalRequestProcessing / OutputPreprocessing / ToolBindings）时不走语法翻译兜底：
+  // 控制指令要留给脚本自己读，请求体也由脚本改写。
+  const spresetRuntime = hasSpresetRuntime(parseSpresetConfig(asRecord(data.extensions)));
+  collectStWarnings(data, warn, { spresetCompat: spresetPlan !== null || spresetRuntime, spresetRuntime });
+  if (spresetRuntime) {
+    warn('spreset_runtime');
+  } else if (spresetPlan) {
+    warn('spreset_protocol', { entry: SPRESET_COMPAT_ENTRY_NAME });
+  }
 
   for (const prompt of rawPrompts) {
     for (const trigger of prompt.injection_trigger ?? []) {
@@ -401,20 +458,24 @@ export function importSillyTavernPreset(
   let enabledCount = 0;
   let markersRecognized = 0;
   let markersDisabled = 0;
+  // 酒馆 prompt identifier → 本次新建条目 id，用于把插件配置里的绑定键改写成本地 id。
+  const identifierToEntryId = new Map<string, string>();
 
   // 自动检测预设剥离协议 → 生成默认 strip_tags：
   //   - RONG：任一 content 含 <story_plot 或 {{setvar::rong_var_schema → story_plot_strip=1 + RONG tags
   //   - 可待：任一 content 同时出现 <content 与 (<thinking|think|output-template) → story_plot_strip=1 + 可待 tags
-  // 两者都不命中 → story_plot_strip=0、strip_tags=[];
+  //   - SPreset：任一 content 含 <<<|catgodml| → story_plot_strip=1 + registerPart 分区标签
+  // 都不命中 → story_plot_strip=0、strip_tags=[];
   // UI 可手工增删、往返格式（LumiMuse native export）亦可自定义（见 importLumiMusePreset）。
   //
   // 可待判据要求 tag 名后紧跟结束符（`>` / 空白 / `/`），避免 <content_policy>、<thinking_style>
   // 这类同前缀 tag 误命中：可待默认 tags 里的 #think / #thinking / #output-template 是 drop 规则，
   // 误判会连内容一起丢掉正文，代价远高于 block 规则误判（只多剥一层标签）。
-  const allContents = rawPrompts.map(p => (typeof p?.content === 'string' ? p.content : '')).join('\n');
-  const isRongProtocol = allContents.includes('<story_plot') || allContents.includes('setvar::rong_var_schema');
-  const isKedaiProtocol = /<content[\s>/]/.test(allContents)
-    && /<(?:thinking|think|output-template)[\s>/]/.test(allContents);
+  const joinedContents = allContents.join('\n');
+  const isRongProtocol = joinedContents.includes('<story_plot') || joinedContents.includes('setvar::rong_var_schema');
+  const isKedaiProtocol = /<content[\s>/]/.test(joinedContents)
+    && /<(?:thinking|think|output-template)[\s>/]/.test(joinedContents);
+  const isSpresetProtocol = spresetPlan !== null;
 
   const RONG_TAGS = [
     'story_plot',
@@ -428,16 +489,18 @@ export function importSillyTavernPreset(
   // think 与 thinking 在酒馆生态里常被混用，同时列出两种。
   const KEDAI_TAGS = ['content', 'scene', '#think', '#thinking', '#output-template'];
 
-  const storyPlotStrip = isRongProtocol || isKedaiProtocol;
-  const defaultStripTags = isRongProtocol ? RONG_TAGS : (isKedaiProtocol ? KEDAI_TAGS : []);
+  const storyPlotStrip = isRongProtocol || isKedaiProtocol || isSpresetProtocol;
+  const defaultStripTags = isRongProtocol
+    ? RONG_TAGS
+    : (isKedaiProtocol ? KEDAI_TAGS : (spresetPlan?.stripTags ?? []));
 
   db.transaction(() => {
     db.prepare(`
       INSERT INTO prompt_presets (
         id, name, description, is_built_in, story_plot_strip,
-        strip_tags, import_warnings, created_at, updated_at
+        strip_tags, import_warnings, extensions, created_at, updated_at
       )
-      VALUES (?, ?, '', 0, ?, ?, ?, ?, ?)
+      VALUES (?, ?, '', 0, ?, ?, ?, '{}', ?, ?)
     `).run(presetId, presetName, storyPlotStrip ? 1 : 0, JSON.stringify(defaultStripTags), '[]', now, now);
 
     const insertEntry = db.prepare(`
@@ -510,6 +573,32 @@ export function importSillyTavernPreset(
       });
     }
 
+    // SPreset 预设（无插件运行时）：追加一条自解释的兼容条目，放在所有条目之后
+    // （相对位置最靠后，尾部约束力最强）。它只做协议翻译，作者的正文一个字都不动。
+    if (spresetPlan && !spresetRuntime) {
+      insertEntry.run(
+        crypto.randomUUID(),
+        presetId,
+        SPRESET_COMPAT_ENTRY_NAME,
+        'system',
+        buildSpresetCompatContent(spresetPlan),
+        0,
+        null,
+        1,
+        0,
+        4,
+        100,
+        0,
+        '[]',
+        1,
+        appendIndex++ * 10,
+        now,
+        now,
+      );
+      total += 1;
+      enabledCount += 1;
+    }
+
     function insertOne(args: {
       prompt: RawPrompt;
       identifier: string;
@@ -575,7 +664,19 @@ export function importSillyTavernPreset(
       );
       total += 1;
       if (enabled) enabledCount += 1;
+      identifierToEntryId.set(identifier, entryId);
     }
+
+    // 插件配置入库：SPreset 运行时靠它驱动（ChatSquash / FinalRequestProcessing / ToolBindings…）。
+    // 工具绑定与消息注入以「酒馆 prompt identifier」为键，这里改写成新建条目的内部 id，
+    // 否则运行时无法把绑定关联到具体条目（条目 id 每次导入都会重新生成）。
+    // LogUpload 是向作者服务器上报调试会话的功能，不移植，直接剔除。
+    const extensions = remapPresetExtensions(data.extensions, identifierToEntryId);
+    if (Object.keys(extensions).length > 0) {
+      db.prepare('UPDATE prompt_presets SET extensions = ? WHERE id = ?')
+        .run(JSON.stringify(extensions), presetId);
+    }
+
     // 0 启用由界面按实时条目状态提示，不写进导入快照，免得启用条目后仍显示过时说明。
     db.prepare('UPDATE prompt_presets SET import_warnings = ? WHERE id = ?')
       .run(JSON.stringify([...warnings.values()]), presetId);
@@ -611,15 +712,23 @@ function importLumiMusePreset(
   let enabledCount = 0;
   let markersRecognized = 0;
 
+  const entryIds = data.entries.map(() => crypto.randomUUID());
+  const entryIdMap = new Map<string, string>();
+  data.entries.forEach((entry, index) => {
+    if (entry.id) entryIdMap.set(entry.id, entryIds[index]);
+  });
+  const extensions = remapPresetExtensions(data.preset.extensions, entryIdMap);
+
   db.transaction(() => {
     db.prepare(`
       INSERT INTO prompt_presets (
         id, name, description, is_built_in, story_plot_strip,
-        strip_tags, import_warnings, created_at, updated_at
+        strip_tags, import_warnings, extensions, created_at, updated_at
       )
-      VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
     `).run(presetId, presetName, description, storyPlotStrip ? 1 : 0, JSON.stringify(stripTags),
-      JSON.stringify(data.preset.import_warnings), now, now);
+      JSON.stringify(data.preset.import_warnings), JSON.stringify(extensions),
+      now, now);
 
     const insertEntry = db.prepare(`
       INSERT INTO prompt_preset_entries (
@@ -632,7 +741,7 @@ function importLumiMusePreset(
     for (let index = 0; index < data.entries.length; index += 1) {
       const raw = data.entries[index];
       insertEntry.run(
-        crypto.randomUUID(),
+        entryIds[index],
         presetId,
         raw.name,
         raw.role,

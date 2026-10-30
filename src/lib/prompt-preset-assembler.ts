@@ -34,6 +34,8 @@ import {
   StMacroContext,
   StMacroState,
 } from '@/lib/st-macros';
+import { stripSpresetControl } from '@/lib/spreset-protocol';
+import { parseSpresetConfig } from '@/lib/spreset/config';
 import {
   Character,
   Message,
@@ -293,6 +295,8 @@ export interface AssemblePresetPromptOptions {
   /** 用户显示名（用于 {{user}} 替换）。MVP 默认 "用户"。 */
   userName?: string;
   generationType?: 'normal' | 'regenerate';
+  /** 按请求脚本不存在来组装：脚本运行失败时的回退，控制指令不能留给上游。 */
+  ignoreRequestProcessor?: boolean;
 }
 
 function hasAttachments(messages: Message[]): boolean {
@@ -377,8 +381,23 @@ export async function assemblePresetPrompt(
   // 这样 setvar 等不输出内容的宏不会被重复计费，in-chat、行为/时间和 inline 指令也不会漏记。
   const stMacroState = createStMacroState();
   let usesLastUserMessageMacro = false;
+  // SPreset（类脑）预设把「工具调用」当输出通道，控制指令 `<<<|catgodml|...>>>` 与
+  // `<|sep|>` / `<|merge|>` / `<run_tool_replacement>` 都是插件语法。
+  //   - 有 FinalRequestProcessing 时必须原样保留：
+  //     脚本要靠这些指令解析 registerPart、判断要不要走工具改写；
+  //   - 输出过滤器或工具绑定不解析请求指令，仍须在渲染期剥掉，否则它们会进入 system prompt，而且
+  //     `setLastMessage:{{lastUserMessage}}` 会让「宏已提供当前输入」成立，
+  //     stripMacroUser 把真正的 user 消息从历史里摘掉（模型收到 0 条 user，只能拒答）。
+  const usesRequestProcessor = !options?.ignoreRequestProcessor
+    && Boolean(parseSpresetConfig(preset.extensions)?.finalRequest);
+  const usesSpresetProtocol = !usesRequestProcessor
+    && enabledEntries.some(entry => entry.content.includes('<<<|catgodml|'));
   const renderContent = (content: string): string => {
-    const rendered = renderStMacros(content, stMacroState, macroValues);
+    const rendered = renderStMacros(
+      usesSpresetProtocol ? stripSpresetControl(content) : content,
+      stMacroState,
+      macroValues,
+    );
     usesLastUserMessageMacro ||= rendered.usesLastUserMessage && Boolean(lastUserRaw)
       && rendered.content.includes(lastUserRaw);
     return rendered.content;

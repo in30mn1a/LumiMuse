@@ -152,22 +152,36 @@ function appendOptionalSamplingParams(body: Record<string, unknown>, settings: S
   }
 }
 
+/**
+ * 组装一次 chat.completions 请求体（聊天主链路与预设运行时共用同一口径）。
+ *
+ * `messages` 由调用方补；这里只负责模型、采样参数与流式开关，
+ * 保证「走预设运行时」与「走普通路径」发出去的字段不会漂移。
+ */
+export function buildChatRequestBody(settings: Settings, stream: boolean): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: settings.model,
+    messages: [],
+    max_tokens: settings.max_tokens,
+    temperature: settings.temperature,
+    stream,
+  };
+  if (stream) {
+    // OpenAI 协议：流式默认不返回 usage，需显式开启。
+    // 兼容上游会忽略未知字段，不支持的也不会报错；支持的上游会在最后一个 chunk 附带 usage。
+    body.stream_options = { include_usage: true };
+  }
+  appendOptionalSamplingParams(body, settings);
+  return body;
+}
+
 export async function chatCompletionStream(
   settings: Settings,
   messages: ChatMessage[],
   callbacks: StreamCallbacks,
 ): Promise<void> {
-  const body: Record<string, unknown> = {
-    model: settings.model,
-    messages,
-    max_tokens: settings.max_tokens,
-    temperature: settings.temperature,
-    stream: true,
-    // OpenAI 协议：流式默认不返回 usage，需显式开启。
-    // 兼容上游会忽略未知字段，不支持的也不会报错；支持的上游会在最后一个 chunk 附带 usage。
-    stream_options: { include_usage: true },
-  };
-  appendOptionalSamplingParams(body, settings);
+  const body = buildChatRequestBody(settings, true);
+  body.messages = messages;
 
   const response = await safeFetch(`${settings.api_base}/chat/completions`, {
     method: 'POST',
@@ -259,6 +273,184 @@ export async function chatCompletionStream(
     }
   }
   await callbacks.onDone(fullText);
+}
+
+/**
+ * 一次函数调用请求。`arguments` 是上游给的 JSON 字符串（流式时会分片到达）。
+ */
+export interface ChatToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+  /** 上游的不透明字段（如 Gemini 的 thought_signature），工具回灌时必须原样带回。 */
+  extra_content?: unknown;
+}
+
+export interface CompletionRequestResult {
+  text: string;
+  toolCalls: ChatToolCall[];
+  finishReason?: string;
+  /** 工具回灌时要带回 assistant 消息的上游字段；上游没给时不存在。 */
+  assistantFields?: Record<string, unknown>;
+}
+
+/** 回灌字段白名单：思考链由上游校验，其余字段不回传。 */
+function replayFields(reasoningContent: unknown, reasoningDetails: unknown): Pick<CompletionRequestResult, 'assistantFields'> {
+  const fields: Record<string, unknown> = {};
+  if (typeof reasoningContent === 'string' && reasoningContent) fields.reasoning_content = reasoningContent;
+  if (Array.isArray(reasoningDetails) && reasoningDetails.length > 0) fields.reasoning_details = reasoningDetails;
+  return Object.keys(fields).length > 0 ? { assistantFields: fields } : {};
+}
+
+export interface CompletionRequestOptions {
+  signal?: AbortSignal;
+  /** 流式时逐段回调可见正文；非流式时整段回调一次。 */
+  onText?: (text: string) => void;
+  onUsage?: (usage: LlmUsage) => void;
+}
+
+interface RawToolCallDelta {
+  index?: unknown;
+  id?: unknown;
+  function?: { name?: unknown; arguments?: unknown };
+  extra_content?: unknown;
+}
+
+/**
+ * 按调用方给的**完整请求体**发一次请求，并把正文与 tool_calls 一起收回来。
+ *
+ * 这是给「预设运行时」用的低层入口：请求体可能已经被预设脚本整个换掉
+ * （自定义 messages / tools / tool_choice），因此不再接受 `ChatMessage[]`。
+ */
+export async function completeRequest(
+  settings: Settings,
+  body: Record<string, unknown>,
+  options: CompletionRequestOptions = {},
+): Promise<CompletionRequestResult> {
+  const response = await safeFetch(`${settings.api_base}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.api_key}`,
+    },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`API error ${response.status}: ${sanitizeUpstreamError(text)}`);
+  }
+
+  const streaming = body.stream === true;
+
+  if (!streaming) {
+    const data = await response.json() as {
+      choices?: Array<{
+        finish_reason?: string;
+        message?: { content?: unknown; tool_calls?: unknown; reasoning_content?: unknown; reasoning_details?: unknown };
+      }>;
+      usage?: unknown;
+    };
+    const choice = data.choices?.[0];
+    const text = typeof choice?.message?.content === 'string' ? choice.message.content : '';
+    const toolCalls = parseToolCalls(choice?.message?.tool_calls);
+    if (text) options.onText?.(text);
+    const usage = extractUsageFromChunk(data);
+    if (usage && options.onUsage) options.onUsage(usage);
+    return {
+      text,
+      toolCalls,
+      finishReason: choice?.finish_reason,
+      ...replayFields(choice?.message?.reasoning_content, choice?.message?.reasoning_details),
+    };
+  }
+
+  if (!response.body) throw new Error('API 未返回响应体（可能是网络或代理问题）');
+
+  const reader = response.body.getReader();
+  let text = '';
+  let finishReason: string | undefined;
+  let capturedUsage: LlmUsage | undefined;
+  // tool_calls 按 index 分片到达：id/name 只来一次，arguments 逐片追加。
+  const partial = new Map<number, ChatToolCall>();
+  let reasoningContent = '';
+  const reasoningDetails: unknown[] = [];
+
+  try {
+    await parseSseStream(reader, ({ text: deltaText, raw }) => {
+      const upstreamError = upstreamStreamError(raw);
+      if (upstreamError) throw upstreamError;
+
+      if (deltaText) {
+        text += deltaText;
+        options.onText?.(deltaText);
+      }
+
+      const choice = (raw as { choices?: Array<{
+        finish_reason?: unknown;
+        delta?: { tool_calls?: unknown; reasoning_content?: unknown; reasoning_details?: unknown };
+      }> })?.choices?.[0];
+      if (typeof choice?.finish_reason === 'string' && choice.finish_reason) {
+        finishReason = choice.finish_reason;
+      }
+      if (typeof choice?.delta?.reasoning_content === 'string') reasoningContent += choice.delta.reasoning_content;
+      if (Array.isArray(choice?.delta?.reasoning_details)) reasoningDetails.push(...choice.delta.reasoning_details);
+
+      const deltas = choice?.delta?.tool_calls;
+      if (Array.isArray(deltas)) {
+        for (const value of deltas) {
+          const delta = value as RawToolCallDelta;
+          const index = typeof delta.index === 'number' ? delta.index : 0;
+          const current = partial.get(index) ?? { id: '', name: '', arguments: '' };
+          if (typeof delta.id === 'string' && delta.id) current.id = delta.id;
+          const fn = delta.function;
+          if (typeof fn?.name === 'string' && fn.name) current.name = fn.name;
+          if (typeof fn?.arguments === 'string' && fn.arguments) current.arguments += fn.arguments;
+          if (delta.extra_content !== undefined) current.extra_content = delta.extra_content;
+          partial.set(index, current);
+        }
+      }
+
+      const usage = extractUsageFromChunk(raw);
+      if (usage) capturedUsage = usage;
+    }, { signal: options.signal });
+  } finally {
+    // abort 时保留已收到的部分，交由调用方决定是否落库。
+    if (options.signal?.aborted) {
+      try { await reader.cancel(); } catch { /* ignore */ }
+    }
+  }
+
+  if (capturedUsage && options.onUsage) options.onUsage(capturedUsage);
+
+  return {
+    text,
+    toolCalls: [...partial.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, call]) => call)
+      .filter(call => call.name),
+    finishReason,
+    ...replayFields(reasoningContent, reasoningDetails),
+  };
+}
+
+/** 非流式响应里的 tool_calls → 统一结构。 */
+function parseToolCalls(value: unknown): ChatToolCall[] {
+  if (!Array.isArray(value)) return [];
+  const calls: ChatToolCall[] = [];
+  for (const item of value) {
+    const record = item as { id?: unknown; function?: { name?: unknown; arguments?: unknown }; extra_content?: unknown };
+    const name = typeof record?.function?.name === 'string' ? record.function.name : '';
+    if (!name) continue;
+    calls.push({
+      id: typeof record.id === 'string' ? record.id : '',
+      name,
+      arguments: typeof record.function?.arguments === 'string' ? record.function.arguments : '',
+      ...(record.extra_content === undefined ? {} : { extra_content: record.extra_content }),
+    });
+  }
+  return calls;
 }
 
 export async function chatCompletion(

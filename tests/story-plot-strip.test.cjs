@@ -73,7 +73,7 @@ test('story_plot + story_done：剥容器，只留正文', () => {
   assert.ok(!out.includes('基沃托斯'), 'location 整体丢弃');
 });
 
-test('story_plot + w2g 行动选项：保留 w2g 原文', () => {
+test('story_plot + w2g 候选项：保留 w2g 原文', () => {
   const input = `<story_plot>
 <story_scene><date>D</date></story_scene>
 <story_body>
@@ -300,16 +300,16 @@ test('stripByPresetRules 可待完整列表：block 保内部 + drop 整段丢',
 });
 
 test('包含 ~ 的规则支持 block/drop、大小写匹配，且不误匹配不带 ~ 的标签', () => {
-  const text = '<think_nya~>draft</think_nya~><content>reply</content>';
-  assert.equal(stripByPresetRules(text, ['#think_nya~', 'content']), 'reply');
-  assert.equal(stripByPresetRules(text, ['think_nya~', 'content']), 'draftreply');
+  const text = '<draft_notes~>draft</draft_notes~><content>reply</content>';
+  assert.equal(stripByPresetRules(text, ['#draft_notes~', 'content']), 'reply');
+  assert.equal(stripByPresetRules(text, ['draft_notes~', 'content']), 'draftreply');
   assert.equal(
-    stripByPresetRules('<THINK_NYA~>draft</THINK_NYA~>reply', ['#think_nya~']),
+    stripByPresetRules('<DRAFT_NOTES~>draft</DRAFT_NOTES~>reply', ['#draft_notes~']),
     'reply',
   );
-  const otherTag = '<think_nya>keep</think_nya>';
-  assert.equal(stripByPresetRules(otherTag, ['#think_nya~']), otherTag);
-  assert.equal(stripByPresetRules(text, ['#think_nya']), text);
+  const otherTag = '<draft_notes>keep</draft_notes>';
+  assert.equal(stripByPresetRules(otherTag, ['#draft_notes~']), otherTag);
+  assert.equal(stripByPresetRules(text, ['#draft_notes']), text);
 });
 
 test('stripByPresetRules 可待完整列表：块与块之间带换行的自然情况（块间单换行）', () => {
@@ -446,15 +446,15 @@ test('流式参数化：逐字符和任意 chunk 的 length-delta 严格单调�
 });
 
 test('包含 ~ 的 drop 规则逐字符流式不泄漏草稿，未闭合或半截标签也不落库', () => {
-  const rules = ['content', '#think_nya~'];
+  const rules = ['content', '#draft_notes~'];
   const cases = [
-    ['<think_nya~>private draft</think_nya~><content>reply</content>', 'reply'],
-    ['<content>reply</content><think_nya~>private draft</think_nya~>', 'reply'],
-    ['<THINK_NYA~>draft</THINK_NYA~><content>reply</content>', 'reply'],
-    ['<think_nya~>unfinished draft', ''],
-    ['<think_nya~>draft</think_nya', ''],
-    ['<think_nya~', ''],
-    ['<think_nya~/><content>reply</content>', 'reply'],
+    ['<draft_notes~>private draft</draft_notes~><content>reply</content>', 'reply'],
+    ['<content>reply</content><draft_notes~>private draft</draft_notes~>', 'reply'],
+    ['<DRAFT_NOTES~>draft</DRAFT_NOTES~><content>reply</content>', 'reply'],
+    ['<draft_notes~>unfinished draft', ''],
+    ['<draft_notes~>draft</draft_notes', ''],
+    ['<draft_notes~', ''],
+    ['<draft_notes~/><content>reply</content>', 'reply'],
   ];
   for (const [full, expected] of cases) {
     assert.equal(stripByPresetRules(full, rules), expected);

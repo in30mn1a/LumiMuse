@@ -170,16 +170,16 @@ test('非法 SillyTavern 结构、重复标识符和字段类型在写库前拒�
 });
 
 test('兼容说明持久化，插件工具依赖不修改启用正文', () => {
-  const content = '所有回复调用 game_content，{{unknownmacro}}';
+  const content = '所有回复调用 story_content，{{unknownmacro}}';
   const report = importLib.importSillyTavernPreset(JSON.stringify({
     top_a: 0.5,
-    extensions: { SPreset: { ToolBindings: [{ name: 'game_content', enabled: true }] } },
+    extensions: { SPreset: { ToolBindings: [{ name: 'story_content', enabled: true }] } },
     prompts: [{ identifier: 'tool-dependent', name: '工具要求', content }],
   }));
   const entry = presetLib.listEntries(report.preset_id)[0];
   assert.equal(entry.content, content);
   assert.equal(entry.enabled, true);
-  assert.deepEqual(warningsWith(report, 'tool_binding'), [{ code: 'tool_binding', params: { tool: 'game_content' } }]);
+  assert.deepEqual(warningsWith(report, 'tool_binding'), [{ code: 'tool_binding', params: { tool: 'story_content' } }]);
   assert.equal(warningsWith(report, 'params_ignored').length, 1);
   assert.deepEqual(warningsWith(report, 'unsupported_fields'), []);
   assert.deepEqual(warningsWith(report, 'unsupported_macro'), [
@@ -460,7 +460,7 @@ test('LumiMuse native export can be imported with all preset and entry fields pr
     name: '原生往返',
     description: '完整描述',
     story_plot_strip: true,
-    strip_tags: ['content', 'scene', '#think', '#think_nya~'],
+    strip_tags: ['content', 'scene', '#think', '#draft_notes~'],
   });
   presetLib.upsertEntry({
     preset_id: source.id,

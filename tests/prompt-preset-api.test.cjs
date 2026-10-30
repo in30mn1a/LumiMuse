@@ -164,8 +164,8 @@ test('preset PATCH rejects invalid and conflicting strip_tags', async () => {
 
   for (const strip_tags of [
     ['#'], [''], ['content', '#CONTENT'],
-    ['#think_nya~', '#THINK_NYA~'], ['think_nya~', '#THINK_NYA~'],
-    ['#think_nya~>'], ['<think_nya~>'], ['#think nya~'], ['#think_nya~/'], ['#~think'],
+    ['#draft_notes~', '#DRAFT_NOTES~'], ['draft_notes~', '#DRAFT_NOTES~'],
+    ['#draft_notes~>'], ['<draft_notes~>'], ['#draft notes~'], ['#draft_notes~/'], ['#~think'],
   ]) {
     const request = new NextRequest(
       `http://localhost/api/prompt-presets/${preset.id}`,
@@ -185,7 +185,7 @@ test('preset PATCH rejects invalid and conflicting strip_tags', async () => {
 test('preset PATCH saves tilde strip tags that GET and the reply stripper can use', async () => {
   const preset = presetLib.createPreset({ name: 'Tilde rules' });
   const params = { params: Promise.resolve({ id: preset.id }) };
-  const strip_tags = ['content', '#think_nya~'];
+  const strip_tags = ['content', '#draft_notes~'];
   const response = await presetRoute.PATCH(new NextRequest(
     `http://localhost/api/prompt-presets/${preset.id}`,
     {
@@ -206,7 +206,7 @@ test('preset PATCH saves tilde strip tags that GET and the reply stripper can us
 
   const { stripByPresetRules } = require(path.join(root, 'src', 'lib', 'story-plot-strip.ts'));
   assert.equal(
-    stripByPresetRules('<think_nya~>private draft</think_nya~><content>reply</content>', saved.strip_tags),
+    stripByPresetRules('<draft_notes~>private draft</draft_notes~><content>reply</content>', saved.strip_tags),
     'reply',
   );
 });

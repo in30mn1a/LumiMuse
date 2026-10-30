@@ -255,7 +255,7 @@ test('/api/export and /api/import preserve preset warnings and trigger with bind
       try {
         source.prepare('INSERT INTO characters (id, name, active_preset_id) VALUES (?, ?, ?)')
           .run('preset-char', '往返角色', 'preset-source');
-        const warnings = ['未执行工具 game_content', '<script>不执行</script>'];
+        const warnings = ['未执行工具 story_content', '<script>不执行</script>'];
         source.prepare(`INSERT INTO prompt_presets (id, name, import_warnings)
           VALUES (?, ?, ?)`).run('preset-source', '标准预设', JSON.stringify(warnings));
         source.prepare(`INSERT INTO prompt_preset_entries

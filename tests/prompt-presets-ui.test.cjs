@@ -494,15 +494,15 @@ test('剥离规则保存返回非 JSON 时回退 HTTP 状态并保留重试输�
   );
   const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
   const input = await view.findByPlaceholderText('preset.stripTagPlaceholder');
-  fireEvent.change(input, { target: { value: '#think_nya~' } });
+  fireEvent.change(input, { target: { value: '#draft_notes~' } });
   fireEvent.click(view.getByRole('button', { name: 'preset.stripTagAdd' }));
 
   await waitFor(() => assert.deepEqual(toastCalls.at(-1), [
     'preset.stripTagsUpdateError: HTTP 502',
     'error',
   ]));
-  assert.equal(input.value, '#think_nya~');
-  assert.equal(view.queryByText('#think_nya~'), null);
+  assert.equal(input.value, '#draft_notes~');
+  assert.equal(view.queryByText('#draft_notes~'), null);
 });
 
 test('剥离规则输入保留波浪号，并通过真实更新 schema 后才显示保存成功', async () => {
@@ -530,16 +530,16 @@ test('剥离规则输入保留波浪号，并通过真实更新 schema 后才显
   );
   const view = render(React.createElement(Component, { params: { value: { id: PRESET.id } } }));
   const input = await view.findByPlaceholderText('preset.stripTagPlaceholder');
-  fireEvent.change(input, { target: { value: '  #think_nya~  ' } });
+  fireEvent.change(input, { target: { value: '  #draft_notes~  ' } });
   fireEvent.click(view.getByRole('button', { name: 'preset.stripTagAdd' }));
 
   await waitFor(() => assert.deepEqual(toastCalls.at(-1), [
     'preset.stripTagsUpdateSuccess',
     'success',
   ]));
-  assert.deepEqual(patchBody, { strip_tags: ['#think_nya~'] });
+  assert.deepEqual(patchBody, { strip_tags: ['#draft_notes~'] });
   assert.equal(input.value, '');
-  assert.ok(view.getByText('#think_nya~'));
+  assert.ok(view.getByText('#draft_notes~'));
 });
 
 test('预设详情新增和保存都用 pending guard 防止重复写请求', async () => {
@@ -1006,7 +1006,7 @@ test('详情直接加载及重新挂载仍显示导入警告，脚本样式内�
   const scriptText = '<script>window.__presetExecuted = true</script><img src=x onerror="alert(1)">';
   global.fetch = async url => {
     if (String(url).endsWith('/entries')) return jsonResponse({ entries: [ENTRY] });
-    return jsonResponse({ ...PRESET, import_warnings: [scriptText, 'game_content tools are not supported.'] });
+    return jsonResponse({ ...PRESET, import_warnings: [scriptText, 'story_content tools are not supported.'] });
   };
   const { Component } = loadUiModule('src/app/settings/prompt-presets/[id]/page.tsx', {
     unwrapParams: true,
@@ -1015,7 +1015,7 @@ test('详情直接加载及重新挂载仍显示导入警告，脚本样式内�
   const props = { params: { value: { id: PRESET.id } } };
   const firstView = render(React.createElement(Component, props));
   await firstView.findByText(scriptText);
-  assert.ok(firstView.getByText('game_content tools are not supported.'));
+  assert.ok(firstView.getByText('story_content tools are not supported.'));
   assert.ok(firstView.getByText(REPORT_TRANSLATIONS['preset.importWarningsHint']));
   assert.ok(!firstView.container.querySelector('script, img'));
   assert.equal(window.__presetExecuted, undefined);

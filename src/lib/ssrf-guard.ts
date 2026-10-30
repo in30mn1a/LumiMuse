@@ -10,7 +10,8 @@
  *
  * 设计权衡：
  * 由于本应用允许自部署用户连接本地 LLM（如 Ollama）和本地生图（SD WebUI / ComfyUI），
- * 提供环境变量 ALLOW_LOCAL_NETWORK=1 显式放开 loopback/RFC1918 地址。
+ * 提供环境变量 ALLOW_LOCAL_NETWORK=1 显式放开 loopback/RFC1918 地址，
+ * 以及本机代理 fake-ip 常用的 benchmark 地址段（否则开着代理时任何域名都解析到这里、全部被拒）。
  * 但 metadata 服务地址永不放开。
  *
  * 注意：本模块在 DNS 解析后再次校验，避免攻击者用域名指向内网。
@@ -38,8 +39,6 @@ const BLOCKED_IPV4_ALWAYS: Ipv4Range[] = [
   { net: 0xc0000200, mask: 0xffffff00 },
   // 192.88.99.0/24 — 已弃用的 6to4 relay anycast
   { net: 0xc0586300, mask: 0xffffff00 },
-  // 198.18.0.0/15 — benchmark
-  { net: 0xc6120000, mask: 0xfffe0000 },
   // 198.51.100.0/24 — TEST-NET-2
   { net: 0xc6336400, mask: 0xffffff00 },
   // 203.0.113.0/24 — TEST-NET-3
@@ -62,12 +61,13 @@ const LOCAL_IPV4_RANGES: Ipv4Range[] = [
   { net: 0xc0a80000, mask: 0xffff0000 },
   // 100.64.0.0/10 — shared address space（CGNAT / overlay）
   { net: 0x64400000, mask: 0xffc00000 },
+  // 198.18.0.0/15 — benchmark（Clash / mihomo 等代理的 fake-ip 默认段）
+  { net: 0xc6120000, mask: 0xfffe0000 },
 ];
 
 const BLOCKED_IPV6_ALWAYS: Ipv6Range[] = [
   { network: '::', prefixLength: 128 }, // unspecified
   { network: '100::', prefixLength: 64 }, // discard-only
-  { network: '2001:2::', prefixLength: 48 }, // benchmark
   { network: '2001:10::', prefixLength: 28 }, // deprecated ORCHIDv1
   { network: '2001:20::', prefixLength: 28 }, // ORCHIDv2
   { network: '2001:db8::', prefixLength: 32 }, // documentation
@@ -81,6 +81,7 @@ const LOCAL_IPV6_RANGES: Ipv6Range[] = [
   { network: '::1', prefixLength: 128 }, // loopback
   { network: 'fc00::', prefixLength: 7 }, // unique local
   { network: 'fec0::', prefixLength: 10 }, // deprecated site-local
+  { network: '2001:2::', prefixLength: 48 }, // benchmark（代理 fake-ip 的 IPv6 段）
 ];
 
 const PUBLIC_IPV4_EXCEPTIONS = new Set([

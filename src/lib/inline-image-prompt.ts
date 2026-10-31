@@ -20,10 +20,15 @@ export { INLINE_PROMPT_SYSTEM_REMINDER };
  * - 提取后会从正文中剥离，保证上下文 / 记忆 / token 统计干净，前端也不展示该块
  */
 
-/** 匹配 [IMG]...[/IMG] 块（含标记本身），大小写不敏感、跨行 */
-const INLINE_IMG_BLOCK = /\[IMG\]([\s\S]*?)\[\/IMG\]/i;
+/**
+ * 匹配 [IMG]...[/IMG] 块（含标记本身），大小写不敏感、跨行。
+ * 块内不允许再出现 [IMG]：文本里单独提到的 [IMG] 不能和后面真正的 [/IMG] 配对，把中间的正文吞掉。
+ */
+const INLINE_IMG_BLOCK = /\[IMG\]((?:(?!\[IMG\])[\s\S])*?)\[\/IMG\]/gi;
 /** 流式过程中可能只输出了开头的 [IMG 而尚未闭合，用于实时隐藏未闭合的尾巴 */
 const INLINE_IMG_OPEN_TAIL = /\[IMG\b[\s\S]*$/i;
+/** 真实提示词至少含一个字母或数字；只有标点的块（`...`、`…`）是模型照抄的格式占位符 */
+const INLINE_PROMPT_HAS_CONTENT = /[\p{L}\p{N}]/u;
 
 /**
  * 内联生图提示词的指令文本。
@@ -52,23 +57,34 @@ export function buildInlinePromptInstruction(
 
 /**
  * 从完整回复文本中提取内联提示词。
+ *
+ * 取最后一个有内容的块：指令要求块放在回复最后，而模型思考时可能先照抄格式
+ * （system 提醒里就有字面量 `[IMG]...[/IMG]`）。思考没进丢弃块时这些块还在文本里。
+ *
  * @returns prompt 为提取到的提示词（去除标记、trim），未找到则为空串
  */
 export function extractInlinePrompt(text: string): string {
-  const m = text.match(INLINE_IMG_BLOCK);
-  if (!m) return '';
-  return m[1].trim();
+  let prompt = '';
+  for (const match of text.matchAll(INLINE_IMG_BLOCK)) {
+    const candidate = match[1].trim();
+    if (INLINE_PROMPT_HAS_CONTENT.test(candidate)) prompt = candidate;
+  }
+  return prompt;
 }
 
 /**
- * 从文本中剥离 [IMG]...[/IMG] 块，返回干净的正文。
+ * 从文本中剥离所有 [IMG]...[/IMG] 块，返回干净的正文。
  * 同时处理流式中途「只有开头标记、尚未闭合」的情况，避免半截标记闪现给用户。
  */
 export function stripInlinePrompt(text: string): string {
-  let result = text.replace(INLINE_IMG_BLOCK, '');
-  // 已闭合的块去掉后，若仍残留未闭合的 [IMG...（流式中间态），一并去掉尾部
-  if (INLINE_IMG_BLOCK.test(result) === false && /\[IMG\b/i.test(result)) {
-    result = result.replace(INLINE_IMG_OPEN_TAIL, '');
+  let result = '';
+  let cursor = 0;
+  for (const match of text.matchAll(INLINE_IMG_BLOCK)) {
+    result += text.slice(cursor, match.index);
+    cursor = match.index + match[0].length;
   }
+  // 未闭合的尾巴（流式中间态）只可能在最后一个闭合块之后；
+  // 更靠前的 [IMG] 只是提到标记，从那里砍到末尾会丢正文。
+  result += text.slice(cursor).replace(INLINE_IMG_OPEN_TAIL, '');
   return result.replace(/\s+$/, '');
 }

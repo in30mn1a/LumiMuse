@@ -44,11 +44,38 @@ test('inline image prompt hides an unclosed streaming tail without inventing a p
   assert.equal(stripInlinePrompt('正文[/IMG]'), '正文[/IMG]');
 });
 
-test('multiple inline image blocks keep the current first-block-only behavior', () => {
+test('multiple inline image blocks use the last one and are all stripped', () => {
   const text = '正文\n[IMG]first, prompt[/IMG]\n补充\n[IMG]second, prompt[/IMG]';
 
-  assert.equal(extractInlinePrompt(text), 'first, prompt');
-  assert.equal(stripInlinePrompt(text), '正文\n\n补充\n[IMG]second, prompt[/IMG]');
+  assert.equal(extractInlinePrompt(text), 'second, prompt');
+  assert.equal(stripInlinePrompt(text), '正文\n\n补充');
+});
+
+test('a placeholder block echoed while thinking does not displace the real prompt', () => {
+  const real = '[IMG]\nPrompt: 1girl, 1boy, indoor\nCharacter 1: girl, long hair\n[/IMG]';
+  for (const echo of ['[IMG]...[/IMG]', '[IMG]…[/IMG]', '[img] ... [/img]', '[IMG]……[/IMG]']) {
+    const text = `末尾要输出一次 ${echo} 生图提示词。\n正文。\n${real}`;
+
+    assert.equal(extractInlinePrompt(text), 'Prompt: 1girl, 1boy, indoor\nCharacter 1: girl, long hair');
+    assert.equal(stripInlinePrompt(text), '末尾要输出一次  生图提示词。\n正文。');
+  }
+});
+
+test('a placeholder block is never a prompt, wherever it appears', () => {
+  assert.equal(extractInlinePrompt('正文。\n[IMG]...[/IMG]'), '');
+  assert.equal(stripInlinePrompt('正文。\n[IMG]...[/IMG]'), '正文。');
+  assert.equal(extractInlinePrompt('[IMG]1girl, rain[/IMG]\n别忘了 [IMG]...[/IMG]'), '1girl, rain');
+});
+
+test('a bare [IMG] mention neither pairs with the real close marker nor swallows the body', () => {
+  const text = '最后要补上 [IMG] 提示词。\n正文。\n[IMG]1girl, rain[/IMG]';
+
+  assert.equal(extractInlinePrompt(text), '1girl, rain');
+  assert.equal(stripInlinePrompt(text), '最后要补上 [IMG] 提示词。\n正文。');
+});
+
+test('an unclosed tail after a closed block is still hidden while streaming', () => {
+  assert.equal(stripInlinePrompt('正文。\n[IMG]...[/IMG]\n后文\n[IMG]1girl, ra'), '正文。\n\n后文');
 });
 
 test('chat-engine wires sensitive tag strip/rejoin for inline prompts on all models', () => {

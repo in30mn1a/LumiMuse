@@ -804,6 +804,26 @@ test('finalizeAssistantResponse 思考块里提到的 [IMG] 不能把正文吞�
   assert.equal(result.inlinePrompt, '1girl, white dress');
 });
 
+test('finalizeAssistantResponse 没进丢弃块的思考照抄 [IMG]...[/IMG] 时，仍取真正的提示词并剥干净', (t) => {
+  const probe = createDbProbe();
+  t.after(() => probe.database.close());
+  const { finalizeAssistantResponse } = loadChatEngine(probe.db, {});
+
+  // system 提醒里就写着字面量 [IMG]...[/IMG]，模型思考时会照抄。思考没包进 #tag 时它还在文本里：
+  // 只认第一个块的话，`...` 成了提示词，真正的块留在正文里显示给用户。
+  const raw = '<notes>末尾要输出一次 [IMG]...[/IMG] 生图提示词。</notes>\n'
+    + '<story_content>\n早上好。\n[IMG]\nPrompt: 1girl, indoor\nCharacter 1: girl, long hair\n[/IMG]\n</story_content>';
+  const result = finalizeAssistantResponse(raw, {
+    storyPlotStrip: true,
+    stripTags: ['story_content', '#draft_notes'],
+    characterImageTags: '',
+  });
+
+  assert.equal(result.inlinePrompt, 'Prompt: 1girl, indoor\nCharacter 1: girl, long hair');
+  assert.doesNotMatch(result.fullText, /Prompt:|\[\/?IMG\]/);
+  assert.match(result.fullText, /早上好。/);
+});
+
 test('finalizeAssistantResponse 丢弃块建立的协议状态要带到正文剥离', (t) => {
   const probe = createDbProbe();
   t.after(() => probe.database.close());

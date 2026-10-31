@@ -138,16 +138,6 @@ test('recoverStaleTasks resets processing task with expired lease', () => {
 
 test('boot recovery wakes again once an unexpired orphan lease expires', async () => {
   const db = memoryTasksDb();
-  const now = new Date().toISOString();
-  // 快速重启：上个进程留下的 processing 任务，租约还没过期
-  db.prepare(`
-    INSERT INTO memory_tasks (
-      character_id, conversation_id, message_ids, status, claim_token, lease_expires_at,
-      started_at, created_at, updated_at
-    )
-    VALUES ('c1', 'conv1', '[]', 'processing', 'orphan-token', datetime('now', '+1 seconds'), ?, ?, ?)
-  `).run(now, now, now);
-
   const { recoverStaleTasks } = requireFreshWithMocks('../src/lib/memory-queue.ts', {
     '@/lib/db': { getDb: () => db },
     '@/lib/memory-engine': noopMemoryEngine,
@@ -155,6 +145,18 @@ test('boot recovery wakes again once an unexpired orphan lease expires', async (
     '@/lib/memory-profile': noopProfile,
   });
   const { recoverAndWakeAtLeaseExpiry } = require('../src/lib/background-task-recovery.ts');
+  const now = new Date().toISOString();
+  // 快速重启：上个进程留下的 processing 任务，租约还没过期。
+  // datetime 只精确到秒，+1 秒的租约一跨整秒就已到期；+2 秒保证写入后至少还有 1 秒。
+  // 模块加载放在写入之前，加载耗时不占用这段余量。
+  db.prepare(`
+    INSERT INTO memory_tasks (
+      character_id, conversation_id, message_ids, status, claim_token, lease_expires_at,
+      started_at, created_at, updated_at
+    )
+    VALUES ('c1', 'conv1', '[]', 'processing', 'orphan-token', datetime('now', '+2 seconds'), ?, ?, ?)
+  `).run(now, now, now);
+
   let triggers = 0;
   recoverAndWakeAtLeaseExpiry(db, 'memory_tasks', {
     recover: recoverStaleTasks,
@@ -165,7 +167,8 @@ test('boot recovery wakes again once an unexpired orphan lease expires', async (
   assert.equal(db.prepare('SELECT status FROM memory_tasks WHERE id = 1').get().status, 'processing');
   assert.equal(triggers, 1);
 
-  await new Promise(resolve => setTimeout(resolve, 2600));
+  // 定时器最晚在 2 秒租约 + 1 秒宽限后触发
+  await new Promise(resolve => setTimeout(resolve, 3600));
 
   // 租约到期后必须自动补跑 recover + trigger，而不是闲置到下一次业务触发
   const row = db.prepare('SELECT status, claim_token FROM memory_tasks WHERE id = 1').get();

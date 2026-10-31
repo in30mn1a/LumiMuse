@@ -42,6 +42,7 @@ import {
 } from '@/lib/image-prompt-sensitive-tags';
 import { mergeConsecutiveRoles } from '@/lib/merge-messages';
 import {
+  collapseDropBlocks,
   stripByPresetRules,
   stripByPresetRulesForStreamingChunk,
 } from '@/lib/story-plot-strip';
@@ -167,6 +168,10 @@ function stripTimestampPrefix(text: string): string {
  *
  * 必须先从原始回复提取并剥离 [IMG]，再处理 story_plot XML。否则当 [IMG] 位于
  * </story_plot> 之后时，story stripper 会先丢掉它，导致提示词永久丢失。
+ *
+ * 但「整块丢弃」的容器（`#tag`，如思考块）要更早一步收起：模型经常在思考里提到 `[IMG]`
+ * （"最后要补上 [IMG]…"），它会与回复末尾真正的 `[/IMG]` 配对，整段正文被当生图提示词剥走；
+ * 剩下的思考块又被整块丢弃，正文变空，整条回复会被判成「未返回有效正文」而丢弃。
  */
 export function finalizeAssistantResponse(
   rawText: string,
@@ -178,7 +183,10 @@ export function finalizeAssistantResponse(
   },
 ): { fullText: string; inlinePrompt: string } {
   const withoutTimestamp = stripTimestampPrefix(rawText);
-  const rawInlinePrompt = extractInlinePrompt(withoutTimestamp);
+  const withoutDropped = options.storyPlotStrip
+    ? collapseDropBlocks(withoutTimestamp, options.stripTags)
+    : withoutTimestamp;
+  const rawInlinePrompt = extractInlinePrompt(withoutDropped);
   const inlinePrompt = rawInlinePrompt
     ? stripGeneratedUndesiredContent(restoreSensitiveImageTagsToPrompt(
         rawInlinePrompt,
@@ -187,9 +195,9 @@ export function finalizeAssistantResponse(
       ))
     : '';
   // 未闭合或空的 IMG 块也要清理；无标记时保留正文原有的尾部空白。
-  const withoutInlinePrompt = /\[IMG\b/i.test(withoutTimestamp)
-    ? stripInlinePrompt(withoutTimestamp)
-    : withoutTimestamp;
+  const withoutInlinePrompt = /\[IMG\b/i.test(withoutDropped)
+    ? stripInlinePrompt(withoutDropped)
+    : withoutDropped;
   const fullText = options.storyPlotStrip && options.stripTags.length > 0
     ? stripByPresetRules(withoutInlinePrompt, options.stripTags)
     : withoutInlinePrompt;

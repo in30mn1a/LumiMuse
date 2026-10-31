@@ -250,19 +250,18 @@ function transformParameterizedTags(
 
     if (dropStack.length > 0) {
       const activeDrop = dropStack[dropStack.length - 1];
-      if (token.mode === 'drop' && token.name === activeDrop.name) {
-        if (token.kind === 'open' && !token.selfClosing) {
-          dropStack.push({ name: token.name, preserveLeadingLayout: false });
-        } else if (token.kind === 'close') {
-          const closedDrop = dropStack.pop();
-          if (dropStack.length === 0) {
-            cursor = closedDrop?.preserveLeadingLayout
-              ? skipLayoutWhitespaceAfter(rawText, token.end)
-              : token.end;
-            continue;
-          }
+      if (token.mode === 'drop' && token.name === activeDrop.name && token.kind === 'close') {
+        const closedDrop = dropStack.pop();
+        if (dropStack.length === 0) {
+          cursor = closedDrop?.preserveLeadingLayout
+            ? skipLayoutWhitespaceAfter(rawText, token.end)
+            : token.end;
+          continue;
         }
       }
+      // 丢弃区里再次出现的同名开标签**不压栈**：预设会教模型在思考里写 `<think>` 这类
+      // tag 名（"在 `<think>` 里推演……"），压栈会让后面唯一那个闭标签闭不上一层，
+      // drop 一路延伸到 EOF，把整段正文一起丢掉。思考块不会真的嵌套，按「提到 tag 名」处理。
       cursor = token.end;
       continue;
     }
@@ -577,6 +576,39 @@ export function stripByPresetRules(rawText: string, rules: string[]): string {
     return stripStoryPlotXml(rawText);
   }
   return stripContainerTags(rawText, rules);
+}
+
+/**
+ * 把 drop 块收成同名自闭合 tag（`<think>…</think>` → `<think/>`），其余文本按字节保留。
+ *
+ * 供「要先看不含思考的文本、之后还要完整剥离」的调用方使用。留下自闭合 tag 而不是直接删除：
+ * drop 块本身是「这是协议回复」的证据，后续 stripByPresetRules 靠它识别残缺 tag；
+ * 自闭合 drop 与完整 drop 块在剥离时状态完全一致，直接删除则会让残缺 tag 被当字面量保留。
+ * 与 stripByPresetRules 同样的 drop 判定：EOF 未闭合丢到末尾；旧协议不处理 drop 规则，原样返回。
+ */
+export function collapseDropBlocks(rawText: string, rules: string[]): string {
+  if (usesLegacyStoryPlotRules(rules)) return rawText;
+  const dropRules = parseTagRules(rules).filter(rule => rule.mode === 'drop');
+  if (dropRules.length === 0) return rawText;
+
+  const { tokens } = scanParameterizedTags(rawText, dropRules);
+  let out = '';
+  let cursor = 0;
+  let activeDrop: string | null = null;
+  for (const token of tokens) {
+    if (activeDrop !== null) {
+      if (token.kind === 'close' && token.name === activeDrop) {
+        activeDrop = null;
+        cursor = token.end;
+      }
+      continue;
+    }
+    if (token.kind !== 'open') continue;
+    out += `${rawText.slice(cursor, token.start)}<${token.name}/>`;
+    cursor = token.end;
+    if (!token.selfClosing) activeDrop = token.name;
+  }
+  return activeDrop === null ? out + rawText.slice(cursor) : out;
 }
 
 /**

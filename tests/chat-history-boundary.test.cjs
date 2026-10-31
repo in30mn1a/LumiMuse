@@ -786,6 +786,74 @@ test('finalizeAssistantResponse 先提取 IMG 再剥 story XML，保留正文和
   assert.equal(result.inlinePrompt, '1girl, blue eyes');
 });
 
+test('finalizeAssistantResponse 思考块里提到的 [IMG] 不能把正文吞进生图提示词', (t) => {
+  const probe = createDbProbe();
+  t.after(() => probe.database.close());
+  const { finalizeAssistantResponse } = loadChatEngine(probe.db, {});
+
+  // 模型在丢弃块里讨论「要在末尾补 [IMG]」，并且把 tag 名本身也写进思考文本。若先按
+  // [IMG]…[/IMG] 抓第一个块，第一个 `[IMG]` 会与末尾真正的 `[/IMG]` 配对，整段正文被当成
+  // 提示词剥走；剩下的思考块再被整块丢弃 —— 正文归零，整条回复被判为「未返回有效正文」而丢失。
+  const result = finalizeAssistantResponse(
+    '<draft_notes>\n要在 `<draft_notes>` 里推演，最后补上 [IMG] 提示词。\n</draft_notes>\n'
+    + '<story_content>\n早上好。\n</story_content>\n[IMG]1girl, white dress[/IMG]',
+    { storyPlotStrip: true, stripTags: ['story_content', '#draft_notes'], characterImageTags: '' },
+  );
+
+  assert.equal(result.fullText, '早上好。');
+  assert.equal(result.inlinePrompt, '1girl, white dress');
+});
+
+test('finalizeAssistantResponse 丢弃块建立的协议状态要带到正文剥离', (t) => {
+  const probe = createDbProbe();
+  t.after(() => probe.database.close());
+  const { finalizeAssistantResponse } = loadChatEngine(probe.db, {});
+  const finalize = (raw) => finalizeAssistantResponse(raw, {
+    storyPlotStrip: true,
+    stripTags: ['story_content', '#draft_notes'],
+    characterImageTags: '',
+  });
+
+  // 丢弃块是「这是协议回复」的证据；提前去掉后若不留痕，这些残缺 tag 会被当字面量落库。
+  assert.equal(finalize('<draft_notes>想</draft_notes>正文<story_cont').fullText, '正文');
+  assert.equal(finalize('<draft_notes>想</draft_notes>前言<story_content>正文').fullText, '前言正文');
+  assert.equal(finalize('<draft_notes>想</draft_notes>正文</story_content>\n尾文').fullText, '正文\n尾文');
+  assert.equal(finalize('前言<draft_notes>想</draft_notes><story_content>正文').fullText, '前言正文');
+});
+
+test('finalizeAssistantResponse 旧协议预设的其余规则不生效', (t) => {
+  const probe = createDbProbe();
+  t.after(() => probe.database.close());
+  const { finalizeAssistantResponse } = loadChatEngine(probe.db, {});
+  const finalize = (raw) => finalizeAssistantResponse(raw, {
+    storyPlotStrip: true,
+    stripTags: ['story_plot', '#aside'],
+    characterImageTags: '',
+  });
+
+  assert.equal(
+    finalize('<story_plot><story_body>正文<aside>旁白</aside></story_body></story_plot>').fullText,
+    '正文<aside>旁白</aside>',
+  );
+  const notAtHead = '<aside>旁白</aside><story_plot><story_body>正文</story_body></story_plot>';
+  assert.equal(finalize(notAtHead).fullText, notAtHead);
+});
+
+test('流式：丢弃块之后的残缺 tag，推给前端与落库内容一致', async () => {
+  const result = await runStreamingStripProbe(
+    '<draft_notes>想</draft_notes>前言<story_content>正文',
+    [5],
+    { stripTags: ['story_content', '#draft_notes'] },
+  );
+  try {
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.storedText, '前言正文');
+    assert.equal(result.emitted, '前言正文');
+  } finally {
+    result.database.close();
+  }
+});
+
 test('finalizeAssistantResponse 清理截断或空的 IMG 块，同时保留普通正文空白', (t) => {
   const probe = createDbProbe();
   t.after(() => probe.database.close());

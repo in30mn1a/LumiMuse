@@ -32,6 +32,7 @@ require.extensions['.ts'] = function loadTs(module, filename) {
 };
 
 const {
+  collapseDropBlocks,
   LEGACY_STORY_PLOT_TAGS,
   PROTOCOL_TAG_PREFIXES,
   stripByPresetRules,
@@ -472,6 +473,51 @@ test('最终参数化：EOF 未闭合 drop 整块丢弃，不能落库思考草�
     stripByPresetRules('<scene>客厅</scene><think>未完成草稿', ['scene', '#think']),
     '客厅',
   );
+});
+
+test('最终参数化：drop 块里提到同名 tag 不让整段回复丢到 EOF', () => {
+  // 预设会教模型在思考里写 `<think>` 这个名字，于是思考内容里出现同名开标签。
+  // 若把这种出现当成嵌套，后面唯一那个闭标签就闭不上一层，drop 会一路延伸到 EOF，
+  // 正文被一起丢掉（线上表现为「回复被吞 + 未返回有效正文」）。
+  assert.equal(
+    stripByPresetRules('<think>要在 `<think>` 里推演</think><content>正文</content>', ['content', '#think']),
+    '正文',
+  );
+  // 两次独立的思考块互不影响。
+  assert.equal(
+    stripByPresetRules('<think>甲</think><content>正文</content><think>乙</think>', ['content', '#think']),
+    '正文',
+  );
+});
+
+test('collapseDropBlocks：drop 块收成自闭合 tag，其余文本按字节保留', () => {
+  const rules = ['content', '#think'];
+  assert.equal(
+    collapseDropBlocks('前<think>提到 [IMG] 和 `<think>`</think>\n<content>正文</content>\n', rules),
+    '前<think/>\n<content>正文</content>\n',
+  );
+  assert.equal(collapseDropBlocks('正文<THINK>甲</THINK>中<think/>后<think>乙', rules), '正文<think/>中<think/>后<think/>');
+  // 没有 drop 块、没有 drop 规则、旧协议：一律原样返回，尾部空白也不动。
+  assert.equal(collapseDropBlocks('正文 </content>\n\n', rules), '正文 </content>\n\n');
+  assert.equal(collapseDropBlocks('<think>甲</think>\n', ['content']), '<think>甲</think>\n');
+  assert.equal(collapseDropBlocks('<aside>甲</aside>', ['story_plot', '#aside']), '<aside>甲</aside>');
+});
+
+test('collapseDropBlocks：收起后再完整剥离，与直接完整剥离结果一致', () => {
+  const rules = ['content', 'scene', '#think'];
+  for (const raw of [
+    '<think>甲</think>\n<scene>地点</scene>\n<content>正文</content>',
+    '<think>甲</think>正文<conte',
+    '<think>甲</think>前言<content>正文',
+    '<think>甲</think>正文</content>\n尾文',
+    '前言 <think>甲</think>  正文',
+    '前言<think>甲</think>\n正文',
+    '<content>甲<think>乙</think>丙</content>',
+    '<think>未闭合',
+    '普通文本 <b>不命中</b>\n',
+  ]) {
+    assert.equal(stripByPresetRules(collapseDropBlocks(raw, rules), rules), stripByPresetRules(raw, rules), raw);
+  }
 });
 
 test('最终参数化：协议已建立后剥非头部未闭合 block 和半截协议 tag', () => {

@@ -177,6 +177,13 @@ export default function Sidebar({ selectedCharacterId, onCharacterSelect, onConv
             <span className="flex-1">{t('sidebar.memories')}</span>
           </Link>
           <Link
+            href="/agent"
+            className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+          >
+            <SparkIcon className="h-4 w-4 shrink-0 text-accent-dark" />
+            <span className="flex-1">{t('sidebar.agent')}</span>
+          </Link>
+          <Link
             href="/settings"
             className="flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
           >

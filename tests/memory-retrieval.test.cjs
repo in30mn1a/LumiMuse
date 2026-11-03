@@ -56,9 +56,9 @@ function requireFreshWithMocks(modulePath, mocks) {
   try {
     const resolved = require.resolve(modulePath);
     delete require.cache[resolved];
-    const memoryIndexTriggerPath = path.join(root, 'src/lib/memory-index-trigger.ts');
-    if (require.cache[memoryIndexTriggerPath]) {
-      delete require.cache[memoryIndexTriggerPath];
+    // 路由经 memory-mutations 触发索引：两者都要重新加载，才能拿到本次的 mock
+    for (const relativePath of ['src/lib/memory-index-trigger.ts', 'src/lib/memory-mutations.ts']) {
+      delete require.cache[path.join(root, relativePath)];
     }
     return require(modulePath);
   } finally {

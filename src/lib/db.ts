@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { structuredLog } from '@/lib/structured-log';
+import { registerAppEventSink } from '@/lib/app-events';
 import path from 'path';
 import fs from 'fs';
 import { inferMemoryDefaults } from '@/lib/memory-category';
@@ -159,6 +160,7 @@ export function getDb(): Database.Database {
     throw err;
   }
   _db = db;
+  registerAppEventSink(db);
   enableGeneratedImageFolderMigrationTracking(db);
 
   // 生产环境未设置访问密码时发出警告：proxy.ts 与 /api/auth 都会在 ACCESS_PASSWORD 缺失时直接放行，
@@ -1052,6 +1054,63 @@ function migrate(db: Database.Database): void {
       ON character_model_preset_bindings(preset_id);
     CREATE INDEX IF NOT EXISTS idx_character_model_preset_bindings_character
       ON character_model_preset_bindings(character_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS app_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      level TEXT NOT NULL,
+      event TEXT NOT NULL,
+      character_id TEXT,
+      conversation_id TEXT,
+      message_id TEXT,
+      task_id TEXT,
+      provider_id TEXT,
+      model TEXT,
+      http_status INTEGER,
+      error_category TEXT,
+      error_name TEXT,
+      error_message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_app_events_ts ON app_events(ts);
+
+    -- 内置 Agent：只新增表、不提升 CURRENT_SCHEMA_VERSION，旧镜像不读这些表，仍可回滚启动
+    CREATE TABLE IF NOT EXISTS agent_sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      character_id TEXT REFERENCES characters(id) ON DELETE SET NULL,
+      conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated ON agent_sessions(updated_at);
+
+    CREATE TABLE IF NOT EXISTS agent_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool', 'event')),
+      content TEXT NOT NULL DEFAULT '',
+      tool_calls_json TEXT,
+      tool_call_id TEXT,
+      tool_name TEXT,
+      assistant_fields_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id, id);
+
+    CREATE TABLE IF NOT EXISTS agent_documents (
+      key TEXT PRIMARY KEY CHECK(key IN ('agents', 'memory')),
+      content TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_document_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL CHECK(key IN ('agents', 'memory')),
+      content TEXT NOT NULL,
+      source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_document_versions_key ON agent_document_versions(key, id);
   `);
 
   // settings.prompt_preset 已废弃；每次启动清掉历史行，避免 GET /api/settings 经 loadSettings 再带出该键

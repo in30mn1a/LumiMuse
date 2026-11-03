@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Memory } from '@/types';
-import { normalizeMemoryCategory } from '@/lib/memory-category';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { memoryUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
-import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
-import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
+import { applyMemoryUpdate } from '@/lib/memory-mutations';
 
 /**
  * 取出请求方可能声明的 character_id 归属（query param 或 body field），
@@ -43,16 +41,6 @@ export async function PUT(
   }
   const body = parsed.data;
   const db = getDb();
-  const shouldEnqueueEmbeddingUpdate =
-    body.category !== undefined ||
-    body.content !== undefined ||
-    body.tags !== undefined ||
-    body.memory_kind !== undefined ||
-    body.importance !== undefined ||
-    body.emotional_weight !== undefined ||
-    body.status !== undefined ||
-    body.pinned !== undefined;
-
   // 先校验归属：若请求方声明了 character_id，必须匹配 DB 中的归属
   const existing = db.prepare('SELECT character_id FROM memories WHERE id = ?').get(id) as
     | { character_id: string }
@@ -64,42 +52,9 @@ export async function PUT(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const now = new Date().toISOString();
-  const fields: string[] = [];
-  const values: unknown[] = [];
-
-  if (body.category !== undefined) { fields.push('category = ?'); values.push(normalizeMemoryCategory(body.category)); }
-  if (body.content !== undefined) { fields.push('content = ?'); values.push(body.content); }
-  if (body.confidence !== undefined) { fields.push('confidence = ?'); values.push(body.confidence); }
-  if (body.tags !== undefined) { fields.push('tags = ?'); values.push(JSON.stringify(body.tags)); }
-  if (body.memory_kind !== undefined) { fields.push('memory_kind = ?'); values.push(body.memory_kind); }
-  if (body.importance !== undefined) { fields.push('importance = ?'); values.push(body.importance); }
-  if (body.emotional_weight !== undefined) { fields.push('emotional_weight = ?'); values.push(body.emotional_weight); }
-  if (body.status !== undefined) { fields.push('status = ?'); values.push(body.status); }
-  if (body.pinned !== undefined) { fields.push('pinned = ?'); values.push(body.pinned ? 1 : 0); }
-  if (body.last_used_at !== undefined) { fields.push('last_used_at = ?'); values.push(body.last_used_at); }
-  if (body.usage_count !== undefined) { fields.push('usage_count = ?'); values.push(body.usage_count); }
-  if (body.metadata !== undefined) { fields.push('metadata = ?'); values.push(JSON.stringify(body.metadata)); }
-  fields.push('updated_at = ?'); values.push(now);
-
-  if (fields.length === 1) return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
-
-  values.push(id);
-  db.prepare(`UPDATE memories SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-
-  if (shouldEnqueueEmbeddingUpdate) {
-    try {
-      if (enqueueMemoryEmbeddingTask(id, existing.character_id, 'updated', db)) {
-        triggerMemoryIndexProcessing();
-      }
-    } catch (error) {
-      console.error('Failed to enqueue memory embedding task after memory update', {
-        memoryId: id,
-        characterId: existing.character_id,
-        error,
-      });
-    }
-  }
+  const result = applyMemoryUpdate(db, id, body, new Date().toISOString());
+  if (result === 'not_found') return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (result === 'no_fields') return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
 
   const updated = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory;
   return NextResponse.json(normalizeMemoryRow(updated));

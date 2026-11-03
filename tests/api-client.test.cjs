@@ -180,6 +180,83 @@ test('completeRequest omits replay fields the upstream did not send', async () =
   assert.equal(Object.hasOwn(result, 'assistantFields'), false);
 });
 
+for (const [label, terminal, expected] of [
+  ['plain EOF', '', false],
+  ['DONE only', 'data: [DONE]\n\n', true],
+  ['stop only', 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', true],
+  ['length followed by DONE', 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n', false],
+]) {
+  test(`completeRequest reports completion separately from unchanged text for ${label}`, async () => {
+    const { completeRequest } = requireFreshWithMocks('../src/lib/api-client.ts', {
+      './ssrf-guard': { safeFetch: async () => new Response(`data: {"choices":[{"delta":{"content":"text"}}]}\n\n${terminal}`) },
+    });
+    const result = await completeRequest({ api_base: 'https://fixture.invalid/v1', api_key: '' }, { stream: true });
+    assert.equal(result.text, 'text');
+    assert.equal(result.completed, expected);
+  });
+}
+
+for (const finishReason of [undefined, 'stop', 'tool_calls', 'length']) {
+  test(`completeRequest identifies a full JSON response with finish_reason ${String(finishReason)}`, async () => {
+    const { completeRequest } = requireFreshWithMocks('../src/lib/api-client.ts', {
+      './ssrf-guard': { safeFetch: async () => Response.json({ choices: [{ message: { content: 'text' }, finish_reason: finishReason }] }) },
+    });
+    const result = await completeRequest({ api_base: 'https://fixture.invalid/v1', api_key: '' }, {});
+    assert.equal(result.completed, finishReason !== 'length');
+    assert.equal(result.text, 'text');
+  });
+}
+
+for (const name of ['chatCompletion', 'completeRequest']) {
+  test(`${name} keeps the original null JSON response error and identifies the actual request model`, async () => {
+    const client = requireFreshWithMocks('../src/lib/api-client.ts', {
+      './ssrf-guard': { safeFetch: async () => Response.json(null) },
+    });
+    const { getLlmRequestModel } = require('../src/lib/upstream-error.ts');
+    const settings = { api_base: 'https://fixture.invalid/v1', api_key: '', model: 'global-model' };
+    let error;
+    try {
+      if (name === 'chatCompletion') await client[name](settings, [], undefined, { model: 'requested-model' });
+      else await client[name](settings, { model: 'requested-model', stream: false });
+    } catch (caught) { error = caught; }
+    assert.ok(error instanceof TypeError);
+    assert.match(error.message, /Cannot read properties of null.*choices/);
+    assert.equal(getLlmRequestModel(error), 'requested-model');
+  });
+}
+
+for (const name of ['chatCompletionStream', 'chatCompletion', 'completeRequest']) {
+  for (const networkFailure of [false, true]) {
+    test(`${name} retains its error while identifying the actual request model on ${networkFailure ? 'network' : 'HTTP'} failure`, async () => {
+      const networkError = new TypeError('fetch failed');
+      const client = requireFreshWithMocks('../src/lib/api-client.ts', {
+        './ssrf-guard': { safeFetch: async () => {
+          if (networkFailure) throw networkError;
+          return new Response('limited', { status: 429 });
+        } },
+      });
+      const { getLlmRequestModel } = require('../src/lib/upstream-error.ts');
+      const settings = { api_base: 'https://fixture.invalid/v1', api_key: '', model: 'global-model' };
+      let error;
+      try {
+        if (name === 'chatCompletionStream') {
+          await client[name]({ ...settings, model: 'requested-model' }, [], {
+            onChunk() {}, onDone() {}, onError: value => { error = value; },
+          });
+        } else if (name === 'chatCompletion') {
+          await client[name](settings, [], undefined, { model: 'requested-model' });
+        } else {
+          await client[name](settings, { model: 'requested-model' });
+        }
+      } catch (caught) { error = caught; }
+      assert.ok(error instanceof Error);
+      assert.equal(getLlmRequestModel(error), 'requested-model');
+      if (networkFailure) assert.equal(error, networkError);
+      else assert.match(error.message, /^API error 429: limited$/);
+    });
+  }
+}
+
 test('chatCompletion merges extra request body into non-streaming completion requests', async () => {
   let capturedBody = null;
 

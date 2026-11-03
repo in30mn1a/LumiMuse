@@ -29,6 +29,12 @@ Module._resolveFilename = function(request, parent, ...args) {
 };
 Module._load = function(request, ...args) {
   if (request === '@/lib/i18n-context') return { useTranslation: () => ({ t }) };
+  if (request === 'next/link') {
+    return {
+      __esModule: true,
+      default: ({ children, href, ...props }) => React.createElement('a', { href, ...props }, children),
+    };
+  }
   return originalLoad.call(this, request, ...args);
 };
 function loadTs(module, filename) {
@@ -116,4 +122,12 @@ test('Escape inside the more menu restores its trigger focus', async () => {
   await user.keyboard('{Escape}');
   assert.equal(view.queryByRole('menu'), null);
   assert.ok(document.activeElement === trigger, 'Escape must focus the more trigger');
+});
+
+test('more menu links to the Agent with the active conversation', async () => {
+  const user = userEvent.setup({ document });
+  const view = render(React.createElement(Harness));
+  await user.click(view.getByRole('button', { name: 'common.more' }));
+  const link = view.getByRole('menuitem', { name: 'chat.openAgent' });
+  assert.equal(link.getAttribute('href'), '/agent?conversation=menu-conversation');
 });

@@ -112,7 +112,7 @@ function normalizeMemory(record: Memory): Memory {
   return normalizeMemoryRow(record);
 }
 
-function tokenizeForRetrieval(text: string): Set<string> {
+export function tokenizeForRetrieval(text: string): Set<string> {
   const tokens = new Set<string>();
 
   for (const pattern of [/《([^》]{1,30})》/g, /「([^」]{1,30})」/g, /"([^"]{1,30})"/g, /'([^']{1,30})'/g]) {

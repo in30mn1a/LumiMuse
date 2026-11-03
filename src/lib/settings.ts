@@ -8,7 +8,7 @@ import { RETIRED_BACKGROUND_SETTING_KEYS } from '@/lib/character-task-settings-m
 import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
 import { resolveReasoningEffortForModel, sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
 import { sanitizePinnedModels } from '@/lib/pinned-models';
-import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, Settings } from '@/types';
+import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, ReasoningEffort, Settings } from '@/types';
 
 const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
   'json_mode',
@@ -172,6 +172,40 @@ export function resolveBackgroundConfig(
     api_base: settings.api_base,
     api_key: settings.api_key,
     model,
+  };
+}
+
+export interface AgentConfig {
+  /** 实际生效的接口 ID；走主接口时是当前激活的供应商 ID（可能为空）。 */
+  provider_id: string;
+  api_base: string;
+  api_key: string;
+  model: string;
+  reasoning_effort: ReasoningEffort;
+}
+
+/**
+ * 解析内置 Agent 的接口和模型。Agent 不属于单个角色，只读全局的 agent_* 设置；
+ * 未配置或所选接口已被删除时回退主接口，未指定模型时用主聊天模型。
+ */
+export function resolveAgentConfig(settings: Settings): AgentConfig {
+  const model = settings.agent_model?.trim() || settings.model;
+  const reasoning_effort = settings.agent_reasoning_effort || 'default';
+  const providerId = settings.agent_provider_id?.trim() ?? '';
+  if (providerId) {
+    const row = getDb().prepare('SELECT api_base, api_key FROM api_providers WHERE id = ?').get(providerId) as
+      | { api_base: string; api_key: string }
+      | undefined;
+    if (row?.api_base) {
+      return { provider_id: providerId, api_base: row.api_base, api_key: row.api_key, model, reasoning_effort };
+    }
+  }
+  return {
+    provider_id: settings.active_provider_id,
+    api_base: settings.api_base,
+    api_key: settings.api_key,
+    model,
+    reasoning_effort,
   };
 }
 

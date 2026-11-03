@@ -504,6 +504,10 @@ export interface Settings {
   font_style: FontStyle;
   font_size: FontSize;
   active_provider_id: string;
+  // 内置 Agent 的接口、模型和思考强度；留空回退主接口和主模型。Agent 不属于单个角色，所以是全局设置。
+  agent_provider_id: string;
+  agent_model: string;
+  agent_reasoning_effort: ReasoningEffort;
   // 高级采样参数：null 表示未设置，请求体中不会包含该字段（部分模型不支持）。
   top_p: number | null;
   frequency_penalty: number | null;
@@ -551,6 +555,9 @@ export const DEFAULT_SETTINGS: Settings = {
   font_style: 'wenkai',
   font_size: 'medium',
   active_provider_id: '',
+  agent_provider_id: '',
+  agent_model: '',
+  agent_reasoning_effort: 'default',
   top_p: null,
   frequency_penalty: null,
   presence_penalty: null,

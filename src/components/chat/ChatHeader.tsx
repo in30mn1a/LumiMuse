@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
+import Link from 'next/link';
 import { useTranslation } from '@/lib/i18n-context';
 import {
   ChevronDownIcon,
@@ -10,6 +11,7 @@ import {
   PencilIcon,
   PlusIcon,
   SearchIcon,
+  SparkIcon,
   SummaryIcon,
   TrashIcon,
 } from '@/components/ui/icons';
@@ -211,6 +213,15 @@ function ChatHeaderImpl({
                 {duplicating ? <span className="spinner-sm" aria-hidden="true" /> : <DuplicateIcon className="h-4 w-4 text-text-muted" />}
                 <span>{duplicating ? t('chat.duplicating') : t('chat.duplicate')}</span>
               </button>
+              <Link
+                href={activeConversation ? `/agent?conversation=${encodeURIComponent(activeConversation.id)}` : '/agent'}
+                role="menuitem"
+                onClick={() => setMoreOpen(false)}
+                className={MENU_ITEM}
+              >
+                <SparkIcon className="h-4 w-4 text-text-muted" />
+                <span>{t('chat.openAgent')}</span>
+              </Link>
               <div className="my-1 h-px bg-border-light" role="separator" />
               <button
                 type="button"

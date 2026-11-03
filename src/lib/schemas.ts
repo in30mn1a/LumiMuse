@@ -162,6 +162,9 @@ export const settingsUpdateSchema = z.looseObject({
   font_style: z.enum(['wenkai', 'system', 'serif']).optional(),
   font_size: z.enum(['small', 'medium', 'large']).optional(),
   active_provider_id: z.string().max(64).optional(),
+  agent_provider_id: z.string().max(64).optional(),
+  agent_model: settingModelSchema.optional(),
+  agent_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
   image_gen: imageGenSettingsSchema.optional(),
   memory_engine: memoryEngineSettingsSchema.optional(),
   artist_strings: z.array(artistStringSettingsSchema).optional(),
@@ -580,6 +583,29 @@ export const providerUpdateSchema = z.object({
   sync_from_settings: z.boolean().optional(),
 });
 export type ProviderUpdate = z.infer<typeof providerUpdateSchema>;
+
+// --------- 内置 Agent ---------
+const agentIdSchema = z.string().min(1).max(64);
+
+export const agentChatRequestSchema = z.object({
+  session_id: agentIdSchema,
+  content: z.string().trim().min(1).max(MAX_MESSAGE_CONTENT),
+});
+
+export const agentSessionCreateSchema = z.object({
+  title: z.string().max(MAX_TITLE).optional(),
+  character_id: agentIdSchema.nullish(),
+  conversation_id: agentIdSchema.nullish(),
+});
+
+export const agentSessionUpdateSchema = z.object({
+  title: z.string().trim().min(1).max(MAX_TITLE),
+});
+
+export const agentDocumentUpdateSchema = z.union([
+  z.object({ content: z.string().max(MAX_LARGE_TEXT) }),
+  z.object({ restore_version_id: z.number().int().positive() }),
+]);
 
 // --------- 通用错误响应辅助 ---------
 /**

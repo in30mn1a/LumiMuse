@@ -6,6 +6,8 @@ import { enqueueExtraction } from '@/lib/memory-queue';
 import { ChatTimeContext } from '@/lib/chat-time';
 import { chatBodySchema, formatZodFieldErrors, validateChatAttachmentTotals } from '@/lib/schemas';
 import { publicErrorMessage } from '@/lib/public-error';
+import { structuredLog } from '@/lib/structured-log';
+import { getLlmRequestModel } from '@/lib/upstream-error';
 import { loadPendingMemoryExtractionBatch, MEMORY_PROCESSED_SQL } from '@/lib/memory-extraction-scope';
 import { descendingMessageOrderSqlForChain } from '@/lib/conversation-chain';
 
@@ -94,6 +96,24 @@ export async function POST(request: NextRequest) {
         closed = true;
       };
       request.signal.addEventListener('abort', onAbort);
+
+      const logReplyFailed = (error: unknown) => {
+        // 客户端主动停止不算回复失败
+        if (request.signal.aborted) return;
+        let characterId: string | undefined;
+        try {
+          const row = db.prepare('SELECT character_id FROM conversations WHERE id = ?').get(conversation_id) as { character_id: string } | undefined;
+          characterId = row?.character_id;
+        } catch {
+          // 诊断字段查不到时仍要记录失败并下发错误
+        }
+        structuredLog('error', 'chat.reply_failed', {
+          conversationId: conversation_id,
+          characterId,
+          model: getLlmRequestModel(error) ?? settings.model,
+          providerId: settings.active_provider_id || undefined,
+        }, error);
+      };
 
       try {
         const options = regenerate_assistant_id
@@ -186,6 +206,7 @@ export async function POST(request: NextRequest) {
             // 上游 LLM 错误在 api-client 抛出前已过 sanitizeUpstreamError 脱敏，
             // 用户需要看到（如 401 invalid key）才能修配置，普通 Error 透传；
             // DB / 系统级异常收口为固定文案，避免 SQL 与本地路径直通客户端。
+            logReplyFailed(error);
             send('error', JSON.stringify({ message: publicErrorMessage(error, UNKNOWN_ERROR_LABEL) }));
             safeClose();
           },
@@ -194,6 +215,7 @@ export async function POST(request: NextRequest) {
         setTimeout(() => safeClose(), STREAM_CLOSE_DELAY_MS);
       } catch (err) {
         // 同 onError：已脱敏上游错误透传（用户修配置需要），系统级异常收口
+        logReplyFailed(err);
         send('error', JSON.stringify({ message: publicErrorMessage(err, UNKNOWN_ERROR_LABEL) }));
         safeClose();
       } finally {

@@ -5,16 +5,15 @@ import {
   listUndoableMemoryArchiveBatches,
   planMemorySummaryArchive,
   undoMemorySummaryArchiveBatch,
-  type MemoryArchiveSourceMemory,
 } from '@/lib/memory-archive';
 import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { loadCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion, REASONING_SAFE_MAX_TOKENS } from '@/lib/api-client';
 import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
+import { loadArchiveSources } from '@/lib/memory-mutations';
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { AI_ARCHIVE_PROMPT } from '@/lib/prompt-templates';
-import type { MemoryCategory, MemoryKind, MemoryStatus } from '@/types';
 import { findFirstBalancedJson } from '@/lib/balanced-json';
 import { publicErrorMessage } from '@/lib/public-error';
 import { BackgroundLlmTimeoutError, runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
@@ -23,62 +22,8 @@ const MAX_SUMMARY_CONTENT_LENGTH = 8 * 1024;
 /** covered_memory_ids 里有记忆已被删除 / 归档 / 合并：方案已过期，重试不会成功。 */
 const COVERED_NOT_ARCHIVABLE_CODE = 'COVERED_NOT_ARCHIVABLE';
 
-type MemoryRow = {
-  id: string;
-  category: MemoryCategory;
-  content: string;
-  confidence: number;
-  tags: string;
-  source_msg_ids: string;
-  memory_kind: MemoryKind;
-  importance: number;
-  emotional_weight: number;
-  status: MemoryStatus;
-  pinned: number;
-  metadata: string;
-};
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function parseStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
-  if (typeof value !== 'string') return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-function parseMetadata(value: unknown): Record<string, unknown> {
-  if (isObject(value)) return value;
-  if (typeof value !== 'string') return {};
-  try {
-    const parsed = JSON.parse(value);
-    return isObject(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function toSourceMemory(row: MemoryRow): MemoryArchiveSourceMemory {
-  return {
-    id: row.id,
-    category: row.category,
-    content: row.content,
-    confidence: row.confidence,
-    tags: parseStringArray(row.tags),
-    source_msg_ids: parseStringArray(row.source_msg_ids),
-    memory_kind: row.memory_kind,
-    importance: row.importance,
-    emotional_weight: row.emotional_weight,
-    status: row.status,
-    pinned: row.pinned === 1,
-    metadata: parseMetadata(row.metadata),
-  };
 }
 
 /** AI 归档方案里的一组：同一主题的若干记忆 + 一条覆盖它们的摘要。 */
@@ -112,24 +57,6 @@ function readStringIds(body: Record<string, unknown>, key: string): string[] | n
   if (!Array.isArray(value) || value.length === 0) return null;
   const ids = value.filter((item): item is string => typeof item === 'string' && item.length > 0);
   return ids.length === value.length ? ids : null;
-}
-
-function loadCoveredMemories(characterId: string, coveredMemoryIds: string[]) {
-  const db = getDb();
-  const placeholders = coveredMemoryIds.map(() => '?').join(',');
-  const rows = db.prepare(`
-    SELECT id, category, content, confidence, tags, source_msg_ids,
-      memory_kind, importance, emotional_weight, status, pinned, metadata
-    FROM memories
-    WHERE character_id = ? AND id IN (${placeholders})
-  `).all(characterId, ...coveredMemoryIds) as MemoryRow[];
-
-  if (rows.length !== coveredMemoryIds.length) {
-    return null;
-  }
-
-  const rowById = new Map(rows.map(row => [row.id, row]));
-  return coveredMemoryIds.map(id => toSourceMemory(rowById.get(id)!));
 }
 
 function queueArchiveSummaryIndex(summaryMemoryId: string, characterId: string) {
@@ -397,27 +324,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'summary_content is too long' }, { status: 400 });
   }
 
-  const sourceMemories = loadCoveredMemories(characterId, coveredMemoryIds);
-  if (!sourceMemories) {
-    return NextResponse.json(
-      { error: 'Some covered memories were not found', code: COVERED_NOT_ARCHIVABLE_CODE },
-      { status: 404 },
-    );
+  const sourceResult = loadArchiveSources(getDb(), characterId, coveredMemoryIds);
+  if (!sourceResult.ok) {
+    return sourceResult.reason === 'not_found'
+      ? NextResponse.json(
+        { error: 'Some covered memories were not found', code: COVERED_NOT_ARCHIVABLE_CODE },
+        { status: 404 },
+      )
+      : NextResponse.json(
+        { error: 'covered_memory_ids must reference active, non-summary memories', code: COVERED_NOT_ARCHIVABLE_CODE },
+        { status: 400 },
+      );
   }
-
-  // 提前拒绝非 active / 已是 summary / 已归档的记忆,给用户明确的 400 反馈;
-  // executeMemorySummaryArchive 内部还会在事务里再校验一次,兜住 preview→execute 之间的状态变化。
-  const invalidCovered = sourceMemories.find(
-    memory => memory.status !== 'active'
-      || memory.metadata?.archiveRole === 'summary'
-      || Boolean(memory.metadata?.archiveBatchId),
-  );
-  if (invalidCovered) {
-    return NextResponse.json(
-      { error: 'covered_memory_ids must reference active, non-summary memories', code: COVERED_NOT_ARCHIVABLE_CODE },
-      { status: 400 },
-    );
-  }
+  const sourceMemories = sourceResult.sources;
 
   const summaryMemoryId = readNonEmptyString(rawBody, 'summary_memory_id') ?? crypto.randomUUID().slice(0, 12);
 

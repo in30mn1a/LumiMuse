@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Memory, MEMORY_STATUSES, MemoryStatus } from '@/types';
-import { normalizeMemoryCategory, inferMemoryDefaults } from '@/lib/memory-category';
+import { normalizeMemoryCategory } from '@/lib/memory-category';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { memoryCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
-import { enqueueMemoryEmbeddingTask } from '@/lib/memory-embeddings';
-import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
+import { createMemoryRow } from '@/lib/memory-mutations';
 
 const MAX_PAGINATED_MEMORIES_LIMIT = 500;
 
@@ -169,52 +168,7 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  const body = parsed.data;
 
-  const db = getDb();
-  const id = crypto.randomUUID().slice(0, 12);
-  const now = new Date().toISOString();
-  const category = normalizeMemoryCategory(body.category);
-  const defaults = inferMemoryDefaults(category);
-
-  db.prepare(`
-    INSERT INTO memories (
-      id, character_id, category, content, confidence, tags, source_msg_ids,
-      memory_kind, importance, emotional_weight, status, pinned, last_used_at, usage_count, metadata,
-      created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    body.character_id,
-    category,
-    body.content,
-    body.confidence ?? 0.9,
-    JSON.stringify(body.tags || []),
-    body.memory_kind ?? defaults.memory_kind,
-    body.importance ?? defaults.importance,
-    body.emotional_weight ?? defaults.emotional_weight,
-    body.status ?? 'active',
-    body.pinned ? 1 : 0,
-    body.last_used_at ?? null,
-    body.usage_count ?? 0,
-    JSON.stringify(body.metadata ?? {}),
-    now,
-    now,
-  );
-
-  try {
-    if (enqueueMemoryEmbeddingTask(id, body.character_id, 'created', db)) {
-      triggerMemoryIndexProcessing();
-    }
-  } catch (error) {
-    console.error('Failed to enqueue memory embedding task after memory create', {
-      memoryId: id,
-      characterId: body.character_id,
-      error,
-    });
-  }
-
-  const memory = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory;
+  const memory = createMemoryRow(getDb(), parsed.data, new Date().toISOString());
   return NextResponse.json(normalizeMemoryRow(memory), { status: 201 });
 }

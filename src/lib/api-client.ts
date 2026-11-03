@@ -1,5 +1,6 @@
 import { Settings } from '@/types';
 import { safeFetch } from './ssrf-guard';
+import { UpstreamApiError, withLlmRequestModel } from './upstream-error';
 import { parseSseStream } from './sse-parser';
 
 // 推理模型（带 reasoning_content）会先消耗大量 token 思考。后台任务（记忆提取、画像 patch）
@@ -175,6 +176,23 @@ export function buildChatRequestBody(settings: Settings, stream: boolean): Recor
   return body;
 }
 
+/** 出站失败带回实际请求模型；预设可以改写 body.model，不能用 settings.model 代替。 */
+async function fetchCompletionResponse(settings: Settings, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  try {
+    return await safeFetch(`${settings.api_base}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.api_key}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (error) {
+    throw withLlmRequestModel(error, body.model);
+  }
+}
+
 export async function chatCompletionStream(
   settings: Settings,
   messages: ChatMessage[],
@@ -183,24 +201,16 @@ export async function chatCompletionStream(
   const body = buildChatRequestBody(settings, true);
   body.messages = messages;
 
-  const response = await safeFetch(`${settings.api_base}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.api_key}`,
-    },
-    body: JSON.stringify(body),
-    signal: callbacks.signal,
-  });
+  const response = await fetchCompletionResponse(settings, body, callbacks.signal);
 
   if (!response.ok) {
-    const text = await response.text();
-    callbacks.onError(new Error(`API error ${response.status}: ${sanitizeUpstreamError(text)}`));
+    const text = await response.text().catch((error: unknown) => { throw withLlmRequestModel(error, body.model); });
+    callbacks.onError(withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text)}`), body.model));
     return;
   }
 
   if (!response.body) {
-    callbacks.onError(new Error('API 未返回响应体（可能是网络或代理问题）'));
+    callbacks.onError(withLlmRequestModel(new Error('API 未返回响应体（可能是网络或代理问题）'), body.model));
     return;
   }
 
@@ -253,14 +263,14 @@ export async function chatCompletionStream(
       }
     }
     try { await reader.cancel(); } catch { /* 释放失败流 */ }
-    callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+    callbacks.onError(withLlmRequestModel(err instanceof Error ? err : new Error(String(err)), body.model));
     return;
   }
 
   // parseSseStream 在 abort 时静默返回；已有部分内容时仍保存，空内容则不写入空回复
   if (callbacks.signal?.aborted && !fullText) return;
   if (!fullText.trim()) {
-    callbacks.onError(new Error('API 未返回有效正文（可能仅返回了推理内容）'));
+    callbacks.onError(withLlmRequestModel(new Error('API 未返回有效正文（可能仅返回了推理内容）'), body.model));
     return;
   }
 
@@ -290,6 +300,8 @@ export interface CompletionRequestResult {
   text: string;
   toolCalls: ChatToolCall[];
   finishReason?: string;
+  /** 流收到了 finish_reason 或 [DONE]，且没有因 length/abort 提前结束；完整 JSON 响应亦为 true。 */
+  completed?: boolean;
   /** 工具回灌时要带回 assistant 消息的上游字段；上游没给时不存在。 */
   assistantFields?: Record<string, unknown>;
 }
@@ -327,50 +339,48 @@ export async function completeRequest(
   body: Record<string, unknown>,
   options: CompletionRequestOptions = {},
 ): Promise<CompletionRequestResult> {
-  const response = await safeFetch(`${settings.api_base}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.api_key}`,
-    },
-    body: JSON.stringify(body),
-    signal: options.signal,
-  });
+  const response = await fetchCompletionResponse(settings, body, options.signal);
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`API error ${response.status}: ${sanitizeUpstreamError(text)}`);
+    const text = await response.text().catch((error: unknown) => { throw withLlmRequestModel(error, body.model); });
+    throw withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text)}`), body.model);
   }
 
   const streaming = body.stream === true;
 
   if (!streaming) {
-    const data = await response.json() as {
-      choices?: Array<{
-        finish_reason?: string;
-        message?: { content?: unknown; tool_calls?: unknown; reasoning_content?: unknown; reasoning_details?: unknown };
-      }>;
-      usage?: unknown;
-    };
-    const choice = data.choices?.[0];
-    const text = typeof choice?.message?.content === 'string' ? choice.message.content : '';
-    const toolCalls = parseToolCalls(choice?.message?.tool_calls);
-    if (text) options.onText?.(text);
-    const usage = extractUsageFromChunk(data);
-    if (usage && options.onUsage) options.onUsage(usage);
-    return {
-      text,
-      toolCalls,
-      finishReason: choice?.finish_reason,
-      ...replayFields(choice?.message?.reasoning_content, choice?.message?.reasoning_details),
-    };
+    try {
+      const data = await response.json() as {
+        choices?: Array<{
+          finish_reason?: string;
+          message?: { content?: unknown; tool_calls?: unknown; reasoning_content?: unknown; reasoning_details?: unknown };
+        }>;
+        usage?: unknown;
+      };
+      const choice = data.choices?.[0];
+      const text = typeof choice?.message?.content === 'string' ? choice.message.content : '';
+      const toolCalls = parseToolCalls(choice?.message?.tool_calls);
+      if (text) options.onText?.(text);
+      const usage = extractUsageFromChunk(data);
+      if (usage && options.onUsage) options.onUsage(usage);
+      return {
+        text,
+        toolCalls,
+        finishReason: choice?.finish_reason,
+        completed: choice?.finish_reason !== 'length' && !options.signal?.aborted,
+        ...replayFields(choice?.message?.reasoning_content, choice?.message?.reasoning_details),
+      };
+    } catch (error) {
+      throw withLlmRequestModel(error, body.model);
+    }
   }
 
-  if (!response.body) throw new Error('API 未返回响应体（可能是网络或代理问题）');
+  if (!response.body) throw withLlmRequestModel(new Error('API 未返回响应体（可能是网络或代理问题）'), body.model);
 
   const reader = response.body.getReader();
   let text = '';
   let finishReason: string | undefined;
+  let doneSeen = false;
   let capturedUsage: LlmUsage | undefined;
   // tool_calls 按 index 分片到达：id/name 只来一次，arguments 逐片追加。
   const partial = new Map<number, ChatToolCall>();
@@ -414,7 +424,9 @@ export async function completeRequest(
 
       const usage = extractUsageFromChunk(raw);
       if (usage) capturedUsage = usage;
-    }, { signal: options.signal });
+    }, { signal: options.signal, onDone: () => { doneSeen = true; } });
+  } catch (error) {
+    throw withLlmRequestModel(error, body.model);
   } finally {
     // abort 时保留已收到的部分，交由调用方决定是否落库。
     if (options.signal?.aborted) {
@@ -431,6 +443,7 @@ export async function completeRequest(
       .map(([, call]) => call)
       .filter(call => call.name),
     finishReason,
+    completed: finishReason !== 'length' && (doneSeen || Boolean(finishReason)) && !options.signal?.aborted,
     ...replayFields(reasoningContent, reasoningDetails),
   };
 }
@@ -476,44 +489,40 @@ export async function chatCompletion(
     Object.assign(body, extraBody);
   }
 
-  const response = await safeFetch(`${settings.api_base}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.api_key}`,
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
+  const response = await fetchCompletionResponse(settings, body, signal);
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`API error ${response.status}: ${sanitizeUpstreamError(text)}`);
+    const text = await response.text().catch((error: unknown) => { throw withLlmRequestModel(error, body.model); });
+    throw withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text)}`), body.model);
   }
 
-  const data = await response.json();
-  const choice = data.choices?.[0];
-  const content = choice?.message?.content;
-  if (!content || (typeof content === 'string' && content.trim() === '')) {
-    const reason = choice?.finish_reason;
-    const hasReasoning = !!choice?.message?.reasoning_content;
-    if (reason === 'length' && hasReasoning) {
-      throw new Error(`推理模型思考消耗了全部 token，最终未生成内容。请增大 max_tokens（建议 ≥${REASONING_SAFE_MAX_TOKENS}）`);
+  try {
+    const data = await response.json();
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content;
+    if (!content || (typeof content === 'string' && content.trim() === '')) {
+      const reason = choice?.finish_reason;
+      const hasReasoning = !!choice?.message?.reasoning_content;
+      if (reason === 'length' && hasReasoning) {
+        throw new Error(`推理模型思考消耗了全部 token，最终未生成内容。请增大 max_tokens（建议 ≥${REASONING_SAFE_MAX_TOKENS}）`);
+      }
+      throw new Error('LLM 返回了空内容，请检查模型是否支持当前请求格式');
     }
-    throw new Error('LLM 返回了空内容，请检查模型是否支持当前请求格式');
-  }
 
-  // 非流式响应直接在 body.usage 返回；提取后通过回调上报（调用方可选消费）
-  if (onUsage) {
-    const usage = extractUsageFromChunk(data);
-    if (usage) {
-      try {
-        onUsage(usage);
-      } catch {
-        // usage 上报失败不应影响主流程
+    // 非流式响应直接在 body.usage 返回；提取后通过回调上报（调用方可选消费）
+    if (onUsage) {
+      const usage = extractUsageFromChunk(data);
+      if (usage) {
+        try {
+          onUsage(usage);
+        } catch {
+          // usage 上报失败不应影响主流程
+        }
       }
     }
-  }
 
-  return content;
+    return content;
+  } catch (error) {
+    throw withLlmRequestModel(error, body.model);
+  }
 }

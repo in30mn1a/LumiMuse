@@ -201,6 +201,29 @@ test('parseSseStream flushes the final data event without a trailing blank line'
   assert.deepEqual(deltas.map(chunk => chunk.text), ['final']);
 });
 
+test('parseSseStream can observe DONE without changing the delta sequence or EOF flush', async () => {
+  const deltas = [];
+  const markers = [];
+  await parseSseStream(
+    readerFromTextChunks([
+      'data: {"choices":[{"delta":{"content":"before"}}]}\n\ndata: [DO',
+      'NE]\n\ndata: {"choices":[{"delta":{"content":"after"}}]}',
+    ]),
+    chunk => deltas.push(chunk.text),
+    { onDone: () => markers.push('done') },
+  );
+  assert.deepEqual(markers, ['done']);
+  assert.deepEqual(deltas, ['before', 'after']);
+});
+
+test('parseSseStream does not report a completion marker for plain EOF', async () => {
+  let done = false;
+  await parseSseStream(readerFromTextChunks(['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n']), () => {}, {
+    onDone: () => { done = true; },
+  });
+  assert.equal(done, false);
+});
+
 test('parseSseStream cancels a pending reader on mid-stream abort and emits no later delta', async () => {
   const encoder = new TextEncoder();
   const controlled = createCancelableControlledReader();

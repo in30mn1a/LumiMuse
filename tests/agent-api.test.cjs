@@ -1,0 +1,246 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const Database = require('better-sqlite3');
+const { NextRequest } = require('next/server');
+const { registerTsLoader } = require('./helpers/register-ts-loader.cjs');
+
+registerTsLoader();
+
+const { __migrateForTests, __setDbForTests } = require('../src/lib/db.ts');
+const ssrfGuard = require('../src/lib/ssrf-guard.ts');
+const chatRoute = require('../src/app/api/agent/chat/route.ts');
+const sessionsRoute = require('../src/app/api/agent/sessions/route.ts');
+const sessionRoute = require('../src/app/api/agent/sessions/[id]/route.ts');
+const documentsRoute = require('../src/app/api/agent/documents/[key]/route.ts');
+const statusRoute = require('../src/app/api/agent/status/route.ts');
+
+const UPSTREAM_KEY = 'agent-api-test-key';
+
+function setup(t) {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  __migrateForTests(db);
+  __setDbForTests(db);
+  const insertSetting = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
+  for (const [key, value] of Object.entries({
+    api_base: 'http://upstream.test/v1',
+    api_key: UPSTREAM_KEY,
+    model: 'agent-api-model',
+    streaming: false,
+  })) {
+    insertSetting.run(key, JSON.stringify(value));
+  }
+  db.prepare(`INSERT INTO characters (id, name) VALUES ('char-1', '星野')`).run();
+  db.prepare(`INSERT INTO conversations (id, character_id, title) VALUES ('conv-1', 'char-1', '午后')`).run();
+
+  const upstream = { calls: [], handlers: [] };
+  const originalFetch = ssrfGuard.safeFetch;
+  ssrfGuard.safeFetch = async (url, init) => {
+    upstream.calls.push({ url, body: JSON.parse(init.body) });
+    const handler = upstream.handlers.shift();
+    if (!handler) throw new Error('unexpected upstream request');
+    return handler(init);
+  };
+  t.after(() => {
+    ssrfGuard.safeFetch = originalFetch;
+    __setDbForTests(null);
+    db.close();
+  });
+  return { db, upstream };
+}
+
+function completion(message) {
+  return () => Response.json({ choices: [{ message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }] });
+}
+
+/** 一直挂起，直到请求被中止。 */
+function hangingCompletion(started) {
+  return init => new Promise((_resolve, reject) => {
+    started();
+    init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+  });
+}
+
+function jsonRequest(path, method, body, init = {}) {
+  return new NextRequest(`http://test.local${path}`, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    ...init,
+  });
+}
+
+function routeContext(params) {
+  return { params: Promise.resolve(params) };
+}
+
+async function readSse(response) {
+  const text = await response.text();
+  return text.split('\n\n').filter(Boolean).map(block => {
+    const [eventLine, dataLine] = block.split('\n');
+    return { event: eventLine.slice('event: '.length), data: JSON.parse(dataLine.slice('data: '.length)) };
+  });
+}
+
+async function createSession(body = { conversation_id: 'conv-1' }) {
+  const response = await sessionsRoute.POST(jsonRequest('/api/agent/sessions', 'POST', body));
+  assert.equal(response.status, 201);
+  return response.json();
+}
+
+test('a chat request streams tool progress, text and done in order, then history restores', async t => {
+  const { upstream } = setup(t);
+  const session = await createSession();
+  assert.equal(session.character_id, 'char-1');
+  upstream.handlers.push(
+    completion({ content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'list_characters', arguments: '{}' } }] }),
+    completion({ content: '你有一个角色：星野。', reasoning_content: '数一下' }),
+  );
+
+  const response = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '我有几个角色？' }));
+  assert.equal(response.headers.get('content-type'), 'text/event-stream');
+  const events = await readSse(response);
+  assert.deepEqual(events.map(item => item.event), ['tool_start', 'tool_end', 'text', 'done']);
+  assert.deepEqual(events[1].data, { id: 'call_1', name: 'list_characters', ok: true });
+  assert.equal(events[2].data.text, '你有一个角色：星野。');
+  assert.deepEqual(events[3].data, { status: 'done', rounds: 2 });
+  assert.equal(upstream.calls[0].url, 'http://upstream.test/v1/chat/completions');
+  assert.ok(upstream.calls[0].body.tools.some(tool => tool.function.name === 'search_memories'));
+
+  const historyResponse = await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${session.id}`, 'GET'), routeContext({ id: session.id }));
+  const history = await historyResponse.json();
+  assert.equal(history.running, false);
+  assert.equal(history.session.title, '我有几个角色？');
+  assert.deepEqual(history.messages.map(m => m.role), ['user', 'assistant', 'tool', 'assistant']);
+  assert.deepEqual(history.messages[1].tool_calls, [{ id: 'call_1', name: 'list_characters', arguments: '{}' }]);
+  assert.match(history.messages[2].content, /星野/);
+  const raw = JSON.stringify(history);
+  assert.equal(raw.includes('数一下'), false, 'reasoning stays server-side');
+  assert.equal(raw.includes(UPSTREAM_KEY), false);
+});
+
+test('a second request on a running session gets 409, and disconnecting aborts the turn', async t => {
+  const { db, upstream } = setup(t);
+  const session = await createSession();
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  upstream.handlers.push(hangingCompletion(() => markStarted()));
+
+  const client = new AbortController();
+  const firstResponse = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '慢慢想' }, { signal: client.signal }));
+  const firstEvents = readSse(firstResponse);
+  await started;
+
+  const busy = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '再问一次' }));
+  assert.equal(busy.status, 409);
+  assert.equal((await busy.json()).code, 'agent_busy');
+  const busyDelete = await sessionRoute.DELETE(jsonRequest(`/api/agent/sessions/${session.id}`, 'DELETE'), routeContext({ id: session.id }));
+  assert.equal(busyDelete.status, 409);
+  const runningView = await (await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${session.id}`, 'GET'), routeContext({ id: session.id }))).json();
+  assert.equal(runningView.running, true);
+
+  // 另一个会话不受影响
+  const other = await createSession({});
+  upstream.handlers.push(completion({ content: '在的' }));
+  const otherEvents = await readSse(await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: other.id, content: '在吗' })));
+  assert.equal(otherEvents.at(-1).data.status, 'done');
+
+  client.abort();
+  const events = await firstEvents;
+  assert.deepEqual(events.at(-1), { event: 'done', data: { status: 'aborted', rounds: 1 } });
+  const rows = db.prepare('SELECT role, content FROM agent_messages WHERE session_id = ? ORDER BY id').all(session.id);
+  assert.deepEqual(rows.map(row => [row.role, row.content]), [['user', '慢慢想'], ['event', '{"kind":"interrupted"}']]);
+
+  upstream.handlers.push(completion({ content: '接着来' }));
+  const retry = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '继续' }));
+  assert.equal(retry.status, 200);
+  assert.equal((await readSse(retry)).at(-1).data.status, 'done');
+});
+
+test('upstream failures arrive as an error event before done', async t => {
+  const { upstream } = setup(t);
+  const session = await createSession();
+  upstream.handlers.push(() => new Response('{"error":{"message":"bad key"}}', { status: 401 }));
+  const events = await readSse(await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '在吗' })));
+  assert.deepEqual(events.map(item => item.event), ['error', 'done']);
+  assert.match(events[0].data.error, /401/);
+  assert.equal(events[1].data.status, 'error');
+});
+
+test('chat validates the body and the session', async t => {
+  setup(t);
+  assert.equal((await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: 'x', content: '   ' }))).status, 400);
+  assert.equal((await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: 'missing', content: 'hi' }))).status, 404);
+});
+
+test('sessions can be listed, renamed and deleted', async t => {
+  setup(t);
+  const first = await createSession({ title: '第一个' });
+  const second = await createSession({ conversation_id: 'missing-conversation', character_id: 'char-1' });
+  assert.equal(second.conversation_id, null);
+  assert.equal(second.character_id, 'char-1');
+
+  const list = await (await sessionsRoute.GET(jsonRequest('/api/agent/sessions?limit=1', 'GET'))).json();
+  assert.equal(list.sessions.length, 1);
+  assert.equal(list.has_more, true);
+
+  const renamed = await sessionRoute.PATCH(jsonRequest(`/api/agent/sessions/${first.id}`, 'PATCH', { title: '改名了' }), routeContext({ id: first.id }));
+  assert.equal((await renamed.json()).title, '改名了');
+  const deleted = await sessionRoute.DELETE(jsonRequest(`/api/agent/sessions/${first.id}`, 'DELETE'), routeContext({ id: first.id }));
+  assert.equal(deleted.status, 200);
+  const gone = await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${first.id}`, 'GET'), routeContext({ id: first.id }));
+  assert.equal(gone.status, 404);
+});
+
+test('documents save versions and restore an old one', async t => {
+  setup(t);
+  const put = body => documentsRoute.PUT(jsonRequest('/api/agent/documents/agents', 'PUT', body), routeContext({ key: 'agents' }));
+  assert.equal((await put({ content: '第一版' })).status, 200);
+  await put({ content: '第二版' });
+  const view = await (await documentsRoute.GET(jsonRequest('/api/agent/documents/agents', 'GET'), routeContext({ key: 'agents' }))).json();
+  assert.equal(view.document.content, '第二版');
+  assert.deepEqual(view.versions.map(version => version.content), ['第二版', '第一版']);
+
+  const restored = await (await put({ restore_version_id: view.versions[1].id })).json();
+  assert.equal(restored.document.content, '第一版');
+  assert.equal((await put({ restore_version_id: 9999 })).status, 404);
+  const bad = await documentsRoute.GET(jsonRequest('/api/agent/documents/settings', 'GET'), routeContext({ key: 'settings' }));
+  assert.equal(bad.status, 404);
+});
+
+test('status counts failures without calling the model', async t => {
+  const { db, upstream } = setup(t);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO memory_tasks (character_id, conversation_id, status, error_message) VALUES ('char-1', 'conv-1', 'failed', 'boom')`).run();
+  db.prepare(`
+    INSERT INTO memory_extraction_candidates (character_id, status, created_at, updated_at)
+    VALUES ('char-1', 'repairable', ?, ?), ('char-1', 'ignored', ?, ?)
+  `).run(now, now, now, now);
+  db.prepare(`INSERT INTO app_events (ts, level, event) VALUES (?, 'error', 'chat.reply_failed'), (?, 'warn', 'x'), (?, 'error', 'old')`)
+    .run(now, now, '2020-01-01T00:00:00.000Z');
+
+  const body = await (await statusRoute.GET()).json();
+  assert.deepEqual(body.failed_tasks, { extraction: 1, profile: 0, embedding: 0 });
+  assert.equal(body.repairable_candidates, 1);
+  assert.equal(body.recent_errors, 1);
+  assert.deepEqual(body.agent, { configured: true, provider_name: null, model: 'agent-api-model' });
+  assert.equal(upstream.calls.length, 0);
+  assert.equal(JSON.stringify(body).includes(UPSTREAM_KEY), false);
+});
+
+test('agent routes are behind the access password', async t => {
+  const previous = { ACCESS_PASSWORD: process.env.ACCESS_PASSWORD, AUTH_SECRET: process.env.AUTH_SECRET };
+  process.env.ACCESS_PASSWORD = 'agent-route-password';
+  process.env.AUTH_SECRET = 'agent-route-secret';
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const { proxy } = require('../src/proxy.ts');
+  for (const path of ['/api/agent/chat', '/api/agent/sessions', '/api/agent/status', '/api/agent/documents/agents']) {
+    const response = await proxy(new NextRequest(`http://test.local${path}`));
+    assert.equal(response.status, 401, path);
+  }
+});

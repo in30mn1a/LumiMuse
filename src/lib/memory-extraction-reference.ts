@@ -137,18 +137,22 @@ function anchorTextFor(candidate: ExtractionCandidateSummary): string {
   return `${candidate.category}: ${candidate.content}${tagPart}`;
 }
 
-async function recallByVector(
+/**
+ * 以若干锚点文本做向量召回，按相似度归并去重。失败不抛出，经 failure 返回，
+ * 由调用方决定如何回退。调用方负责决定锚点：提取流程的锚点必须是候选条目本身。
+ */
+export async function recallMemoriesByVector(
   characterId: string,
-  candidates: ExtractionCandidateSummary[],
+  anchorTexts: string[],
   config: ReturnType<typeof resolveMemoryEngineConfig>,
-  deps: ExtractionReferenceDeps,
+  deps: Pick<ExtractionReferenceDeps, 'embedTexts' | 'loadEmbeddingRows' | 'loadMemoriesByIds'> = {},
 ): Promise<{ memories: Memory[]; failure?: string }> {
   const embed = deps.embedTexts || embedTexts;
   const loadRows = deps.loadEmbeddingRows || loadReadyMemoryEmbeddings;
   const loadByIds = deps.loadMemoriesByIds || loadDefaultMemoriesByIds;
 
   try {
-    const vectors = await embed(candidates.map(anchorTextFor), {
+    const vectors = await embed(anchorTexts, {
       api_base: config.embedding_api_base,
       api_key: config.embedding_api_key,
       model: config.embedding_model,
@@ -164,7 +168,7 @@ async function recallByVector(
     });
     if (rows.length === 0) return { memories: [] };
 
-    // 每个候选各召回一批，按相似度归并去重：同一条旧记忆被多个候选命中时取最高分。
+    // 每个锚点各召回一批，按相似度归并去重：同一条旧记忆被多个锚点命中时取最高分。
     const bestScore = new Map<string, number>();
     for (const vector of vectors) {
       for (const item of rankEmbeddingRows(vector, rows, PER_CANDIDATE_RECALL_LIMIT)) {
@@ -271,7 +275,7 @@ export async function buildLifecycleReference(
 
   if (candidates.length > 0) {
     if (config.embedding_enabled && config.embedding_model) {
-      const vector = await recallByVector(characterId, candidates, config, deps);
+      const vector = await recallMemoriesByVector(characterId, candidates.map(anchorTextFor), config, deps);
       embeddingFailed = vector.failure;
       if (vector.memories.length > 0) {
         recalled = vector.memories;

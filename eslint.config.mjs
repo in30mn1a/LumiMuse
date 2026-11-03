@@ -2,7 +2,7 @@ import nextVitals from 'eslint-config-next/core-web-vitals';
 
 const config = [
   {
-    ignores: ['lumimuse_flutter/**', '.tmp-tests/**'],
+    ignores: ['lumimuse_flutter/**', '.tmp-tests/**', '.claude/worktrees/**'],
   },
   ...nextVitals,
   {

@@ -1,0 +1,71 @@
+{
+  "small": {
+    "conflicts": [
+      { "id": "c1", "keys": ["c1a", "c1b"], "note": "不爱吃甜 / 迷上做甜点并吃掉" },
+      { "id": "c2", "keys": ["c2a", "c2b"], "note": "猫毛过敏 / 每天抱猫睡" },
+      { "id": "c3", "keys": ["c3a", "c3b"], "note": "独生子女 / 亲哥哥结婚" },
+      { "id": "c4", "keys": ["c4a", "c4b"], "note": "滴酒不沾 / 常喝精酿" },
+      { "id": "c5", "keys": ["c5a", "c5b"], "note": "绝不催睡 / 每晚提醒睡觉" },
+      { "id": "c6", "keys": ["c6a", "c6b"], "note": "急诊护士 / 公司写前端，跨 40 条边界" }
+    ],
+    "duplicates": [
+      { "id": "d1", "keys": ["d1a", "d1b"] },
+      { "id": "d2", "keys": ["d2a", "d2b"] },
+      { "id": "d3", "keys": ["d3a", "d3b", "d3c"] },
+      { "id": "d4", "keys": ["d4a", "d4b"] },
+      { "id": "d5", "keys": ["d5a", "d5b"], "note": "跨 40 条边界" }
+    ],
+    "misclassified": [
+      { "id": "m1", "key": "m1", "expected_categories": ["四季日常"] },
+      { "id": "m2", "key": "m2", "expected_categories": ["重要事件"] },
+      { "id": "m3", "key": "m3", "expected_categories": ["基础信息"] },
+      { "id": "m4", "key": "m4", "expected_categories": ["人格特质", "偏好习惯"] }
+    ],
+    "traps": [
+      { "id": "t1", "keys": ["t1a", "t1b"], "conflict_allowed": true, "note": "时序变化：搬家" },
+      { "id": "t2", "keys": ["t2a", "t2b"], "conflict_allowed": true, "note": "时序变化：毕业" },
+      { "id": "t3", "keys": ["t3a", "t3b"], "conflict_allowed": false, "note": "室友爱吃，用户讨厌" },
+      { "id": "t4", "keys": ["t4a", "t4b"], "conflict_allowed": false, "note": "两次不同的爬山" },
+      { "id": "t5", "keys": ["t5a", "t5b"], "conflict_allowed": false, "note": "两个方向不同的约定" },
+      { "id": "t6", "keys": ["t6a", "t6b"], "conflict_allowed": false, "note": "来源消息说明水煮鱼是给父亲点的" }
+    ],
+    "do_not_touch": ["n1", "n2", "n3", "n4"]
+  },
+  "scale": {
+    "conflicts": [
+      { "id": "sc1", "keys": ["sc1a", "sc1b"], "note": "不会游泳 / 潜水证" },
+      { "id": "sc2", "keys": ["sc2a", "sc2b"], "note": "恐高 / 跳伞" },
+      { "id": "sc3", "keys": ["sc3a", "sc3b"], "note": "吃素 / 烤肉" },
+      { "id": "sc4", "keys": ["sc4a", "sc4b"], "note": "没驾照 / 开车上班" },
+      { "id": "sc5", "keys": ["sc5a", "sc5b"], "cross_legacy_batch": true, "note": "父亲去世 / 陪爸爸钓鱼" },
+      { "id": "sc6", "keys": ["sc6a", "sc6b"], "cross_legacy_batch": true, "note": "高度近视 / 视力 5.2" },
+      { "id": "sc7", "keys": ["sc7a", "sc7b"], "cross_legacy_batch": true, "note": "每天道早安 / 早上别发消息" },
+      { "id": "sc8", "keys": ["sc8a", "sc8b"], "cross_legacy_batch": true, "note": "不看恐怖片 / 恐怖片影迷" }
+    ],
+    "duplicates": [
+      { "id": "sd1", "keys": ["sd1a", "sd1b"] },
+      { "id": "sd2", "keys": ["sd2a", "sd2b"] },
+      { "id": "sd3", "keys": ["sd3a", "sd3b"] },
+      { "id": "sd4", "keys": ["sd4a", "sd4b", "sd4c"] },
+      { "id": "sd5", "keys": ["sd5a", "sd5b"], "cross_legacy_batch": true },
+      { "id": "sd6", "keys": ["sd6a", "sd6b"], "cross_legacy_batch": true }
+    ],
+    "misclassified": [
+      { "id": "sm1", "key": "sm1", "expected_categories": ["四季日常"] },
+      { "id": "sm2", "key": "sm2", "expected_categories": ["重要事件"] },
+      { "id": "sm3", "key": "sm3", "expected_categories": ["基础信息"] },
+      { "id": "sm4", "key": "sm4", "expected_categories": ["人格特质"] },
+      { "id": "sm5", "key": "sm5", "expected_categories": ["四季日常"] },
+      { "id": "sm6", "key": "sm6", "expected_categories": ["偏好习惯"] }
+    ],
+    "traps": [
+      { "id": "st1", "keys": ["st1a", "st1b"], "conflict_allowed": true, "note": "时序变化：跳槽" },
+      { "id": "st2", "keys": ["st2a", "st2b"], "conflict_allowed": true, "note": "时序变化：恋爱" },
+      { "id": "st3", "keys": ["st3a", "st3b"], "conflict_allowed": false, "note": "同事的仓鼠和用户小时候的仓鼠" },
+      { "id": "st4", "keys": ["st4a", "st4b"], "conflict_allowed": false, "note": "两次不同的旅行" },
+      { "id": "st5", "keys": ["st5a", "st5b"], "conflict_allowed": false, "note": "两个方向不同的约定" },
+      { "id": "st6", "keys": ["st6a", "st6b"], "conflict_allowed": false, "note": "来源消息说明花生制品是替同事买的" }
+    ],
+    "do_not_touch": ["sn1", "sn2", "sn3", "sn4", "sn5", "sn6"]
+  }
+}

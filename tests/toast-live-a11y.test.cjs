@@ -55,6 +55,13 @@ function loadModule(modulePath) {
     if (request === '@/components/ui/icons') {
       return new Proxy({}, { get: () => icon });
     }
+    // 真实 next/link 的预取依赖浏览器的 requestIdleCallback
+    if (request === 'next/link') {
+      return {
+        __esModule: true,
+        default: ({ children, href, ...props }) => React.createElement('a', { href, ...props }, children),
+      };
+    }
     return originalLoad.call(this, request, parent, isMain);
   };
 

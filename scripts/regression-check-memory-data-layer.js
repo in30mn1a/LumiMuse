@@ -26,6 +26,7 @@ const settingsFile = read('src/lib/settings.ts');
 const schemasFile = read('src/lib/schemas.ts');
 const memoryPromptContractFile = read('src/lib/memory-prompt-contract.ts');
 const memoryNormalizationFile = read('src/lib/memory-normalization.ts');
+const memoryMutationsFile = read('src/lib/memory-mutations.ts');
 const memoriesRoute = read('src/app/api/memories/route.ts');
 const memoryDetailRoute = read('src/app/api/memories/[id]/route.ts');
 
@@ -88,15 +89,25 @@ assert(
   memoriesRoute.includes('normalizeMemoryRow') && memoryNormalizationFile.includes('export function normalizeMemoryRow'),
   'memories 列表/创建统一规范化返回新字段',
 );
-assert(memoriesRoute.includes('inferMemoryDefaults'), '旧格式创建记忆会推断默认 memory_kind/importance/emotional_weight');
-assert(memoriesRoute.includes('INSERT INTO memories') && memoriesRoute.includes('memory_kind'), 'POST /api/memories 写入新字段');
+assert(
+  memoriesRoute.includes('createMemoryRow(getDb(), parsed.data,') && memoryMutationsFile.includes('inferMemoryDefaults(category)'),
+  '旧格式创建记忆会推断默认 memory_kind/importance/emotional_weight',
+);
+assert(
+  memoriesRoute.includes('createMemoryRow(getDb(), parsed.data,')
+    && memoryMutationsFile.includes('INSERT INTO memories') && memoryMutationsFile.includes('input.memory_kind ?? defaults.memory_kind'),
+  'POST /api/memories 写入新字段',
+);
 
 assert(memoryDetailRoute.includes('memoryUpdateSchema'), 'PUT /api/memories/[id] 使用更新 schema 校验');
 assert(
   memoryDetailRoute.includes('normalizeMemoryRow') && memoryNormalizationFile.includes('export function normalizeMemoryRow'),
   'PUT /api/memories/[id] 返回规范化新字段',
 );
-assert(memoryDetailRoute.includes('memory_kind = ?'), 'PUT /api/memories/[id] 可更新 memory_kind');
+assert(
+  memoryDetailRoute.includes('applyMemoryUpdate(db, id, body,') && memoryMutationsFile.includes('memory_kind = ?'),
+  'PUT /api/memories/[id] 可更新 memory_kind',
+);
 
 if (process.exitCode) process.exit(process.exitCode);
 console.log('记忆数据层升级回归检查通过');

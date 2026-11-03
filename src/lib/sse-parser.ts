@@ -7,7 +7,7 @@
  * 关键不变量：
  * - 使用 TextDecoder 的 `stream: true` 模式，避免多字节字符（中文/emoji）在 chunk 边界被截断
  * - 缓冲区按空行切分后，**最后一段必须留下来**，因为它可能是被截断的下一个事件
- * - 终止符 `data: [DONE]` 直接跳过（不会进入 onDelta），不抛错也不算结束信号
+ * - 终止符 `data: [DONE]` 不进入 onDelta，也不停止读取；可选观察回调只记录标志
  * - 完整 data event 的 JSON 解析失败时输出 warn，避免生产中静默丢 chunk；跨 chunk 的不完整 JSON 仍由 buffer 保留等待后续 chunk
  * - signal.aborted 时取消 reader 并立即返回，由调用方决定后续行为
  */
@@ -22,6 +22,8 @@ export interface SseDeltaChunk {
 export interface ParseSseStreamOptions {
   /** abort 信号；触发时会取消 reader 并直接 return，不抛错 */
   signal?: AbortSignal;
+  /** 观察协议终止标志；不改变正文解析及读取到 EOF 的既有行为。 */
+  onDone?: () => void;
   /**
    * 自定义事件提取器：默认提取 `choices[0].delta.content`。
    * 返回 undefined 表示本行无需推送 text（但 raw 仍会传递给 onDelta）。
@@ -72,7 +74,11 @@ export async function parseSseStream(
 
   const processLine = (line: string): void => {
     const trimmed = line.trim();
-    if (!trimmed || trimmed === 'data: [DONE]') return;
+    if (!trimmed) return;
+    if (trimmed === 'data: [DONE]') {
+      options.onDone?.();
+      return;
+    }
     if (!trimmed.startsWith('data: ')) return;
     let json: unknown;
     const data = trimmed.slice(6);

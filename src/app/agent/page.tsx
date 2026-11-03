@@ -138,6 +138,20 @@ function AgentPageInner() {
     }
   };
 
+  // 决定结果已作为事件写入会话；「批准并继续」接着开始下一轮
+  const handleProposalDecided = async (continueNext: boolean) => {
+    const target = locationRef.current;
+    await chat.reload();
+    if (
+      continueNext
+      && mountedRef.current
+      && locationRef.current.sessionId === target.sessionId
+      && locationRef.current.revision === target.revision
+    ) {
+      void handleSend(t('agent.proposal.continuePrompt'));
+    }
+  };
+
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setDeleting(true);
@@ -215,7 +229,16 @@ function AgentPageInner() {
     body = <div className="min-h-0 flex-1"><ContentState mode="loading" title={t('common.loading')} /></div>;
   } else {
     // 按会话重新挂载，切换会话时滚动位置不沿用上一个会话
-    body = <AgentMessageList key={activeId ?? ''} messages={chat.detail?.messages ?? []} live={chat.live} emptyState={emptyState} />;
+    body = (
+      <AgentMessageList
+        key={activeId ?? ''}
+        messages={chat.detail?.messages ?? []}
+        live={chat.live}
+        emptyState={emptyState}
+        proposalBusy={sendPending || chat.sending || chat.serverRunning}
+        onProposalDecided={continueNext => void handleProposalDecided(continueNext)}
+      />
+    );
   }
 
   return (
@@ -302,6 +325,7 @@ function AgentPageInner() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onModelSaved={() => setStatusKey(key => key + 1)}
+        characterId={chat.detail?.session.character_id ?? null}
       />
 
       <ConfirmModal

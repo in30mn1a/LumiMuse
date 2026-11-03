@@ -44,7 +44,7 @@ export async function DELETE(_request: NextRequest, { params }: RouteContext) {
   if (isAgentRunActive(id)) {
     return NextResponse.json({ error: '这个会话正在运行，请先停止', code: 'agent_busy' }, { status: 409 });
   }
-  if (!deleteAgentSession(getDb(), id)) {
+  if (!deleteAgentSession(getDb(), id, new Date().toISOString())) {
     return NextResponse.json({ error: 'Session not found' }, { status: 404 });
   }
   return NextResponse.json({ success: true });

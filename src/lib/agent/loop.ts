@@ -15,7 +15,13 @@ import { loadSettings, resolveAgentConfig } from '@/lib/settings';
 import { estimateTokens } from '@/lib/token-counter';
 import type { Settings } from '@/types';
 import { readAgentDocument } from './documents';
-import { parseEventPayload, parseStoredToolCalls, type AgentEventPayload, type StoredToolCall } from './messages';
+import {
+  parseEventPayload,
+  parseStoredToolCalls,
+  type AgentEventPayload,
+  type ProposalDecisionEventItem,
+  type StoredToolCall,
+} from './messages';
 import { buildAgentSystemPrompt, type AgentPromptSkill } from './prompt';
 import {
   appendAgentMessage,
@@ -76,6 +82,20 @@ export interface RunAgentTurnInput {
 export const CONTEXT_OVER_LIMIT_NOTE = '上下文已接近模型上限，较早的工具结果已折叠。如果回复变差，建议新建会话。';
 export const EMPTY_REPLY_NOTE = '模型没有返回内容。如果用的是推理模型，可能是思考用完了输出长度。';
 
+function decisionLine(item: ProposalDecisionEventItem): string {
+  const head = `- 第 ${item.seq} 项（${item.op}）：`;
+  switch (item.state) {
+    case 'applied':
+      return `${head}已批准并生效`;
+    case 'rejected':
+      return item.reason ? `${head}主人拒绝，原因：${item.reason}` : `${head}主人拒绝，没有填写原因`;
+    case 'stale':
+      return `${head}已跳过，${item.reason ?? '目标在提案生成后已被改动'}`;
+    case 'failed':
+      return `${head}应用失败：${item.reason ?? '未知错误'}`;
+  }
+}
+
 /** 不认识的记录（例如新版本写入的）不发给模型。 */
 function eventModelText(payload: AgentEventPayload): string | null {
   switch (payload.kind) {
@@ -85,6 +105,8 @@ function eventModelText(payload: AgentEventPayload): string | null {
       return `（系统记录：上一轮连续调用工具达到 ${payload.rounds} 轮上限后暂停。主人说「继续」时接着做。）`;
     case 'error':
       return '（系统记录：上一轮因请求失败中断。）';
+    case 'proposal_decision':
+      return `（系统记录：主人处理了提案 #${payload.proposal_id}。\n${payload.items.map(decisionLine).join('\n')}\n只有「已批准并生效」的项改了记忆。）`;
     default:
       return null;
   }

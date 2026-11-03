@@ -7,8 +7,11 @@ import Modal from '@/components/ui/Modal';
 import { XIcon } from '@/components/ui/icons';
 import AgentDocumentEditor, { type AgentDocumentState } from './AgentDocumentEditor';
 import AgentModelSettings, { type AgentModelState } from './AgentModelSettings';
+import AgentProposalHistory from './AgentProposalHistory';
 
-type SettingsTab = 'model' | AgentDocumentKey;
+/** 会写入的页签，各有一把保存锁 */
+type WriteTab = 'model' | AgentDocumentKey;
+type SettingsTab = WriteTab | 'history';
 /** save 或正在恢复的版本 ID；锁随抽屉保留，不随编辑器卸载。 */
 type PendingWrite = 'save' | number | null;
 
@@ -17,26 +20,28 @@ interface Props {
   onClose: () => void;
   /** 模型设置保存后调用 */
   onModelSaved: () => void;
+  /** 当前会话关联的角色，修改历史默认显示它 */
+  characterId: string | null;
 }
 
-/** Agent 设置：接口和模型、`Agents.md`、`memory.md`。未保存的文档修改在关掉抽屉后仍保留。 */
-export default function AgentSettingsDrawer({ open, onClose, onModelSaved }: Props) {
+/** Agent 设置：接口和模型、`Agents.md`、`memory.md`、记忆修改历史。未保存的文档修改在关掉抽屉后仍保留。 */
+export default function AgentSettingsDrawer({ open, onClose, onModelSaved, characterId }: Props) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<SettingsTab>('model');
   const [agentsState, setAgentsState] = useState<AgentDocumentState>({ document: null, draft: undefined, versions: [], hasMore: false });
   const [memoryState, setMemoryState] = useState<AgentDocumentState>({ document: null, draft: undefined, versions: [], hasMore: false });
   const [modelState, setModelState] = useState<AgentModelState>({ saved: null, value: null });
-  const [pendingWrites, setPendingWrites] = useState<Record<SettingsTab, PendingWrite>>({ model: null, agents: null, memory: null });
+  const [pendingWrites, setPendingWrites] = useState<Record<WriteTab, PendingWrite>>({ model: null, agents: null, memory: null });
   const pendingWritesRef = useRef(pendingWrites);
 
-  const startWrite = (key: SettingsTab, operation: Exclude<PendingWrite, null>): boolean => {
+  const startWrite = (key: WriteTab, operation: Exclude<PendingWrite, null>): boolean => {
     if (pendingWritesRef.current[key] !== null) return false;
     const next = { ...pendingWritesRef.current, [key]: operation };
     pendingWritesRef.current = next;
     setPendingWrites(next);
     return true;
   };
-  const finishWrite = (key: SettingsTab) => {
+  const finishWrite = (key: WriteTab) => {
     const next = { ...pendingWritesRef.current, [key]: null };
     pendingWritesRef.current = next;
     setPendingWrites(next);
@@ -46,6 +51,7 @@ export default function AgentSettingsDrawer({ open, onClose, onModelSaved }: Pro
     { id: 'model', label: t('agent.settings.tabModel') },
     { id: 'agents', label: 'Agents.md' },
     { id: 'memory', label: 'memory.md' },
+    { id: 'history', label: t('agent.settings.tabHistory') },
   ];
 
   return (
@@ -112,15 +118,17 @@ export default function AgentSettingsDrawer({ open, onClose, onModelSaved }: Pro
             onSaveStart={() => startWrite('model', 'save')}
             onSaveEnd={() => finishWrite('model')}
           />
-          : <AgentDocumentEditor
-            key={tab}
-            docKey={tab}
-            state={tab === 'agents' ? agentsState : memoryState}
-            onStateChange={tab === 'agents' ? setAgentsState : setMemoryState}
-            pendingWrite={pendingWrites[tab]}
-            onWriteStart={operation => startWrite(tab, operation)}
-            onWriteEnd={() => finishWrite(tab)}
-          />}
+          : tab === 'history'
+            ? <AgentProposalHistory defaultCharacterId={characterId} />
+            : <AgentDocumentEditor
+              key={tab}
+              docKey={tab}
+              state={tab === 'agents' ? agentsState : memoryState}
+              onStateChange={tab === 'agents' ? setAgentsState : setMemoryState}
+              pendingWrite={pendingWrites[tab]}
+              onWriteStart={operation => startWrite(tab, operation)}
+              onWriteEnd={() => finishWrite(tab)}
+            />}
       </div>
     </Modal>
   );

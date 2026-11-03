@@ -10,12 +10,25 @@ import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { CheckIcon, CopyIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
+import ProposalCard from './ProposalCard';
 
 type DisplayItem =
   | { kind: 'user'; key: string; content: string }
   | { kind: 'assistant'; key: string; content: string }
   | { kind: 'tool'; key: string; name: string; arguments: string; result: string | null; ok: boolean | null }
-  | { kind: 'event'; key: string; event: AgentEventPayload };
+  | { kind: 'event'; key: string; event: AgentEventPayload }
+  | { kind: 'proposal'; key: string; proposalId: number };
+
+/** 提案工具成功时返回 proposal_id；卡片紧跟在这次工具调用后面。 */
+function createdProposalId(name: string, result: string | null): number | null {
+  if (name !== 'create_memory_proposal' || result === null) return null;
+  try {
+    const parsed = JSON.parse(result.split('\n', 1)[0]) as { ok?: unknown; proposal_id?: unknown };
+    return parsed.ok === true && typeof parsed.proposal_id === 'number' ? parsed.proposal_id : null;
+  } catch {
+    return null;
+  }
+}
 
 /** 把存储的消息排成显示顺序：每轮先是回复正文，再是这轮的工具调用（与结果配对）。 */
 export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayItem[] {
@@ -39,6 +52,8 @@ export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayIte
           result: result ? result.content : null,
           ok: result ? result.tool_ok : null,
         });
+        const proposalId = createdProposalId(call.name, result ? result.content : null);
+        if (proposalId !== null) items.push({ kind: 'proposal', key: `proposal-${proposalId}`, proposalId });
       }
     } else if (message.role === 'event' && message.event) {
       items.push({ kind: 'event', key: `m${message.id}`, event: message.event });
@@ -177,7 +192,13 @@ function EventNote({ event }: { event: AgentEventPayload }) {
     ? t('agent.event.interrupted')
     : event.kind === 'round_limit'
       ? formatTemplate(t('agent.event.roundLimit'), { rounds: event.rounds })
-      : formatTemplate(t('agent.event.error'), { message: event.message });
+      : event.kind === 'proposal_decision'
+        ? formatTemplate(t('agent.event.proposalDecision'), {
+          applied: event.items.filter(item => item.state === 'applied').length,
+          rejected: event.items.filter(item => item.state === 'rejected').length,
+          skipped: event.items.filter(item => item.state === 'stale' || item.state === 'failed').length,
+        })
+        : formatTemplate(t('agent.event.error'), { message: event.message });
   return (
     <p
       className={`mx-auto max-w-full rounded-xl border px-3 py-2 text-center text-xs [overflow-wrap:anywhere] ${
@@ -200,10 +221,13 @@ interface Props {
   messages: AgentMessageView[];
   live: LiveTurn | null;
   emptyState: React.ReactNode;
+  /** 会话正在运行，提案暂时不能批准 */
+  proposalBusy?: boolean;
+  onProposalDecided?: (continueNext: boolean) => void;
 }
 
 /** 消息流。贴近底部时新内容自动滚到底；主人往上翻时不打扰。 */
-export default function AgentMessageList({ messages, live, emptyState }: Props) {
+export default function AgentMessageList({ messages, live, emptyState, proposalBusy = false, onProposalDecided }: Props) {
   const { t } = useTranslation();
   const items = useMemo(() => buildAgentDisplayItems(messages), [messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -234,6 +258,9 @@ export default function AgentMessageList({ messages, live, emptyState }: Props) 
             if (item.kind === 'user') return <UserBubble key={item.key} content={item.content} />;
             if (item.kind === 'assistant') return <AssistantBubble key={item.key} content={item.content} copyable />;
             if (item.kind === 'event') return <EventNote key={item.key} event={item.event} />;
+            if (item.kind === 'proposal') {
+              return <ProposalCard key={item.key} proposalId={item.proposalId} busy={proposalBusy} onDecided={onProposalDecided} />;
+            }
             const state = item.ok === null ? 'unknown' : item.ok ? 'ok' : 'error';
             return <ToolRow key={item.key} name={item.name} args={item.arguments} result={item.result} state={state} />;
           })}

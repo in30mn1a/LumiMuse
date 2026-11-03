@@ -1,4 +1,4 @@
-import type { AgentReadTool } from './types';
+import type { AgentReadTool, AgentTool, AgentWriteTool } from './types';
 import { getCharacterTool, listCharactersTool } from './character-tools';
 import { listConversationsTool, readMessagesTool, searchMessagesTool } from './conversation-tools';
 import {
@@ -13,6 +13,7 @@ import {
   getMemorySourcesTool,
   searchMemoriesTool,
 } from './memory-tools';
+import { createMemoryProposalTool } from './proposal-tools';
 import { queryTableTool } from './query-table-tool';
 
 export { createSearchMemoriesTool, type SearchMemoriesDeps } from './memory-tools';
@@ -34,3 +35,9 @@ export const AGENT_READ_TOOLS: AgentReadTool[] = [
   listRepairableCandidatesTool,
   queryTableTool,
 ];
+
+/** 写入工具。没有直接修改记忆的工具：记忆只能经提案、由主人批准后修改。 */
+export const AGENT_WRITE_TOOLS: AgentWriteTool[] = [createMemoryProposalTool];
+
+/** 交给 Agent 循环的完整工具表。 */
+export const AGENT_TOOLS: AgentTool[] = [...AGENT_READ_TOOLS, ...AGENT_WRITE_TOOLS];

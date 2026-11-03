@@ -1,10 +1,21 @@
+import type { ProposalItemOp } from './proposals';
 import type { AgentMessageRole, AgentMessageRow } from './store';
+
+/** 提案决定后每个被决定项的结果。 */
+export interface ProposalDecisionEventItem {
+  seq: number;
+  op: ProposalItemOp;
+  state: 'applied' | 'rejected' | 'stale' | 'failed';
+  /** 主人的拒绝原因，或跳过、失败的说明 */
+  reason?: string;
+}
 
 /** 存在 `event` 行 content 里的结构化记录；界面按 kind 本地化显示。 */
 export type AgentEventPayload =
   | { kind: 'interrupted' }
   | { kind: 'round_limit'; rounds: number }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  | { kind: 'proposal_decision'; proposal_id: number; items: ProposalDecisionEventItem[] };
 
 /** 存在 `tool_calls_json` 里、也原样发给上游的调用结构。 */
 export interface StoredToolCall {

@@ -1111,6 +1111,57 @@ function migrate(db: Database.Database): void {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_agent_document_versions_key ON agent_document_versions(key, id);
+
+    -- 提案随角色删除；会话删除后保留（SET NULL），修改历史仍可查看和撤销
+    CREATE TABLE IF NOT EXISTS agent_proposals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      summary TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'decided')),
+      created_at TEXT NOT NULL,
+      decided_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_proposals_character ON agent_proposals(character_id, id);
+    CREATE INDEX IF NOT EXISTS idx_agent_proposals_session ON agent_proposals(session_id);
+
+    CREATE TABLE IF NOT EXISTS agent_proposal_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      proposal_id INTEGER NOT NULL REFERENCES agent_proposals(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      op TEXT NOT NULL CHECK(op IN (
+        'create', 'update', 'retire', 'merge', 'archive',
+        'repair_candidate', 'discard_candidate', 'report_conflict'
+      )),
+      reason TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      before_json TEXT NOT NULL,
+      after_json TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN (
+        'pending', 'applied', 'rejected', 'stale', 'failed', 'undone', 'reported'
+      )),
+      reject_reason TEXT,
+      result_json TEXT,
+      applied_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_proposal_items_proposal ON agent_proposal_items(proposal_id, seq);
+    -- 每次批准、撤销对每条受影响的记忆各记一条；memory_id 不设外键，记忆删除后历史仍在
+    CREATE TABLE IF NOT EXISTS memory_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      memory_id TEXT NOT NULL,
+      proposal_item_id INTEGER REFERENCES agent_proposal_items(id) ON DELETE SET NULL,
+      op TEXT NOT NULL,
+      action TEXT NOT NULL CHECK(action IN ('apply', 'undo')),
+      reason TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      before_json TEXT,
+      after_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_revisions_memory ON memory_revisions(character_id, memory_id, id);
+    CREATE INDEX IF NOT EXISTS idx_memory_revisions_item ON memory_revisions(proposal_item_id);
   `);
 
   // settings.prompt_preset 已废弃；每次启动清掉历史行，避免 GET /api/settings 经 loadSettings 再带出该键

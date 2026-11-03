@@ -96,9 +96,23 @@ export function renameAgentSession(db: Database.Database, id: string, title: str
   return result.changes > 0;
 }
 
-/** 删除会话，消息随外键级联删除。 */
-export function deleteAgentSession(db: Database.Database, id: string): boolean {
-  return db.prepare('DELETE FROM agent_sessions WHERE id = ?').run(id).changes > 0;
+const SESSION_DELETED_REJECT_REASON = '会话已删除';
+
+/**
+ * 删除会话，消息随外键级联删除。提案和修订记录因 SET NULL 保留，仍可在修改历史里查看和撤销；
+ * 没人能再批准的 pending 项在同一事务里记为拒绝。
+ */
+export function deleteAgentSession(db: Database.Database, id: string, now: string): boolean {
+  return db.transaction(() => {
+    db.prepare(`
+      UPDATE agent_proposal_items SET state = 'rejected', reject_reason = ?
+      WHERE state = 'pending' AND proposal_id IN (SELECT id FROM agent_proposals WHERE session_id = ?)
+    `).run(SESSION_DELETED_REJECT_REASON, id);
+    db.prepare(`
+      UPDATE agent_proposals SET status = 'decided', decided_at = ? WHERE session_id = ? AND status = 'pending'
+    `).run(now, id);
+    return db.prepare('DELETE FROM agent_sessions WHERE id = ?').run(id).changes > 0;
+  })();
 }
 
 export function touchAgentSession(db: Database.Database, id: string, now: string): void {

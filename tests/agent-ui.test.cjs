@@ -85,7 +85,7 @@ require.extensions['.ts'] = loadTs;
 require.extensions['.tsx'] = loadTs;
 
 const AgentPage = require('../src/app/agent/page.tsx').default;
-const { buildAgentDisplayItems } = require('../src/components/agent/AgentMessageList.tsx');
+const { buildAgentDisplayItems, groupAgentDisplayItems } = require('../src/components/agent/AgentMessageList.tsx');
 const { readAgentStream } = require('../src/hooks/agent/agent-stream.ts');
 
 // ---- 虚构数据 ----
@@ -114,18 +114,34 @@ const STATUS = {
   recent_error_window_hours: 24,
   agent: { configured: true, provider_name: '虚构接口', model: 'fake-model' },
 };
+/** 输入框的模型选择读取的设置（只含它用到的键） */
+const SETTINGS = { model: 'main-model', agent_provider_id: '', agent_model: 'fake-model', agent_reasoning_effort: 'default', pinned_models: [] };
+
+/** 一条入库消息，只写和默认值不同的字段 */
+function storedMessage(id, role, fields = {}) {
+  return { id, role, content: '', tool_calls: null, tool_call_id: null, tool_name: null, tool_ok: null, event: null, created_at: '', ...fields };
+}
+
+/** 工具组标题按真实格式渲染，其余键原样返回 */
+function withToolGroupLabels(t) {
+  const original = mocks['@/lib/i18n-context'].useTranslation;
+  const labels = { 'agent.toolGroup': '{count} 个工具调用', 'agent.toolGroupFailed': '{count} 个失败', 'agent.toolGroupRunning': '正在运行 {name}' };
+  mocks['@/lib/i18n-context'].useTranslation = () => ({ t: key => labels[key] ?? key });
+  t.after(() => { mocks['@/lib/i18n-context'].useTranslation = original; });
+}
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-/** 按事件分段推送的 SSE 响应；`gate` 用来把流卡在某个位置等测试推进。 */
+/** 按事件分段推送的 SSE 响应；`gate`（或按下标的 `gates`）用来把流卡在某个位置等测试推进。 */
 function sseResponse(events, options = {}) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       for (const [index, [event, data]] of events.entries()) {
         if (options.gateAt === index) await options.gate;
+        if (options.gates?.[index]) await options.gates[index];
         if (options.signal?.aborted) {
           controller.error(new DOMException('aborted', 'AbortError'));
           return;
@@ -138,11 +154,13 @@ function sseResponse(events, options = {}) {
   return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-function installFetch(handler) {
+function installFetch(handler, { settings = SETTINGS } = {}) {
   const calls = [];
   global.fetch = async (url, init = {}) => {
     const call = { url: String(url), method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null, signal: init.signal };
     calls.push(call);
+    // 输入框的模型选择挂载时读一次设置；读取统一给虚构设置，写入（PUT）仍交给各测试
+    if (call.url === '/api/settings' && call.method === 'GET') return json(settings);
     return handler(call, calls);
   };
   return calls;
@@ -178,6 +196,32 @@ test('display items pair tool calls with results and keep events', () => {
 
   const unpaired = buildAgentDisplayItems([HISTORY[0], HISTORY[1]]);
   assert.equal(unpaired[1].result, null, 'a call without a stored result shows no result');
+});
+
+test('consecutive tool calls form one group, cards follow it and reused call ids get distinct keys', () => {
+  const messages = [
+    storedMessage(1, 'user', { content: '帮我整理一下记忆' }),
+    storedMessage(2, 'assistant', { tool_calls: [{ id: 'a', name: 'load_skill', arguments: '{"name":"memory-review"}' }] }),
+    storedMessage(3, 'tool', { content: '{"ok":true}', tool_call_id: 'a', tool_name: 'load_skill', tool_ok: true }),
+    // 正文为空的下一轮不打断分组
+    storedMessage(4, 'assistant', {
+      tool_calls: [{ id: 'b', name: 'search_memories', arguments: '{}' }, { id: 'c', name: 'create_memory_proposal', arguments: '{}' }],
+    }),
+    storedMessage(5, 'tool', { content: '{"ok":false,"error":"timeout"}', tool_call_id: 'b', tool_name: 'search_memories', tool_ok: false }),
+    storedMessage(6, 'tool', { content: '{"ok":true,"proposal_id":7}', tool_call_id: 'c', tool_name: 'create_memory_proposal', tool_ok: true }),
+    storedMessage(7, 'assistant', { content: '已提出一份整理提案。' }),
+    // 有的供应商跨轮复用调用 id
+    storedMessage(8, 'assistant', { tool_calls: [{ id: 'a', name: 'get_status', arguments: '{}' }] }),
+  ];
+  const counts = new Map();
+  const blocks = groupAgentDisplayItems(buildAgentDisplayItems(messages), counts);
+  assert.deepEqual(
+    blocks.map(block => (block.kind === 'tools' ? block.calls.map(call => call.callId).join(',') : block.item.kind)),
+    ['user', 'a,b,c', 'proposal', 'assistant', 'a'],
+  );
+  assert.deepEqual(blocks[1].calls.map(call => call.state), ['ok', 'error', 'ok']);
+  assert.deepEqual(blocks.filter(block => block.kind === 'tools').map(block => block.key), ['tools:a:0', 'tools:a:1']);
+  assert.equal(counts.get('a'), 2, 'live groups continue the numbering after history');
 });
 
 test('stream reader handles events split across chunks, including inside a multi-byte character', async () => {
@@ -232,10 +276,12 @@ test('page restores history, folds tool calls, localizes events and copies repli
   assert.equal(toolRow.open, false, 'tool calls are folded by default');
   assert.match(toolRow.textContent, /agent\.toolOk/);
 
-  const status = view.getByRole('region', { name: 'agent.status.title' });
-  await within(status).findByText('fake-model', { exact: false });
+  const status = await view.findByRole('region', { name: 'agent.status.title' });
   assert.match(status.querySelector('[data-status="extraction"]').textContent, /2/);
   assert.match(status.querySelector('[data-status="repairable"]').textContent, /3/);
+  // 模型名挪到了输入框里，状态条不再显示
+  assert.ok(await view.findByRole('button', { name: 'fake-model' }), 'the composer shows the agent model');
+  assert.equal(within(status).queryByText('fake-model', { exact: false }), null);
 
   fireEvent.click(view.getByRole('button', { name: 'agent.copy' }));
   await waitFor(() => assert.deepEqual(writes, ['没有失败的提取任务。']));
@@ -289,6 +335,112 @@ test('sending streams tools and text, then reloads history and the status bar', 
   await waitFor(() => {
     assert.ok(calls.filter(call => call.url === '/api/agent/status').length > statusCallsBefore, 'status bar refreshes after the turn');
   });
+});
+
+test('stored tool calls of consecutive rounds fold into one group that expands on click', async t => {
+  withToolGroupLabels(t);
+  const messages = [
+    storedMessage(1, 'user', { content: '最近有提取失败吗' }),
+    storedMessage(2, 'assistant', {
+      tool_calls: [{ id: 'call_a', name: 'list_failed_tasks', arguments: '{"limit":5}' }, { id: 'call_b', name: 'search_memories', arguments: '{}' }],
+    }),
+    storedMessage(3, 'tool', { content: '{"ok":true,"tasks":[]}', tool_call_id: 'call_a', tool_name: 'list_failed_tasks', tool_ok: true }),
+    storedMessage(4, 'tool', { content: '{"ok":false,"error":"timeout"}', tool_call_id: 'call_b', tool_name: 'search_memories', tool_ok: false }),
+    storedMessage(5, 'assistant', { tool_calls: [{ id: 'call_c', name: 'get_memory_profile', arguments: '{}' }] }),
+    storedMessage(6, 'tool', { content: '{"ok":true}', tool_call_id: 'call_c', tool_name: 'get_memory_profile', tool_ok: true }),
+    storedMessage(7, 'assistant', { content: '没有失败的提取任务。' }),
+  ];
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages, running: false });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByText('没有失败的提取任务。');
+
+  const groups = view.container.querySelectorAll('[data-agent-tool-group]');
+  assert.equal(groups.length, 1);
+  const header = within(groups[0]).getByRole('button', { name: /^3 个工具调用/ });
+  assert.equal(header.getAttribute('aria-expanded'), 'false', 'groups start collapsed');
+  assert.ok(within(header).getByText('1 个失败'));
+  assert.match(header.textContent, /list_failed_tasks · search_memories · get_memory_profile/);
+  const body = view.container.ownerDocument.getElementById(header.getAttribute('aria-controls'));
+  assert.ok(body.hasAttribute('inert'), 'collapsed rows are skipped by keyboard and screen readers');
+  assert.equal(body.querySelectorAll('details[data-agent-tool]').length, 3);
+
+  fireEvent.click(header);
+  assert.equal(header.getAttribute('aria-expanded'), 'true');
+  assert.equal(body.hasAttribute('inert'), false);
+  fireEvent.click(header);
+  assert.equal(header.getAttribute('aria-expanded'), 'false');
+});
+
+test('live tool calls stream into one group that stays open when history replaces the live turn', async t => {
+  withToolGroupLabels(t);
+  const release = {};
+  const gates = {};
+  for (const index of [2, 4, 5]) gates[index] = new Promise(resolve => { release[index] = resolve; });
+  t.after(() => Object.values(release).forEach(resolve => resolve()));
+  let turnDone = false;
+  const turn = [
+    storedMessage(6, 'user', { content: '看看记忆有没有问题' }),
+    storedMessage(7, 'assistant', {
+      tool_calls: [{ id: 'c1', name: 'search_memories', arguments: '{}' }, { id: 'c2', name: 'list_failed_tasks', arguments: '{}' }],
+    }),
+    storedMessage(8, 'tool', { content: '{"ok":true}', tool_call_id: 'c1', tool_name: 'search_memories', tool_ok: true }),
+    storedMessage(9, 'tool', { content: '{"ok":false,"error":"timeout"}', tool_call_id: 'c2', tool_name: 'list_failed_tasks', tool_ok: false }),
+    storedMessage(10, 'assistant', { content: '记忆状态正常。' }),
+  ];
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) {
+      return json({ session: SESSION, messages: turnDone ? [...HISTORY, ...turn] : HISTORY, running: false });
+    }
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/agent/chat') {
+      return sseResponse([
+        ['tool_start', { id: 'c1', name: 'search_memories', arguments: '{}' }],
+        ['tool_start', { id: 'c2', name: 'list_failed_tasks', arguments: '{}' }],
+        ['tool_end', { id: 'c1', name: 'search_memories', ok: true }],
+        ['tool_end', { id: 'c2', name: 'list_failed_tasks', ok: false, error: 'timeout' }],
+        ['text', { text: '记忆状态正常。' }],
+        ['done', { status: 'done', rounds: 2 }],
+      ], { gates });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByText('没有失败的提取任务。');
+  fireEvent.change(view.getByRole('textbox', { name: 'agent.inputLabel' }), { target: { value: '看看记忆有没有问题' } });
+  fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+
+  // 两个工具都开始了、结果还没回来：标题显示最后开始的那个，不另显示「思考中」
+  const header = await view.findByRole('button', { name: /^2 个工具调用/ });
+  await within(header).findByText('正在运行 list_failed_tasks');
+  assert.equal(view.queryByText('agent.thinking'), null);
+  fireEvent.click(header);
+  assert.equal(header.getAttribute('aria-expanded'), 'true');
+
+  // 这一轮的结果回来了，下一轮还没有输出：显示「思考中」
+  await act(async () => { release[2](); });
+  await within(header).findByText('1 个失败');
+  assert.ok(view.getByText('agent.thinking'));
+
+  await act(async () => { release[4](); });
+  await view.findByText('记忆状态正常。');
+  assert.equal(view.queryByText('agent.thinking'), null, 'streaming text replaces the thinking line');
+
+  turnDone = true;
+  await act(async () => { release[5](); });
+  await waitFor(() => assert.equal(view.getAllByRole('button', { name: 'agent.copy' }).length, 2), 'the stored reply replaced the live one');
+  assert.equal(view.getAllByText('记忆状态正常。').length, 1);
+  assert.equal(view.getAllByText('看看记忆有没有问题').length, 1);
+  const after = view.getByRole('button', { name: /^2 个工具调用/ });
+  assert.ok(after === header, 'the group element is kept, so it does not flash or replay its animation');
+  assert.equal(after.getAttribute('aria-expanded'), 'true', 'it stays open');
+  assert.ok(within(after).getByText('1 个失败'));
+  assert.equal(view.container.querySelectorAll('[data-agent-tool-group]').length, 2);
 });
 
 test('a busy session keeps the draft and says why', async () => {
@@ -394,6 +546,95 @@ test('status bar stays usable when the agent upstream fails', async () => {
   const statusAfter = view.getByRole('region', { name: 'agent.status.title' });
   assert.ok(within(statusAfter).getByText('agent.status.notConfigured'), 'status bar is still there after the failed turn');
   assert.ok(view.getByRole('button', { name: 'agent.send' }), 'the composer is ready for another try');
+});
+
+/** 模型切换测试共用的接口：模型列表固定，PUT 的结果由测试决定 */
+function installModelFetch(putResponse, settings) {
+  return installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: HISTORY, running: false });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/models' && call.method === 'POST') return json({ models: ['main-model', 'fake-model', 'deep-model'] });
+    if (call.url === '/api/settings' && call.method === 'PUT') return putResponse();
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  }, { settings });
+}
+
+test('the composer switches the Agent model and reasoning effort using the Agent provider', async () => {
+  const calls = installModelFetch(() => json({ ok: true }), { ...SETTINGS, agent_provider_id: 'prov-2' });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByRole('region', { name: 'agent.status.title' });
+  const statusReads = () => calls.filter(call => call.url === '/api/agent/status').length;
+  const puts = () => calls.filter(call => call.url === '/api/settings' && call.method === 'PUT').map(call => call.body);
+
+  const readsBeforeModel = statusReads();
+  fireEvent.click(await view.findByRole('button', { name: 'fake-model' }));
+  fireEvent.click(await view.findByRole('option', { name: 'deep-model' }));
+  await waitFor(() => assert.deepEqual(puts(), [{ agent_model: 'deep-model' }]));
+  assert.deepEqual(calls.find(call => call.url === '/api/models').body, { provider_id: 'prov-2' }, 'the list comes from the Agent provider');
+  assert.ok(view.getByRole('button', { name: 'deep-model' }));
+  await waitFor(() => assert.ok(statusReads() > readsBeforeModel, 'the status bar re-checks the effective model'));
+
+  fireEvent.click(view.getByRole('button', { name: 'input.reasoningEffort: input.reasoningEffortDefault' }));
+  fireEvent.click(await view.findByRole('option', { name: 'high' }));
+  await waitFor(() => assert.deepEqual(puts(), [{ agent_model: 'deep-model' }, { agent_reasoning_effort: 'high' }]));
+  assert.ok(view.getByRole('button', { name: 'input.reasoningEffort: high' }));
+  assert.deepEqual(toasts, []);
+});
+
+test('a failed model switch says why and returns to the saved model', async () => {
+  installModelFetch(() => json({ error: 'disk full' }, 500));
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: 'fake-model' }));
+  fireEvent.click(await view.findByRole('option', { name: 'deep-model' }));
+  await waitFor(() => assert.deepEqual(toasts, [{ message: 'settings.saveFailed: disk full', type: 'error' }]));
+  await view.findByRole('button', { name: 'fake-model' });
+  assert.equal(view.queryByRole('button', { name: 'deep-model' }), null);
+});
+
+test('the Agent model picker pins models to the shared list', async () => {
+  const calls = installModelFetch(() => json({ ok: true }), { ...SETTINGS, pinned_models: ['deep-model'] });
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: 'fake-model' }));
+  const order = () => view.getAllByRole('option').map(option => option.textContent);
+  await waitFor(() => assert.deepEqual(order(), ['deep-model', 'main-model', 'fake-model']), { timeout: 2000 });
+  const mainOption = view.getAllByRole('option')[1];
+  assert.equal(within(mainOption).getByRole('button').getAttribute('aria-pressed'), 'false');
+  fireEvent.click(within(mainOption).getByRole('button'));
+
+  await waitFor(() => assert.deepEqual(
+    calls.filter(call => call.url === '/api/settings' && call.method === 'PUT').map(call => call.body),
+    [{ pinned_models: ['deep-model', 'main-model'] }],
+  ));
+  // 置顶组内部保持上游顺序，所以两个置顶的模型按上游顺序排
+  assert.deepEqual(order(), ['main-model', 'deep-model', 'fake-model']);
+  assert.ok(view.getByRole('button', { name: 'fake-model' }), 'pinning does not change the selected model');
+});
+
+test('a failed pin says why and restores the saved list', async () => {
+  installModelFetch(() => json({ error: 'disk full' }, 500), { ...SETTINGS, pinned_models: ['deep-model'] });
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: 'fake-model' }));
+  const order = () => view.getAllByRole('option').map(option => option.textContent);
+  await waitFor(() => assert.deepEqual(order(), ['deep-model', 'main-model', 'fake-model']), { timeout: 2000 });
+  const fakeOption = view.getAllByRole('option')[2];
+  fireEvent.click(within(fakeOption).getByRole('button'));
+  assert.deepEqual(order(), ['fake-model', 'deep-model', 'main-model'], 'the optimistic order shows immediately');
+
+  await waitFor(() => assert.deepEqual(toasts, [{ message: 'settings.saveFailed: disk full', type: 'error' }]));
+  await waitFor(() => assert.deepEqual(order(), ['deep-model', 'main-model', 'fake-model']));
+  const restored = view.getAllByRole('option').find(option => option.textContent === 'fake-model');
+  assert.equal(within(restored).getByRole('button').getAttribute('aria-pressed'), 'false');
+});
+
+test('picking the main model the Agent already follows does not pin it', async () => {
+  const calls = installModelFetch(() => json({ ok: true }), { ...SETTINGS, agent_model: '' });
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: 'main-model' }));
+  fireEvent.click(await view.findByRole('option', { name: 'main-model' }));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  assert.equal(calls.filter(call => call.method === 'PUT').length, 0, 'an empty agent_model keeps following the main model');
+  assert.ok(view.getByRole('button', { name: 'main-model' }));
 });
 
 test('a rejected chat request preserves the unsent draft and shows the network error', async () => {
@@ -534,6 +775,47 @@ test('repeated quick prompts while creating a session create and send only once'
 
   assert.equal(calls.filter(call => call.url === '/api/agent/sessions').length, 1);
   assert.equal(calls.filter(call => call.url === '/api/agent/chat').length, 1);
+});
+
+test('a quick prompt in a new session shows the sent message once, during and after the turn', async () => {
+  // 服务端在一轮开头就写入主人的消息；新会话导航后读到的历史已含这条消息，而流还在进行
+  let releaseStream;
+  const gate = new Promise(resolve => { releaseStream = resolve; });
+  let chatAccepted = false;
+  let turnDone = false;
+  let midTurnHistoryReads = 0;
+  const sent = { ...HISTORY[0], id: 1, content: 'agent.quick.recentErrors' };
+  const reply = { ...HISTORY[3], id: 2, content: '最近 24 小时没有报错。' };
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [], has_more: false });
+    if (call.url === '/api/agent/sessions' && call.method === 'POST') return json(SESSION, 201);
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) {
+      if (chatAccepted && !turnDone) midTurnHistoryReads += 1;
+      const messages = turnDone ? [sent, reply] : chatAccepted ? [sent] : [];
+      return json({ session: SESSION, messages, running: chatAccepted && !turnDone });
+    }
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/agent/chat') {
+      chatAccepted = true;
+      return sseResponse([
+        ['text', { text: '正在查看' }],
+        ['done', { status: 'done', rounds: 1 }],
+      ], { gateAt: 1, gate });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage('');
+  fireEvent.click(await view.findByRole('button', { name: 'agent.quick.recentErrors' }));
+  await view.findByText('正在查看');
+  await waitFor(() => assert.ok(midTurnHistoryReads > 0, 'history is read while the turn is still streaming'));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  assert.equal(view.getAllByText('agent.quick.recentErrors').length, 1, 'no duplicate bubble while streaming');
+
+  turnDone = true;
+  await act(async () => { releaseStream(); });
+  await view.findByText('最近 24 小时没有报错。');
+  await waitFor(() => assert.ok(view.queryByRole('button', { name: 'agent.send' })));
+  assert.equal(view.getAllByText('agent.quick.recentErrors').length, 1, 'no duplicate bubble after the turn');
 });
 
 test('a pending session creation does not navigate after leaving the page', async () => {

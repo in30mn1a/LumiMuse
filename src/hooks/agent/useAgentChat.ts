@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AgentMessageView } from '@/lib/agent/messages';
 import type { AgentSession } from '@/lib/agent/store';
 import { HttpResponseError, getErrorMessage, parseJsonResponse } from '@/lib/http';
@@ -22,6 +22,11 @@ export type LiveSegment =
 export interface LiveTurn {
   sessionId: string;
   userContent: string;
+  /**
+   * 发送时已知的最大消息 id（id 自增且不复用）。服务端在一轮开头就写入主人的消息，
+   * 这一轮进行中读到的历史里比它新的行（例如新会话导航后的首次读取）由实时内容显示，不再重复列出。
+   */
+  afterMessageId: number;
   segments: LiveSegment[];
   error: string | null;
 }
@@ -73,6 +78,8 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
   const [detail, setDetail] = useState<AgentSessionDetail | null>(null);
   const [loadError, setLoadError] = useState<{ sessionId: string; message: string; notFound: boolean } | null>(null);
   const [live, setLive] = useState<LiveTurn | null>(null);
+  /** 最近一次读到的历史，发送时据此确定实时内容从哪条消息之后开始 */
+  const detailRef = useRef<AgentSessionDetail | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const currentIdRef = useRef(sessionId);
   const historyRequestRef = useRef(0);
@@ -93,6 +100,7 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     try {
       const next = await fetchSessionDetail(id);
       if (currentIdRef.current !== id || historyRequestRef.current !== requestId) return;
+      detailRef.current = next;
       setDetail(next);
       setLoadError(null);
     } catch (error) {
@@ -129,7 +137,9 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     controllerRef.current = controller;
     // 发送前读取的历史不含这一轮，不能在它完成后回写旧消息或 running 状态。
     historyRequestRef.current += 1;
-    setLive({ sessionId: targetId, userContent: content, segments: [], error: null });
+    const known = detailRef.current?.session.id === targetId ? detailRef.current.messages : [];
+    const afterMessageId = known.reduce((max, message) => Math.max(max, message.id), 0);
+    setLive({ sessionId: targetId, userContent: content, afterMessageId, segments: [], error: null });
     let failure: AgentSendFailure | null = null;
     let accepted = false;
     try {
@@ -184,10 +194,19 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     controllerRef.current?.abort();
   }, []);
 
+  const visibleLive = live && live.sessionId === sessionId ? live : null;
+  // 只依赖基线数字：流式文本每来一段都会换 live 对象，不能每次都重排整段历史
+  const liveBaseline = visibleLive ? visibleLive.afterMessageId : null;
+  const visibleDetail = useMemo(() => {
+    if (!currentDetail || liveBaseline === null) return currentDetail;
+    if (!currentDetail.messages.some(message => message.id > liveBaseline)) return currentDetail;
+    return { ...currentDetail, messages: currentDetail.messages.filter(message => message.id <= liveBaseline) };
+  }, [currentDetail, liveBaseline]);
+
   return {
-    detail: currentDetail,
+    detail: visibleDetail,
     loadError: loadError && loadError.sessionId === sessionId ? loadError : null,
-    live: live && live.sessionId === sessionId ? live : null,
+    live: visibleLive,
     /** 本页有一条流在进行（可能属于别的会话） */
     sending,
     serverRunning,

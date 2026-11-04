@@ -17,6 +17,7 @@ import AgentSessionList from '@/components/agent/AgentSessionList';
 import AgentSettingsDrawer from '@/components/agent/AgentSettingsDrawer';
 import AgentStatusBar from '@/components/agent/AgentStatusBar';
 import { useAgentChat } from '@/hooks/agent/useAgentChat';
+import { useAgentModel } from '@/hooks/agent/useAgentModel';
 import { useAgentSessions } from '@/hooks/agent/useAgentSessions';
 
 const DESKTOP_LAYOUT_QUERY = '(min-width: 1024px)';
@@ -41,6 +42,7 @@ function AgentPageInner() {
   const sessions = useAgentSessions();
   const { create: createSession, refresh: refreshSessions } = sessions;
   const [statusKey, setStatusKey] = useState(0);
+  const [modelKey, setModelKey] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AgentSession | null>(null);
@@ -97,6 +99,9 @@ function AgentPageInner() {
     setStatusKey(key => key + 1);
   }, [refreshSessions]);
   const chat = useAgentChat(activeId, { onTurnFinished: handleTurnFinished });
+  // 输入框里换模型后刷新状态条：「未配置」提示取决于生效的模型
+  const refreshStatus = useCallback(() => setStatusKey(key => key + 1), []);
+  const agentModel = useAgentModel(modelKey, refreshStatus);
 
   useEffect(() => {
     if (conversationParam && locationRef.current.conversationId === conversationParam) void ensureSession();
@@ -187,6 +192,7 @@ function AgentPageInner() {
     ...(boundToConversation ? [t('agent.quick.suggestReply')] : []),
     t('agent.quick.recentErrors'),
     t('agent.quick.memoryHealth'),
+    t('agent.quick.memoryReview'),
   ];
   const emptyState = (
     <div className="mx-auto flex max-w-xl flex-col items-center px-6 py-12 text-center">
@@ -318,13 +324,17 @@ function AgentPageInner() {
           canStop={chat.live !== null}
           onSend={handleSend}
           onStop={chat.stop}
+          model={agentModel}
         />
       </main>
 
       <AgentSettingsDrawer
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        onModelSaved={() => setStatusKey(key => key + 1)}
+        onModelSaved={() => {
+          setStatusKey(key => key + 1);
+          setModelKey(key => key + 1);
+        }}
         characterId={chat.detail?.session.character_id ?? null}
       />
 

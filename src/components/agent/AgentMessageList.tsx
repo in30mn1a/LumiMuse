@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -8,7 +8,7 @@ import type { AgentEventPayload, AgentMessageView } from '@/lib/agent/messages';
 import type { LiveSegment, LiveTurn } from '@/hooks/agent/useAgentChat';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
-import { CheckIcon, CopyIcon } from '@/components/ui/icons';
+import { CheckIcon, ChevronDownIcon, CopyIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
 import ProposalCard from './ProposalCard';
 import AgentMemoryNote, { type AgentMemoryNoteData } from './AgentMemoryNote';
@@ -16,10 +16,29 @@ import AgentMemoryNote, { type AgentMemoryNoteData } from './AgentMemoryNote';
 type DisplayItem =
   | { kind: 'user'; key: string; content: string }
   | { kind: 'assistant'; key: string; content: string }
-  | { kind: 'tool'; key: string; name: string; arguments: string; result: string | null; ok: boolean | null }
+  | { kind: 'tool'; key: string; callId: string; name: string; arguments: string; result: string | null; ok: boolean | null }
   | { kind: 'event'; key: string; event: AgentEventPayload }
   | { kind: 'memory'; key: string; note: AgentMemoryNoteData; undone: boolean }
   | { kind: 'proposal'; key: string; proposalId: number };
+
+type ToolState = 'running' | 'ok' | 'error' | 'unknown';
+
+interface ToolCallView {
+  callId: string;
+  name: string;
+  arguments: string;
+  result: string | null;
+  state: ToolState;
+  error?: string;
+}
+
+/** 连续的工具调用合成一组折叠显示 */
+type ToolGroupBlock = { kind: 'tools'; key: string; calls: ToolCallView[] };
+export type DisplayBlock = { kind: 'item'; item: Exclude<DisplayItem, { kind: 'tool' }> } | ToolGroupBlock;
+type LiveBlock =
+  | { kind: 'text'; key: string; text: string }
+  | { kind: 'note'; key: string; text: string }
+  | ToolGroupBlock;
 
 function rememberedNote(name: string, result: string | null): AgentMemoryNoteData | null {
   if (name !== 'remember' || result === null) return null;
@@ -63,6 +82,7 @@ export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayIte
         items.push({
           kind: 'tool',
           key: `m${message.id}-${call.id}`,
+          callId: call.id,
           name: call.name,
           arguments: call.arguments,
           result: result ? result.content : null,
@@ -79,6 +99,81 @@ export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayIte
   }
   return items;
 }
+
+/**
+ * 组的 key：首个调用 id 加同 id 的出现序号，供应商跨轮复用调用 id 时也不重复。
+ * 历史与实时内容按同一顺序编号，一轮结束换成入库历史时同一组的 key 不变，展开状态和 DOM 都保留。
+ */
+function nextGroupKey(firstCallId: string, counts: Map<string, number>): string {
+  const seen = counts.get(firstCallId) ?? 0;
+  counts.set(firstCallId, seen + 1);
+  return `tools:${firstCallId}:${seen}`;
+}
+
+/**
+ * 连续的工具调用合成一组（正文为空的回合不打断）。组内产生的提案卡片和笔记移到组后面，折叠时也看得见。
+ * @param counts 组 key 的出现计数；实时内容接着这里继续编号
+ */
+export function groupAgentDisplayItems(items: DisplayItem[], counts = new Map<string, number>()): DisplayBlock[] {
+  const blocks: DisplayBlock[] = [];
+  let calls: ToolCallView[] = [];
+  let held: DisplayBlock[] = [];
+  const flush = () => {
+    if (calls.length > 0) blocks.push({ kind: 'tools', key: nextGroupKey(calls[0].callId, counts), calls });
+    blocks.push(...held);
+    calls = [];
+    held = [];
+  };
+  for (const item of items) {
+    if (item.kind === 'tool') {
+      calls.push({
+        callId: item.callId,
+        name: item.name,
+        arguments: item.arguments,
+        result: item.result,
+        state: item.ok === null ? 'unknown' : item.ok ? 'ok' : 'error',
+      });
+    } else if (calls.length > 0 && (item.kind === 'proposal' || item.kind === 'memory')) {
+      held.push({ kind: 'item', item });
+    } else {
+      flush();
+      blocks.push({ kind: 'item', item });
+    }
+  }
+  flush();
+  return blocks;
+}
+
+/** 实时内容按同样的规则分块；只有空白的文本段不打断分组，与历史里跳过空正文一致。 */
+function groupLiveSegments(segments: LiveSegment[], counts: Map<string, number>): LiveBlock[] {
+  const blocks: LiveBlock[] = [];
+  let calls: ToolCallView[] = [];
+  const flush = () => {
+    if (calls.length > 0) blocks.push({ kind: 'tools', key: nextGroupKey(calls[0].callId, counts), calls });
+    calls = [];
+  };
+  segments.forEach((segment, index) => {
+    if (segment.kind === 'tool') {
+      calls.push({ callId: segment.id, name: segment.name, arguments: segment.arguments, result: null, state: segment.state, error: segment.error });
+      return;
+    }
+    if (segment.kind === 'text' && !segment.text.trim()) return;
+    flush();
+    // 段只会追加，下标可以当 key
+    blocks.push(segment.kind === 'text'
+      ? { kind: 'text', key: `live-text-${index}`, text: segment.text }
+      : { kind: 'note', key: `live-note-${index}`, text: segment.text });
+  });
+  flush();
+  return blocks;
+}
+
+const TOOL_DOT: Record<ToolState, string> = {
+  running: 'bg-accent motion-safe:animate-pulse',
+  ok: 'bg-emerald-500',
+  error: 'bg-danger',
+  unknown: 'bg-text-muted',
+};
 
 const MD_COMPONENTS: React.ComponentProps<typeof ReactMarkdown>['components'] = {
   p: ({ children }) => <p className="mb-2 leading-relaxed last:mb-0">{children}</p>,
@@ -117,9 +212,9 @@ function prettyJson(text: string): string {
   }
 }
 
-function UserBubble({ content }: { content: string }) {
+function UserBubble({ content, appear = false }: { content: string; appear?: boolean }) {
   return (
-    <div className="flex justify-end">
+    <div className={`flex justify-end ${appear ? 'message-appear' : ''}`}>
       <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-[var(--bubble-user-bg)] px-4 py-2.5 text-sm leading-relaxed text-white [overflow-wrap:anywhere]">
         {content}
       </div>
@@ -127,7 +222,7 @@ function UserBubble({ content }: { content: string }) {
   );
 }
 
-function AssistantBubble({ content, copyable }: { content: string; copyable: boolean }) {
+function AssistantBubble({ content, copyable, appear = false }: { content: string; copyable: boolean; appear?: boolean }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [copied, setCopied] = useState(false);
@@ -148,7 +243,7 @@ function AssistantBubble({ content, copyable }: { content: string; copyable: boo
   };
 
   return (
-    <div className="flex flex-col items-start gap-1">
+    <div className={`flex flex-col items-start gap-1 ${appear ? 'message-appear' : ''}`}>
       <div className="w-full min-w-0 rounded-2xl rounded-bl-md border border-border-light bg-surface px-4 py-2.5 text-sm text-text-primary [overflow-wrap:anywhere]">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{content}</ReactMarkdown>
       </div>
@@ -166,24 +261,19 @@ function AssistantBubble({ content, copyable }: { content: string; copyable: boo
   );
 }
 
-function ToolRow({ name, args, result, state, error }: {
-  name: string;
-  args: string;
-  result: string | null;
-  state: 'running' | 'ok' | 'error' | 'unknown';
-  error?: string;
-}) {
+function ToolRow({ call, appear }: { call: ToolCallView; appear: boolean }) {
   const { t } = useTranslation();
+  const { name, arguments: args, result, state, error } = call;
   const stateLabel = state === 'running'
     ? t('agent.toolRunning')
     : state === 'ok' ? t('agent.toolOk') : state === 'error' ? t('agent.toolFailed') : t('agent.toolNoResult');
-  const dot = state === 'running'
-    ? 'bg-accent motion-safe:animate-pulse'
-    : state === 'ok' ? 'bg-emerald-500' : state === 'error' ? 'bg-danger' : 'bg-text-muted';
   return (
-    <details className="group min-w-0 rounded-xl border border-border-light bg-surface-2/40 text-xs" data-agent-tool={name}>
+    <details
+      className={`group min-w-0 rounded-lg border border-border-light bg-surface text-xs ${appear ? 'animate-fadeIn' : ''}`}
+      data-agent-tool={name}
+    >
       <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-1.5 [&::-webkit-details-marker]:hidden">
-        <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} aria-hidden="true" />
+        <span className={`h-2 w-2 shrink-0 rounded-full ${TOOL_DOT[state]}`} aria-hidden="true" />
         <span className="shrink-0 font-mono text-text-secondary">{name}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-text-muted">{args}</span>
         <span className="shrink-0 text-text-muted">{stateLabel}</span>
@@ -191,16 +281,70 @@ function ToolRow({ name, args, result, state, error }: {
       <div className="space-y-2 border-t border-border-light px-3 py-2">
         <div>
           <p className="mb-1 text-text-muted">{t('agent.toolArguments')}</p>
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-surface px-2 py-1.5 font-mono [overflow-wrap:anywhere]">{prettyJson(args) || '{}'}</pre>
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-surface-2/40 px-2 py-1.5 font-mono [overflow-wrap:anywhere]">{prettyJson(args) || '{}'}</pre>
         </div>
         <div>
           <p className="mb-1 text-text-muted">{t('agent.toolResult')}</p>
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-surface px-2 py-1.5 font-mono [overflow-wrap:anywhere]">
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-surface-2/40 px-2 py-1.5 font-mono [overflow-wrap:anywhere]">
             {result !== null ? prettyJson(result) : error || stateLabel}
           </pre>
         </div>
       </div>
     </details>
+  );
+}
+
+/** 一组工具调用：默认折叠，标题显示数量、失败数和正在运行的工具；展开收起有过渡。 */
+function ToolGroup({ calls, open, onToggle, appear }: {
+  calls: ToolCallView[];
+  open: boolean;
+  onToggle: () => void;
+  /** 实时内容：出现时有入场动画 */
+  appear: boolean;
+}) {
+  const { t } = useTranslation();
+  const bodyId = useId();
+  const running = calls.filter(call => call.state === 'running');
+  const failed = calls.filter(call => call.state === 'error').length;
+  const state: ToolState = running.length > 0
+    ? 'running'
+    : failed > 0 ? 'error' : calls.some(call => call.state === 'unknown') ? 'unknown' : 'ok';
+  return (
+    <div className={`min-w-0 rounded-xl border border-border-light bg-surface-2/40 text-xs ${appear ? 'message-appear' : ''}`} data-agent-tool-group="">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        className="flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl px-3 py-1.5 text-left md:min-h-9"
+      >
+        <span className={`h-2 w-2 shrink-0 rounded-full ${TOOL_DOT[state]}`} aria-hidden="true" />
+        <span className="shrink-0 font-medium text-text-secondary">{formatTemplate(t('agent.toolGroup'), { count: calls.length })}</span>
+        {failed > 0 && <span className="shrink-0 text-danger">{formatTemplate(t('agent.toolGroupFailed'), { count: failed })}</span>}
+        {running.length > 0 ? (
+          // 读工具依次执行、结果在回合末一起返回，最后开始的就是正在执行的
+          <span className="min-w-0 flex-1 truncate text-text-muted">
+            {formatTemplate(t('agent.toolGroupRunning'), { name: running[running.length - 1].name })}
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate font-mono text-text-muted">{[...new Set(calls.map(call => call.name))].join(' · ')}</span>
+        )}
+        <ChevronDownIcon className={`h-3.5 w-3.5 shrink-0 text-text-muted transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {/* 0fr 与 1fr 之间过渡，高度平滑展开收起；收起时 inert，键盘和读屏跳过里面的行 */}
+      <div
+        id={bodyId}
+        inert={!open}
+        className={`grid transition-[grid-template-rows] duration-200 ease-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className="space-y-1.5 px-2 pb-2">
+            {/* 组内只会追加，下标 key 让实时行在换成入库历史时原地保留 */}
+            {calls.map((call, index) => <ToolRow key={index} call={call} appear={appear} />)}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -231,12 +375,6 @@ function EventNote({ event }: { event: AgentEventPayload }) {
   );
 }
 
-function LiveSegmentView({ segment }: { segment: LiveSegment }) {
-  if (segment.kind === 'text') return <AssistantBubble content={segment.text} copyable={false} />;
-  if (segment.kind === 'note') return <p className="text-center text-xs text-text-muted">{segment.text}</p>;
-  return <ToolRow name={segment.name} args={segment.arguments} result={null} state={segment.state} error={segment.error} />;
-}
-
 interface Props {
   messages: AgentMessageView[];
   live: LiveTurn | null;
@@ -249,7 +387,15 @@ interface Props {
 /** 消息流。贴近底部时新内容自动滚到底；主人往上翻时不打扰。 */
 export default function AgentMessageList({ messages, live, emptyState, proposalBusy = false, onProposalDecided }: Props) {
   const { t } = useTranslation();
-  const items = useMemo(() => buildAgentDisplayItems(messages), [messages]);
+  const history = useMemo(() => {
+    const counts = new Map<string, number>();
+    return { blocks: groupAgentDisplayItems(buildAgentDisplayItems(messages), counts), counts };
+  }, [messages]);
+  const liveBlocks = useMemo(
+    () => (live ? groupLiveSegments(live.segments, new Map(history.counts)) : []),
+    [live, history],
+  );
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const hadLiveRef = useRef(false);
@@ -260,7 +406,7 @@ export default function AgentMessageList({ messages, live, emptyState, proposalB
     if (live && !hadLiveRef.current) stickToBottomRef.current = true;
     hadLiveRef.current = live !== null;
     if (element && stickToBottomRef.current) element.scrollTop = element.scrollHeight;
-  }, [items, live]);
+  }, [history, live]);
 
   const handleScroll = () => {
     const element = scrollRef.current;
@@ -268,37 +414,60 @@ export default function AgentMessageList({ messages, live, emptyState, proposalB
     stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
   };
 
-  const isEmpty = items.length === 0 && !live;
+  const toggleGroup = (key: string) => setOpenGroups(prev => {
+    const next = new Set(prev);
+    if (!next.delete(key)) next.add(key);
+    return next;
+  });
+
+  const renderGroup = (block: ToolGroupBlock, appear: boolean) => (
+    <ToolGroup key={block.key} calls={block.calls} open={openGroups.has(block.key)} onToggle={() => toggleGroup(block.key)} appear={appear} />
+  );
+  const renderItem = (item: Exclude<DisplayItem, { kind: 'tool' }>) => {
+    if (item.kind === 'user') return <UserBubble key={item.key} content={item.content} />;
+    if (item.kind === 'assistant') return <AssistantBubble key={item.key} content={item.content} copyable />;
+    if (item.kind === 'event') return <EventNote key={item.key} event={item.event} />;
+    if (item.kind === 'memory') return <AgentMemoryNote key={item.key} note={item.note} undone={item.undone} disabled={proposalBusy} />;
+    return <ProposalCard key={item.key} proposalId={item.proposalId} busy={proposalBusy} onDecided={onProposalDecided} />;
+  };
+
+  // 历史与实时内容放在同一个数组里：一轮结束换成入库历史时，同 key 的工具组原地保留，不闪也不收起
+  const rows = history.blocks.map(block => (block.kind === 'tools' ? renderGroup(block, false) : renderItem(block.item)));
+  if (live) {
+    rows.push(<UserBubble key="live-user" content={live.userContent} appear />);
+    for (const block of liveBlocks) {
+      if (block.kind === 'tools') rows.push(renderGroup(block, true));
+      else if (block.kind === 'text') rows.push(<AssistantBubble key={block.key} content={block.text} copyable={false} appear />);
+      else rows.push(<p key={block.key} className="message-appear text-center text-xs text-text-muted">{block.text}</p>);
+    }
+    const last = liveBlocks[liveBlocks.length - 1];
+    // 回合之间模型还在想、没有任何输出时也要有反馈；正文在流式输出或工具在跑时不需要
+    const thinking = !live.error && (
+      !last || last.kind === 'note' || (last.kind === 'tools' && last.calls.every(call => call.state !== 'running'))
+    );
+    if (thinking) {
+      rows.push(
+        <p key="live-thinking" className="animate-fadeIn text-xs text-text-muted" role="status">
+          <span className="motion-safe:animate-pulse">{t('agent.thinking')}</span>
+        </p>,
+      );
+    }
+    if (live.error) {
+      rows.push(
+        <p key="live-error" className="message-appear rounded-xl border border-danger/30 px-3 py-2 text-xs text-danger [overflow-wrap:anywhere]" role="alert">
+          {live.error}
+        </p>,
+      );
+    }
+  }
+
+  const isEmpty = history.blocks.length === 0 && !live;
 
   return (
     <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
       {isEmpty ? emptyState : (
         <div className="mx-auto flex max-w-3xl flex-col gap-3 px-3 py-4 lg:px-6" aria-live="polite">
-          {items.map(item => {
-            if (item.kind === 'user') return <UserBubble key={item.key} content={item.content} />;
-            if (item.kind === 'assistant') return <AssistantBubble key={item.key} content={item.content} copyable />;
-            if (item.kind === 'event') return <EventNote key={item.key} event={item.event} />;
-            if (item.kind === 'memory') return <AgentMemoryNote key={item.key} note={item.note} undone={item.undone} disabled={proposalBusy} />;
-            if (item.kind === 'proposal') {
-              return <ProposalCard key={item.key} proposalId={item.proposalId} busy={proposalBusy} onDecided={onProposalDecided} />;
-            }
-            const state = item.ok === null ? 'unknown' : item.ok ? 'ok' : 'error';
-            return <ToolRow key={item.key} name={item.name} args={item.arguments} result={item.result} state={state} />;
-          })}
-          {live && (
-            <>
-              <UserBubble content={live.userContent} />
-              {live.segments.map((segment, index) => <LiveSegmentView key={index} segment={segment} />)}
-              {live.segments.length === 0 && !live.error && (
-                <p className="text-xs text-text-muted motion-safe:animate-pulse" role="status">{t('agent.thinking')}</p>
-              )}
-              {live.error && (
-                <p className="rounded-xl border border-danger/30 px-3 py-2 text-xs text-danger [overflow-wrap:anywhere]" role="alert">
-                  {live.error}
-                </p>
-              )}
-            </>
-          )}
+          {rows}
         </div>
       )}
     </div>

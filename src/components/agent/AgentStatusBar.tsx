@@ -10,7 +10,8 @@ interface AgentStatus {
   repairable_candidates: number;
   recent_errors: number;
   recent_error_window_hours: number;
-  agent: { configured: boolean; provider_name: string | null; model: string };
+  /** 接口还返回 provider_name / model；模型改在输入框里显示和切换，这里只看是否可用 */
+  agent: { configured: boolean };
 }
 
 interface Props {
@@ -68,9 +69,6 @@ export default function AgentStatusBar({ refreshKey }: Props) {
       count: status.recent_errors,
     },
   ];
-  const modelLabel = status.agent.configured
-    ? [status.agent.provider_name, status.agent.model].filter(Boolean).join(' · ')
-    : t('agent.status.notConfigured');
 
   return (
     <div className="border-b border-border-light px-3 py-2 lg:px-6" aria-label={t('agent.status.title')} role="region">
@@ -82,12 +80,11 @@ export default function AgentStatusBar({ refreshKey }: Props) {
             <span className="ml-1 font-semibold tabular-nums">{item.count}</span>
           </span>
         ))}
-        <span
-          className={`${status.agent.configured ? CHIP_OK : CHIP_WARN} min-w-0 max-w-full`}
-          title={modelLabel}
-        >
-          <span className="truncate">{modelLabel}</span>
-        </span>
+        {!status.agent.configured && (
+          <span className={`${CHIP_WARN} min-w-0 max-w-full`} data-status="not-configured">
+            <span className="truncate">{t('agent.status.notConfigured')}</span>
+          </span>
+        )}
       </div>
     </div>
   );

@@ -101,6 +101,8 @@ function eventModelText(payload: AgentEventPayload): string | null {
   switch (payload.kind) {
     case 'interrupted':
       return '（系统记录：上一轮中断，未完成的工具调用没有执行。）';
+    case 'memory_undo':
+      return `（系统记录：主人撤销了 Agent 笔记版本 ${payload.version_id} 的追加，memory.md 已恢复；以后以当前笔记为准。）`;
     case 'round_limit':
       return `（系统记录：上一轮连续调用工具达到 ${payload.rounds} 轮上限后暂停。主人说「继续」时接着做。）`;
     case 'error':
@@ -195,7 +197,9 @@ function foldedPlaceholder(name: string, rawArguments: string | undefined): stri
   return JSON.stringify({
     ok: true,
     folded: true,
-    note: '较早的结果已折叠以节省上下文；需要引用时用相同参数重新调用。',
+    note: name === 'remember'
+      ? '笔记写入结果已折叠，不得重复 remember；原追加内容在 arguments 中，下一轮以当前 memory.md 为准。'
+      : '较早的结果已折叠以节省上下文；需要引用时用相同参数重新调用。',
     tool: name,
     arguments: args,
   });

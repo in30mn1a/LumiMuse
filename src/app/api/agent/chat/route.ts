@@ -7,6 +7,7 @@ import { runAgentTurn } from '@/lib/agent/loop';
 import { finishAgentRun, startAgentRun } from '@/lib/agent/runs';
 import { getAgentSession } from '@/lib/agent/store';
 import { AGENT_TOOLS } from '@/lib/agent/tools';
+import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
 
 /**
  * 运行一轮 Agent 对话，以 SSE 推送进度。事件：
@@ -53,6 +54,7 @@ export async function POST(request: NextRequest) {
           sessionId,
           userContent: content,
           tools: AGENT_TOOLS,
+          skills: AGENT_SKILLS,
           signal: run.signal,
           events: {
             onText: text => send('text', { text }),

@@ -222,7 +222,7 @@ test('memory.md restores an older version and pages through history', async () =
 
   await waitFor(() => assert.equal(view.getByRole('textbox', { name: 'memory.md' }).value, '第 1 版笔记：主人喜欢先看结论。'));
   const put = server.calls.find(call => call.method === 'PUT' && call.url === '/api/agent/documents/memory');
-  assert.deepEqual(put.body, { restore_version_id: 1 });
+  assert.deepEqual(put.body, { restore_version_id: 1, expected_content: '第 3 版笔记：主人喜欢先看结论。' });
   assert.deepEqual(toasts, [{ message: 'agent.settings.restored', type: 'success' }]);
   assert.equal(server.versions.filter(item => item.key === 'memory').length, 4, 'restoring adds a version instead of rewriting history');
 });

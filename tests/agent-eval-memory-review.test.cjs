@@ -93,6 +93,7 @@ test('anything landing on do_not_touch is wrong', () => {
   }), EXPECTED);
   assert.equal(score.accuracy.wrong, 3);
   assert.equal(score.accuracy.correct, 0);
+  assert.deepEqual(score.wrong_merges.map(item => item.key), ['merge:n1,yy']);
 });
 
 test('category corrections must pick an accepted category', () => {
@@ -119,9 +120,32 @@ test('unlabeled suggestions widen the bounds until a verdict resolves them', () 
   assert.equal(rejected.accuracy.lower, 0.5);
   assert.equal(rejected.accuracy.upper, 0.5);
   assert.deepEqual(rejected.needs_review, []);
+  assert.deepEqual(rejected.wrong_merges.map(item => item.key), ['merge:u1,u2']);
+  assert.deepEqual(rejected.wrong_items.map(item => item.key), ['merge:u1,u2']);
 
   const accepted = scoreRun(input, EXPECTED, { 'merge:u1,u2': true });
   assert.equal(accepted.accuracy.lower, 1);
+  assert.deepEqual(accepted.wrong_merges, []);
+  assert.deepEqual(accepted.wrong_items, []);
+});
+
+test('manual verdicts resolve every suggestion type and cannot override planted mistakes', () => {
+  const input = run({
+    conflicts: [{ source_ids: ['u1', 'u2'] }],
+    merges: [{ source_ids: ['a1', 'a2'], merged_content: 'x' }],
+    corrections: [{ id: 'u3', category: '基础信息' }],
+  });
+  const score = scoreRun(input, EXPECTED, {
+    'conflict:u1,u2': false,
+    'merge:a1,a2': true,
+    'category:u3:基础信息': false,
+  });
+  assert.equal(score.accuracy.wrong, 3);
+  assert.deepEqual(score.needs_review, []);
+  assert.deepEqual(score.wrong_items.map(item => item.key).sort(), [
+    'category:u3:基础信息', 'conflict:u1,u2', 'merge:a1,a2',
+  ]);
+  assert.deepEqual(score.wrong_merges.map(item => item.plant), ['c1']);
 });
 
 test('repeated suggestions across batches count once', () => {

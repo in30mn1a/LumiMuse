@@ -81,3 +81,34 @@ export function restoreAgentDocumentVersion(
   if (!row) return null;
   return saveAgentDocument(db, key, row.content, 'user', now);
 }
+
+/** Agent 只追加自己的笔记；版本与本回合工具记录由调用方一起提交。 */
+export function appendAgentMemory(db: Database.Database, content: string, now: string): number {
+  return db.transaction(() => {
+    const current = readAgentDocument(db, 'memory').content;
+    saveAgentDocument(db, 'memory', `${current}${current ? '\n\n' : ''}${content}`, 'agent', now);
+    return (db.prepare('SELECT id FROM agent_document_versions WHERE key = ? ORDER BY id DESC LIMIT 1')
+      .get('memory') as { id: number }).id;
+  })();
+}
+
+export type AgentMemoryUndoResult =
+  | { ok: true; document: AgentDocument }
+  | { ok: false; code: 'not_found' | 'changed' };
+
+/** 只撤销最新一次 Agent 追加；任何后续保存（包括同时间戳）都会阻止覆盖。 */
+export function undoAgentMemory(db: Database.Database, versionId: number, now: string): AgentMemoryUndoResult {
+  return db.transaction((): AgentMemoryUndoResult => {
+    const version = db.prepare('SELECT content, source FROM agent_document_versions WHERE id = ? AND key = ?')
+      .get(versionId, 'memory') as { content: string; source: AgentDocumentSource } | undefined;
+    if (!version || version.source !== 'agent') return { ok: false, code: 'not_found' };
+    const latest = db.prepare('SELECT id FROM agent_document_versions WHERE key = ? ORDER BY id DESC LIMIT 1')
+      .get('memory') as { id: number };
+    if (latest.id !== versionId || readAgentDocument(db, 'memory').content !== version.content) {
+      return { ok: false, code: 'changed' };
+    }
+    const previous = db.prepare('SELECT content FROM agent_document_versions WHERE key = ? AND id < ? ORDER BY id DESC LIMIT 1')
+      .get('memory', versionId) as { content: string } | undefined;
+    return { ok: true, document: saveAgentDocument(db, 'memory', previous?.content ?? '', 'user', now) };
+  })();
+}

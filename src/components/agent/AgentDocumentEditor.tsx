@@ -96,7 +96,7 @@ export default function AgentDocumentEditor({ docKey, state, onStateChange, pend
     const response = await fetch(documentUrl(docKey), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(docKey === 'memory' ? { ...body, expected_content: doc.content } : body),
     });
     const result = await parseJsonResponse<{ document: AgentDocument }>(response);
     // 同时更新已保存基准与草稿，旧实例完成保存后，重开的编辑器也能显示正确内容。

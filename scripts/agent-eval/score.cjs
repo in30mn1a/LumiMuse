@@ -66,7 +66,7 @@ function scoreRun(run, expected, verdicts = {}) {
   const corrections = dedupeByKey(run.corrections, item => itemKey('category', [item.id], item.category));
 
   const judged = [];
-  const wrongMerges = [];
+  const wrongMergePlants = new Map();
   const record = (type, key, item, label, detail) => judged.push({ type, key, item, label, detail });
 
   for (const { key, item } of conflicts) {
@@ -87,7 +87,7 @@ function scoreRun(run, expected, verdicts = {}) {
     const ids = item.source_ids;
     const badPlant = [...expected.traps, ...expected.conflicts].find(plant => coversAll(ids, plant.memory_ids));
     if (badPlant) {
-      wrongMerges.push({ key, plant: badPlant.id });
+      wrongMergePlants.set(key, badPlant.id);
       record('merge', key, item, 'wrong', `合并了不应合并的 ${badPlant.id}`);
     } else if (touchesProtected(ids)) {
       record('merge', key, item, 'wrong', '落在不应改动的条目上');
@@ -109,14 +109,18 @@ function scoreRun(run, expected, verdicts = {}) {
     else record('category', key, item, 'wrong', `${plant.id} 应改为 ${plant.expected_categories.join('或')}`);
   }
 
+  for (const item of run.unsupported_suggestions ?? []) {
+    record('unsupported', `unsupported:${item.id}`, item, 'wrong', `本次目标不允许的操作 ${item.op}`);
+  }
+
   const counted = judged.filter(row => row.label !== 'neutral');
   const resolved = counted.map(row => {
-    if (row.label !== 'unlabeled' || !(row.key in verdicts)) return row.label;
-    return verdicts[row.key] ? 'correct' : 'wrong';
+    if (row.label !== 'unlabeled' || !(row.key in verdicts)) return row;
+    return { ...row, label: verdicts[row.key] ? 'correct' : 'wrong', detail: '人工判定' };
   });
-  const correct = resolved.filter(label => label === 'correct').length;
-  const wrong = resolved.filter(label => label === 'wrong').length;
-  const unlabeled = resolved.filter(label => label === 'unlabeled').length;
+  const correct = resolved.filter(row => row.label === 'correct').length;
+  const wrong = resolved.filter(row => row.label === 'wrong').length;
+  const unlabeled = resolved.filter(row => row.label === 'unlabeled').length;
   const denominator = counted.length;
 
   const coverage = field => {
@@ -141,7 +145,10 @@ function scoreRun(run, expected, verdicts = {}) {
       plant => corrections.some(({ item }) => item.id === plant.memory_id && plant.expected_categories.includes(item.category)),
       () => true,
     ),
-    wrong_merges: wrongMerges,
+    wrong_merges: resolved
+      .filter(row => row.type === 'merge' && row.label === 'wrong')
+      .map(row => ({ key: row.key, ...(wrongMergePlants.has(row.key)
+        ? { plant: wrongMergePlants.get(row.key) } : { detail: row.detail }) })),
     accuracy: {
       correct,
       wrong,
@@ -157,7 +164,7 @@ function scoreRun(run, expected, verdicts = {}) {
     needs_review: judged
       .filter(row => row.label === 'unlabeled' && !(row.key in verdicts))
       .map(row => ({ key: row.key, type: row.type, item: row.item })),
-    wrong_items: judged
+    wrong_items: resolved
       .filter(row => row.label === 'wrong')
       .map(row => ({ key: row.key, type: row.type, detail: row.detail })),
   };
@@ -213,4 +220,17 @@ function evaluateGate(baseline, spike) {
   };
 }
 
-module.exports = { aggregateScores, evaluateGate, scoreRun };
+/** M4 的最终门槛：以准确率保守下界比较，缺少运行或指标时不能判为通过。 */
+function evaluateAgentGate(baseline, agent) {
+  const atLeast = (value, target) => Number.isFinite(value) && Number.isFinite(target) && value >= target;
+  const checks = {
+    enough_runs: baseline.runs >= 3 && agent.runs >= 3,
+    no_wrong_merges: agent.wrong_merges_per_run === 0,
+    conflict_recall: atLeast(agent.conflict_recall, baseline.conflict_recall),
+    suggestion_accuracy: atLeast(agent.accuracy_lower, baseline.accuracy_upper),
+    all_reasons: agent.reason_coverage === 1,
+  };
+  return { pass: Object.values(checks).every(Boolean), checks, accuracy_undetermined: agent.unreviewed_total + baseline.unreviewed_total > 0 };
+}
+
+module.exports = { aggregateScores, evaluateAgentGate, evaluateGate, scoreRun };

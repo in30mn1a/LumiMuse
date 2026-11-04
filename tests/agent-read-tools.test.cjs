@@ -16,6 +16,7 @@ const { AGENT_READ_TOOLS, createSearchMemoriesTool } = require('../src/lib/agent
 const { parseToolArguments, toolDefinitions } = require('../src/lib/agent/tools/registry.ts');
 const { REDACTED_PLACEHOLDER } = require('../src/lib/agent/tools/credentials.ts');
 const { runReadTool } = require('../src/lib/agent/tools/shared.ts');
+const { createMemoryReviewPlan } = require('../src/lib/memory-review-plan.ts');
 const {
   QUERYABLE_TABLE_NAMES,
   allowedColumns,
@@ -352,6 +353,11 @@ function createFixture(t, { seedData = seed } = {}) {
   const db = new Database(':memory:');
   __migrateForTests(db);
   seedData(db);
+  createMemoryReviewPlan({
+    characterId: 'char-a', planId: 'fixture-read-plan',
+    memories: db.prepare("SELECT id, content, importance FROM memories WHERE character_id = 'char-a' AND status = 'active'").all(),
+    clusterOptions: { batchSize: 40, keepClustersTogether: true },
+  });
   __setDbForTests(db);
   const settings = loadSettings();
 
@@ -374,12 +380,12 @@ function withEngine(ctx, overrides) {
 
 const ids = rows => rows.map(row => row.id);
 
-test('registry: 14 read tools with unique names and convertible schemas', () => {
-  assert.equal(AGENT_READ_TOOLS.length, 14);
-  assert.equal(TOOLS.size, 14);
+test('registry: 17 read tools with unique names and convertible schemas', () => {
+  assert.equal(AGENT_READ_TOOLS.length, 17);
+  assert.equal(TOOLS.size, 17);
   for (const item of AGENT_READ_TOOLS) assert.equal(item.kind, 'read');
   const definitions = toolDefinitions(AGENT_READ_TOOLS);
-  assert.equal(definitions.length, 14);
+  assert.equal(definitions.length, 17);
   for (const definition of definitions) {
     assert.equal(definition.function.parameters.type, 'object');
     assert.equal(definition.function.parameters.$schema, undefined);
@@ -835,6 +841,9 @@ function sweepCalls() {
     list_app_events: [{ limit: 50 }],
     list_failed_tasks: [{ limit: 50 }],
     list_repairable_candidates: [{ limit: 50 }],
+    load_skill: [{ name: 'memory-review' }],
+    prepare_memory_review: [{ character_id: 'char-a' }],
+    read_review_batch: [{ character_id: 'char-a', plan_id: 'fixture-read-plan', batch_index: 0 }],
     query_table: QUERYABLE_TABLE_NAMES.flatMap(table => [
       { table, limit: 50 },
       { table, columns: [...allowedColumns(table)], limit: 50 },

@@ -11,13 +11,28 @@ import { formatTemplate } from '@/lib/i18n';
 import { CheckIcon, CopyIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
 import ProposalCard from './ProposalCard';
+import AgentMemoryNote, { type AgentMemoryNoteData } from './AgentMemoryNote';
 
 type DisplayItem =
   | { kind: 'user'; key: string; content: string }
   | { kind: 'assistant'; key: string; content: string }
   | { kind: 'tool'; key: string; name: string; arguments: string; result: string | null; ok: boolean | null }
   | { kind: 'event'; key: string; event: AgentEventPayload }
+  | { kind: 'memory'; key: string; note: AgentMemoryNoteData; undone: boolean }
   | { kind: 'proposal'; key: string; proposalId: number };
+
+function rememberedNote(name: string, result: string | null): AgentMemoryNoteData | null {
+  if (name !== 'remember' || result === null) return null;
+  try {
+    const value = JSON.parse(result.split('\n', 1)[0]) as Record<string, unknown>;
+    if (value.ok === true && typeof value.version_id === 'number' && typeof value.content === 'string' && typeof value.session_id === 'string') {
+      return { versionId: value.version_id, content: value.content, sessionId: value.session_id };
+    }
+  } catch {
+    // 工具失败或不认识的历史格式只显示原工具行。
+  }
+  return null;
+}
 
 /** 提案工具成功时返回 proposal_id；卡片紧跟在这次工具调用后面。 */
 function createdProposalId(name: string, result: string | null): number | null {
@@ -33,6 +48,7 @@ function createdProposalId(name: string, result: string | null): number | null {
 /** 把存储的消息排成显示顺序：每轮先是回复正文，再是这轮的工具调用（与结果配对）。 */
 export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayItem[] {
   const results = new Map<string, AgentMessageView>();
+  const undoneVersions = new Set(messages.flatMap(message => message.event?.kind === 'memory_undo' ? [message.event.version_id] : []));
   for (const message of messages) {
     if (message.role === 'tool' && message.tool_call_id) results.set(message.tool_call_id, message);
   }
@@ -54,6 +70,8 @@ export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayIte
         });
         const proposalId = createdProposalId(call.name, result ? result.content : null);
         if (proposalId !== null) items.push({ kind: 'proposal', key: `proposal-${proposalId}`, proposalId });
+        const note = rememberedNote(call.name, result ? result.content : null);
+        if (note) items.push({ kind: 'memory', key: `memory-${note.versionId}`, note, undone: undoneVersions.has(note.versionId) });
       }
     } else if (message.role === 'event' && message.event) {
       items.push({ kind: 'event', key: `m${message.id}`, event: message.event });
@@ -190,6 +208,8 @@ function EventNote({ event }: { event: AgentEventPayload }) {
   const { t } = useTranslation();
   const text = event.kind === 'interrupted'
     ? t('agent.event.interrupted')
+    : event.kind === 'memory_undo'
+      ? t('agent.memory.undoEvent')
     : event.kind === 'round_limit'
       ? formatTemplate(t('agent.event.roundLimit'), { rounds: event.rounds })
       : event.kind === 'proposal_decision'
@@ -258,6 +278,7 @@ export default function AgentMessageList({ messages, live, emptyState, proposalB
             if (item.kind === 'user') return <UserBubble key={item.key} content={item.content} />;
             if (item.kind === 'assistant') return <AssistantBubble key={item.key} content={item.content} copyable />;
             if (item.kind === 'event') return <EventNote key={item.key} event={item.event} />;
+            if (item.kind === 'memory') return <AgentMemoryNote key={item.key} note={item.note} undone={item.undone} disabled={proposalBusy} />;
             if (item.kind === 'proposal') {
               return <ProposalCard key={item.key} proposalId={item.proposalId} busy={proposalBusy} onDecided={onProposalDecided} />;
             }

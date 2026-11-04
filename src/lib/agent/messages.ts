@@ -15,6 +15,7 @@ export type AgentEventPayload =
   | { kind: 'interrupted' }
   | { kind: 'round_limit'; rounds: number }
   | { kind: 'error'; message: string }
+  | { kind: 'memory_undo'; version_id: number }
   | { kind: 'proposal_decision'; proposal_id: number; items: ProposalDecisionEventItem[] };
 
 /** 存在 `tool_calls_json` 里、也原样发给上游的调用结构。 */

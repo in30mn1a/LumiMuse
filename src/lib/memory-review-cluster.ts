@@ -29,6 +29,8 @@ export type MemoryReviewClusterItem = {
 export type BuildMemoryReviewBatchesOptions = {
   /** 每批最多条数；默认 MEMORY_REVIEW_BATCH_SIZE。 */
   batchSize?: number;
+  /** Agent 整理时尽量把整簇放进同一批；默认关闭，保持旧流程的分批结果。 */
+  keepClustersTogether?: boolean;
   vectorThreshold?: number;
   textThreshold?: number;
   maxComparisons?: number;
@@ -129,6 +131,26 @@ export function buildMemoryReviewBatches(
     } else {
       clusters.push({ seed: item, members: [item] });
     }
+  }
+
+  if (options.keepClustersTogether) {
+    const batches: string[][] = [];
+    let current: string[] = [];
+    for (const cluster of clusters) {
+      const ids = cluster.members.map(member => member.id);
+      if (current.length > 0 && current.length + ids.length > batchSize) {
+        batches.push(current);
+        current = [];
+      }
+      let offset = 0;
+      while (ids.length - offset > batchSize) {
+        batches.push(ids.slice(offset, offset + batchSize));
+        offset += batchSize;
+      }
+      current = current.concat(ids.slice(offset));
+    }
+    if (current.length > 0) batches.push(current);
+    return batches;
   }
 
   // 按簇展平（同簇相邻），再按条数切批，避免按字符切出上百次 LLM 调用。

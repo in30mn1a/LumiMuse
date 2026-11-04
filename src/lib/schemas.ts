@@ -603,8 +603,9 @@ export const agentSessionUpdateSchema = z.object({
 });
 
 export const agentDocumentUpdateSchema = z.union([
-  z.object({ content: z.string().max(MAX_LARGE_TEXT) }),
-  z.object({ restore_version_id: z.number().int().positive() }),
+  z.object({ content: z.string().max(MAX_LARGE_TEXT), expected_content: z.string().optional() }),
+  z.object({ restore_version_id: z.number().int().positive(), expected_content: z.string().optional() }),
+  z.object({ undo_version_id: z.number().int().positive(), session_id: z.string().trim().min(1).optional() }),
 ]);
 
 // --------- 通用错误响应辅助 ---------

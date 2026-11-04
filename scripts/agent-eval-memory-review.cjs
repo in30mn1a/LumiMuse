@@ -1,11 +1,11 @@
 /**
- * 记忆整理评测（TASK-EVAL-BASELINE、TASK-EVAL-SPIKE）。
+ * 记忆整理评测（TASK-EVAL-BASELINE、TASK-EVAL-SPIKE、TASK-EVAL-AGENT）。
  *
- * 用同一模型、同一虚构样本比较旧 AI 整理和小型验证模式，只读样本，不写任何数据库。
+ * 用同一模型、同一虚构样本比较旧流程、验证模式和完整 Agent；Agent 只收集内存库提案，不批准角色记忆写入。
  *
  * Usage:
- *   node scripts/agent-eval-memory-review.cjs run --mode legacy|spike --sample small|scale|all [--runs 3] [--model m] [--concurrency 3] [--force]
- *   node scripts/agent-eval-memory-review.cjs report [--model m] [--verdicts path/to/verdicts.json]
+ *   node scripts/agent-eval-memory-review.cjs run --mode legacy|spike|agent --sample small|scale|all [--runs 3] [--model m] [--concurrency 3] [--force]
+ *   node scripts/agent-eval-memory-review.cjs report [--mode agent] [--model m] [--verdicts path/to/verdicts.json]
  *
  * 配置见 scripts/agent-eval/upstream-config.cjs。原始回复和报告写到被 gitignore 的 docs/agent-eval/。
  * 已完成的运行会跳过，中断后可以直接重跑；verdicts 是 {建议 key: true|false} 的人工判定。
@@ -17,17 +17,18 @@ const { registerTsLoader } = require('../tests/helpers/register-ts-loader.cjs');
 const { loadSample } = require('./agent-eval/fixtures.cjs');
 const legacy = require('./agent-eval/legacy-review-prompt.cjs');
 const spike = require('./agent-eval/spike-review-prompt.cjs');
-const { aggregateScores, evaluateGate, scoreRun } = require('./agent-eval/score.cjs');
+const { aggregateScores, evaluateAgentGate, evaluateGate, scoreRun } = require('./agent-eval/score.cjs');
 const { loadUpstreamConfig, redactSecret } = require('./agent-eval/upstream-config.cjs');
 
 registerTsLoader();
+const { agentImplementationHash, createAgentModelCaller, runAgent } = require('./agent-eval/agent-review.cjs');
 const { chatCompletion, REASONING_SAFE_MAX_TOKENS } = require('../src/lib/api-client.ts');
 const { buildMemoryReviewBatches } = require('../src/lib/memory-review-cluster.ts');
 
 const OUTPUT_DIR = path.resolve(__dirname, '..', 'docs', 'agent-eval');
 const REQUEST_TIMEOUT_MS = 600_000;
 const RETRY_DELAYS_MS = [5_000, 20_000];
-const MODES = ['legacy', 'spike'];
+const MODES = ['legacy', 'spike', 'agent'];
 const SAMPLES = ['small', 'scale'];
 
 function sleep(ms) {
@@ -236,7 +237,7 @@ async function runSpike(sample, call, { concurrency = 3, retryDelaysMs = RETRY_D
   };
 }
 
-const RUNNERS = { legacy: runLegacy, spike: runSpike };
+const RUNNERS = { legacy: runLegacy, spike: runSpike, agent: runAgent };
 
 function modelDir(outputDir, model) {
   return path.join(outputDir, 'runs', model.replace(/[^\w.-]+/g, '_'));
@@ -249,6 +250,7 @@ function readRecord(filePath) {
 /** 跑完立刻落盘，已完成的跳过；样本变了（hash 不同）或上次未完成都会重跑。 */
 async function runMode({ mode, sampleName, runs, model, call, outputDir = OUTPUT_DIR, force = false, log = () => {}, ...options }) {
   const sample = loadSample(sampleName);
+  const implementationHash = mode === 'agent' ? agentImplementationHash() : null;
   const dir = modelDir(outputDir, model);
   fs.mkdirSync(dir, { recursive: true });
   const records = [];
@@ -256,15 +258,17 @@ async function runMode({ mode, sampleName, runs, model, call, outputDir = OUTPUT
     const filePath = path.join(dir, `${mode}-${sampleName}-run${run}.json`);
     if (!force && fs.existsSync(filePath)) {
       const existing = readRecord(filePath);
-      if (!existing.incomplete && existing.sample_hash === sample.hash) {
+      if (!existing.incomplete && existing.sample_hash === sample.hash && existing.model === model && existing.mode === mode
+        && (mode !== 'agent' || existing.implementation_hash === implementationHash)) {
         log(`跳过 ${mode} ${sampleName} 第 ${run} 次（已完成）`);
         records.push(existing);
         continue;
       }
     }
     const startedAt = Date.now();
-    const result = await RUNNERS[mode](sample, call, options);
-    const record = { mode, sample: sampleName, sample_hash: sample.hash, model, run, generated_at: new Date().toISOString(), ...result };
+    const result = await RUNNERS[mode](sample, call, { ...options, model, log });
+    const record = { mode, sample: sampleName, sample_hash: sample.hash, model, run, generated_at: new Date().toISOString(),
+      ...(implementationHash ? { implementation_hash: implementationHash } : {}), ...result };
     fs.writeFileSync(filePath, `${JSON.stringify(record, null, 2)}\n`);
     log(`${mode} ${sampleName} 第 ${run}/${runs} 次：${result.calls.length} 次调用，失败 ${result.failed_calls}${result.incomplete ? '，未完成（上游错误）' : ''}，${Math.round((Date.now() - startedAt) / 1000)}s`);
     records.push(record);
@@ -359,7 +363,7 @@ function buildReport({ model, records, verdicts = {} }) {
     const pending = new Map();
     const wrong = { legacy: [], spike: [] };
     const missed = { legacy: [], spike: [] };
-    for (const mode of MODES) {
+    for (const mode of ['legacy', 'spike']) {
       for (const score of scores[mode]) {
         for (const row of score.needs_review) pending.set(row.key, row);
         wrong[mode].push(...score.wrong_items.map(item => item.detail));
@@ -408,6 +412,97 @@ function buildReport({ model, records, verdicts = {} }) {
   ].join('\n');
 }
 
+/** 只核验已被系统接受的提案；来源重读必须先于生成提案的模型调用。 */
+function foldedEvidenceItems(record) {
+  const refetchedByGoal = new Map((record.phases ?? []).map(phase => [phase.goal, new Set(phase.refetched_source_ids_after_fold ?? [])]));
+  const readAt = new Map();
+  const items = [];
+  const sameIds = (left, right) => left.length === right.length && left.every(id => right.includes(id));
+  for (const [index, call] of (record.calls ?? []).entries()) {
+    if (call.status !== 'ok') continue;
+    const refetched = refetchedByGoal.get(call.goal) ?? new Set();
+    for (const tool of call.tool_calls ?? []) {
+      let args;
+      try { args = JSON.parse(tool.arguments); } catch { continue; }
+      if (!args || typeof args !== 'object') continue;
+      if (tool.name === 'get_memory_sources' && call.folded_tools?.length > 0 && Array.isArray(args.memory_ids)) {
+        for (const id of args.memory_ids) if (refetched.has(id)) readAt.set(`${call.goal}:${id}`, index);
+      }
+      if (tool.name !== 'create_memory_proposal' || !Array.isArray(args.items)) continue;
+      for (const item of args.items) {
+        if (!item || typeof item !== 'object') continue;
+        const ids = Array.isArray(item.memory_ids) ? item.memory_ids : typeof item.memory_id === 'string' ? [item.memory_id] : [];
+        if (ids.length === 0 || !ids.every(id => {
+          const sourceCall = readAt.get(`${call.goal}:${id}`);
+          return sourceCall !== undefined && sourceCall < index;
+        })) continue;
+        const evidence = item.evidence?.message_ids;
+        // 虚构来源 ID 与 seedDatabase 中的生成规则相同，确保引用的正是重读的来源。
+        if (!Array.isArray(evidence) || !ids.every(id => evidence.some(messageId => typeof messageId === 'string' && messageId.startsWith(`eval-msg-${id}-`)))) continue;
+        const normalized = item.op === 'report_conflict' ? record.normalized.conflicts
+          : item.op === 'merge' ? record.normalized.merges
+            : item.op === 'update' ? record.normalized.corrections : [];
+        const accepted = normalized.some(row => sameIds(ids, row.source_ids ?? [row.id])
+          && row.reason === item.reason && row.evidence === JSON.stringify(evidence)
+          && (item.op !== 'merge' || row.merged_content === item.fields?.content)
+          && (item.op !== 'update' || row.category === item.fields?.category));
+        if (accepted) items.push({ goal: call.goal, model_call: index + 1, op: item.op, memory_ids: ids, message_ids: evidence });
+      }
+    }
+  }
+  return items;
+}
+
+/** 最终评测保留每次运行和必备场景，不能用合并平均掩盖某个样本的退步。 */
+function buildAgentReport({ model, records, verdicts = {} }) {
+  const sections = [`# 完整 Agent 记忆整理评测：${model}`, '',
+    '门槛按 AC-QUALITY-03：错误合并为 0，矛盾检出率和建议准确率不低于同模型旧流程，每项都有理由；小样本和规模样本分别至少 3 次。准确率用新流程下界与旧流程上界保守比较。结果仍需主人确认，未通过不进入 M5。', '',
+    'Agent 使用真实循环和工具、虚构 :memory: 数据，全部提案未批准。评测的 Agent context_window 为 48000，以实际运行结果观察折叠与重新取证；角色聊天完全不受影响。折叠取证只计入重读来源之后生成、引用该来源且已被系统接受的提案，每个规模运行都须命中。', ''];
+  for (const sampleName of SAMPLES) {
+    const sample = loadSample(sampleName);
+    const baseline = records[sampleName]?.legacy ?? [];
+    const agent = records[sampleName]?.agent ?? [];
+    const baselineScores = baseline.map(record => scoreRecord(record, sample.expected, verdicts));
+    const agentScores = agent.map(record => scoreRecord(record, sample.expected, verdicts));
+    const left = aggregateScores(baselineScores);
+    const right = aggregateScores(agentScores);
+    const gate = evaluateAgentGate(left, right);
+    const covers = (record, ids) => record.normalized.conflicts.some(item => ids.every(id => item.source_ids.includes(id)));
+    const isCrossBatch = (record, ids) => {
+      const indexes = ids.map(id => record.batches.findIndex(batch => batch.includes(id)));
+      return indexes.every(index => index >= 0) && new Set(indexes).size > 1;
+    };
+    const crossPlants = sample.expected.conflicts.filter(plant => agent.some(record => isCrossBatch(record, plant.memory_ids)));
+    const mandatory = {
+      full_coverage: agent.length >= 3 && agent.every(record => record.memory_unchanged && record.phases?.length === 3 && record.phases.every(phase => phase.complete)),
+      cross_batch: agent.length >= 3 && crossPlants.length > 0 && agent.every(record => crossPlants.some(plant => covers(record, plant.memory_ids))),
+      ...(sampleName === 'small' ? { c1_c5: agent.length >= 3 && agent.every(record => ['c1', 'c5'].every(id => covers(record, sample.expected.conflicts.find(plant => plant.id === id).memory_ids))) } : {
+        folded_evidence: agent.length >= 3 && agent.every(record => foldedEvidenceItems(record).length > 0),
+      }),
+    };
+    const passed = gate.pass && Object.values(mandatory).every(Boolean);
+    sections.push(`## ${sampleName}（${sample.memories.length} 条，hash ${sample.hash}）`, '',
+      `旧流程 ${baseline.length} 次；完整 Agent ${agent.length} 次。当前门槛：**${passed ? '通过，待主人确认' : '未通过或验证不足'}**。`, '',
+      '| 指标 | 旧流程 | 完整 Agent |', '| --- | --- | --- |',
+      metricRows(left, right, baselineScores, agentScores), '',
+      '| 条件 | 结果 |', '| --- | --- |',
+      ...Object.entries({ ...gate.checks, ...mandatory }).map(([name, pass]) => `| ${name} | ${pass ? '通过' : '未通过'} |`), '',
+      '| 矛盾埋点 | 每次命中 | 跨批 |', '| --- | --- | --- |',
+      ...sample.expected.conflicts.map(plant => `| ${plant.id} | ${agent.map(record => covers(record, plant.memory_ids) ? '是' : '否').join('，') || '无运行'} | ${agent.some(record => isCrossBatch(record, plant.memory_ids)) ? '是' : '否'} |`), '',
+      '| 运行 | 模型调用 | 来源读取 | 折叠后重新取证 | 重读后有据提案 |', '| --- | --- | --- | --- | --- |',
+      ...agent.map(record => `| ${record.run} | ${record.calls.length} | ${record.phases.reduce((sum, phase) => sum + phase.source_reads, 0)} | ${record.phases.reduce((sum, phase) => sum + phase.refetched_source_ids_after_fold.length, 0)} 条 | ${foldedEvidenceItems(record).length} 项 |`), '');
+    const pending = new Map();
+    const wrong = [];
+    for (const score of [...baselineScores, ...agentScores]) {
+      for (const row of score.needs_review) pending.set(row.key, row);
+    }
+    for (const score of agentScores) wrong.push(...score.wrong_items.map(item => item.detail));
+    sections.push(`Agent 判错原因：${tally(wrong)}`, '', `### 待人工判定（${pending.size} 项）`, '',
+      pending.size === 0 ? '无。' : [...pending.values()].map(row => describeSuggestion(row, new Map(sample.memories.map(memory => [memory.id, memory])))).join('\n'), '');
+  }
+  return sections.join('\n');
+}
+
 function loadCompletedRecords(model, outputDir = OUTPUT_DIR) {
   const dir = modelDir(outputDir, model);
   const records = {};
@@ -423,7 +518,8 @@ function loadCompletedRecords(model, outputDir = OUTPUT_DIR) {
         .sort()
         .map(name => ({ name, record: readRecord(path.join(dir, name)) }))
         .filter(({ name, record }) => {
-          const usable = !record.incomplete && record.sample_hash === currentHash;
+          const usable = !record.incomplete && record.sample_hash === currentHash && record.model === model && record.mode === mode
+            && (mode !== 'agent' || record.implementation_hash === agentImplementationHash());
           if (!usable) skipped.push(name);
           return usable;
         })
@@ -451,14 +547,14 @@ async function main() {
   const model = values.model || config.models[0];
 
   if (command === 'run') {
-    if (!MODES.includes(values.mode)) throw new Error('--mode 必须是 legacy 或 spike');
+    if (!MODES.includes(values.mode)) throw new Error('--mode 必须是 legacy、spike 或 agent');
     const sampleNames = values.sample === 'all' ? SAMPLES : [values.sample];
     if (!sampleNames.every(name => SAMPLES.includes(name))) throw new Error('--sample 必须是 small、scale 或 all');
     const runs = Number.parseInt(values.runs, 10);
     const concurrency = Number.parseInt(values.concurrency, 10);
     if (!(runs >= 1) || !(concurrency >= 1)) throw new Error('--runs 和 --concurrency 必须是正整数');
 
-    const call = createModelCaller(config, model);
+    const call = values.mode === 'agent' ? createAgentModelCaller(config, model) : createModelCaller(config, model);
     let incomplete = 0;
     for (const sampleName of sampleNames) {
       const records = await runMode({ mode: values.mode, sampleName, runs, model, call, concurrency, force: values.force, log: console.log });
@@ -474,15 +570,16 @@ async function main() {
   if (command === 'report') {
     const verdicts = values.verdicts ? JSON.parse(fs.readFileSync(values.verdicts, 'utf8')) : {};
     const { records, skipped } = loadCompletedRecords(model);
-    const reportPath = path.join(OUTPUT_DIR, `report-${model.replace(/[^\w.-]+/g, '_')}.md`);
+    const reportPath = path.join(OUTPUT_DIR, `report-${values.mode === 'agent' ? 'agent-' : ''}${model.replace(/[^\w.-]+/g, '_')}.md`);
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    fs.writeFileSync(reportPath, buildReport({ model, records, verdicts }));
+    fs.writeFileSync(reportPath, values.mode === 'agent' ? buildAgentReport({ model, records, verdicts }) : buildReport({ model, records, verdicts }));
     if (skipped.length > 0) console.log(`未计入（未完成或样本已变）：${skipped.join('，')}`);
     console.log(`报告：${path.relative(process.cwd(), reportPath)}`);
     return;
   }
 
-  throw new Error('用法：run --mode legacy|spike --sample small|scale|all，或 report');
+  if (command === 'models') { console.log(JSON.stringify({ models: config.models })); return; }
+  throw new Error('用法：run --mode legacy|spike|agent --sample small|scale|all，或 report --mode agent，或 models');
 }
 
 if (require.main === module) {
@@ -492,4 +589,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildReport, createModelCaller, loadCompletedRecords, runLegacy, runMode, runSpike };
+module.exports = { buildAgentReport, buildReport, createModelCaller, foldedEvidenceItems, loadCompletedRecords, runAgent, runLegacy, runMode, runSpike };

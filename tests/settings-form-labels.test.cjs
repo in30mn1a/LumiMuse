@@ -94,11 +94,7 @@ function loadSettingsPage() {
     error: null,
     activeTasks: [],
     blockedReason: null,
-    diagnostics: null,
-    diagnosticsLoading: false,
-    diagnosticsError: null,
     loadMemoryIndexStatus: asyncNoop,
-    loadMemoryDiagnostics: asyncNoop,
     handleRetryFailedMemoryIndex: noop,
     handleRebuildMemoryIndex: noop,
     handleIndexUnindexedMemoryIndex: noop,
@@ -118,7 +114,6 @@ function loadSettingsPage() {
     loadMemoryArchiveMemories: asyncNoop,
     loadMemoryArchiveBatches: asyncNoop,
   };
-  const memoryCandidatesPanel = { loadMemoryCandidates: asyncNoop };
 
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (request === 'next/navigation') return { useRouter: () => ({ push: noop, replace: noop }) };
@@ -168,7 +163,6 @@ function loadSettingsPage() {
     if (request === '@/hooks/settings/useMemoryManagementCharacters') return { useMemoryManagementCharacters: () => memoryManagementPanel };
     if (request === '@/hooks/settings/useMemoryProfilePanel') return { useMemoryProfilePanel: () => memoryProfilePanel };
     if (request === '@/hooks/settings/useMemoryArchivePanel') return { useMemoryArchivePanel: () => memoryArchivePanel };
-    if (request === '@/hooks/settings/useMemoryCandidatesPanel') return { useMemoryCandidatesPanel: () => memoryCandidatesPanel };
     if (/^@\/components\/settings\/memory\/(?!MemoryEngineSection)/.test(request)) {
       const exportName = path.basename(request);
       return { [exportName]: nullPanel };

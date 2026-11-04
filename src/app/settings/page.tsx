@@ -24,13 +24,10 @@ import { useMemoryIndexPanel } from '@/hooks/settings/useMemoryIndexPanel';
 import { useMemoryManagementCharacters } from '@/hooks/settings/useMemoryManagementCharacters';
 import { useMemoryProfilePanel } from '@/hooks/settings/useMemoryProfilePanel';
 import { useMemoryArchivePanel } from '@/hooks/settings/useMemoryArchivePanel';
-import { useMemoryCandidatesPanel } from '@/hooks/settings/useMemoryCandidatesPanel';
 import { MemoryIndexPanel } from '@/components/settings/memory/MemoryIndexPanel';
-import { MemoryDiagnosticsPanel } from '@/components/settings/memory/MemoryDiagnosticsPanel';
 import { MemoryEngineSection } from '@/components/settings/memory/MemoryEngineSection';
 import { MemoryProfilePanel } from '@/components/settings/memory/MemoryProfilePanel';
 import { MemoryArchivePanel } from '@/components/settings/memory/MemoryArchivePanel';
-import { MemoryCandidatesPanel } from '@/components/settings/memory/MemoryCandidatesPanel';
 import { ImageGenSettingsSection } from '@/components/settings/ImageGenSettingsSection';
 import { DisplaySettingsSection } from '@/components/settings/DisplaySettingsSection';
 import { ApiSettingsSection } from '@/components/settings/ApiSettingsSection';
@@ -79,9 +76,8 @@ const SETTINGS_TABS: Array<{ key: SettingsTab; label: string }> = [
 const MEMORY_PAGES = [
   { key: 'engine', label: 'settings.memoryEngineParameters' },
   { key: 'profile', label: 'settings.memoryProfileTitle' },
-  { key: 'candidates', label: 'settings.memoryCandidatesTitle' },
   { key: 'archive', label: 'settings.memoryArchiveTitle' },
-  { key: 'index', label: 'settings.memoryIndexAndDiagnostics' },
+  { key: 'index', label: 'settings.memoryIndexTitle' },
 ] as const;
 type MemoryPage = typeof MEMORY_PAGES[number]['key'];
 
@@ -171,39 +167,24 @@ export default function SettingsPage() {
   const memoryManagementPanel = useMemoryManagementCharacters();
   const memoryIndexPanel = useMemoryIndexPanel({
     active: activeTab === 'memory',
-    memoryManagementCharacterIdRef: memoryManagementPanel.memoryManagementCharacterIdRef,
     t,
     showToast,
   });
-  const {
-    loadMemoryIndexStatus,
-    loadMemoryDiagnostics,
-  } = memoryIndexPanel;
+  const { loadMemoryIndexStatus } = memoryIndexPanel;
   const memoryProfilePanel = useMemoryProfilePanel({
     characterId: memoryManagementPanel.memoryManagementCharacterId,
     memoryManagementCharacterIdRef: memoryManagementPanel.memoryManagementCharacterIdRef,
-    loadMemoryDiagnostics,
     t,
     showToast,
   });
   const memoryArchivePanel = useMemoryArchivePanel({
     characterId: memoryManagementPanel.memoryManagementCharacterId,
     memoryManagementCharacterIdRef: memoryManagementPanel.memoryManagementCharacterIdRef,
-    loadMemoryDiagnostics,
     loadMemoryIndexStatus,
     t,
     showToast,
-  });
-  const memoryCandidatesPanel = useMemoryCandidatesPanel({
-    characterId: memoryManagementPanel.memoryManagementCharacterId,
-    memoryManagementCharacterIdRef: memoryManagementPanel.memoryManagementCharacterIdRef,
-    t,
-    showToast,
-    loadMemoryDiagnostics,
-    loadMemoryIndexStatus,
   });
   const { loadMemoryManagementCharacters } = memoryManagementPanel;
-  const { loadMemoryCandidates } = memoryCandidatesPanel;
   const providerDraftDirty = Boolean(editingProvider && JSON.stringify(editingProvider) !== JSON.stringify(providers.find(provider => provider.id === editingProvider.id)));
   const hasUnsavedDrafts = hasUnsavedChanges || providerSyncPending || providerDraftDirty || memoryProfilePanel.isProfileDraftDirty;
 
@@ -444,12 +425,10 @@ export default function SettingsPage() {
     memoryManagementPanel.handleMemoryManagementCharacterChange(characterId, {
       resetProfile: memoryProfilePanel.resetProfile,
       resetArchiveForCharacterChange: memoryArchivePanel.resetArchiveForCharacterChange,
-      loadMemoryDiagnostics,
       loadMemoryProfile: memoryProfilePanel.loadMemoryProfile,
       loadMemoryArchiveMemories: memoryArchivePanel.loadMemoryArchiveMemories,
       loadMemoryArchiveBatches: memoryArchivePanel.loadMemoryArchiveBatches,
     });
-    void loadMemoryCandidates(characterId);
   };
 
   const handleMemoryManagementCharacterChange = (characterId: string) => {
@@ -483,18 +462,13 @@ export default function SettingsPage() {
 
   const loadMemoryPanelState = useCallback(async () => {
     void loadMemoryIndexStatus();
-    void loadMemoryDiagnostics();
     await loadMemoryManagementCharacters({
-      loadMemoryDiagnostics,
       loadMemoryProfile: memoryProfilePanel.loadMemoryProfile,
       loadMemoryArchiveMemories: memoryArchivePanel.loadMemoryArchiveMemories,
       loadMemoryArchiveBatches: memoryArchivePanel.loadMemoryArchiveBatches,
     });
-    void loadMemoryCandidates();
   }, [
-    loadMemoryDiagnostics,
     loadMemoryIndexStatus,
-    loadMemoryCandidates,
     loadMemoryManagementCharacters,
     memoryArchivePanel.loadMemoryArchiveBatches,
     memoryArchivePanel.loadMemoryArchiveMemories,
@@ -821,16 +795,6 @@ export default function SettingsPage() {
               />
               </div>
 
-              <div hidden={memoryPage !== 'index'}>
-              <MemoryDiagnosticsPanel
-                t={t}
-                diagnostics={memoryIndexPanel.diagnostics}
-                loading={memoryIndexPanel.diagnosticsLoading}
-                error={memoryIndexPanel.diagnosticsError}
-                onRefresh={() => void memoryIndexPanel.loadMemoryDiagnostics()}
-              />
-              </div>
-
               <div hidden={memoryPage !== 'profile'}>
               <MemoryProfilePanel
                 t={t}
@@ -845,13 +809,6 @@ export default function SettingsPage() {
                 t={t}
                 archive={memoryArchivePanel}
                 memoryManagementCharacterId={memoryManagementPanel.memoryManagementCharacterId}
-              />
-              </div>
-
-              <div hidden={memoryPage !== 'candidates'}>
-              <MemoryCandidatesPanel
-                t={t}
-                candidates={memoryCandidatesPanel}
               />
               </div>
             </MemoryEngineSection>

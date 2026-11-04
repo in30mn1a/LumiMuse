@@ -168,7 +168,6 @@ test('memory profile loading stays true when an older request finishes after a n
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         t: key => key,
         showToast: () => {},
       }),
@@ -228,7 +227,6 @@ test('memory profile init preserves the no_active_memories business result while
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         t: key => key,
         showToast: (message, type) => toastMessages.push({ message, type }),
       }),
@@ -280,7 +278,6 @@ test('memory archive AI state is aborted and cleared on character change without
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => followUpRequests.push({ url: 'diagnostics', body: null }),
         loadMemoryIndexStatus: async () => followUpRequests.push({ url: 'index-status', body: null }),
         t: key => key,
         showToast: message => toastMessages.push(message),
@@ -352,7 +349,6 @@ test('memory archive list ignores an older character response while the new char
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         loadMemoryIndexStatus: async () => {},
         t: key => key,
         showToast: () => {},
@@ -422,7 +418,6 @@ test('memory archive batches ignore an older same-character response after a new
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         loadMemoryIndexStatus: async () => {},
         t: key => key,
         showToast: () => {},
@@ -513,7 +508,6 @@ test('memory archive preview response cannot overwrite a newer execute action', 
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => refreshes.push('diagnostics'),
         loadMemoryIndexStatus: async () => refreshes.push('index-status'),
         t: key => key,
         showToast: () => {},
@@ -547,7 +541,7 @@ test('memory archive preview response cannot overwrite a newer execute action', 
     assert.equal(runtime.current.memoryArchiveLoading, false);
     assert.equal(runtime.current.memoryArchivePlan.summaryMemory.id, 'summary-B');
     assert.deepEqual(runtime.current.selectedMemoryArchiveIds, []);
-    assert.deepEqual(refreshes, ['diagnostics', 'index-status']);
+    assert.deepEqual(refreshes, ['index-status']);
     assert.deepEqual(followUpRequests, ['memories:B', 'batches:B']);
   } finally {
     global.fetch = originalFetch;
@@ -596,7 +590,6 @@ test('memory archive undo and batch detail ignore stale character responses', as
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => refreshes.push('diagnostics'),
         loadMemoryIndexStatus: async () => refreshes.push('index-status'),
         t: key => key,
         showToast: () => {},
@@ -649,7 +642,7 @@ test('memory archive undo and batch detail ignore stale character responses', as
     assert.equal(runtime.current.memoryArchiveLoading, false);
     assert.equal(runtime.current.selectedMemoryArchiveBatchId, '');
     assert.equal(runtime.current.memoryArchiveBatchDetail, null);
-    assert.deepEqual(refreshes, ['diagnostics', 'index-status']);
+    assert.deepEqual(refreshes, ['index-status']);
     assert.deepEqual(followUpRequests, ['memories:B', 'batches:B']);
   } finally {
     global.fetch = originalFetch;
@@ -680,7 +673,6 @@ test('memory archive AI failure shows an error without reporting success or appl
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         loadMemoryIndexStatus: async () => {},
         t: key => key,
         showToast: (message, type) => toastMessages.push({ message, type }),
@@ -731,7 +723,6 @@ test('memory archive batch detail keeps old state and exposes non-2xx or invalid
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         loadMemoryIndexStatus: async () => {},
         t: key => key,
         showToast: () => {},
@@ -795,7 +786,6 @@ test('memory archive AI only stores proposals and leaves archiving to an explici
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => refreshes.push('diagnostics'),
         loadMemoryIndexStatus: async () => refreshes.push('index-status'),
         t: archiveT,
         showToast: (message, type) => toastMessages.push({ message, type }),
@@ -901,7 +891,6 @@ test('memory archive AI proposals are archived group by group with edits applied
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => refreshes.push('diagnostics'),
         loadMemoryIndexStatus: async () => refreshes.push('index-status'),
         t: archiveT,
         showToast: (message, type) => toastMessages.push({ message, type }),
@@ -936,7 +925,7 @@ test('memory archive AI proposals are archived group by group with edits applied
       [undefined, 'settings.memoryArchiveAiProposalStale', 'boom', undefined],
     );
     assert.deepEqual(toastMessages, [{ message: 'settings.memoryArchiveAiDone:2', type: 'success' }]);
-    assert.deepEqual(refreshes, ['diagnostics', 'index-status', 'memories:A', 'batches:A']);
+    assert.deepEqual(refreshes, ['index-status', 'memories:A', 'batches:A']);
     assert.deepEqual(runtime.current.selectedMemoryArchiveIds, ['m9'], 'archived memories must leave the manual selection');
     assert.equal(runtime.current.memoryArchiveLoading, false);
     assert.equal(runtime.current.memoryArchiveError, null);
@@ -985,7 +974,6 @@ test('memory archive AI proposals report a failure when no group could be archiv
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         loadMemoryIndexStatus: async () => {},
         t: archiveT,
         showToast: (message, type) => toastMessages.push({ message, type }),
@@ -1041,7 +1029,6 @@ test('memory archive execute clears the manual form, and viewing a batch keeps t
       () => ({
         characterId: memoryManagementCharacterIdRef.current,
         memoryManagementCharacterIdRef,
-        loadMemoryDiagnostics: async () => {},
         loadMemoryIndexStatus: async () => {},
         t: key => key,
         showToast: () => {},

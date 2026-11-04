@@ -129,11 +129,7 @@ function createPageHarness(options = {}) {
     error: null,
     activeTasks: [],
     blockedReason: null,
-    diagnostics: null,
-    diagnosticsLoading: false,
-    diagnosticsError: null,
     loadMemoryIndexStatus: asyncNoop,
-    loadMemoryDiagnostics: asyncNoop,
     handleRetryFailedMemoryIndex: noop,
     handleRebuildMemoryIndex: noop,
     handleIndexUnindexedMemoryIndex: noop,
@@ -153,7 +149,6 @@ function createPageHarness(options = {}) {
     loadMemoryArchiveMemories: asyncNoop,
     loadMemoryArchiveBatches: asyncNoop,
   };
-  const memoryCandidatesPanel = { loadMemoryCandidates: asyncNoop };
 
   global.fetch = async (url, init = {}) => {
     const method = init.method || 'GET';
@@ -228,7 +223,6 @@ function createPageHarness(options = {}) {
     if (request === '@/hooks/settings/useMemoryManagementCharacters') return { useMemoryManagementCharacters: () => memoryManagementPanel };
     if (request === '@/hooks/settings/useMemoryProfilePanel') return { useMemoryProfilePanel: () => memoryProfilePanel };
     if (request === '@/hooks/settings/useMemoryArchivePanel') return { useMemoryArchivePanel: () => memoryArchivePanel };
-    if (request === '@/hooks/settings/useMemoryCandidatesPanel') return { useMemoryCandidatesPanel: () => memoryCandidatesPanel };
     if (request === '@/components/settings/memory/MemoryEngineSection') {
       if (options.realMemorySection) return originalLoad.call(this, request, parent, isMain);
       return { MemoryEngineSection: ({ children }) => React.createElement(React.Fragment, null, children) };
@@ -372,7 +366,7 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   assert.deepEqual(harness.toastCalls.at(-1), ['settings.saveSuccess', 'success']);
 });
 
-test('settings navigation deep-links five memory details and retains hidden panel drafts', async () => {
+test('settings navigation deep-links four memory details and retains hidden panel drafts', async () => {
   window.history.replaceState({ nextState: true }, '', '/settings?section=memory&panel=profile');
   const harness = createPageHarness({ realMemorySection: true, panelDrafts: true });
   const view = render(React.createElement(harness.SettingsPage));
@@ -382,9 +376,8 @@ test('settings navigation deep-links five memory details and retains hidden pane
   fireEvent.change(profile, { target: { value: 'keep this draft' } });
 
   for (const [label, panel, field] of [
-    ['settings.memoryCandidatesTitle', 'candidates', 'MemoryCandidatesPanel draft'],
     ['settings.memoryArchiveTitle', 'archive', 'MemoryArchivePanel draft'],
-    ['settings.memoryIndexAndDiagnostics', 'index', 'MemoryIndexPanel draft'],
+    ['settings.memoryIndexTitle', 'index', 'MemoryIndexPanel draft'],
   ]) {
     fireEvent.click(view.getByRole('button', { name: label }));
     assert.equal(new URLSearchParams(window.location.search).get('panel'), panel);

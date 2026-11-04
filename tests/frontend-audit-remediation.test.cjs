@@ -61,7 +61,7 @@ test('a late profile mutation cannot invalidate the current character load or ed
   const { useMemoryProfilePanel } = require('../src/hooks/settings/useMemoryProfilePanel.ts');
   const characterRef = { current: 'a' };
   const { result, rerender } = renderHook(({ id }) => useMemoryProfilePanel({
-    characterId: id, memoryManagementCharacterIdRef: characterRef, loadMemoryDiagnostics() {}, t, showToast() {},
+    characterId: id, memoryManagementCharacterIdRef: characterRef, t, showToast() {},
   }), { initialProps: { id: 'a' } });
   let old, loading;
   act(() => { old = result.current.handleMemoryProfileRollback(1); });
@@ -83,11 +83,11 @@ function renderManagedProfile() {
     const panel = useMemoryProfilePanel({
       characterId: manager.memoryManagementCharacterId,
       memoryManagementCharacterIdRef: manager.memoryManagementCharacterIdRef,
-      loadMemoryDiagnostics() {}, t, showToast() {},
+      t, showToast() {},
     });
     const callbacks = {
       resetProfile: panel.resetProfile, resetArchiveForCharacterChange() {},
-      loadMemoryProfile: panel.loadMemoryProfile, loadMemoryDiagnostics() {},
+      loadMemoryProfile: panel.loadMemoryProfile,
       loadMemoryArchiveMemories() {}, loadMemoryArchiveBatches() {},
     };
     return {

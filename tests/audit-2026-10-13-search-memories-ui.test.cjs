@@ -1,5 +1,4 @@
-// 2026-10-13 外部审计：搜索 / 记忆页的 4 个前端缺陷回归。
-//   F13 记忆 AI 整理只比较角色 id，A→B→A 后旧运行会污染新运行
+// 2026-10-13 外部审计：搜索的前端缺陷回归（F13 记忆 AI 整理已随旧功能退役删除）。
 //   F17 侧栏搜索的 blur 定时器会卸载正在聚焦的结果
 //   F18 侧栏把搜索失败显示成「没有结果」
 //   F19 全局搜索把输入法确认用的 Enter 当成选中结果
@@ -54,11 +53,8 @@ function icon() {
   return React.createElement('span', { 'aria-hidden': 'true' });
 }
 
-// 身份必须稳定：记忆页把 t / showToast 放在加载角色的 effect 依赖里。
-// aiReviewDone 保留占位符，才能从提示文案区分「旧运行」与「新运行」的结果。
-const translate = key => (key === 'memory.aiReviewDone' ? 'done {reviewed}/{corrected}' : key);
-const toasts = [];
-const showToast = (...args) => { toasts.push(args); };
+// 身份必须稳定：组件可能把 t 放在 effect 依赖里。
+const translate = key => key;
 
 function loadComponent(relativePath, mocks = {}) {
   Module._load = function loadWithMocks(request, parent, isMain) {
@@ -158,7 +154,6 @@ async function openSidebarSearch(view, user, query = 'q') {
 }
 
 test.beforeEach(() => {
-  toasts.length = 0;
   resetSearchState();
 });
 
@@ -174,126 +169,6 @@ test.after(() => {
   delete require.extensions['.tsx'];
   delete global.IS_REACT_ACT_ENVIRONMENT;
   restoreDom();
-});
-
-// ---------------------------------------------------------------------------
-// F13
-// ---------------------------------------------------------------------------
-
-function reviewBatch(overrides = {}) {
-  return {
-    ok: true,
-    reviewed: 1,
-    total_active: 1,
-    skipped_due_to_limit: 0,
-    reviewed_offset: 0,
-    next_offset: null,
-    has_more: false,
-    next_batch_index: null,
-    corrected: 0,
-    failed_batches: 0,
-    failed_messages: [],
-    indexing_queued: 0,
-    indexing_started: false,
-    changes: [],
-    merge_suggestions: [],
-    ...overrides,
-  };
-}
-
-// 渲染记忆页并接管 /api/memory-review：每个请求都挂起，由用例决定何时、以什么结果返回。
-// 故意不响应 abort signal——模拟「响应已在路上 / 正在解析」时被作废的旧运行。
-async function renderMemoriesPage() {
-  const MemoriesPage = loadComponent('src/app/memories/page.tsx', {
-    '@/components/ui/Toast': { useToast: () => ({ showToast }) },
-    '@/components/memories/MemoryList': { __esModule: true, default: () => null },
-  });
-  const requests = [];
-  global.fetch = async (input, init = {}) => {
-    const url = String(input);
-    if (url === '/api/characters') {
-      return jsonResponse([{ id: 'A', name: 'Alice' }, { id: 'B', name: 'Bob' }]);
-    }
-    if (url === '/api/memory-review') {
-      let resolve;
-      const promise = new Promise(done => { resolve = done; });
-      requests.push({ resolve, signal: init.signal, body: JSON.parse(init.body) });
-      return promise;
-    }
-    throw new Error(`Unexpected request: ${url}`);
-  };
-  const view = render(React.createElement(MemoriesPage));
-  await waitFor(() => assert.equal(view.getByRole('combobox').value, 'A'));
-  return { view, requests };
-}
-
-// 角色 A 启动整理 → 切到 B → 切回 A 再启动：返回时旧运行（requests[0]）与新运行（requests[1]）都在途。
-async function startReviewSwitchAwayAndRestart() {
-  const { view, requests } = await renderMemoriesPage();
-  const select = view.getByRole('combobox');
-  fireEvent.click(view.getByRole('button', { name: 'memory.aiReview' }));
-  fireEvent.change(select, { target: { value: 'B' } });
-  fireEvent.change(select, { target: { value: 'A' } });
-  fireEvent.click(view.getByRole('button', { name: 'memory.aiReview' }));
-  assert.equal(requests.length, 2);
-  assert.deepEqual(requests.map(request => request.body.character_id), ['A', 'A']);
-  return { view, requests };
-}
-
-function assertNewRunStillBusy(view) {
-  // 仍显示「整理中」而不是进度文案：旧运行连进度都不能写。
-  assert.equal(view.getByRole('button', { name: 'memory.aiReviewRunning' }).disabled, true);
-  assert.ok(view.queryByRole('button', { name: 'memory.aiReviewStop' }), 'stop button belongs to the new run');
-  assert.ok(view.queryByRole('button', { name: 'memory.hideLatestAiReviewChanges' }) === null);
-  assert.ok(view.queryByRole('button', { name: 'memory.viewLatestAiReviewChanges' }) === null);
-  assert.deepEqual(toasts, []);
-}
-
-test('F13: a superseded AI review that succeeds late cannot touch the new run for the same character', async () => {
-  const { view, requests } = await startReviewSwitchAwayAndRestart();
-
-  await act(async () => requests[0].resolve(jsonResponse(reviewBatch({ reviewed: 1, corrected: 0 }))));
-  assertNewRunStillBusy(view);
-
-  // 新运行自己的结果照常提交。
-  await act(async () => requests[1].resolve(jsonResponse(reviewBatch({ reviewed: 7, total_active: 7, corrected: 3 }))));
-  await waitFor(() => assert.equal(view.getByRole('button', { name: 'memory.aiReview' }).disabled, false));
-  assert.ok(view.queryByRole('button', { name: 'memory.aiReviewStop' }) === null);
-  assert.ok(view.getByRole('button', { name: 'memory.hideLatestAiReviewChanges' }));
-  assert.deepEqual(toasts, [['done 7/3', 'success']]);
-});
-
-test('F13: a superseded AI review that fails late cannot touch the new run for the same character', async () => {
-  const { view, requests } = await startReviewSwitchAwayAndRestart();
-
-  await act(async () => requests[0].resolve(jsonResponse({ error: 'upstream exploded' }, 503)));
-  assertNewRunStillBusy(view);
-
-  await act(async () => requests[1].resolve(jsonResponse(reviewBatch({ reviewed: 2, total_active: 2, corrected: 1 }))));
-  await waitFor(() => assert.equal(view.getByRole('button', { name: 'memory.aiReview' }).disabled, false));
-  assert.deepEqual(toasts, [['done 2/1', 'success']]);
-});
-
-test('F13: switching characters aborts the in-flight AI review', async () => {
-  const { view, requests } = await renderMemoriesPage();
-  fireEvent.click(view.getByRole('button', { name: 'memory.aiReview' }));
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].signal.aborted, false);
-
-  fireEvent.change(view.getByRole('combobox'), { target: { value: 'B' } });
-
-  assert.equal(requests[0].signal.aborted, true, 'the run started for the previous character must be aborted');
-  assert.equal(view.getByRole('button', { name: 'memory.aiReview' }).disabled, false);
-  // 被切换作废的运行不是「用户点了停止」，也不是故障：不提示。
-  await act(async () => requests[0].resolve(jsonResponse(reviewBatch())));
-  assert.deepEqual(toasts, []);
-});
-
-test('F13: the stop button still aborts the current run after an A→B→A switch', async () => {
-  const { view, requests } = await startReviewSwitchAwayAndRestart();
-  assert.equal(requests[1].signal.aborted, false);
-  fireEvent.click(view.getByRole('button', { name: 'memory.aiReviewStop' }));
-  assert.equal(requests[1].signal.aborted, true);
 });
 
 // ---------------------------------------------------------------------------

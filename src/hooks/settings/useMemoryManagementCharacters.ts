@@ -7,7 +7,6 @@ export interface MemoryManagementCharacter {
 }
 
 interface MemoryManagementLoadCallbacks {
-  loadMemoryDiagnostics: () => Promise<void> | void;
   loadMemoryProfile: (characterId: string) => Promise<void> | void;
   loadMemoryArchiveMemories: (characterId: string) => Promise<void> | void;
   loadMemoryArchiveBatches: (characterId: string) => Promise<void> | void;
@@ -42,7 +41,6 @@ export function useMemoryManagementCharacters() {
         setMemoryManagementCharacterId(nextCharacterId);
         memoryManagementCharacterIdRef.current = nextCharacterId;
         await Promise.all([
-          callbacks.loadMemoryDiagnostics(),
           callbacks.loadMemoryProfile(nextCharacterId),
           callbacks.loadMemoryArchiveMemories(nextCharacterId),
           callbacks.loadMemoryArchiveBatches(nextCharacterId),
@@ -66,7 +64,6 @@ export function useMemoryManagementCharacters() {
       void callbacks.loadMemoryArchiveMemories(characterId);
       void callbacks.loadMemoryArchiveBatches(characterId);
     }
-    void callbacks.loadMemoryDiagnostics();
   };
 
   return {

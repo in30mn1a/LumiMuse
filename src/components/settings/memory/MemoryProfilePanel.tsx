@@ -60,7 +60,7 @@ export function MemoryProfilePanel({
           ) : (
             <RefreshIcon className="h-3.5 w-3.5" />
           )}
-          {memoryProfileLoading ? t('common.loading') : t('settings.memoryCandidatesRefresh')}
+          {memoryProfileLoading ? t('common.loading') : t('settings.memoryProfileRefresh')}
         </button>
         <button
           type="button"

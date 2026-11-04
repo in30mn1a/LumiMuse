@@ -161,7 +161,7 @@ Import/export makes backup and migration easy; Docker lets you deploy on hardwar
 |:---:|:---|:---|
 | 🎭 | **Character System** | Unique personality, greeting, example dialogue, image tags — independent conversations & memories per character, drag-to-reorder, SillyTavern JSON import |
 | 💬 | **Chat Experience** | Streaming, edit / delete / multi-version regenerate, image & text attachments, manual summarization, real-world time injection |
-| 🧠 | **Long-term Memory** | Extract, AI review, profile, archive, and index — local working memory + vector retrieval + reranker + token-budget packing |
+| 🧠 | **Long-term Memory** | Extract, Agent review, profile, archive, and index — local working memory + vector retrieval + reranker + token-budget packing |
 | 🎨 | **AI Image Generation** | SD WebUI / NovelAI / ComfyUI / Custom API, version history, auto-trigger keywords |
 | 🔌 | **Multi-provider** | Save multiple API configs; switch models right from the chat input bar |
 | 🔍 | **Search & Navigation** | Global message search, date search, CJK inclusive search, jump-to-result with highlight |
@@ -203,7 +203,7 @@ Import/export makes backup and migration easy; Docker lets you deploy on hardwar
 - Injection packs memories by token budget (default `memory_package_token_budget = 12000`), preferring high-relevance / high-priority items
 - Memory management page with pagination, search, category filters, sorting, editing, deletion, and tags
 - Ignore memory extraction per conversation to avoid polluting the bank with test chats
-- AI review can batch-correct category, importance, emotional weight, and tags, then rebuild affected indexes
+- The built-in Agent reviews the memory bank and proposes additions, corrections, merges, archives, and repairs for failed extractions; nothing is written until you approve each proposal, and applied proposals can be undone
 - AI archive compresses older memories into summary memories with traceable batches
 - Memory profiles support init, queued processing, manual edits, version switching, and version deletion
 - Background task API, model, reasoning effort, and system prompt are configured per character under "Task models", with a separate image prompt model; Settings only keeps the background task deadline
@@ -499,7 +499,7 @@ Extract → Manage / Review / Archive → Retrieve → Pack & Inject
 ```
 
 1. **Extract** — When triggers fire, a background task summarizes content worth keeping long-term
-2. **Manage** — Memories enter the character bank for manual edit/delete/tagging, or AI review/archive
+2. **Manage** — Memories enter the character bank for manual edit/delete/tagging, Agent review, or AI archive
 3. **Retrieve** — Priority, keyword, optional vector search and reranking pick relevant memories
 4. **Inject** — Pack by token budget into the system prompt so the character "remembers"
 

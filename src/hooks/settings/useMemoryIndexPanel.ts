@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { formatTemplate } from '@/lib/i18n';
 import type { ToastType } from '@/components/ui/Toast';
@@ -35,30 +35,8 @@ interface MemoryIndexActionResponse {
   processing_blocked_reason?: MemoryIndexProcessingBlockedReason;
 }
 
-export interface MemoryDiagnostics {
-  index: {
-    total: number;
-    ready: number;
-    failed: number;
-    library_rows?: number;
-    other_target_ready?: number;
-    target_model?: string | null;
-    target_dimension?: number | null;
-  };
-  tasks: Record<string, number>;
-  queues?: {
-    extraction: Record<string, number>;
-    profile: Record<string, number>;
-    embedding: Record<string, number>;
-  };
-  candidates: Record<string, number>;
-  profile: { exists: boolean; filled_fields: number };
-  archive: Record<string, number>;
-}
-
 interface UseMemoryIndexPanelOptions {
   active: boolean;
-  memoryManagementCharacterIdRef: MutableRefObject<string>;
   t: (key: string) => string;
   showToast: (message: string, type?: ToastType) => void;
 }
@@ -67,7 +45,6 @@ const MEMORY_INDEX_STATUS_POLL_INTERVAL_MS = 2000;
 
 export function useMemoryIndexPanel({
   active,
-  memoryManagementCharacterIdRef,
   t,
   showToast,
 }: UseMemoryIndexPanelOptions) {
@@ -80,9 +57,6 @@ export function useMemoryIndexPanel({
   const [clearingOther, setClearingOther] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics] = useState<MemoryDiagnostics | null>(null);
-  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
-  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
 
   const formatMemoryIndexBlockedReason = useCallback((reason?: MemoryIndexProcessingBlockedReason | null): string | null => {
     return reason ? t(`settings.memoryIndexBlocked.${reason}`) : null;
@@ -114,23 +88,6 @@ export function useMemoryIndexPanel({
       if (!options.silent) setLoading(false);
     }
   }, []);
-
-  const loadMemoryDiagnostics = useCallback(async (options: { silent?: boolean } = {}) => {
-    if (!options.silent) setDiagnosticsLoading(true);
-    setDiagnosticsError(null);
-    const diagnosticsCharacterId = memoryManagementCharacterIdRef.current.trim();
-    try {
-      const query = diagnosticsCharacterId ? `?character_id=${encodeURIComponent(diagnosticsCharacterId)}` : '';
-      const data = await parseJsonResponse<MemoryDiagnostics>(await fetch(`/api/memory-diagnostics${query}`));
-      if (memoryManagementCharacterIdRef.current.trim() !== diagnosticsCharacterId) return;
-      setDiagnostics(data);
-    } catch (err) {
-      if (memoryManagementCharacterIdRef.current.trim() !== diagnosticsCharacterId) return;
-      setDiagnosticsError(getErrorMessage(err));
-    } finally {
-      if (!options.silent) setDiagnosticsLoading(false);
-    }
-  }, [memoryManagementCharacterIdRef]);
 
   const handleRebuildMemoryIndex = async () => {
     setRebuilding(true);
@@ -203,7 +160,6 @@ export function useMemoryIndexPanel({
       }));
       showToast(t('settings.memoryIndexClearSuccess'), 'success');
       await loadMemoryIndexStatus();
-      await loadMemoryDiagnostics();
     } catch (err) {
       const message = getErrorMessage(err);
       setError(message);
@@ -229,7 +185,6 @@ export function useMemoryIndexPanel({
         'success',
       );
       await loadMemoryIndexStatus();
-      await loadMemoryDiagnostics();
     } catch (err) {
       const message = getErrorMessage(err);
       setError(message);
@@ -250,7 +205,6 @@ export function useMemoryIndexPanel({
       }));
       showToast(t('settings.memoryIndexStopCurrentSuccess'), 'success');
       await loadMemoryIndexStatus();
-      await loadMemoryDiagnostics();
     } catch (err) {
       const message = getErrorMessage(err);
       setError(message);
@@ -272,11 +226,9 @@ export function useMemoryIndexPanel({
     if (!shouldPollMemoryIndexStatus) return;
     const interval = setInterval(() => {
       void loadMemoryIndexStatus({ silent: true });
-      void loadMemoryDiagnostics({ silent: true });
     }, MEMORY_INDEX_STATUS_POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [
-    loadMemoryDiagnostics,
     loadMemoryIndexStatus,
     shouldPollMemoryIndexStatus,
   ]);
@@ -293,11 +245,7 @@ export function useMemoryIndexPanel({
     error,
     activeTasks,
     blockedReason,
-    diagnostics,
-    diagnosticsLoading,
-    diagnosticsError,
     loadMemoryIndexStatus,
-    loadMemoryDiagnostics,
     handleRebuildMemoryIndex,
     handleRetryFailedMemoryIndex,
     handleIndexUnindexedMemoryIndex,

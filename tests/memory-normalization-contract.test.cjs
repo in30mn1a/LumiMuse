@@ -138,41 +138,7 @@ function updateDb(row) {
   };
 }
 
-function candidateDb(row) {
-  return {
-    prepare(sql) {
-      if (sql.includes('SELECT id, character_id, raw_candidate_json, status FROM memory_extraction_candidates')) {
-        return {
-          get: () => ({
-            id: 1,
-            character_id: row.character_id,
-            raw_candidate_json: JSON.stringify({
-              category: '偏好习惯',
-              content: row.content,
-              tags: ['two'],
-            }),
-            status: 'repairable',
-          }),
-        };
-      }
-      if (sql.includes('UPDATE memory_extraction_candidates')) {
-        return { run: () => ({ changes: 1 }) };
-      }
-      if (sql.includes('INSERT INTO memories')) {
-        return { run: () => ({ changes: 1 }) };
-      }
-      if (sql === 'SELECT * FROM memories WHERE id = ?') {
-        return { get: () => row };
-      }
-      throw new Error(`Unexpected SQL in candidate route test: ${sql}`);
-    },
-    transaction(fn) {
-      return () => fn();
-    },
-  };
-}
-
-test('四个 memory 读取路径与权威 normalizeMemoryRow 对 dirty row 逐字段一致', async () => {
+test('三个 memory 读取路径与权威 normalizeMemoryRow 对 dirty row 逐字段一致', async () => {
   const row = dirtyMemoryRow();
   const { normalizeMemoryRow } = require('../src/lib/memory-normalization.ts');
   assert.deepEqual(normalizedFields(normalizeMemoryRow(row)), expectedNormalizedFields);
@@ -197,19 +163,6 @@ test('四个 memory 读取路径与权威 normalizeMemoryRow 对 dirty row 逐�
   );
   const updatePayload = await updateResponse.json();
   assert.deepEqual(normalizedFields(updatePayload), expectedNormalizedFields);
-
-  const candidateRoute = requireFreshWithMocks('../src/app/api/memory-candidates/[id]/route.ts', {
-    'next/server': jsonResponseMock(),
-    '@/lib/db': { getDb: () => candidateDb(row) },
-    '@/lib/memory-embeddings': { enqueueMemoryEmbeddingTask: () => false },
-    '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
-  });
-  const candidateResponse = await candidateRoute.POST(
-    requestFor('http://test.local/api/memory-candidates/1', { action: 'accept' }),
-    { params: Promise.resolve({ id: '1' }) },
-  );
-  const candidatePayload = await candidateResponse.json();
-  assert.deepEqual(normalizedFields(candidatePayload.memory), expectedNormalizedFields);
 
   const { retrieveWorkingMemoryPackage } = requireFreshWithMocks('../src/lib/memory-retrieval.ts', {});
   const retrieval = await retrieveWorkingMemoryPackage({

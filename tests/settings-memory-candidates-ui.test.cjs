@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 // 结构契约测试：这些源码断言固定 Settings 记忆面板的组件/hook wiring。
-// 候选列表 stale guard 和图片生成 abort 等关键路径由 frontend-state-p1.test.cjs 行为测试覆盖。
+// 图片生成 abort 等关键路径由 frontend-state-p1.test.cjs 行为测试覆盖。
 const root = path.resolve(__dirname, '..');
 
 function readProjectFile(relativePath) {
@@ -19,73 +19,8 @@ function sourceBlock(source, startMarker, endMarker) {
   return source.slice(start, end);
 }
 
-test('settings memory tab exposes repairable memory candidates and actions', () => {
+test('settings memory tab exposes profile and archive management wiring', () => {
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
-  const candidatesHook = readProjectFile('src/hooks/settings/useMemoryCandidatesPanel.ts');
-  const candidatesPanel = readProjectFile('src/components/settings/memory/MemoryCandidatesPanel.tsx');
-  const i18n = readProjectFile('src/lib/i18n.ts');
-
-  assert.ok(settingsPage.includes('<MemoryCandidatesPanel'), 'settings page should render extracted candidates panel');
-  assert.match(candidatesHook, /fetch\(`\/api\/memory-candidates\?character_id=\$\{encodeURIComponent\(characterId\)\}&limit=50`\)/);
-  assert.match(candidatesHook, /`\/api\/memory-candidates\/\$\{candidate\.id\}`/);
-
-  for (const snippet of [
-    "handleMemoryCandidateAction(candidate, 'accept')",
-    "handleMemoryCandidateAction(candidate, 'edit-accept')",
-    "handleMemoryCandidateAction(candidate, 'ignore')",
-    "handleMemoryCandidateAction(candidate, 'discard')",
-  ]) {
-    assert.ok(candidatesPanel.includes(snippet), `missing candidates panel snippet: ${snippet}`);
-  }
-
-  for (const key of [
-    'settings.memoryCandidatesTitle',
-    'settings.memoryCandidatesEmpty',
-    'settings.memoryCandidatesErrorReason',
-    'settings.memoryCandidatesRole',
-    'settings.memoryCandidatesActionFailed',
-  ]) {
-    assert.match(i18n, new RegExp(`'${key}'`));
-  }
-});
-
-test('settings memory candidate actions refresh diagnostics and index status after mutation', () => {
-  const settingsPage = readProjectFile('src/app/settings/page.tsx');
-  const candidatesHook = readProjectFile('src/hooks/settings/useMemoryCandidatesPanel.ts');
-  const hookUsage = sourceBlock(
-    settingsPage,
-    'const memoryCandidatesPanel = useMemoryCandidatesPanel({',
-    'const { loadMemoryManagementCharacters } = memoryManagementPanel;',
-  );
-  const actionBlock = sourceBlock(
-    candidatesHook,
-    'const handleMemoryCandidateAction = async (',
-    'return {',
-  );
-
-  for (const snippet of [
-    'loadMemoryDiagnostics',
-    'loadMemoryIndexStatus',
-  ]) {
-    assert.ok(hookUsage.includes(snippet), `settings page does not pass candidate refresh callback: ${snippet}`);
-    assert.ok(candidatesHook.includes(`${snippet}: () => Promise<void> | void;`), `candidate hook options missing: ${snippet}`);
-  }
-
-  const candidatesReloadIndex = actionBlock.indexOf('await loadMemoryCandidates(requestedCharacterId);');
-  const diagnosticsReloadIndex = actionBlock.indexOf('await loadMemoryDiagnostics();');
-  const indexStatusReloadIndex = actionBlock.indexOf('await loadMemoryIndexStatus();');
-
-  assert.notEqual(candidatesReloadIndex, -1, 'candidate action should reload candidates');
-  assert.notEqual(diagnosticsReloadIndex, -1, 'candidate action should refresh diagnostics');
-  assert.notEqual(indexStatusReloadIndex, -1, 'candidate action should refresh memory index status');
-  assert.ok(candidatesReloadIndex < diagnosticsReloadIndex, 'diagnostics should refresh after candidate reload');
-  assert.ok(diagnosticsReloadIndex < indexStatusReloadIndex, 'index status should refresh after diagnostics');
-});
-
-test('settings memory tab exposes diagnostics, profile, and archive management wiring', () => {
-  const settingsPage = readProjectFile('src/app/settings/page.tsx');
-  const diagnosticsPanel = readProjectFile('src/components/settings/memory/MemoryDiagnosticsPanel.tsx');
-  const memoryIndexHook = readProjectFile('src/hooks/settings/useMemoryIndexPanel.ts');
   const profileHook = readProjectFile('src/hooks/settings/useMemoryProfilePanel.ts');
   const profilePanel = readProjectFile('src/components/settings/memory/MemoryProfilePanel.tsx');
   const archiveHook = readProjectFile('src/hooks/settings/useMemoryArchivePanel.ts');
@@ -108,16 +43,10 @@ test('settings memory tab exposes diagnostics, profile, and archive management w
   ]) {
     assert.ok(archiveHook.includes(snippet), `missing archive hook snippet: ${snippet}`);
   }
-  assert.ok(settingsPage.includes('<MemoryDiagnosticsPanel'), 'settings page should render extracted diagnostics panel');
   assert.ok(settingsPage.includes('<MemoryProfilePanel'), 'settings page should render extracted profile panel');
   assert.ok(settingsPage.includes('<MemoryArchivePanel'), 'settings page should render extracted archive panel');
-  assert.ok(diagnosticsPanel.includes("t('settings.memoryDiagnosticsTitle')"));
-  assert.ok(memoryIndexHook.includes("fetch(`/api/memory-diagnostics${query}`)"));
 
   for (const key of [
-    'settings.memoryDiagnosticsTitle',
-    'settings.memoryDiagnosticsTasks',
-    'settings.memoryDiagnosticsProfile',
     'settings.memoryProfileTitle',
     'settings.memoryManagementCharacter',
     'settings.memoryProfileInitFromMemories',
@@ -128,6 +57,21 @@ test('settings memory tab exposes diagnostics, profile, and archive management w
     'settings.memoryArchiveUndo',
   ]) {
     assert.match(i18n, new RegExp(`'${key}'`));
+  }
+});
+
+test('settings memory panels only use i18n keys defined in both languages', () => {
+  // M5 退役删了一批候选/诊断键；Profile 面板曾误用其中的刷新键，渲染成原始键名。
+  const i18n = readProjectFile('src/lib/i18n.ts');
+  const memoryDir = path.join(__dirname, '..', 'src', 'components', 'settings', 'memory');
+  const files = fs.readdirSync(memoryDir).filter(name => name.endsWith('.tsx'));
+  assert.ok(files.length > 0, 'expected settings memory panel files');
+  for (const name of files) {
+    const source = fs.readFileSync(path.join(memoryDir, name), 'utf8');
+    for (const match of source.matchAll(/\bt\(\s*'([\w.]+)'/g)) {
+      const definitions = i18n.split(`'${match[1]}':`).length - 1;
+      assert.ok(definitions === 2, `${name} uses ${match[1]}, defined ${definitions}x (expected zh + en)`);
+    }
   }
 });
 
@@ -164,14 +108,6 @@ test('settings memory controls keep shared configuration but no longer own chat 
   assert.doesNotMatch(memoryEngineSection, /settings-memory-chat-injection-mode/);
   assert.match(characterEditor, /character\.memory_chat_injection_mode \?\? 'full'/);
   assert.match(characterEditor, /character-memory-chat-injection-mode/);
-});
-
-test('settings memory diagnostics requests include selected management character id', () => {
-  const memoryIndexHook = readProjectFile('src/hooks/settings/useMemoryIndexPanel.ts');
-
-  assert.ok(memoryIndexHook.includes('const diagnosticsCharacterId = memoryManagementCharacterIdRef.current.trim();'));
-  assert.ok(memoryIndexHook.includes("const query = diagnosticsCharacterId ? `?character_id=${encodeURIComponent(diagnosticsCharacterId)}` : '';"));
-  assert.ok(memoryIndexHook.includes('fetch(`/api/memory-diagnostics${query}`)'));
 });
 
 test('settings memory tab shows latest memory index failure reason', () => {
@@ -360,7 +296,6 @@ test('settings memory tab polls index status while rebuild or queue is active', 
   assert.ok(memoryIndexHook.includes('const shouldPollMemoryIndexStatus ='));
   assert.ok(memoryIndexHook.includes('setInterval(() => {'));
   assert.ok(memoryIndexHook.includes('void loadMemoryIndexStatus({ silent: true });'));
-  assert.ok(memoryIndexHook.includes('void loadMemoryDiagnostics({ silent: true });'));
   assert.ok(memoryIndexHook.includes('return () => clearInterval(interval);'));
   assert.ok(memoryIndexHook.includes('rebuilding'));
   assert.ok(memoryIndexHook.includes('retrying'));
@@ -372,12 +307,8 @@ test('settings memory tab keeps shared privacy and management panels always acce
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
   const memoryIndexPanel = readProjectFile('src/components/settings/memory/MemoryIndexPanel.tsx');
-  const diagnosticsPanel = readProjectFile('src/components/settings/memory/MemoryDiagnosticsPanel.tsx');
   const profilePanel = readProjectFile('src/components/settings/memory/MemoryProfilePanel.tsx');
   const archivePanel = readProjectFile('src/components/settings/memory/MemoryArchivePanel.tsx');
-  const candidatesPanel = readProjectFile('src/components/settings/memory/MemoryCandidatesPanel.tsx');
-  const i18n = readProjectFile('src/lib/i18n.ts');
-
   const memoryEngineSectionStart = settingsPage.indexOf('<MemoryEngineSection');
   const memoryEngineSectionEnd = settingsPage.indexOf('</MemoryEngineSection>', memoryEngineSectionStart);
 
@@ -396,20 +327,16 @@ test('settings memory tab keeps shared privacy and management panels always acce
   const memoryEngineSectionUsage = settingsPage.slice(memoryEngineSectionStart, memoryEngineSectionEnd);
   for (const component of [
     '<MemoryIndexPanel',
-    '<MemoryDiagnosticsPanel',
     '<MemoryProfilePanel',
     '<MemoryArchivePanel',
-    '<MemoryCandidatesPanel',
   ]) {
     const componentIndex = memoryEngineSectionUsage.indexOf(component);
     assert.notEqual(componentIndex, -1, `advanced memory component should remain a MemoryEngineSection child: ${component}`);
   }
 
   assert.ok(memoryIndexPanel.includes("t('settings.memoryIndexStatus')"));
-  assert.ok(diagnosticsPanel.includes("t('settings.memoryDiagnosticsTitle')"));
   assert.ok(profilePanel.includes("t('settings.memoryProfileTitle')"));
   assert.ok(archivePanel.includes("t('settings.memoryArchiveTitle')"));
-  assert.ok(candidatesPanel.includes("t('settings.memoryCandidatesTitle')"));
 });
 
 test('character editor places memory mode beside its preset while settings has no global selector', () => {
@@ -523,7 +450,7 @@ test('settings memory archive list ignores stale role responses and clears pagin
 
   const characterChangeStart = managementHook.indexOf('const handleMemoryManagementCharacterChange = (characterId: string, callbacks: MemoryManagementCharacterChangeCallbacks) => {');
   assert.notEqual(characterChangeStart, -1, 'missing character change handler');
-  const characterChangeEnd = managementHook.indexOf('void callbacks.loadMemoryDiagnostics();', characterChangeStart);
+  const characterChangeEnd = managementHook.indexOf('\n  return {', characterChangeStart);
   assert.notEqual(characterChangeEnd, -1, 'missing character change handler end marker');
   const characterChangeBlock = managementHook.slice(characterChangeStart, characterChangeEnd);
 
@@ -803,6 +730,21 @@ test('settings memory diagnostics no longer owns AI review entry point', () => {
   assert.doesNotMatch(settingsPage, /t\('settings\.memoryAiReview'\)/);
 });
 
+test('settings memory tab no longer exposes retired candidates and diagnostics panels', () => {
+  const settingsPage = readProjectFile('src/app/settings/page.tsx');
+
+  for (const relativePath of [
+    'src/components/settings/memory/MemoryCandidatesPanel.tsx',
+    'src/components/settings/memory/MemoryDiagnosticsPanel.tsx',
+    'src/hooks/settings/useMemoryCandidatesPanel.ts',
+  ]) {
+    assert.equal(fs.existsSync(path.join(root, relativePath)), false, `retired file still exists: ${relativePath}`);
+  }
+  for (const snippet of ['MemoryCandidatesPanel', 'MemoryDiagnosticsPanel', 'loadMemoryDiagnostics', "key: 'candidates'"]) {
+    assert.equal(settingsPage.includes(snippet), false, `retired settings wiring still present: ${snippet}`);
+  }
+});
+
 test('settings memory tab no longer exposes DeepSeek background thinking, and tasks still forward extra body', () => {
   const memoryEngineSection = readProjectFile('src/components/settings/memory/MemoryEngineSection.tsx');
   const settingsTypes = readProjectFile('src/types/index.ts');
@@ -812,7 +754,6 @@ test('settings memory tab no longer exposes DeepSeek background thinking, and ta
 
   for (const relativePath of [
     'src/app/api/image-gen/prompt/route.ts',
-    'src/app/api/memory-review/route.ts',
     'src/lib/memory-profile.ts',
     'src/app/api/memory-archive/route.ts',
   ]) {

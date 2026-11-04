@@ -42,7 +42,6 @@ interface MemoryProfileActionResponse {
 interface UseMemoryProfilePanelOptions {
   characterId: string;
   memoryManagementCharacterIdRef: MutableRefObject<string>;
-  loadMemoryDiagnostics: () => Promise<void> | void;
   t: (key: string) => string;
   showToast: (message: string, type?: ToastType) => void;
 }
@@ -54,7 +53,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function useMemoryProfilePanel({
   characterId: selectedCharacterId,
   memoryManagementCharacterIdRef,
-  loadMemoryDiagnostics,
   t,
   showToast,
 }: UseMemoryProfilePanelOptions) {
@@ -155,8 +153,6 @@ export function useMemoryProfilePanel({
       const result = data as unknown as MemoryProfileActionResponse;
       if (characterId) await loadMemoryProfile(characterId);
       if (!isCurrent()) return;
-      await loadMemoryDiagnostics();
-      if (!isCurrent()) return;
       setEditingProfile(false);
       setEditingProfileDraft({});
       if (result.status === 'no_changes') {
@@ -172,8 +168,6 @@ export function useMemoryProfilePanel({
         && err.data.error === 'no_active_memories'
       ) {
         if (characterId) await loadMemoryProfile(characterId);
-        if (!isCurrent()) return;
-        await loadMemoryDiagnostics();
         if (!isCurrent()) return;
         showToast(t('settings.memoryProfileInitFromMemoriesNoMemories'), 'error');
         return;
@@ -202,8 +196,6 @@ export function useMemoryProfilePanel({
       }));
       if (!isCurrent()) return;
       await loadMemoryProfile(characterId);
-      if (!isCurrent()) return;
-      await loadMemoryDiagnostics();
       if (!isCurrent()) return;
     } catch (err) {
       if (!isCurrent()) return;
@@ -234,8 +226,6 @@ export function useMemoryProfilePanel({
       if (result.deleted) showToast(t('settings.memoryProfileVersionDeleted'), 'success');
       if (!isCurrent()) return;
       await loadMemoryProfile(characterId);
-      if (!isCurrent()) return;
-      await loadMemoryDiagnostics();
       if (!isCurrent()) return;
     } catch (err) {
       if (!isCurrent()) return;
@@ -318,8 +308,6 @@ export function useMemoryProfilePanel({
       showToast(t('settings.memoryProfileEditSaved'), 'success');
       if (!isCurrent()) return;
       await loadMemoryProfile(characterId);
-      if (!isCurrent()) return;
-      await loadMemoryDiagnostics();
       if (!isCurrent()) return;
     } catch (err) {
       if (!isCurrent()) return;

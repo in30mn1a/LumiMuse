@@ -88,7 +88,6 @@ function parseMemoryArchiveBatchDetail(response: Response, data: unknown): Memor
 interface UseMemoryArchivePanelOptions {
   characterId: string;
   memoryManagementCharacterIdRef: MutableRefObject<string>;
-  loadMemoryDiagnostics: () => Promise<void> | void;
   loadMemoryIndexStatus: () => Promise<void> | void;
   t: (key: string) => string;
   showToast: (message: string, type?: ToastType) => void;
@@ -99,7 +98,6 @@ const MEMORY_ARCHIVE_MEMORY_LIMIT = 200;
 export function useMemoryArchivePanel({
   characterId: selectedCharacterId,
   memoryManagementCharacterIdRef,
-  loadMemoryDiagnostics,
   loadMemoryIndexStatus,
   t,
   showToast,
@@ -344,8 +342,6 @@ export function useMemoryArchivePanel({
       setMemoryArchivePlan(data.plan);
       setSelectedMemoryArchiveIds([]);
       setMemoryArchiveSummary('');
-      await loadMemoryDiagnostics();
-      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryIndexStatus();
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryArchiveMemories(requestedCharacterId);
@@ -386,8 +382,6 @@ export function useMemoryArchivePanel({
       setMemoryArchivePlan(null);
       setSelectedMemoryArchiveBatchId('');
       setMemoryArchiveBatchDetail(null);
-      await loadMemoryDiagnostics();
-      if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryIndexStatus();
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryArchiveMemories(requestedCharacterId);
@@ -546,7 +540,6 @@ export function useMemoryArchivePanel({
       } else {
         showToast(t('settings.memoryArchiveAiFailed'), 'error');
       }
-      await loadMemoryDiagnostics();
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;
       await loadMemoryIndexStatus();
       if (!isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)) return;

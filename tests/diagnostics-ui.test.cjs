@@ -10,7 +10,7 @@ const { installDomTestEnvironment } = require('./helpers/dom-test-environment.cj
 const restoreDom = installDomTestEnvironment();
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
-const { cleanup, render, within } = require('@testing-library/react');
+const { cleanup, render } = require('@testing-library/react');
 const root = path.resolve(__dirname, '..');
 const originalResolveFilename = Module._resolveFilename;
 const originalLoad = Module._load;
@@ -61,76 +61,6 @@ test.after(() => {
   Module._resolveFilename = originalResolveFilename;
   delete global.IS_REACT_ACT_ENVIRONMENT;
   restoreDom();
-});
-
-test('memory diagnostics panel renders extraction, profile, and embedding queues separately', () => {
-  const { MemoryDiagnosticsPanel } = loadWithMocks(
-    '../src/components/settings/memory/MemoryDiagnosticsPanel.tsx',
-    {
-      '@/components/ui/icons': {
-        RefreshIcon: props => React.createElement('span', { ...props, 'aria-hidden': 'true' }),
-      },
-    },
-  );
-  const t = key => key;
-
-  const view = render(React.createElement(MemoryDiagnosticsPanel, {
-    t,
-    diagnostics: {
-      index: { total: 13, ready: 10, failed: 3 },
-      tasks: { pending: 91, processing: 92, failed: 93 },
-      queues: {
-        extraction: { pending: 1, processing: 2, failed: 3 },
-        profile: { pending: 4, processing: 5, failed: 6 },
-        embedding: { pending: 7, processing: 8, failed: 9 },
-      },
-      candidates: { repairable: 2 },
-      profile: { exists: true, filled_fields: 4 },
-      archive: { archived: 5, summarized: 1 },
-    },
-    loading: false,
-    error: null,
-    onRefresh() {},
-  }));
-
-  for (const [label, value] of [
-    ['settings.memoryDiagnosticsExtractionQueue', '1/2/3'],
-    ['settings.memoryDiagnosticsProfileQueue', '4/5/6'],
-    ['settings.memoryDiagnosticsEmbeddingQueue', '7/8/9'],
-  ]) {
-    const card = view.getByText(label).closest('div');
-    assert.ok(card, `expected queue card for ${label}`);
-    assert.equal(within(card).getByText(value).textContent, value);
-  }
-  assert.equal(view.queryByText('91/92/93'), null, 'new queue payload must not fall back to legacy aggregate tasks');
-});
-
-test('memory diagnostics panel keeps legacy tasks payload compatible as embedding queue', () => {
-  const { MemoryDiagnosticsPanel } = loadWithMocks(
-    '../src/components/settings/memory/MemoryDiagnosticsPanel.tsx',
-    {
-      '@/components/ui/icons': {
-        RefreshIcon: props => React.createElement('span', { ...props, 'aria-hidden': 'true' }),
-      },
-    },
-  );
-  const view = render(React.createElement(MemoryDiagnosticsPanel, {
-    t: key => key,
-    diagnostics: {
-      index: { total: 0, ready: 0, failed: 0 },
-      tasks: { pending: 2, processing: 1, failed: 4 },
-      candidates: {},
-      profile: { exists: false, filled_fields: 0 },
-      archive: {},
-    },
-    loading: false,
-    error: null,
-    onRefresh() {},
-  }));
-
-  const embeddingCard = view.getByText('settings.memoryDiagnosticsEmbeddingQueue').closest('div');
-  assert.ok(embeddingCard);
-  assert.equal(within(embeddingCard).getByText('2/1/4').textContent, '2/1/4');
 });
 
 test('token breakdown shows a retrieval failed badge from the safe mode field', () => {

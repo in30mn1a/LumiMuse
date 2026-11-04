@@ -225,7 +225,6 @@ test('background LLM call sites use the character task system prompt', () => {
     'src/lib/memory-engine.ts',
     'src/lib/memory-profile.ts',
     'src/app/api/summarize/route.ts',
-    'src/app/api/memory-review/route.ts',
     'src/app/api/memory-archive/route.ts',
     'src/app/api/image-gen/prompt/route.ts',
   ];

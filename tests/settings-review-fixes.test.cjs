@@ -156,7 +156,7 @@ test('manual archive stays disabled until memories are selected and a summary is
 
 function archiveHook() {
   return renderHook(() => useMemoryArchivePanel({ characterId: 'one', memoryManagementCharacterIdRef: { current: 'one' },
-    loadMemoryDiagnostics: async () => {}, loadMemoryIndexStatus: async () => {}, showToast: () => {}, t }));
+    loadMemoryIndexStatus: async () => {}, showToast: () => {}, t }));
 }
 const plan = { summaryMemory: { id: 'summary', content: 'summary' }, coveredMemoryUpdates: [] };
 const json = data => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });

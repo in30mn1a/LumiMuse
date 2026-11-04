@@ -647,7 +647,8 @@ test('/api/models 用已保存的 memory_engine 密钥获取 embedding/reranker 
   ]);
 });
 
-test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应兼容性', async () => {
+// 旧 /api/memory-diagnostics 路由已退役；同一份状态摘要现由 Agent 状态栏和诊断工具读取，脱敏约束不变。
+test('getMemorySystemStatus 返回三队列安全摘要且不暴露私有载荷', () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE characters (
@@ -751,9 +752,7 @@ test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应�
     VALUES ('char-a', '稳定陪伴', '2026-06-02T00:00:00.000Z');
   `);
 
-  const route = requireFreshWithMocks('../src/app/api/memory-diagnostics/route.ts', {
-    'next/server': jsonResponseMock(),
-    '@/lib/db': { getDb: () => db },
+  const { getMemorySystemStatus } = requireFreshWithMocks('../src/lib/memory-status.ts', {
     '@/lib/settings': {
       loadSettings: () => ({
         memory_engine: {
@@ -764,10 +763,8 @@ test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应�
     },
   });
 
-  const filteredPayload = await route.GET(jsonRequest(null, 'http://test.local/api/memory-diagnostics?character_id=char-a'))
-    .then(response => response.json());
+  const filteredPayload = getMemorySystemStatus(db, 'char-a');
 
-  assert.equal(filteredPayload.ok, true);
   assert.equal(filteredPayload.character_id, 'char-a');
   assert.deepEqual(filteredPayload.index, {
     ready: 1,
@@ -788,8 +785,7 @@ test('/api/memory-diagnostics 返回三队列安全摘要并保留现有响应�
   assert.deepEqual(filteredPayload.profile, { exists: true, filled_fields: 1 });
   assert.deepEqual(filteredPayload.archive, { archived: 1, summarized: 1 });
 
-  const globalPayload = await route.GET(jsonRequest(null, 'http://test.local/api/memory-diagnostics'))
-    .then(response => response.json());
+  const globalPayload = getMemorySystemStatus(db);
 
   assert.equal(globalPayload.character_id, null);
   assert.deepEqual(globalPayload.tasks, { pending: 2, processing: 1, failed: 1 });

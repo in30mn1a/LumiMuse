@@ -45,6 +45,7 @@ test('unconfigured agent falls back to the main provider and chat model', t => {
     api_key: MAIN_KEY,
     model: 'main-model',
     reasoning_effort: 'default',
+    context_window: 272000,
   });
 });
 
@@ -60,6 +61,7 @@ test('a configured provider, model and effort are used together', t => {
     api_key: AGENT_KEY,
     model: 'judge-model',
     reasoning_effort: 'high',
+    context_window: 272000,
   });
 });
 
@@ -96,4 +98,24 @@ test('GET /api/settings returns the agent keys and still masks the main key', as
   assert.equal(body.api_key, API_KEY_MASK);
   assert.equal(text.includes(MAIN_KEY), false);
   assert.equal(text.includes(AGENT_KEY), false);
+});
+
+test('the agent context window is independent of the global context_window', t => {
+  setupDb(t, { context_window: 32000, agent_context_window: 500000 });
+  const settings = loadSettings();
+  assert.equal(resolveAgentConfig(settings).context_window, 500000);
+  assert.equal(settings.context_window, 32000);
+});
+
+test('an invalid stored agent context window falls back to the default', t => {
+  setupDb(t, { agent_context_window: 0 });
+  assert.equal(resolveAgentConfig(loadSettings()).context_window, 272000);
+});
+
+test('the settings schema accepts a positive integer agent context window and rejects others', () => {
+  const { settingsUpdateSchema } = require('../src/lib/schemas.ts');
+  assert.equal(settingsUpdateSchema.safeParse({ agent_context_window: 272000 }).success, true);
+  for (const value of [0, -1, 1.5, '272000', 100_000_001]) {
+    assert.equal(settingsUpdateSchema.safeParse({ agent_context_window: value }).success, false, String(value));
+  }
 });

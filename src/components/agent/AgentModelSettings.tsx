@@ -8,11 +8,23 @@ import { useToast } from '@/components/ui/Toast';
 import type { ReasoningEffort } from '@/types';
 
 const EFFORTS: ReasoningEffort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
+const DEFAULT_CONTEXT_WINDOW = 272000;
+/** 与服务端 settingsUpdateSchema 的上限一致 */
+const MAX_CONTEXT_WINDOW = 100_000_000;
 
 interface AgentModelValue {
   agent_provider_id: string;
   agent_model: string;
   agent_reasoning_effort: ReasoningEffort;
+  /** 输入框原文；保存时转成正整数 */
+  agent_context_window: string;
+}
+
+function parseContextWindow(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const value = Number(trimmed);
+  return value >= 1 && value <= MAX_CONTEXT_WINDOW ? value : null;
 }
 
 export interface AgentModelState {
@@ -39,7 +51,8 @@ interface Props {
 function sameValue(a: AgentModelValue, b: AgentModelValue): boolean {
   return a.agent_provider_id === b.agent_provider_id
     && a.agent_model === b.agent_model
-    && a.agent_reasoning_effort === b.agent_reasoning_effort;
+    && a.agent_reasoning_effort === b.agent_reasoning_effort
+    && a.agent_context_window.trim() === b.agent_context_window.trim();
 }
 
 /** Agent 用哪个接口和模型。留空时跟随主接口和主聊天模型。 */
@@ -62,11 +75,15 @@ export default function AgentModelSettings({ state, onStateChange, onSaved, savi
     const savedAtLoad = stateRef.current.saved;
     setLoadError(null);
     try {
-      const settings = await parseJsonResponse<AgentModelValue & { model?: string }>(await fetch('/api/settings'));
+      const settings = await parseJsonResponse<Omit<AgentModelValue, 'agent_context_window'> & {
+        model?: string;
+        agent_context_window?: number;
+      }>(await fetch('/api/settings'));
       const current: AgentModelValue = {
         agent_provider_id: settings.agent_provider_id ?? '',
         agent_model: settings.agent_model ?? '',
         agent_reasoning_effort: settings.agent_reasoning_effort ?? 'default',
+        agent_context_window: String(settings.agent_context_window ?? DEFAULT_CONTEXT_WINDOW),
       };
       onStateChange(prev => {
         // 读取期间完成的保存更晚，不让旧 GET 回包覆盖它或尚未保存的选择。
@@ -153,17 +170,18 @@ export default function AgentModelSettings({ state, onStateChange, onSaved, savi
   }
 
   const dirty = !sameValue(value, saved);
+  const contextWindow = parseContextWindow(value.agent_context_window);
   const inheritLabel = formatTemplate(t('agent.settings.modelInherit'), { model: mainModel || '-' });
 
   const save = async () => {
-    if (!dirty || !onSaveStart()) return;
+    if (!dirty || contextWindow === null || !onSaveStart()) return;
     try {
       await parseJsonResponse<unknown>(await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...value, agent_model: value.agent_model.trim() }),
+        body: JSON.stringify({ ...value, agent_model: value.agent_model.trim(), agent_context_window: contextWindow }),
       }));
-      const next = { ...value, agent_model: value.agent_model.trim() };
+      const next = { ...value, agent_model: value.agent_model.trim(), agent_context_window: String(contextWindow) };
       onStateChange(prev => ({
         saved: next,
         value: prev.value && sameValue(prev.value, value) ? next : prev.value,
@@ -253,11 +271,33 @@ export default function AgentModelSettings({ state, onStateChange, onSaved, savi
         </select>
       </div>
 
+      <div>
+        <label htmlFor="agent-context-window" className="mb-1.5 block text-sm font-medium text-text-secondary">
+          {t('agent.settings.contextWindow')}
+        </label>
+        <input
+          id="agent-context-window"
+          type="number"
+          inputMode="numeric"
+          min={1}
+          max={MAX_CONTEXT_WINDOW}
+          step={1}
+          value={value.agent_context_window}
+          onChange={event => setValue({ ...value, agent_context_window: event.target.value })}
+          aria-invalid={contextWindow === null}
+          aria-describedby="agent-context-window-hint"
+          className="input-rich w-full"
+        />
+        <p id="agent-context-window-hint" className="mt-1.5 text-xs leading-relaxed text-text-muted">
+          {t('agent.settings.contextWindowHint')}
+        </p>
+      </div>
+
       <div className="flex justify-end">
         <button
           type="button"
           onClick={() => void save()}
-          disabled={!dirty || saving}
+          disabled={!dirty || saving || contextWindow === null}
           className="soft-button soft-button-primary min-h-10 px-5 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {saving ? t('common.loading') : t('common.save')}

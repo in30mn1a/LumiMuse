@@ -182,6 +182,8 @@ export interface AgentConfig {
   api_key: string;
   model: string;
   reasoning_effort: ReasoningEffort;
+  /** Agent 独立的上下文窗口，与全局 context_window 无关。 */
+  context_window: number;
 }
 
 /**
@@ -191,13 +193,17 @@ export interface AgentConfig {
 export function resolveAgentConfig(settings: Settings): AgentConfig {
   const model = settings.agent_model?.trim() || settings.model;
   const reasoning_effort = settings.agent_reasoning_effort || 'default';
+  // 设置写入经过 schema 校验；这里再兜一次底，库里的异常值不能让阈值变成 NaN 或 0
+  const context_window = Number.isInteger(settings.agent_context_window) && settings.agent_context_window > 0
+    ? settings.agent_context_window
+    : DEFAULT_SETTINGS.agent_context_window;
   const providerId = settings.agent_provider_id?.trim() ?? '';
   if (providerId) {
     const row = getDb().prepare('SELECT api_base, api_key FROM api_providers WHERE id = ?').get(providerId) as
       | { api_base: string; api_key: string }
       | undefined;
     if (row?.api_base) {
-      return { provider_id: providerId, api_base: row.api_base, api_key: row.api_key, model, reasoning_effort };
+      return { provider_id: providerId, api_base: row.api_base, api_key: row.api_key, model, reasoning_effort, context_window };
     }
   }
   return {
@@ -206,6 +212,7 @@ export function resolveAgentConfig(settings: Settings): AgentConfig {
     api_key: settings.api_key,
     model,
     reasoning_effort,
+    context_window,
   };
 }
 

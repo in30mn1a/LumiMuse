@@ -99,8 +99,11 @@ function AgentPageInner() {
     setStatusKey(key => key + 1);
   }, [refreshSessions]);
   const chat = useAgentChat(activeId, { onTurnFinished: handleTurnFinished });
-  // 输入框里换模型后刷新状态条：「未配置」提示取决于生效的模型
-  const refreshStatus = useCallback(() => setStatusKey(key => key + 1), []);
+  // 输入框里换模型后刷新状态和占用；正在运行时保持本轮的实时数值。
+  const refreshStatus = () => {
+    setStatusKey(key => key + 1);
+    if (!chat.sending) void chat.reload();
+  };
   const agentModel = useAgentModel(modelKey, refreshStatus);
 
   useEffect(() => {
@@ -326,6 +329,7 @@ function AgentPageInner() {
           onSend={handleSend}
           onStop={chat.stop}
           model={agentModel}
+          context={chat.context}
         />
       </main>
 
@@ -335,6 +339,8 @@ function AgentPageInner() {
         onModelSaved={() => {
           setStatusKey(key => key + 1);
           setModelKey(key => key + 1);
+          // 窗口或模型变了，占用和阈值要重新算；正在运行时等本轮结束后的刷新
+          if (!chat.sending) void chat.reload();
         }}
         characterId={chat.detail?.session.character_id ?? null}
       />

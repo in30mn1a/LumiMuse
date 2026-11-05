@@ -143,7 +143,7 @@ async function runAgent(sample, complete, {
   const settings = {
     ...DEFAULT_SETTINGS, api_base: 'https://agent-eval.invalid/v1', api_key: '', model,
     streaming: false, json_mode: false, max_tokens: REASONING_SAFE_MAX_TOKENS,
-    context_window: contextWindow, memory_background_timeout_ms: REQUEST_TIMEOUT_MS,
+    agent_context_window: contextWindow, memory_background_timeout_ms: REQUEST_TIMEOUT_MS,
     memory_engine: { ...DEFAULT_SETTINGS.memory_engine, index_enabled: false },
   };
   const calls = [];

@@ -165,6 +165,7 @@ export const settingsUpdateSchema = z.looseObject({
   agent_provider_id: z.string().max(64).optional(),
   agent_model: settingModelSchema.optional(),
   agent_reasoning_effort: z.enum(['default', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  agent_context_window: settingPositiveIntegerSchema.max(100_000_000).optional(),
   image_gen: imageGenSettingsSchema.optional(),
   memory_engine: memoryEngineSettingsSchema.optional(),
   artist_strings: z.array(artistStringSettingsSchema).optional(),

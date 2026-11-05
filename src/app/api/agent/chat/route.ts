@@ -11,7 +11,7 @@ import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
 
 /**
  * 运行一轮 Agent 对话，以 SSE 推送进度。事件：
- * text、tool_start、tool_end、note、usage、error，最后总是 done（带本轮结束状态）。
+ * text、tool_start、tool_end、note、usage、context、compaction、error，最后总是 done（带本轮结束状态）。
  * 连接断开即中止本轮；已完成的回合已经入库。
  */
 export async function POST(request: NextRequest) {
@@ -67,6 +67,8 @@ export async function POST(request: NextRequest) {
             }),
             onUsage: usage => send('usage', usage),
             onNote: text => send('note', { text }),
+            onContext: status => send('context', status),
+            onCompaction: event => send('compaction', event),
           },
         });
         if (result.status === 'error') send('error', { error: result.error });

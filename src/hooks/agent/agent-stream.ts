@@ -1,14 +1,42 @@
+import type { AgentContextStatus } from '@/lib/agent/context';
 import type { AgentTurnStatus } from '@/lib/agent/loop';
 import { parseChatSsePart } from '@/lib/chat-stream-client';
 
-/** `/api/agent/chat` 推送的事件（usage 界面不用，直接忽略）。 */
+/** `/api/agent/chat` 推送的事件（usage 已体现在 context 的 last_usage 里，直接忽略）。 */
 export type AgentStreamEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_start'; id: string; name: string; arguments: string }
   | { type: 'tool_end'; id: string; name: string; ok: boolean; error?: string }
   | { type: 'note'; text: string }
+  | { type: 'context'; context: AgentContextStatus }
+  | { type: 'compaction'; phase: 'start' }
+  | { type: 'compaction'; phase: 'failed' }
+  | { type: 'compaction'; phase: 'done'; summary: string; tokensBefore: number }
   | { type: 'error'; error: string }
   | { type: 'done'; status: AgentTurnStatus; rounds: number };
+
+function count(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function toContext(value: Record<string, unknown>): AgentContextStatus | null {
+  const window = count(value.window);
+  const used = count(value.used);
+  const threshold = count(value.threshold);
+  if (!window || used === null || threshold === null) return null;
+  const usage = value.last_usage && typeof value.last_usage === 'object' ? value.last_usage as Record<string, unknown> : null;
+  const prompt = count(usage?.prompt_tokens);
+  const completion = count(usage?.completion_tokens);
+  const cached = count(usage?.cached_tokens);
+  return {
+    window,
+    used,
+    threshold,
+    last_usage: prompt === null || completion === null
+      ? null
+      : { prompt_tokens: prompt, completion_tokens: completion, ...(cached === null ? {} : { cached_tokens: cached }) },
+  };
+}
 
 function toEvent(eventType: string, data: unknown): AgentStreamEvent | null {
   if (!data || typeof data !== 'object') return null;
@@ -29,6 +57,17 @@ function toEvent(eventType: string, data: unknown): AgentStreamEvent | null {
       };
     case 'note':
       return text(value.text) ? { type: 'note', text: text(value.text) } : null;
+    case 'context': {
+      const context = toContext(value);
+      return context ? { type: 'context', context } : null;
+    }
+    case 'compaction':
+      if (value.phase === 'start') return { type: 'compaction', phase: 'start' };
+      if (value.phase === 'failed') return { type: 'compaction', phase: 'failed' };
+      if (value.phase === 'done' && text(value.summary)) {
+        return { type: 'compaction', phase: 'done', summary: text(value.summary), tokensBefore: count(value.tokens_before) ?? 0 };
+      }
+      return null;
     case 'error':
       return { type: 'error', error: text(value.error) };
     case 'done':

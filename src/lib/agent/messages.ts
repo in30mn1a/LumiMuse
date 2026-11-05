@@ -16,7 +16,12 @@ export type AgentEventPayload =
   | { kind: 'round_limit'; rounds: number }
   | { kind: 'error'; message: string }
   | { kind: 'memory_undo'; version_id: number }
-  | { kind: 'proposal_decision'; proposal_id: number; items: ProposalDecisionEventItem[] };
+  | { kind: 'proposal_decision'; proposal_id: number; items: ProposalDecisionEventItem[] }
+  /**
+   * 自动压缩：`through_id` 及更早的消息由 `summary` 代替发给模型，数据库里的原始消息不变。
+   * `tokens_before` 是压缩前的预计占用，只用于界面显示。
+   */
+  | { kind: 'compaction'; through_id: number; summary: string; tokens_before: number };
 
 /** 存在 `tool_calls_json` 里、也原样发给上游的调用结构。 */
 export interface StoredToolCall {

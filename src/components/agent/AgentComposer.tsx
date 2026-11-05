@@ -5,6 +5,8 @@ import { useTranslation } from '@/lib/i18n-context';
 import { SendIcon, StopIcon } from '@/components/ui/icons';
 import { ModelPicker, ReasoningEffortPicker } from '@/components/ui/ComposerModelPickers';
 import type { AgentModelControls } from '@/hooks/agent/useAgentModel';
+import type { AgentContextStatus } from '@/lib/agent/context';
+import AgentContextMeter from './AgentContextMeter';
 
 interface Props {
   /** 本页正有一条流在进行（可能属于别的会话），此时不能再发送 */
@@ -16,10 +18,12 @@ interface Props {
   onStop: () => void;
   /** 输入框里的模型与思考强度 */
   model: AgentModelControls;
+  /** 当前会话的上下文占用；没有会话或读不到时为 null，不显示 */
+  context?: AgentContextStatus | null;
 }
 
 /** Agent 输入框，布局同聊天页。桌面 Enter 发送、Shift+Enter 换行；触屏上回车只换行，发送走按钮。 */
-export default function AgentComposer({ busy, canStop, onSend, onStop, model }: Props) {
+export default function AgentComposer({ busy, canStop, onSend, onStop, model, context = null }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState('');
   const [enterInsertsNewline, setEnterInsertsNewline] = useState(false);
@@ -94,6 +98,7 @@ export default function AgentComposer({ busy, canStop, onSend, onStop, model }: 
                 <ReasoningEffortPicker reasoningEffort={model.reasoningEffort} onReasoningEffortChange={model.selectReasoningEffort} />
               </>
             )}
+            {context && <AgentContextMeter context={context} />}
           </div>
 
           {canStop ? (

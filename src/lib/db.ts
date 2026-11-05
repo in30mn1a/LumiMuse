@@ -1164,6 +1164,12 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_memory_revisions_item ON memory_revisions(proposal_item_id);
   `);
 
+  // Agent 会话最近一次上游 usage，供占用显示和估算校准；旧镜像按显式列名读取，加列不影响回滚
+  const agentSessionCols = db.prepare("PRAGMA table_info(agent_sessions)").all() as { name: string }[];
+  if (!agentSessionCols.some(col => col.name === 'last_usage_json')) {
+    db.exec('ALTER TABLE agent_sessions ADD COLUMN last_usage_json TEXT');
+  }
+
   // settings.prompt_preset 已废弃；每次启动清掉历史行，避免 GET /api/settings 经 loadSettings 再带出该键
   db.prepare("DELETE FROM settings WHERE key = 'prompt_preset'").run();
 

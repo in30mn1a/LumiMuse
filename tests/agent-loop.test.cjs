@@ -424,7 +424,7 @@ test('old tool results fold under context pressure, pairing stays intact and a r
     { text: '读完了' },
   ]);
   const notes = [];
-  const settings = { ...BASE_SETTINGS, context_window: 6000 };
+  const settings = { ...BASE_SETTINGS, agent_context_window: 6000 };
   const result = await runAgentTurn({
     db, sessionId, userContent: '读两页', tools: [readPage], settings, complete, now, events: { onNote: note => notes.push(note) },
   });
@@ -476,7 +476,7 @@ test('folded results retain their own arguments when an upstream reuses a call i
   ]);
   const result = await runAgentTurn({
     db, sessionId, userContent: '读取两页', tools: [readPage], complete, now,
-    settings: { ...BASE_SETTINGS, context_window: 6000 },
+    settings: { ...BASE_SETTINGS, agent_context_window: 6000 },
   });
   assert.equal(result.status, 'done');
   const messages = requests[2].messages;

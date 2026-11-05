@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { AgentContextStatus } from '@/lib/agent/context';
 import type { AgentMessageView } from '@/lib/agent/messages';
 import type { AgentSession } from '@/lib/agent/store';
 import { HttpResponseError, getErrorMessage, parseJsonResponse } from '@/lib/http';
@@ -11,12 +12,15 @@ export interface AgentSessionDetail {
   messages: AgentMessageView[];
   /** 服务端仍有一轮在跑（例如刷新页面、或停止后服务端还没收尾） */
   running: boolean;
+  /** 当前上下文占用；服务端算不出来时为 null */
+  context?: AgentContextStatus | null;
 }
 
 export type LiveSegment =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; arguments: string; state: 'running' | 'ok' | 'error'; error?: string }
-  | { kind: 'note'; text: string };
+  | { kind: 'note'; text: string }
+  | { kind: 'compaction'; state: 'running' | 'done'; summary?: string; tokensBefore?: number };
 
 /** 正在流式进行的一轮。结束后重新读取会话历史，以数据库为准。 */
 export interface LiveTurn {
@@ -29,6 +33,8 @@ export interface LiveTurn {
   afterMessageId: number;
   segments: LiveSegment[];
   error: string | null;
+  /** 本轮最近一次请求前的上下文占用；还没收到时为 null */
+  context: AgentContextStatus | null;
 }
 
 export type AgentSendFailure = { kind: 'busy' } | { kind: 'error' | 'interrupted'; message: string };
@@ -64,6 +70,22 @@ export function applyAgentStreamEvent(turn: LiveTurn, event: AgentStreamEvent): 
     }
     case 'note':
       return { ...turn, segments: [...turn.segments, { kind: 'note', text: event.text }] };
+    case 'context':
+      return { ...turn, context: event.context };
+    case 'compaction': {
+      const index = turn.segments.findLastIndex(segment => segment.kind === 'compaction' && segment.state === 'running');
+      if (event.phase === 'start') {
+        return { ...turn, segments: [...turn.segments, { kind: 'compaction', state: 'running' }] };
+      }
+      // 失败时只撤下进行中的提示，失败原因由随后的 note 显示
+      const rest = index === -1 ? turn.segments : turn.segments.filter((_, current) => current !== index);
+      if (event.phase === 'failed') return { ...turn, segments: rest };
+      const done: LiveSegment = { kind: 'compaction', state: 'done', summary: event.summary, tokensBefore: event.tokensBefore };
+      return {
+        ...turn,
+        segments: index === -1 ? [...rest, done] : [...rest.slice(0, index), done, ...rest.slice(index)],
+      };
+    }
     case 'error':
       return { ...turn, error: event.error };
     default:
@@ -144,7 +166,7 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     historyRequestRef.current += 1;
     const known = detailRef.current?.session.id === targetId ? detailRef.current.messages : [];
     const afterMessageId = known.reduce((max, message) => Math.max(max, message.id), 0);
-    setLive({ sessionId: targetId, userContent: content, afterMessageId, segments: [], error: null });
+    setLive({ sessionId: targetId, userContent: content, afterMessageId, segments: [], error: null, context: null });
     let failure: AgentSendFailure | null = null;
     let accepted = false;
     try {
@@ -210,6 +232,8 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
 
   return {
     detail: visibleDetail,
+    /** 当前会话的上下文占用：本轮进行中用实时值，否则用最近读到的历史里的值 */
+    context: visibleLive?.context ?? currentDetail?.context ?? null,
     loadError: loadError && loadError.sessionId === sessionId ? loadError : null,
     live: visibleLive,
     /** 本页有一条流在进行（可能属于别的会话） */

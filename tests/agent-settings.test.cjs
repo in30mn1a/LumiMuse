@@ -161,9 +161,38 @@ test('model tab saves provider, model and effort as agent settings', async () =>
 
   await waitFor(() => assert.equal(saved, 1));
   const put = server.calls.find(call => call.url === '/api/settings' && call.method === 'PUT');
-  assert.deepEqual(put.body, { agent_provider_id: 'p-alt', agent_model: 'alt-large', agent_reasoning_effort: 'high' });
+  // 服务端没有存过窗口时按默认 272000 读出并原样带上
+  assert.deepEqual(put.body, {
+    agent_provider_id: 'p-alt', agent_model: 'alt-large', agent_reasoning_effort: 'high', agent_context_window: 272000,
+  });
   assert.deepEqual(toasts, [{ message: 'agent.settings.saved', type: 'success' }]);
   await waitFor(() => assert.equal(view.getByRole('button', { name: 'common.save' }).disabled, true));
+});
+
+test('model tab edits the agent context window and refuses values that are not positive integers', async () => {
+  const server = createServer();
+  server.settings.agent_context_window = 400000;
+  server.settings.context_window = 32000;
+  let saved = 0;
+  const view = renderDrawer({ onModelSaved: () => { saved += 1; } });
+
+  const input = await view.findByLabelText('agent.settings.contextWindow');
+  assert.equal(input.value, '400000');
+  const saveButton = () => view.getByRole('button', { name: 'common.save' });
+  for (const bad of ['0', '', '1.5', '-3', '100000001']) {
+    fireEvent.change(input, { target: { value: bad } });
+    assert.equal(saveButton().disabled, true, `"${bad}" must not be saveable`);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+  }
+  fireEvent.change(input, { target: { value: '128000' } });
+  assert.equal(input.getAttribute('aria-invalid'), 'false');
+  fireEvent.click(saveButton());
+
+  await waitFor(() => assert.equal(saved, 1));
+  const put = server.calls.find(call => call.url === '/api/settings' && call.method === 'PUT');
+  assert.equal(put.body.agent_context_window, 128000);
+  assert.equal('context_window' in put.body, false, 'the global window is left alone');
+  await waitFor(() => assert.equal(saveButton().disabled, true));
 });
 
 test('Agents.md drafts survive tab switches and closing, and saving writes a new version', async () => {

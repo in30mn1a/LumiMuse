@@ -12,6 +12,7 @@ import { CheckIcon, ChevronDownIcon, CopyIcon } from '@/components/ui/icons';
 import { useToast } from '@/components/ui/Toast';
 import ProposalCard from './ProposalCard';
 import AgentMemoryNote, { type AgentMemoryNoteData } from './AgentMemoryNote';
+import { formatTokenCount } from './AgentContextMeter';
 
 type DisplayItem =
   | { kind: 'user'; key: string; content: string }
@@ -38,6 +39,7 @@ export type DisplayBlock = { kind: 'item'; item: Exclude<DisplayItem, { kind: 't
 type LiveBlock =
   | { kind: 'text'; key: string; text: string }
   | { kind: 'note'; key: string; text: string }
+  | { kind: 'compaction'; key: string; running: boolean; summary: string; tokensBefore: number }
   | ToolGroupBlock;
 
 function rememberedNote(name: string, result: string | null): AgentMemoryNoteData | null {
@@ -162,7 +164,17 @@ function groupLiveSegments(segments: LiveSegment[], counts: Map<string, number>)
     }
     if (segment.kind === 'text' && !segment.text.trim()) return;
     flush();
-    // 段只会追加，下标可以当 key
+    // 段只会追加，下标可以当 key；压缩完成时原地替换，key 不变
+    if (segment.kind === 'compaction') {
+      blocks.push({
+        kind: 'compaction',
+        key: `live-compaction-${index}`,
+        running: segment.state === 'running',
+        summary: segment.summary ?? '',
+        tokensBefore: segment.tokensBefore ?? 0,
+      });
+      return;
+    }
     blocks.push(segment.kind === 'text'
       ? { kind: 'text', key: `live-text-${index}`, text: segment.text }
       : { kind: 'note', key: `live-note-${index}`, text: segment.text });
@@ -351,7 +363,30 @@ function ToolGroup({ calls, open, onToggle, appear }: {
   );
 }
 
-function EventNote({ event }: { event: AgentEventPayload }) {
+/** 压缩分隔线：说明从这里起较早的对话以摘要发给模型，展开可看摘要全文。 */
+function CompactionDivider({ summary, tokensBefore, appear = false }: { summary: string; tokensBefore: number; appear?: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <details className={`group mx-auto w-full max-w-full text-xs text-text-muted ${appear ? 'message-appear' : ''}`}>
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-lg px-1 hover:text-text-secondary [&::-webkit-details-marker]:hidden">
+        <span className="h-px flex-1 bg-border-light" aria-hidden="true" />
+        <span className="shrink-0">
+          {tokensBefore > 0
+            ? formatTemplate(t('agent.event.compaction'), { tokens: formatTokenCount(tokensBefore) })
+            : t('agent.event.compactionShort')}
+        </span>
+        <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+        <span className="h-px flex-1 bg-border-light" aria-hidden="true" />
+      </summary>
+      <div className="mt-2 rounded-xl border border-border-light bg-surface-2 px-3 py-2 text-left">
+        <p className="mb-1 font-medium text-text-secondary">{t('agent.event.compactionSummary')}</p>
+        <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">{summary}</p>
+      </div>
+    </details>
+  );
+}
+
+function EventNote({ event }: { event: Exclude<AgentEventPayload, { kind: 'compaction' }> }) {
   const { t } = useTranslation();
   const text = event.kind === 'interrupted'
     ? t('agent.event.interrupted')
@@ -429,7 +464,11 @@ export default function AgentMessageList({ messages, live, emptyState, proposalB
   const renderItem = (item: Exclude<DisplayItem, { kind: 'tool' }>) => {
     if (item.kind === 'user') return <UserBubble key={item.key} content={item.content} />;
     if (item.kind === 'assistant') return <AssistantBubble key={item.key} content={item.content} copyable />;
-    if (item.kind === 'event') return <EventNote key={item.key} event={item.event} />;
+    if (item.kind === 'event') {
+      return item.event.kind === 'compaction'
+        ? <CompactionDivider key={item.key} summary={item.event.summary} tokensBefore={item.event.tokens_before} />
+        : <EventNote key={item.key} event={item.event} />;
+    }
     if (item.kind === 'memory') return <AgentMemoryNote key={item.key} note={item.note} undone={item.undone} disabled={proposalBusy} />;
     return <ProposalCard key={item.key} proposalId={item.proposalId} busy={proposalBusy} onDecided={onProposalDecided} />;
   };
@@ -441,12 +480,21 @@ export default function AgentMessageList({ messages, live, emptyState, proposalB
     for (const block of liveBlocks) {
       if (block.kind === 'tools') rows.push(renderGroup(block, true));
       else if (block.kind === 'text') rows.push(<AssistantBubble key={block.key} content={block.text} copyable={false} appear />);
-      else rows.push(<p key={block.key} className="message-appear text-center text-xs text-text-muted">{block.text}</p>);
+      else if (block.kind === 'compaction') {
+        rows.push(block.running
+          ? (
+            <p key={block.key} className="message-appear text-center text-xs text-text-muted" role="status">
+              <span className="motion-safe:animate-pulse">{t('agent.event.compacting')}</span>
+            </p>
+          )
+          : <CompactionDivider key={block.key} summary={block.summary} tokensBefore={block.tokensBefore} appear />);
+      } else rows.push(<p key={block.key} className="message-appear text-center text-xs text-text-muted">{block.text}</p>);
     }
     const last = liveBlocks[liveBlocks.length - 1];
     // 回合之间模型还在想、没有任何输出时也要有反馈；正文在流式输出或工具在跑时不需要
     const thinking = !live.error && (
-      !last || last.kind === 'note' || (last.kind === 'tools' && last.calls.every(call => call.state !== 'running'))
+      !last || last.kind === 'note' || (last.kind === 'compaction' && !last.running)
+      || (last.kind === 'tools' && last.calls.every(call => call.state !== 'running'))
     );
     if (thinking) {
       rows.push(

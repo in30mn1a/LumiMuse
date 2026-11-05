@@ -2,22 +2,35 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { agentSessionUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import { readJsonObject } from '@/lib/request-json';
+import { getAgentContextStatus } from '@/lib/agent/loop';
 import { toAgentMessageView } from '@/lib/agent/messages';
 import { isAgentRunActive } from '@/lib/agent/runs';
 import { deleteAgentSession, getAgentSession, listAgentMessages, renameAgentSession } from '@/lib/agent/store';
+import { AGENT_TOOLS } from '@/lib/agent/tools';
+import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-/** 会话与完整历史。`running` 表示服务端仍有一轮在跑（例如刷新页面后）。 */
+/**
+ * 会话与完整历史。`running` 表示服务端仍有一轮在跑（例如刷新页面后）。
+ * `context` 是当前上下文占用；算不出来时为 null，不影响读取历史。
+ */
 export async function GET(_request: NextRequest, { params }: RouteContext) {
   const { id } = await params;
   const db = getDb();
   const session = getAgentSession(db, id);
   if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+  let context = null;
+  try {
+    context = getAgentContextStatus(db, id, { tools: AGENT_TOOLS, skills: AGENT_SKILLS });
+  } catch {
+    // 占用只是附加信息
+  }
   return NextResponse.json({
     session,
     messages: listAgentMessages(db, id).map(toAgentMessageView),
     running: isAgentRunActive(id),
+    context,
   });
 }
 

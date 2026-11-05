@@ -100,10 +100,13 @@ test('a chat request streams tool progress, text and done in order, then history
   const response = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '我有几个角色？' }));
   assert.equal(response.headers.get('content-type'), 'text/event-stream');
   const events = await readSse(response);
-  assert.deepEqual(events.map(item => item.event), ['tool_start', 'tool_end', 'text', 'done']);
-  assert.deepEqual(events[1].data, { id: 'call_1', name: 'list_characters', ok: true });
-  assert.equal(events[2].data.text, '你有一个角色：星野。');
-  assert.deepEqual(events[3].data, { status: 'done', rounds: 2 });
+  assert.deepEqual(events.map(item => item.event), ['context', 'tool_start', 'tool_end', 'context', 'text', 'done']);
+  assert.deepEqual(events[2].data, { id: 'call_1', name: 'list_characters', ok: true });
+  assert.equal(events[4].data.text, '你有一个角色：星野。');
+  assert.deepEqual(events[5].data, { status: 'done', rounds: 2 });
+  // 每次请求前推送占用；第二次多了工具回合
+  assert.equal(events[0].data.window, 272000);
+  assert.ok(events[3].data.used > events[0].data.used);
   assert.equal(upstream.calls[0].url, 'http://upstream.test/v1/chat/completions');
   assert.ok(upstream.calls[0].body.tools.some(tool => tool.function.name === 'search_memories'));
 
@@ -114,6 +117,9 @@ test('a chat request streams tool progress, text and done in order, then history
   assert.deepEqual(history.messages.map(m => m.role), ['user', 'assistant', 'tool', 'assistant']);
   assert.deepEqual(history.messages[1].tool_calls, [{ id: 'call_1', name: 'list_characters', arguments: '{}' }]);
   assert.match(history.messages[2].content, /星野/);
+  assert.equal(history.context.window, 272000);
+  assert.ok(history.context.used > events[3].data.used, 'history now includes the final reply');
+  assert.ok(history.context.threshold > 0);
   const raw = JSON.stringify(history);
   assert.equal(raw.includes('数一下'), false, 'reasoning stays server-side');
   assert.equal(raw.includes(UPSTREAM_KEY), false);
@@ -162,9 +168,9 @@ test('upstream failures arrive as an error event before done', async t => {
   const session = await createSession();
   upstream.handlers.push(() => new Response('{"error":{"message":"bad key"}}', { status: 401 }));
   const events = await readSse(await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '在吗' })));
-  assert.deepEqual(events.map(item => item.event), ['error', 'done']);
-  assert.match(events[0].data.error, /401/);
-  assert.equal(events[1].data.status, 'error');
+  assert.deepEqual(events.map(item => item.event), ['context', 'error', 'done']);
+  assert.match(events[1].data.error, /401/);
+  assert.equal(events[2].data.status, 'error');
 });
 
 test('chat validates the body and the session', async t => {

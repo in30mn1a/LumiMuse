@@ -1250,3 +1250,187 @@ test('round2: an empty reply error remains visible after final history reload an
   assert.ok(reopened.getByRole('alert').textContent.includes(warning));
   assert.equal(reopened.container.querySelectorAll('[data-markdown]').length, 0, 'there is no empty assistant bubble');
 });
+
+// ---- 上下文占用与压缩 ----
+
+/** 占用与压缩相关文案按真实格式渲染，其余键原样返回 */
+function withContextLabels(t) {
+  const original = mocks['@/lib/i18n-context'].useTranslation;
+  const labels = {
+    'agent.context.label': '上下文占用 {percent}%',
+    'agent.context.usedValue': '{used} / {window}（{percent}%）',
+    'agent.context.thresholdValue': '超过 {tokens}（{percent}%）时',
+    'agent.context.lastUsageValue': '输入 {prompt} · 输出 {completion}',
+    'agent.context.cached': '缓存命中 {cached}',
+    'agent.event.compaction': '上下文已压缩（压缩前约 {tokens} token）',
+  };
+  mocks['@/lib/i18n-context'].useTranslation = () => ({ t: key => labels[key] ?? key });
+  t.after(() => { mocks['@/lib/i18n-context'].useTranslation = original; });
+}
+
+const CONTEXT = { window: 272000, used: 54400, threshold: 204492, last_usage: { prompt_tokens: 51234, completion_tokens: 812, cached_tokens: 48000 } };
+
+test('the composer shows context usage and its details, without real usage when there is none', async t => {
+  withContextLabels(t);
+  let context = CONTEXT;
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: HISTORY, running: false, context });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  const meter = await view.findByRole('button', { name: '上下文占用 20%' });
+  assert.equal(view.queryByRole('dialog', { name: 'agent.context.title' }), null);
+  await act(async () => { meter.focus(); });
+  assert.ok(view.getByRole('dialog', { name: 'agent.context.title' }), 'keyboard focus opens the details');
+  fireEvent.click(meter);
+  const panel = view.getByRole('dialog', { name: 'agent.context.title' });
+  assert.ok(within(panel).getByText('54.4k / 272k（20%）'));
+  assert.ok(within(panel).getByText('超过 204k（75%）时'));
+  assert.ok(within(panel).getByText('输入 51.2k · 输出 812'));
+  assert.ok(within(panel).getByText('缓存命中 48k'));
+  await act(async () => { view.getByRole('textbox', { name: 'agent.inputLabel' }).focus(); });
+  fireEvent.keyDown(document, { key: 'Escape' });
+  assert.equal(view.queryByRole('dialog', { name: 'agent.context.title' }), null);
+  assert.equal(document.activeElement, meter, 'focus returns to the meter');
+
+  // 没有真实 usage 时只显示估算
+  context = { ...CONTEXT, last_usage: null };
+  cleanup();
+  const second = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await second.findByRole('button', { name: '上下文占用 20%' }));
+  const bare = second.getByRole('dialog', { name: 'agent.context.title' });
+  assert.equal(within(bare).queryByText('agent.context.lastUsage'), null);
+});
+
+test('switching the composer model refreshes the session context calibration', async t => {
+  withContextLabels(t);
+  let selected = 'fake-model';
+  const calls = installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) {
+      return json({ session: SESSION, messages: HISTORY, running: false, context: { ...CONTEXT, used: selected === 'fake-model' ? 163200 : 54400 } });
+    }
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/models') return json({ models: ['fake-model', 'deep-model'] });
+    if (call.url === '/api/settings' && call.method === 'PUT') {
+      selected = call.body.agent_model;
+      return json({ ok: true });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByRole('button', { name: '上下文占用 60%' });
+  fireEvent.click(await view.findByRole('button', { name: 'fake-model' }));
+  fireEvent.click(await view.findByRole('option', { name: 'deep-model' }));
+  await view.findByRole('button', { name: '上下文占用 20%' });
+  assert.equal(selected, 'deep-model');
+  assert.equal(calls.filter(call => call.url === `/api/agent/sessions/${SESSION.id}`).length, 2);
+});
+
+test('switching the composer model during a turn keeps its live context until the turn finishes', async t => {
+  withContextLabels(t);
+  let selected = 'fake-model';
+  let releaseStream;
+  const gate = new Promise(resolve => { releaseStream = resolve; });
+  t.after(() => releaseStream());
+  const calls = installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) {
+      return json({ session: SESSION, messages: HISTORY, running: false, context: { ...CONTEXT, used: selected === 'fake-model' ? 163200 : 54400 } });
+    }
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/models') return json({ models: ['fake-model', 'deep-model'] });
+    if (call.url === '/api/settings' && call.method === 'PUT') {
+      selected = call.body.agent_model;
+      return json({ ok: true });
+    }
+    if (call.url === '/api/agent/chat') {
+      return sseResponse([
+        ['context', { ...CONTEXT, used: 108800 }],
+        ['text', { text: '这一轮完成了。' }],
+        ['done', { status: 'done', rounds: 1 }],
+      ], { gateAt: 1, gate });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByRole('button', { name: '上下文占用 60%' });
+  fireEvent.change(view.getByRole('textbox', { name: 'agent.inputLabel' }), { target: { value: '继续' } });
+  fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+  await view.findByRole('button', { name: '上下文占用 40%' });
+  const readsBefore = calls.filter(call => call.url === `/api/agent/sessions/${SESSION.id}`).length;
+  const statusReadsBefore = calls.filter(call => call.url === '/api/agent/status').length;
+  fireEvent.click(await view.findByRole('button', { name: 'fake-model' }));
+  fireEvent.click(await view.findByRole('option', { name: 'deep-model' }));
+  await waitFor(() => assert.ok(calls.filter(call => call.url === '/api/agent/status').length > statusReadsBefore));
+  assert.equal(selected, 'deep-model');
+  assert.equal(calls.filter(call => call.url === `/api/agent/sessions/${SESSION.id}`).length, readsBefore);
+  assert.ok(view.getByRole('button', { name: '上下文占用 40%' }), 'the running turn still uses its original model');
+
+  await act(async () => { releaseStream(); });
+  await view.findByRole('button', { name: '上下文占用 20%' });
+  await view.findByRole('button', { name: 'agent.send' });
+  assert.equal(calls.filter(call => call.url === `/api/agent/sessions/${SESSION.id}`).length, readsBefore + 1);
+});
+
+test('a session without context data shows no meter', async () => {
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: HISTORY, running: false, context: null });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByText('没有失败的提取任务。');
+  assert.equal(view.queryByRole('button', { name: 'agent.context.label' }), null);
+});
+
+test('a live turn updates the meter, shows compaction progress, then the stored divider expands to the summary', async t => {
+  withContextLabels(t);
+  let releaseStream;
+  const gate = new Promise(resolve => { releaseStream = resolve; });
+  let afterTurn = false;
+  const compactionEvent = { kind: 'compaction', through_id: 5, summary: '主人想清理星野的重复记忆，已查看 mem-1。', tokens_before: 210000 };
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) {
+      const messages = afterTurn
+        ? [...HISTORY, storedMessage(6, 'user', { content: '继续' }), storedMessage(7, 'event', { event: compactionEvent }), storedMessage(8, 'assistant', { content: '接着整理。' })]
+        : HISTORY;
+      return json({ session: SESSION, messages, running: false, context: afterTurn ? { ...CONTEXT, used: 13600 } : { ...CONTEXT, used: 209000 } });
+    }
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/agent/chat') {
+      afterTurn = true;
+      return sseResponse([
+        ['compaction', { phase: 'start' }],
+        ['compaction', { phase: 'done', through_id: 5, summary: compactionEvent.summary, tokens_before: 210000 }],
+        ['context', { ...CONTEXT, used: 13600 }],
+        ['text', { text: '接着整理。' }],
+        ['done', { status: 'done', rounds: 1 }],
+      ], { gateAt: 1, gate });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByRole('button', { name: '上下文占用 77%' });
+
+  fireEvent.change(view.getByRole('textbox', { name: 'agent.inputLabel' }), { target: { value: '继续' } });
+  fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+  await view.findByText('agent.event.compacting');
+
+  await act(async () => { releaseStream(); });
+  await view.findByText('接着整理。');
+  await waitFor(() => assert.ok(view.getByRole('button', { name: '上下文占用 5%' })));
+  await waitFor(() => assert.ok(view.getByRole('button', { name: 'agent.send' })));
+  assert.equal(view.queryByText('agent.event.compacting'), null);
+
+  const divider = view.getByText('上下文已压缩（压缩前约 210k token）').closest('details');
+  assert.equal(divider.open, false);
+  assert.ok(within(divider).getByText(compactionEvent.summary));
+  fireEvent.click(within(divider).getByText('上下文已压缩（压缩前约 210k token）'));
+  assert.equal(divider.open, true);
+  assert.equal(view.getAllByText('上下文已压缩（压缩前约 210k token）').length, 1, 'the live divider is replaced by the stored one');
+});

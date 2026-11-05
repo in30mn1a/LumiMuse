@@ -508,6 +508,8 @@ export interface Settings {
   agent_provider_id: string;
   agent_model: string;
   agent_reasoning_effort: ReasoningEffort;
+  /** Agent 独立的上下文窗口（token），只用于 Agent 的占用显示与自动压缩，不影响角色聊天。 */
+  agent_context_window: number;
   // 高级采样参数：null 表示未设置，请求体中不会包含该字段（部分模型不支持）。
   top_p: number | null;
   frequency_penalty: number | null;
@@ -558,6 +560,7 @@ export const DEFAULT_SETTINGS: Settings = {
   agent_provider_id: '',
   agent_model: '',
   agent_reasoning_effort: 'default',
+  agent_context_window: 272000,
   top_p: null,
   frequency_penalty: null,
   presence_penalty: null,

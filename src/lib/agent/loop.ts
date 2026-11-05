@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import {
   buildChatRequestBody,
   completeRequest,
-  REASONING_SAFE_MAX_TOKENS,
   type ChatToolCall,
   type CompletionRequestOptions,
   type CompletionRequestResult,
@@ -14,6 +13,18 @@ import { publicErrorMessage } from '@/lib/public-error';
 import { loadSettings, resolveAgentConfig } from '@/lib/settings';
 import { estimateTokens } from '@/lib/token-counter';
 import type { Settings } from '@/types';
+import { compactAgentHistory } from './compaction';
+import {
+  agentCalibrationRatio,
+  agentCompactThreshold,
+  agentOutputReserve,
+  publicLastUsage,
+  readAgentLastUsage,
+  saveAgentLastUsage,
+  toAgentLastUsage,
+  type AgentContextStatus,
+  type AgentLastUsage,
+} from './context';
 import { readAgentDocument } from './documents';
 import {
   parseEventPayload,
@@ -30,13 +41,12 @@ import {
   listAgentMessages,
   touchAgentSession,
   type AgentMessageRow,
+  type AgentSession,
 } from './store';
 import { parseToolArguments, toolDefinitions } from './tools/registry';
 import type { AgentTool, AgentToolContext, AgentToolResult } from './tools/types';
 
 export const AGENT_MAX_ROUNDS = 25;
-/** 估算超过 context_window 的这个比例时折叠较旧的工具结果。 */
-export const AGENT_CONTEXT_FOLD_RATIO = 0.7;
 /** 相同工具和参数连续调用到第几次时附加提醒。 */
 const REPEAT_REMINDER_AT = 3;
 
@@ -55,7 +65,15 @@ export interface AgentTurnEvents {
   onUsage?(usage: LlmUsage): void;
   /** 不入库的提示，例如上下文折叠后仍然超出。 */
   onNote?(note: string): void;
+  /** 每次请求上游前的上下文占用，与是否压缩、折叠的判断用同一个数。 */
+  onContext?(status: AgentContextStatus): void;
+  onCompaction?(event: AgentCompactionEvent): void;
 }
+
+export type AgentCompactionEvent =
+  | { phase: 'start' }
+  | { phase: 'done'; through_id: number; summary: string; tokens_before: number }
+  | { phase: 'failed' };
 
 export type AgentTurnStatus = 'done' | 'aborted' | 'round_limit' | 'terminated' | 'error';
 
@@ -81,6 +99,8 @@ export interface RunAgentTurnInput {
 
 export const CONTEXT_OVER_LIMIT_NOTE = '上下文已接近模型上限，较早的工具结果已折叠。如果回复变差，建议新建会话。';
 export const EMPTY_REPLY_NOTE = '模型没有返回内容。如果用的是推理模型，可能是思考用完了输出长度。';
+export const COMPACT_FAILED_NOTE = '自动压缩上下文失败，这一轮改为折叠较早的工具结果继续。';
+const COMPACTION_PREFIX = '（系统记录：较早的对话已压缩为下面的摘要，原始记录仍保存在会话里。需要具体数据时请用工具重新查询。）';
 
 function decisionLine(item: ProposalDecisionEventItem): string {
   const head = `- 第 ${item.seq} 项（${item.op}）：`;
@@ -109,6 +129,9 @@ function eventModelText(payload: AgentEventPayload): string | null {
       return '（系统记录：上一轮因请求失败中断。）';
     case 'proposal_decision':
       return `（系统记录：主人处理了提案 #${payload.proposal_id}。\n${payload.items.map(decisionLine).join('\n')}\n只有「已批准并生效」的项改了记忆。）`;
+    case 'compaction':
+      // 摘要由 buildHistoryEntries 放在历史开头，不在原位置重复
+      return null;
     default:
       return null;
   }
@@ -124,14 +147,40 @@ function parseJson<T>(text: string | null): T | null {
 }
 
 interface ContextEntry {
-  /** 组成这条消息的第一行 id；行写入后不再修改，可用来缓存 token 估算。 */
+  /** 组成这条消息的第一行 id；行写入后不再修改，可用来缓存 token 估算。压缩摘要用负的事件行 id。 */
   key: number;
   message: AgentRequestMessage;
+}
+
+interface CompactionRecord {
+  rowId: number;
+  throughId: number;
+  summary: string;
+}
+
+/** 最近一次压缩。它的 through_id 最大，更早的压缩已被它包含。 */
+function latestCompaction(rows: readonly AgentMessageRow[]): CompactionRecord | null {
+  let latest: CompactionRecord | null = null;
+  for (const row of rows) {
+    if (row.role !== 'event') continue;
+    const payload = parseEventPayload(row.content);
+    if (payload?.kind !== 'compaction') continue;
+    if (!Number.isInteger(payload.through_id) || typeof payload.summary !== 'string' || !payload.summary.trim()) continue;
+    if (!latest || payload.through_id >= latest.throughId) {
+      latest = { rowId: row.id, throughId: payload.through_id, summary: payload.summary };
+    }
+  }
+  return latest;
+}
+
+function isCompactionRow(row: AgentMessageRow): boolean {
+  return row.role === 'event' && parseEventPayload(row.content)?.kind === 'compaction';
 }
 
 /**
  * 把会话历史转成发给上游的消息。
  *
+ * - 有压缩记录时，`through_id` 及更早的行由摘要代替，摘要放在开头，与紧随的 user 合并。
  * - 相邻的 user 与 event 合并成一条 user：部分上游拒绝连续的同角色消息。
  * - 思考链等 `assistant_fields` 只回传本轮（最后一条 user 之后）的 assistant：
  *   上游要求工具循环内带回，而部分上游拒绝历史轮次里的思考链。
@@ -141,15 +190,20 @@ function buildHistoryEntries(rows: readonly AgentMessageRow[]): ContextEntry[] {
   for (const row of rows) {
     if (row.role === 'user') lastUserId = row.id;
   }
+  const compaction = latestCompaction(rows);
 
   const entries: ContextEntry[] = [];
-  let pending: { key: number; parts: string[] } | null = null;
+  let pending: { key: number; parts: string[] } | null = compaction
+    ? { key: -compaction.rowId, parts: [`${COMPACTION_PREFIX}\n\n${compaction.summary}`] }
+    : null;
   const flush = () => {
     if (pending) entries.push({ key: pending.key, message: { role: 'user', content: pending.parts.join('\n\n') } });
     pending = null;
   };
 
   for (const row of rows) {
+    if (compaction && row.id <= compaction.throughId) continue;
+    if (isCompactionRow(row)) continue;
     if (row.role === 'user' || row.role === 'event') {
       const text = row.role === 'user' ? row.content : eventText(row.content);
       if (text === null) continue;
@@ -214,11 +268,11 @@ function foldToolResults(
   tokenOf: (entry: ContextEntry) => number,
   fixedTokens: number,
   limit: number,
-): { messages: AgentRequestMessage[]; overLimit: boolean } {
+): { messages: AgentRequestMessage[]; overLimit: boolean; total: number } {
   let total = fixedTokens;
   for (const entry of entries) total += tokenOf(entry);
   const messages = entries.map(entry => entry.message);
-  if (total <= limit) return { messages, overLimit: false };
+  if (total <= limit) return { messages, overLimit: false, total };
 
   let lastToolRoundStart = entries.length;
   for (let i = entries.length - 1; i >= 0; i -= 1) {
@@ -245,7 +299,111 @@ function foldToolResults(
     total += estimateTokens(JSON.stringify(folded)) - tokenOf(entry);
     messages[i] = folded;
   }
-  return { messages, overLimit: total > limit };
+  return { messages, overLimit: total > limit, total };
+}
+
+/** 压缩时交给摘要模型的纯文本记录；无法解析或不发给模型的事件跳过。 */
+function transcriptBlock(row: AgentMessageRow): string | null {
+  switch (row.role) {
+    case 'user':
+      return `【主人】\n${row.content}`;
+    case 'assistant': {
+      const calls = parseStoredToolCalls(row.tool_calls_json) ?? [];
+      const lines = calls.map(call => `→ 调用 ${call.function.name} ${call.function.arguments}`);
+      const text = [row.content.trim(), ...lines].filter(Boolean).join('\n');
+      return text ? `【Agent】\n${text}` : null;
+    }
+    case 'tool':
+      return `【工具结果 ${row.tool_name ?? ''}】\n${row.content}`;
+    case 'event':
+      return eventText(row.content);
+  }
+}
+
+/**
+ * 本轮可以压缩的行：上次压缩之后、本轮主人消息之前。边界落在两轮之间，
+ * 不会拆开一组工具调用和结果。没有 user/assistant/tool 行时不值得压缩。
+ */
+function compactableRows(rows: readonly AgentMessageRow[], userMessageId: number) {
+  const previous = latestCompaction(rows);
+  const pending = rows.filter(row => row.id < userMessageId
+    && (!previous || row.id > previous.throughId)
+    && !isCompactionRow(row));
+  if (!pending.some(row => row.role !== 'event')) return null;
+  return { rows: pending, throughId: pending[pending.length - 1].id, previousSummary: previous?.summary ?? null };
+}
+
+interface AgentContextSetup {
+  systemPrompt: string;
+  definitions: ReturnType<typeof toolDefinitions> | undefined;
+  fixedTokens: number;
+  window: number;
+  threshold: number;
+  reserve: number;
+}
+
+/** 系统提示、工具定义与阈值。文档在这里读一次：主人保存后下一轮生效，本轮内保持不变。 */
+function buildContextSetup(
+  db: Database.Database,
+  session: AgentSession,
+  tools: readonly AgentTool[],
+  skills: readonly AgentPromptSkill[],
+  settings: Settings,
+  window: number,
+): AgentContextSetup {
+  const definitions = tools.length > 0 ? toolDefinitions(tools) : undefined;
+  const characterName = session.character_id
+    ? (db.prepare('SELECT name FROM characters WHERE id = ?').get(session.character_id) as { name: string } | undefined)?.name ?? null
+    : null;
+  const systemPrompt = buildAgentSystemPrompt({
+    agentsMd: readAgentDocument(db, 'agents').content,
+    memoryMd: readAgentDocument(db, 'memory').content,
+    skills,
+    characterId: session.character_id,
+    characterName,
+    conversationId: session.conversation_id,
+  });
+  const fixedTokens = estimateTokens(systemPrompt) + (definitions ? estimateTokens(JSON.stringify(definitions)) : 0);
+  const reserve = agentOutputReserve(settings);
+  return { systemPrompt, definitions, fixedTokens, window, threshold: agentCompactThreshold(window, reserve), reserve };
+}
+
+function createTokenCounter() {
+  const cache = new Map<number, number>();
+  return (entry: ContextEntry) => {
+    let count = cache.get(entry.key);
+    if (count === undefined) {
+      count = estimateTokens(JSON.stringify(entry.message));
+      cache.set(entry.key, count);
+    }
+    return count;
+  };
+}
+
+/**
+ * 会话当前的上下文占用（不在运行时给界面用）：系统提示、工具定义和上次压缩后的完整历史，
+ * 不含折叠——下一轮开始时超过阈值会先压缩。
+ */
+export function getAgentContextStatus(
+  db: Database.Database,
+  sessionId: string,
+  input: { tools: readonly AgentTool[]; skills?: readonly AgentPromptSkill[]; settings?: Settings },
+): AgentContextStatus | null {
+  const session = getAgentSession(db, sessionId);
+  if (!session) return null;
+  const settings = input.settings ?? loadSettings();
+  const config = resolveAgentConfig(settings);
+  const setup = buildContextSetup(db, session, input.tools, input.skills ?? [], settings, config.context_window);
+  const tokenOf = createTokenCounter();
+  let total = setup.fixedTokens;
+  for (const entry of buildHistoryEntries(listAgentMessages(db, sessionId))) total += tokenOf(entry);
+  const lastUsage = readAgentLastUsage(db, sessionId);
+  return {
+    window: setup.window,
+    used: Math.ceil(total * agentCalibrationRatio(lastUsage, config.model)),
+    threshold: setup.threshold,
+    last_usage: publicLastUsage(lastUsage),
+  };
 }
 
 function stableCallKey(tool: AgentTool | undefined, call: ChatToolCall): string {
@@ -282,7 +440,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
   const session = getAgentSession(db, sessionId);
   if (!session) return { status: 'error', rounds: 0, error: '会话不存在' };
 
-  appendAgentUserMessage(db, sessionId, input.userContent, now());
+  const userMessageId = appendAgentUserMessage(db, sessionId, input.userContent, now());
 
   const config = resolveAgentConfig(settings);
   const llmSettings: Settings = {
@@ -293,35 +451,16 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
     reasoning_effort: config.reasoning_effort,
   };
   const toolsByName = new Map(input.tools.map(tool => [tool.name, tool]));
-  const definitions = input.tools.length > 0 ? toolDefinitions(input.tools) : undefined;
-  const characterName = session.character_id
-    ? (db.prepare('SELECT name FROM characters WHERE id = ?').get(session.character_id) as { name: string } | undefined)?.name ?? null
-    : null;
-  // 每轮开始时读一次文档：主人保存后下一轮生效，本轮内保持不变
-  const systemPrompt = buildAgentSystemPrompt({
-    agentsMd: readAgentDocument(db, 'agents').content,
-    memoryMd: readAgentDocument(db, 'memory').content,
-    skills: input.skills ?? [],
-    characterId: session.character_id,
-    characterName,
-    conversationId: session.conversation_id,
-  });
-  const fixedTokens = estimateTokens(systemPrompt) + (definitions ? estimateTokens(JSON.stringify(definitions)) : 0);
-  const contextLimit = Math.floor(settings.context_window * AGENT_CONTEXT_FOLD_RATIO);
-  const tokenCache = new Map<number, number>();
-  const tokenOf = (entry: ContextEntry) => {
-    let count = tokenCache.get(entry.key);
-    if (count === undefined) {
-      count = estimateTokens(JSON.stringify(entry.message));
-      tokenCache.set(entry.key, count);
-    }
-    return count;
-  };
+  const setup = buildContextSetup(db, session, input.tools, input.skills ?? [], settings, config.context_window);
+  const { systemPrompt, definitions, fixedTokens, threshold } = setup;
+  const tokenOf = createTokenCounter();
+  let lastUsage: AgentLastUsage | null = readAgentLastUsage(db, sessionId);
   const toolContext: AgentToolContext = { db, settings, sessionId, signal };
 
   let lastCallKey = '';
   let repeatCount = 0;
   let overLimitNoted = false;
+  let compactionFailed = false;
 
   const writeEvent = (payload: AgentEventPayload) => {
     try {
@@ -345,19 +484,68 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
   };
 
   for (let round = 1; round <= maxRounds; round += 1) {
-    const { messages: history, overLimit } = foldToolResults(
-      buildHistoryEntries(listAgentMessages(db, sessionId)),
-      tokenOf,
-      fixedTokens,
-      contextLimit,
-    );
+    // 估算按真实 usage 放大后再与阈值比较；折叠用的是未放大的估算，所以阈值反过来缩小
+    const ratio = agentCalibrationRatio(lastUsage, config.model);
+    const rawLimit = Math.floor(threshold / ratio);
+    let rows = listAgentMessages(db, sessionId);
+    let entries = buildHistoryEntries(rows);
+    const estimate = entries.reduce((sum, entry) => sum + tokenOf(entry), fixedTokens);
+
+    if (estimate > rawLimit && !compactionFailed) {
+      const pending = compactableRows(rows, userMessageId);
+      if (pending) {
+        events.onCompaction?.({ phase: 'start' });
+        try {
+          const summary = await compactAgentHistory({
+            blocks: pending.rows.map(transcriptBlock).filter((block): block is string => block !== null),
+            previousSummary: pending.previousSummary,
+            settings: llmSettings,
+            complete,
+            inputBudget: rawLimit,
+            maxTokens: setup.reserve,
+            streaming: settings.streaming !== false,
+            timeoutMs: settings.memory_background_timeout_ms,
+            signal,
+          });
+          if (signal?.aborted) throw new Error('aborted');
+          const tokensBefore = Math.ceil(estimate * ratio);
+          db.transaction(() => {
+            appendAgentMessage(db, sessionId, {
+              role: 'event',
+              content: JSON.stringify({ kind: 'compaction', through_id: pending.throughId, summary, tokens_before: tokensBefore }),
+            }, now());
+            touchAgentSession(db, sessionId, now());
+          })();
+          events.onCompaction?.({ phase: 'done', through_id: pending.throughId, summary, tokens_before: tokensBefore });
+          rows = listAgentMessages(db, sessionId);
+          entries = buildHistoryEntries(rows);
+        } catch {
+          if (signal?.aborted) {
+            saveInterruptedText('');
+            return { status: 'aborted', rounds: round };
+          }
+          // 压缩失败不让本轮失败：退回折叠，本轮不再重试，免得每个回合都多一次失败的请求
+          compactionFailed = true;
+          events.onCompaction?.({ phase: 'failed' });
+          events.onNote?.(COMPACT_FAILED_NOTE);
+        }
+      }
+    }
+
+    const { messages: history, overLimit, total } = foldToolResults(entries, tokenOf, fixedTokens, rawLimit);
     if (overLimit && !overLimitNoted) {
       overLimitNoted = true;
       events.onNote?.(CONTEXT_OVER_LIMIT_NOTE);
     }
+    events.onContext?.({
+      window: setup.window,
+      used: Math.ceil(total * ratio),
+      threshold,
+      last_usage: publicLastUsage(lastUsage),
+    });
 
     const body = buildChatRequestBody(llmSettings, settings.streaming !== false);
-    body.max_tokens = Math.max(llmSettings.max_tokens || 0, REASONING_SAFE_MAX_TOKENS);
+    body.max_tokens = setup.reserve;
     body.messages = [{ role: 'system', content: systemPrompt }, ...history];
     if (definitions) body.tools = definitions;
 
@@ -372,7 +560,15 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
             streamedText += delta;
             events.onText?.(delta);
           },
-          onUsage: usage => events.onUsage?.(usage),
+          onUsage: usage => {
+            lastUsage = toAgentLastUsage(usage, config.model, total, now());
+            try {
+              saveAgentLastUsage(db, sessionId, lastUsage);
+            } catch {
+              // 统计写入失败不影响本轮
+            }
+            events.onUsage?.(usage);
+          },
         }),
         signal,
       );

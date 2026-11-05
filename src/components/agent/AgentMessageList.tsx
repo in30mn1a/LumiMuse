@@ -66,16 +66,19 @@ function createdProposalId(name: string, result: string | null): number | null {
 
 /** 把存储的消息排成显示顺序：每轮先是回复正文，再是这轮的工具调用（与结果配对）。 */
 export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayItem[] {
-  const results = new Map<string, AgentMessageView>();
   const undoneVersions = new Set(messages.flatMap(message => message.event?.kind === 'memory_undo' ? [message.event.version_id] : []));
-  for (const message of messages) {
-    if (message.role === 'tool' && message.tool_call_id) results.set(message.tool_call_id, message);
-  }
   const items: DisplayItem[] = [];
-  for (const message of messages) {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
     if (message.role === 'user') {
       items.push({ kind: 'user', key: `m${message.id}`, content: message.content });
     } else if (message.role === 'assistant') {
+      // 调用 ID 只在本回合内唯一；结果是紧随 assistant 入库的连续工具行。
+      const results = new Map<string, AgentMessageView>();
+      for (let next = index + 1; next < messages.length && messages[next].role === 'tool'; next += 1) {
+        const result = messages[next];
+        if (result.tool_call_id) results.set(result.tool_call_id, result);
+      }
       if (message.content.trim()) items.push({ kind: 'assistant', key: `m${message.id}`, content: message.content });
       for (const call of message.tool_calls ?? []) {
         const result = results.get(call.id);

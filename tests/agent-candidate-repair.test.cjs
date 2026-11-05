@@ -13,6 +13,7 @@ const { __migrateForTests, __setDbForTests } = require('../src/lib/db.ts');
 const ssrfGuard = require('../src/lib/ssrf-guard.ts');
 const { loadSettings } = require('../src/lib/settings.ts');
 const { extractMemories } = require('../src/lib/memory-engine.ts');
+const { enqueueExtraction, isProcessing } = require('../src/lib/memory-queue.ts');
 const { createMemoryProposal, createMemoryProposalSchema, getProposalView } = require('../src/lib/agent/proposals.ts');
 const { applyProposalDecision, proposalDecisionSchema, undoProposalItem } = require('../src/lib/agent/proposal-apply.ts');
 const { createAgentSession } = require('../src/lib/agent/store.ts');
@@ -234,6 +235,35 @@ test('approving two repairs of the same record writes the memories only once', t
   assert.equal(ctx.db.prepare('SELECT COUNT(*) AS n FROM memories WHERE content = ?').get(BAKING.content).n, 1);
   assert.equal(JSON.parse(repairedMemories(ctx.db, 1)[0].metadata).createdByProposalItem, first.itemIds[0]);
   assert.deepEqual(revisions(ctx.db, second.itemIds[0], 'apply'), []);
+});
+
+test('a duplicate added after proposal creation makes the entire repair stale', async t => {
+  for (const source of ['another proposal', 'manual addition']) {
+    await t.test(source, t2 => {
+      const ctx = setup(t2);
+      const pending = proposeOk(ctx, [repair(1, [BAKING, SEASIDE])]);
+      if (source === 'another proposal') {
+        proposeAndApply(ctx, [repair(3, [SEASIDE], { evidence: { note: '无原文依据' } })]);
+      } else {
+        insertRow(ctx.db, 'memories', {
+          id: 'm-manual', character_id: 'char-a', category: '话题历史', content: SEASIDE.content,
+          confidence: 0.9, status: 'active', source_msg_ids: '[]', created_at: T0, updated_at: T0,
+        });
+      }
+      const memories = ctx.db.prepare('SELECT * FROM memories ORDER BY id').all();
+      const candidate = ctx.db.prepare('SELECT * FROM memory_extraction_candidates WHERE id = 1').get();
+      const indexIds = embeddingTaskIds(ctx.db);
+
+      const outcome = approveAll(ctx, pending);
+      assert.equal(outcome.items[0].state, 'stale');
+      assert.match(outcome.items[0].reason, /内容相同/);
+      assert.deepEqual(ctx.db.prepare('SELECT * FROM memories ORDER BY id').all(), memories);
+      assert.deepEqual(ctx.db.prepare('SELECT * FROM memory_extraction_candidates WHERE id = 1').get(), candidate);
+      assert.deepEqual(repairedMemories(ctx.db, 1), []);
+      assert.deepEqual(embeddingTaskIds(ctx.db), indexIds);
+      assert.deepEqual(revisions(ctx.db, pending.itemIds[0], 'apply'), []);
+    });
+  }
 });
 
 test('undoing a repair removes its memories and reopens the record', t => {
@@ -472,4 +502,52 @@ test('a record left by the real extraction path can be repaired and undone', asy
   assert.equal(undoProposalItem(ctx.db, proposal.id, proposal.itemIds[0], now()).ok, true);
   assert.equal(candidateStatus(ctx.db, candidate.id), 'repairable');
   assert.deepEqual(repairedMemories(ctx.db, candidate.id), []);
+});
+
+test('two failed queue extractions of the same messages can only be repaired once', async t => {
+  const ctx = setup(t);
+  for (const [key, value] of Object.entries({
+    api_base: 'http://upstream.test/v1', api_key: 'candidate-repair-test-key',
+    model: 'candidate-repair-model', streaming: false,
+  })) {
+    ctx.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, JSON.stringify(value));
+  }
+  const originalFetch = ssrfGuard.safeFetch;
+  let calls = 0;
+  ssrfGuard.safeFetch = async () => {
+    calls += 1;
+    return Response.json({ choices: [{ message: { content: '主人周末想去海边（不是 JSON）' }, finish_reason: 'stop' }] });
+  };
+  t.after(() => { ssrfGuard.safeFetch = originalFetch; });
+
+  const messages = ctx.db.prepare("SELECT * FROM messages WHERE id = 'msg-a2'").all();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    enqueueExtraction('char-a', 'conv-a', messages);
+    for (let turn = 0; isProcessing() && turn < 100; turn += 1) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(isProcessing(), false);
+  }
+  assert.equal(calls, 2);
+  const candidates = ctx.db.prepare(`
+    SELECT c.id, c.task_id, c.status, t.status AS task_status
+    FROM memory_extraction_candidates c JOIN memory_tasks t ON t.id = c.task_id
+    WHERE c.task_id > 4 ORDER BY c.id
+  `).all();
+  assert.equal(candidates.length, 2);
+  assert.ok(candidates.every(candidate => candidate.status === 'repairable' && candidate.task_status === 'failed'));
+  assert.notEqual(candidates[0].task_id, candidates[1].task_id);
+
+  const proposal = proposeOk(ctx, candidates.map(candidate => repair(candidate.id, [SEASIDE])));
+  const secondBefore = ctx.db.prepare('SELECT * FROM memory_extraction_candidates WHERE id = ?').get(candidates[1].id);
+  const outcome = approveAll(ctx, proposal);
+  assert.deepEqual(outcome.items.map(row => row.state), ['applied', 'stale']);
+  const active = ctx.db.prepare("SELECT * FROM memories WHERE character_id = 'char-a' AND status = 'active'").all();
+  assert.equal(active.length, 1);
+  assert.equal(active[0].content, SEASIDE.content);
+  assert.deepEqual(JSON.parse(active[0].source_msg_ids), ['msg-a2']);
+  assert.equal(candidateStatus(ctx.db, candidates[0].id), 'repaired');
+  assert.deepEqual(ctx.db.prepare('SELECT * FROM memory_extraction_candidates WHERE id = ?').get(candidates[1].id), secondBefore);
+  assert.deepEqual(embeddingTaskIds(ctx.db), [active[0].id]);
+  assert.deepEqual(revisions(ctx.db, proposal.itemIds[1], 'apply'), []);
 });

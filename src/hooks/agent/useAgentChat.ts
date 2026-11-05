@@ -50,13 +50,18 @@ export function applyAgentStreamEvent(turn: LiveTurn, event: AgentStreamEvent): 
         ...turn,
         segments: [...turn.segments, { kind: 'tool', id: event.id, name: event.name, arguments: event.arguments, state: 'running' }],
       };
-    case 'tool_end':
+    case 'tool_end': {
+      // 前一回合已完成的同 ID 调用保持原状态，只结束当前运行的实例。
+      const index = turn.segments.findIndex(segment => segment.kind === 'tool'
+        && segment.id === event.id && segment.name === event.name && segment.state === 'running');
+      if (index === -1) return turn;
       return {
         ...turn,
-        segments: turn.segments.map(segment => (segment.kind === 'tool' && segment.id === event.id
+        segments: turn.segments.map((segment, current) => (current === index && segment.kind === 'tool'
           ? { ...segment, state: event.ok ? 'ok' : 'error', error: event.error }
           : segment)),
       };
+    }
     case 'note':
       return { ...turn, segments: [...turn.segments, { kind: 'note', text: event.text }] };
     case 'error':

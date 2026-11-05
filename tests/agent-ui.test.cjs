@@ -637,6 +637,237 @@ test('picking the main model the Agent already follows does not pin it', async (
   assert.ok(view.getByRole('button', { name: 'main-model' }));
 });
 
+/** 设置 PUT 由测试逐个放行，聊天在开始时读取已经保存的虚构配置。 */
+function pendingModelServer(t, {
+  messages = [], createGate = Promise.resolve(), decisionGate = Promise.resolve(), historyGate = Promise.resolve(),
+} = {}) {
+  const settings = { ...SETTINGS };
+  const writes = [];
+  const usedChoices = [];
+  let draining = false;
+  let decided = false;
+  const calls = installFetch(async call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === '/api/agent/sessions' && call.method === 'POST') {
+      await createGate;
+      return json(SESSION, 201);
+    }
+    if (call.url.startsWith('/api/agent/sessions/')) {
+      if (decided) await historyGate;
+      return json({ session: { ...SESSION, id: call.url.split('/').at(-1) }, messages, running: false });
+    }
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/models') return json({ models: ['fake-model', 'deep-model', 'latest-model'] });
+    if (call.url === '/api/settings' && call.method === 'PUT') {
+      const status = draining ? 200 : await new Promise(resolve => { writes.push({ body: call.body, resolve }); });
+      if (status !== 200) return json({ error: 'model save failed' }, status);
+      Object.assign(settings, call.body);
+      return json({ ok: true });
+    }
+    if (call.url === '/api/agent/proposals/71') {
+      if (call.method === 'POST') {
+        decided = true;
+        await decisionGate;
+      }
+      return json({
+        id: 71, session_id: SESSION.id, character_id: 'char-a', summary: '待确认的虚构提案',
+        status: call.method === 'POST' ? 'decided' : 'pending', created_at: SESSION.created_at,
+        items: [{
+          id: 72, seq: 1, op: 'create', reason: '虚构理由', confidence: 0.9, evidence: { message_ids: [] },
+          before: null, after: { content: '虚构记忆', category: 'fact' }, state: call.method === 'POST' ? 'applied' : 'pending',
+        }], evidence_messages: [],
+      });
+    }
+    if (call.url === '/api/agent/chat') {
+      usedChoices.push({ model: settings.agent_model, effort: settings.agent_reasoning_effort });
+      return sseResponse([['done', { status: 'done', rounds: 1 }]]);
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  }, { settings });
+  t.after(() => {
+    draining = true;
+    writes.forEach(write => write.resolve(200));
+  });
+  return { calls, writes, usedChoices };
+}
+
+async function selectAgentModel(view, current, next) {
+  fireEvent.click(await view.findByRole('button', { name: current }));
+  fireEvent.click(await view.findByRole('option', { name: next }));
+}
+
+for (const entry of ['composer', 'quick prompt', 'approve and continue']) {
+  test(`model saves: ${entry} waits for the selected model before sending`, async t => {
+    const messages = entry === 'approve and continue' ? [
+      storedMessage(1, 'assistant', { tool_calls: [{ id: 'proposal-call', name: 'create_memory_proposal', arguments: '{}' }] }),
+      storedMessage(2, 'tool', { tool_call_id: 'proposal-call', tool_name: 'create_memory_proposal', tool_ok: true, content: '{"ok":true,"proposal_id":71}' }),
+    ] : [];
+    const server = pendingModelServer(t, { messages });
+    const view = renderPage(`session=${SESSION.id}`);
+    await selectAgentModel(view, 'fake-model', 'deep-model');
+    await waitFor(() => assert.equal(server.writes.length, 1));
+    if (entry === 'composer') {
+      fireEvent.change(view.getByLabelText('agent.inputLabel'), { target: { value: '请用新模型检查' } });
+      fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+    } else if (entry === 'quick prompt') {
+      fireEvent.click(view.getByRole('button', { name: 'agent.quick.memoryReview' }));
+    } else {
+      fireEvent.click(await view.findByRole('button', { name: 'agent.proposal.approveContinue' }));
+    }
+    await act(async () => {});
+    const startedBeforeSave = server.usedChoices.length;
+    await act(async () => { server.writes[0].resolve(200); });
+    await waitFor(() => assert.equal(server.usedChoices.length, 1));
+    assert.equal(startedBeforeSave, 0, 'no turn may start with the still-saved old model');
+    assert.deepEqual(server.usedChoices, [{ model: 'deep-model', effort: 'default' }]);
+  });
+}
+
+for (const stage of ['decision', 'history']) {
+  test(`model saves: failure during proposal ${stage} cancels automatic continuation`, async t => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    t.after(() => release());
+    const messages = [
+      storedMessage(1, 'assistant', { tool_calls: [{ id: 'proposal-call', name: 'create_memory_proposal', arguments: '{}' }] }),
+      storedMessage(2, 'tool', { tool_call_id: 'proposal-call', tool_name: 'create_memory_proposal', tool_ok: true, content: '{"ok":true,"proposal_id":71}' }),
+    ];
+    const server = pendingModelServer(t, { messages, [`${stage}Gate`]: gate });
+    const view = renderPage(`session=${SESSION.id}`);
+    await selectAgentModel(view, 'fake-model', 'deep-model');
+    await waitFor(() => assert.equal(server.writes.length, 1));
+    fireEvent.click(await view.findByRole('button', { name: 'agent.proposal.approveContinue' }));
+    await waitFor(() => assert.ok(server.calls.some(call => call.url === '/api/agent/proposals/71' && call.method === 'POST')));
+    if (stage === 'history') {
+      await waitFor(() => assert.equal(server.calls.filter(call => call.url === `/api/agent/sessions/${SESSION.id}`).length, 2));
+    }
+    await act(async () => { server.writes[0].resolve(500); });
+    await view.findByRole('button', { name: 'fake-model' });
+    await act(async () => { release(); });
+    assert.equal(server.usedChoices.length, 0, 'a failure after clicking approve must not silently continue with the previous model');
+  });
+}
+
+test('model saves: rapid choices made while waiting join the send barrier and repeated sends stay locked', async t => {
+  const server = pendingModelServer(t);
+  const view = renderPage(`session=${SESSION.id}`);
+  await selectAgentModel(view, 'fake-model', 'deep-model');
+  await waitFor(() => assert.equal(server.writes.length, 1));
+  fireEvent.change(view.getByLabelText('agent.inputLabel'), { target: { value: '只发送一轮' } });
+  fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+  await selectAgentModel(view, 'deep-model', 'latest-model');
+  fireEvent.click(view.getByRole('button', { name: 'input.reasoningEffort: input.reasoningEffortDefault' }));
+  fireEvent.click(await view.findByRole('option', { name: 'high' }));
+  fireEvent.click(view.getByRole('button', { name: 'agent.quick.memoryReview' }));
+  await act(async () => { server.writes[0].resolve(200); });
+  await waitFor(() => assert.equal(server.writes.length, 2));
+  await act(async () => { server.writes[1].resolve(200); });
+  await waitFor(() => assert.equal(server.writes.length, 3));
+  const startedBeforeLastSave = server.usedChoices.length;
+  await act(async () => { server.writes[2].resolve(200); });
+  await waitFor(() => assert.equal(server.usedChoices.length, 1));
+  assert.equal(startedBeforeLastSave, 0);
+  assert.deepEqual(server.usedChoices, [{ model: 'latest-model', effort: 'high' }]);
+});
+
+for (const choice of ['model', 'effort']) {
+  test(`model saves: failed ${choice} save cancels sending and restores the draft`, async t => {
+    const server = pendingModelServer(t);
+    const view = renderPage(`session=${SESSION.id}`);
+    if (choice === 'model') await selectAgentModel(view, 'fake-model', 'deep-model');
+    else {
+      fireEvent.click(await view.findByRole('button', { name: 'input.reasoningEffort: input.reasoningEffortDefault' }));
+      fireEvent.click(await view.findByRole('option', { name: 'high' }));
+    }
+    await waitFor(() => assert.equal(server.writes.length, 1));
+    const input = view.getByLabelText('agent.inputLabel');
+    fireEvent.change(input, { target: { value: '保存失败则保留这份草稿' } });
+    fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+    await act(async () => { server.writes[0].resolve(500); });
+    assert.equal(server.usedChoices.length, 0);
+    await waitFor(() => assert.equal(input.value, '保存失败则保留这份草稿'));
+    assert.deepEqual(toasts, [{ message: 'settings.saveFailed: model save failed', type: 'error' }]);
+    fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+    await waitFor(() => assert.equal(server.usedChoices.length, 1));
+    assert.deepEqual(server.usedChoices, [{ model: 'fake-model', effort: 'default' }], 'a later explicit retry may use the confirmed choice');
+  });
+}
+
+test('model saves: failed model choices roll back before a later pin write finishes', async t => {
+  const server = pendingModelServer(t);
+  const view = renderPage(`session=${SESSION.id}`);
+  await selectAgentModel(view, 'fake-model', 'deep-model');
+  await waitFor(() => assert.equal(server.writes.length, 1));
+  fireEvent.click(view.getByRole('button', { name: 'deep-model' }));
+  fireEvent.click(within(await view.findByRole('option', { name: 'latest-model' })).getByRole('button'));
+  fireEvent.click(view.getByRole('button', { name: 'deep-model' }));
+  const input = view.getByLabelText('agent.inputLabel');
+  fireEvent.change(input, { target: { value: '失败后等待明确重试' } });
+  fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+  await act(async () => { server.writes[0].resolve(500); });
+  await waitFor(() => assert.equal(server.writes.length, 2));
+  await waitFor(() => assert.equal(input.value, '失败后等待明确重试'));
+  const confirmedModelVisible = view.queryByRole('button', { name: 'fake-model' }) !== null;
+  await act(async () => { server.writes[1].resolve(200); });
+  assert.equal(server.usedChoices.length, 0);
+  assert.equal(confirmedModelVisible, true, 'the failed model must stop displaying even while unrelated pin persistence is pending');
+});
+
+for (const leave of ['switch away and back', 'unmount']) {
+  test(`model saves: ${leave} while waiting cancels the queued send`, async t => {
+    const server = pendingModelServer(t);
+    const view = renderPage(`session=${SESSION.id}`);
+    await selectAgentModel(view, 'fake-model', 'deep-model');
+    await waitFor(() => assert.equal(server.writes.length, 1));
+    const input = view.getByLabelText('agent.inputLabel');
+    fireEvent.change(input, { target: { value: '取消过期的发送' } });
+    fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+    if (leave === 'unmount') view.unmount();
+    else {
+      await act(async () => { setSearch('session=other-session'); });
+      await act(async () => { setSearch(`session=${SESSION.id}`); });
+    }
+    await act(async () => { server.writes[0].resolve(200); });
+    assert.equal(server.usedChoices.length, 0);
+    if (leave !== 'unmount') await waitFor(() => assert.equal(input.value, '取消过期的发送'));
+  });
+}
+
+test('model saves: failures during a slow session creation still cancel sending', async t => {
+  let releaseCreate;
+  const createGate = new Promise(resolve => { releaseCreate = resolve; });
+  t.after(() => releaseCreate());
+  const server = pendingModelServer(t, { createGate });
+  const view = renderPage('');
+  await selectAgentModel(view, 'fake-model', 'deep-model');
+  await waitFor(() => assert.equal(server.writes.length, 1));
+  const input = view.getByLabelText('agent.inputLabel');
+  fireEvent.change(input, { target: { value: '新会话的未发送草稿' } });
+  fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+  await act(async () => { server.writes[0].resolve(200); });
+  // 首次保存已结束、会话仍在创建时，再发生一次保存失败。
+  await selectAgentModel(view, 'deep-model', 'latest-model');
+  await waitFor(() => assert.equal(server.writes.length, 2));
+  await act(async () => { server.writes[1].resolve(500); });
+  await act(async () => { releaseCreate(); });
+  assert.equal(server.usedChoices.length, 0);
+  await waitFor(() => assert.equal(input.value, '新会话的未发送草稿'));
+});
+
+test('model saves: a failed pin does not cancel a send using unchanged configuration', async t => {
+  const server = pendingModelServer(t);
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: 'fake-model' }));
+  fireEvent.click(within(await view.findByRole('option', { name: 'deep-model' })).getByRole('button'));
+  await waitFor(() => assert.equal(server.writes.length, 1));
+  fireEvent.click(view.getByRole('button', { name: 'fake-model' }));
+  fireEvent.change(view.getByLabelText('agent.inputLabel'), { target: { value: '不等待置顶保存' } });
+  fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
+  await waitFor(() => assert.equal(server.usedChoices.length, 1));
+  await act(async () => { server.writes[0].resolve(500); });
+  assert.deepEqual(server.usedChoices, [{ model: 'fake-model', effort: 'default' }]);
+});
+
 test('a rejected chat request preserves the unsent draft and shows the network error', async () => {
   installFetch(call => {
     if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });

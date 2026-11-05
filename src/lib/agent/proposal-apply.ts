@@ -171,6 +171,19 @@ function createProposalMemory(
   return memory.id;
 }
 
+/** 批准事务内重查全部拟新增正文，避免待批期间或前一项刚写入的记忆被重复补回。 */
+function newMemoryDuplicateIssue(
+  db: Database.Database,
+  characterId: string,
+  memories: readonly ProposalMemoryFields[],
+): string | null {
+  const duplicate = db.prepare(`
+    SELECT id FROM memories WHERE character_id = ? AND status = 'active'
+      AND content IN (${memories.map(() => '?').join(', ')}) LIMIT 1
+  `).get(characterId, ...memories.map(memory => memory.content!)) as { id: string } | undefined;
+  return duplicate ? `已有内容相同的 active 记忆 ${duplicate.id}，本项已过期，没有修改` : null;
+}
+
 function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): ItemOutcome {
   const characterId = proposal.character_id;
   const before = JSON.parse(item.before_json) as ProposalBefore;
@@ -197,9 +210,12 @@ function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalI
   let batchId: string | null = null;
   const repairedIds: string[] = [];
   switch (item.op) {
-    case 'create':
+    case 'create': {
+      const issue = newMemoryDuplicateIssue(db, characterId, [after]);
+      if (issue) return { state: 'stale', detail: issue };
       createdId = createProposalMemory(db, characterId, item, after, {}, now);
       break;
+    }
     case 'update':
       applyMemoryUpdate(db, targetIds[0], after, now);
       break;
@@ -241,6 +257,17 @@ function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalI
     case 'repair_candidate':
     case 'discard_candidate': {
       const candidateId = before && 'candidate' in before ? before.candidate.id : null;
+      let memories: ProposalMemoryFields[] = [];
+      if (item.op === 'repair_candidate') {
+        const candidate = db.prepare(`
+          SELECT id FROM memory_extraction_candidates WHERE id = ? AND character_id = ? AND status = 'repairable'
+        `).get(candidateId, characterId);
+        if (!candidate) return { state: 'stale', detail: `待修复记录 ${candidateId} 已被处理，没有修改` };
+        memories = (JSON.parse(item.after_json) as ProposalRepairAfter).memories;
+        // 整项检查在状态抢占之前完成，任一条重复都不能留下部分补回或已处理的候选。
+        const issue = newMemoryDuplicateIssue(db, characterId, memories);
+        if (issue) return { state: 'stale', detail: issue };
+      }
       // 条件更新即抢占：记录已被处理时 changes 为 0，重复批准不会重复补回
       const changes = db.prepare(`
         UPDATE memory_extraction_candidates SET status = ?, updated_at = ?
@@ -251,7 +278,6 @@ function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalI
         return { state: 'applied', result: { memory_ids: [], created_memory_id: null, batch_id: null, after: [] }, indexIds: [] };
       }
       // 外层 savepoint 保证整项要么全部补回、要么连记录状态一起回滚
-      const { memories } = JSON.parse(item.after_json) as ProposalRepairAfter;
       for (const memory of memories) {
         repairedIds.push(createProposalMemory(db, characterId, item, memory, { repairedFromCandidate: candidateId }, now));
       }

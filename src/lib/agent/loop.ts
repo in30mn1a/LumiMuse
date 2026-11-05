@@ -230,14 +230,16 @@ function foldToolResults(
   }
 
   const callArguments = new Map<string, string>();
-  for (const { message } of entries) {
-    if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
-    for (const call of message.tool_calls as StoredToolCall[]) callArguments.set(call.id, call.function.arguments);
-  }
-
   for (let i = 0; i < lastToolRoundStart && total > limit; i += 1) {
     const entry = entries[i];
-    if (entry.message.role !== 'tool') continue;
+    if (entry.message.role !== 'tool') {
+      // 只关联当前 assistant 后的工具结果，避免跨回合复用 ID 时覆盖原参数。
+      callArguments.clear();
+      if (entry.message.role === 'assistant' && Array.isArray(entry.message.tool_calls)) {
+        for (const call of entry.message.tool_calls as StoredToolCall[]) callArguments.set(call.id, call.function.arguments);
+      }
+      continue;
+    }
     const placeholder = foldedPlaceholder(String(entry.message.name), callArguments.get(String(entry.message.tool_call_id)));
     const folded: AgentRequestMessage = { ...entry.message, content: placeholder };
     total += estimateTokens(JSON.stringify(folded)) - tokenOf(entry);

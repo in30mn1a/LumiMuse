@@ -195,6 +195,73 @@ test('pending items that were neither approved nor listed are rejected without a
   assert.deepEqual(embeddingTaskIds(ctx.db), []);
 });
 
+test('duplicate creates in one decision apply only the first item', t => {
+  const ctx = setup(t);
+  const content = '主人在学做蛋糕';
+  const proposal = propose(ctx, [
+    item('create', { fields: { content, category: '话题历史' }, evidence }),
+    item('create', { fields: { content, category: '偏好习惯', tags: ['甜点'] }, evidence: { message_ids: ['msg-a2'] } }),
+  ]);
+
+  const outcome = decide(ctx, proposal.id, proposal.itemIds);
+  assert.deepEqual(outcome.items.map(row => row.state), ['applied', 'stale']);
+  const createdId = itemRow(ctx.db, proposal.itemIds[0]).result.created_memory_id;
+  assert.match(outcome.items[1].reason, new RegExp(`内容相同.*${createdId}`));
+  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM memories WHERE content = ? AND status = 'active'").get(content).n, 1);
+  assert.deepEqual(embeddingTaskIds(ctx.db), [createdId]);
+  assert.deepEqual(revisions(ctx.db, proposal.itemIds[1]), []);
+});
+
+test('create rechecks active content added after proposal creation', async t => {
+  for (const source of ['another proposal', 'manual addition']) {
+    await t.test(source, t2 => {
+      const ctx = setup(t2);
+      const content = '主人在学做蛋糕';
+      const create = item('create', { fields: { content, category: '话题历史' }, evidence });
+      const pending = propose(ctx, [create]);
+      if (source === 'another proposal') {
+        const first = propose(ctx, [create]);
+        assert.equal(decide(ctx, first.id, first.itemIds).items[0].state, 'applied');
+      } else {
+        addMemory(ctx.db, 'm-manual', content, { category: '偏好习惯' });
+      }
+      const bytes = memoryBytes(ctx.db);
+      const indexIds = embeddingTaskIds(ctx.db);
+
+      const outcome = decide(ctx, pending.id, pending.itemIds);
+      assert.equal(outcome.items[0].state, 'stale');
+      assert.match(outcome.items[0].reason, /内容相同/);
+      assert.equal(memoryBytes(ctx.db), bytes);
+      assert.deepEqual(embeddingTaskIds(ctx.db), indexIds);
+      assert.deepEqual(revisions(ctx.db, pending.itemIds[0]), []);
+    });
+  }
+});
+
+test('create deduplication stays limited to exact active content in the same character', async t => {
+  const content = '主人在学做蛋糕';
+  const cases = [
+    ['another character', content, 'char-b', 'active'],
+    ['inactive memory', content, 'char-a', 'archived'],
+    ['similar content', '主人最近在学做蛋糕', 'char-a', 'active'],
+  ];
+  for (const [name, existingContent, characterId, status] of cases) {
+    await t.test(name, t2 => {
+      const ctx = setup(t2);
+      const proposal = propose(ctx, [item('create', { fields: { content, category: '话题历史' }, evidence })]);
+      addMemory(ctx.db, 'm-later', existingContent, { character_id: characterId });
+      ctx.db.prepare('UPDATE memories SET status = ? WHERE id = ?').run(status, 'm-later');
+      const existing = memory(ctx.db, 'm-later');
+
+      assert.equal(decide(ctx, proposal.id, proposal.itemIds).items[0].state, 'applied');
+      assert.deepEqual(memory(ctx.db, 'm-later'), existing);
+      const created = itemRow(ctx.db, proposal.itemIds[0]).result.created_memory_id;
+      assert.equal(memory(ctx.db, created).content, content);
+      assert.equal(memory(ctx.db, created).character_id, 'char-a');
+    });
+  }
+});
+
 test('the rejection reason reaches the model in the next turn', async t => {
   const ctx = setup(t);
   const proposal = propose(ctx, [

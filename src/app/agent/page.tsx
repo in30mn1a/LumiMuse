@@ -128,8 +128,9 @@ function AgentPageInner() {
     sendPendingRef.current = true;
     setSendPending(true);
     try {
-      const target = await ensureSession();
-      if (!target || !mountedRef.current || locationRef.current.revision !== target.revision) return false;
+      const sessionReady = ensureSession();
+      const [target, modelSaved] = await Promise.all([sessionReady, agentModel.waitForModelWrites(sessionReady)]);
+      if (!modelSaved || !target || !mountedRef.current || locationRef.current.revision !== target.revision) return false;
       const failure = await chat.send(target.id, content);
       if (failure?.kind === 'busy') showToast(t('agent.busy'), 'error');
       else if (failure) {

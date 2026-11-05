@@ -461,6 +461,35 @@ test('nothing folds while the context fits', async t => {
   assert.deepEqual(tools, ['{"ok":true,"sum":1}', '{"ok":true,"sum":2}']);
 });
 
+test('folded results retain their own arguments when an upstream reuses a call id across rounds', async t => {
+  const { db, sessionId } = setup(t);
+  const readPage = defineReadTool({
+    name: 'read_page',
+    description: 'fixture page reader',
+    schema: z.object({ page: z.number() }),
+    execute: args => ({ ok: true, text: `第${args.page}页的完整来源。`.repeat(2000) }),
+  });
+  const { complete, requests } = scripted([
+    { toolCalls: [call('reused', 'read_page', { page: 1 })] },
+    { toolCalls: [call('reused', 'read_page', { page: 2 })] },
+    { text: '已读完两页。' },
+  ]);
+  const result = await runAgentTurn({
+    db, sessionId, userContent: '读取两页', tools: [readPage], complete, now,
+    settings: { ...BASE_SETTINGS, context_window: 6000 },
+  });
+  assert.equal(result.status, 'done');
+  const messages = requests[2].messages;
+  const calls = messages.filter(message => message.role === 'assistant').map(message => message.tool_calls[0]);
+  const results = messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content));
+  assert.deepEqual(calls.map(item => item.id), ['reused', 'reused']);
+  assert.equal(results[0].folded, true);
+  assert.deepEqual(results[0].arguments, JSON.parse(calls[0].function.arguments));
+  assert.deepEqual(results[0].arguments, { page: 1 });
+  assert.equal(results[1].text, '第2页的完整来源。'.repeat(2000));
+  assertPaired(messages);
+});
+
 test('aborting during the second of two tools drops the round, and the next turn has no unpaired calls', async t => {
   const { db, sessionId } = setup(t);
   const controller = new AbortController();

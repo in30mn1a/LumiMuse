@@ -55,9 +55,9 @@ assert(characterList.includes('parseJsonResponse'), '角色列表使用统一 HT
 assert(characterList.includes("setListError(t('common.loadFailed'))"), '角色加载失败会展示错误');
 assert(characterList.includes("setListError(t('common.operationFailed'))"), '角色新建失败会展示错误');
 
-const chatInput = read('src/components/chat/ChatInput.tsx');
-assert(chatInput.includes('setModelError'), '模型选择器保留模型加载错误状态');
-assert(chatInput.includes("setModelError(t('input.modelLoadFail'))"), '模型选择器加载失败会提示用户');
+const modelPickers = read('src/components/ui/ComposerModelPickers.tsx');
+assert(modelPickers.includes('setModelError'), '模型选择器保留模型加载错误状态');
+assert(modelPickers.includes("setModelError(t('input.modelLoadFail'))"), '模型选择器加载失败会提示用户');
 
 if (process.exitCode) process.exit(process.exitCode);
 console.log('前端交互错误处理回归检查通过');

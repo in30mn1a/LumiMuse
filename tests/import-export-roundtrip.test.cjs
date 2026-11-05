@@ -593,6 +593,102 @@ test('/api/import round-trips memory v2 fields, source message ids, ignore_memor
   assert.deepEqual(parseJson(summarizedMemory.metadata), { summary_id: 'summary-1' });
 });
 
+test('/api/import remaps memory, message and batch references inside memory metadata', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  const { listUndoableMemoryArchiveBatches, undoMemorySummaryArchiveBatch } = require('../src/lib/memory-archive.ts');
+
+  // 摘要排在被覆盖条目之前：coveredMemoryIds 是前向引用，验证导入在全部插入后才改写
+  const payload = {
+    version: 2,
+    memories: [
+      {
+        id: 'old-summary', character_id: 'old-char', category: '四季日常', content: '归档摘要',
+        status: 'active',
+        metadata: { archiveRole: 'summary', archiveBatchId: 'old-archive-batch', coveredMemoryIds: ['old-covered-a', 'old-covered-b', 'not-in-package'] },
+      },
+      ...['a', 'b'].map(key => ({
+        id: `old-covered-${key}`, character_id: 'old-char', category: '四季日常', content: `被归档的条目${key}`,
+        status: 'archived',
+        metadata: { archiveBatchId: 'old-archive-batch', summarizedBy: 'old-summary', previousStatus: 'active' },
+      })),
+      {
+        id: 'old-merge-result', character_id: 'old-char', category: '偏好习惯', content: '合并结果',
+        status: 'active',
+        metadata: { mergeRole: 'result', mergeBatchId: 'old-merge-batch', mergedFromIds: ['old-merge-source'] },
+      },
+      {
+        id: 'old-merge-source', character_id: 'old-char', category: '偏好习惯', content: '合并来源',
+        status: 'superseded',
+        metadata: {
+          mergeBatchId: 'old-merge-batch', mergedInto: 'old-merge-result', previousStatus: 'active',
+          supersededBy: { action: 'memory_merge', memoryId: 'old-merge-result', sourceMsgIds: ['old-msg'], supersededAt: '2026-06-01T00:00:00.000Z' },
+          sourceInvalidation: { messageId: 'old-msg', reason: 'regenerated', replacementMessageId: 'old-msg', invalidatedAt: '2026-06-01T00:00:00.000Z' },
+        },
+      },
+    ],
+    conversations: [{
+      id: 'old-conv', character_id: 'old-char', title: '引用对话',
+      messages: [{ id: 'old-msg', role: 'user', content: '来源消息', created_at: '2026-06-01T00:00:00.000Z' }],
+    }],
+  };
+
+  const importOnce = async () => {
+    const response = await route.POST(importRequest(payload, 'target_character_id=target-char&include_character=0'));
+    assert.equal(response.status, 200);
+    const memoryIds = new Set(db.prepare('SELECT id FROM memories').all().map(row => row.id));
+    return memoryIds;
+  };
+  const rowsByContent = ids => Object.fromEntries(db.prepare('SELECT * FROM memories').all()
+    .filter(row => ids.has(row.id))
+    .map(row => [row.content, { ...row, metadata: parseJson(row.metadata) }]));
+
+  const firstIds = await importOnce();
+  const first = rowsByContent(firstIds);
+  const messageId = db.prepare('SELECT id FROM messages WHERE content = ?').get('来源消息').id;
+
+  const summary = first['归档摘要'];
+  assert.deepEqual(summary.metadata.coveredMemoryIds, [first['被归档的条目a'].id, first['被归档的条目b'].id, 'not-in-package']);
+  for (const key of ['a', 'b']) {
+    const covered = first[`被归档的条目${key}`];
+    assert.equal(covered.metadata.summarizedBy, summary.id);
+    assert.equal(covered.metadata.archiveBatchId, summary.metadata.archiveBatchId);
+  }
+  assert.notEqual(summary.metadata.archiveBatchId, 'old-archive-batch');
+
+  const result = first['合并结果'];
+  const source = first['合并来源'];
+  assert.deepEqual(result.metadata.mergedFromIds, [source.id]);
+  assert.equal(source.metadata.mergedInto, result.id);
+  assert.equal(source.metadata.mergeBatchId, result.metadata.mergeBatchId);
+  assert.notEqual(result.metadata.mergeBatchId, 'old-merge-batch');
+  assert.equal(source.metadata.supersededBy.memoryId, result.id);
+  assert.deepEqual(source.metadata.supersededBy.sourceMsgIds, [messageId]);
+  assert.equal(source.metadata.supersededBy.action, 'memory_merge');
+  assert.equal(source.metadata.sourceInvalidation.messageId, messageId);
+  assert.equal(source.metadata.sourceInvalidation.replacementMessageId, messageId);
+  assert.equal(source.metadata.sourceInvalidation.reason, 'regenerated');
+
+  // 归档列表能连上摘要正文（修复前 summarizedBy 指向旧 id，summary_content 为空）
+  const batches = listUndoableMemoryArchiveBatches(db, 'target-char');
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].summary_content, '归档摘要');
+
+  // 同一份数据再导入同一角色：两份不共享批次，撤销第一份不碰第二份
+  const allIds = await importOnce();
+  const secondIds = new Set([...allIds].filter(id => !firstIds.has(id)));
+  const second = rowsByContent(secondIds);
+  assert.notEqual(second['归档摘要'].metadata.archiveBatchId, summary.metadata.archiveBatchId);
+  assert.notEqual(second['合并结果'].metadata.mergeBatchId, result.metadata.mergeBatchId);
+  assert.equal(listUndoableMemoryArchiveBatches(db, 'target-char').length, 2);
+
+  undoMemorySummaryArchiveBatch(db, { batchId: summary.metadata.archiveBatchId, characterId: 'target-char', now: '2026-06-02T00:00:00.000Z' });
+  const statusOf = id => db.prepare('SELECT status FROM memories WHERE id = ?').get(id)?.status;
+  assert.equal(statusOf(first['被归档的条目a'].id), 'active');
+  assert.equal(statusOf(second['被归档的条目a'].id), 'archived');
+  assert.equal(statusOf(second['被归档的条目b'].id), 'archived');
+});
+
 test('/api/import fills v2 defaults for old packages without those fields', async () => {
   const db = createImportDb();
   const route = loadImportRoute(db);

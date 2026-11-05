@@ -53,10 +53,13 @@ interface ImportResponse {
 
 function ImportDialog({
   fileName,
+  busy,
   onCancel,
   onConfirm,
 }: {
   fileName: string;
+  /** 导入请求进行中：锁住选项与按钮，防止重复提交把同一份数据导入两次 */
+  busy: boolean;
   onCancel: () => void;
   onConfirm: (options: {
     includeCharacter: boolean;
@@ -76,13 +79,13 @@ function ImportDialog({
   const nothingSelected = !includeCharacter && !includeMemories && !includeConversations && !includeProfiles && !includeEmbeddings;
 
   return (
-    <Modal open onClose={onCancel} title={t('import.characterTitle')} maxWidth="max-w-sm">
+    <Modal open onClose={() => { if (!busy) onCancel(); }} title={t('import.characterTitle')} maxWidth="max-w-sm">
       <p className="mb-3 text-sm text-text-muted">{t('import.characterHint')}</p>
       <p className="mb-3 rounded-2xl border border-amber-200/70 bg-amber-50/70 px-4 py-3 text-xs leading-relaxed text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200">
         {t('import.characterMemoryRisk')}
       </p>
       <p className="mb-5 truncate rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-xs text-text-muted">{fileName}</p>
-      <div className="space-y-2">
+      <fieldset disabled={busy} className="space-y-2 disabled:opacity-60">
         <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border-light bg-surface/70 px-4 py-3 text-sm text-text-secondary">
           <input type="checkbox" checked={includeCharacter} onChange={e => setIncludeCharacter(e.target.checked)} />
           {t('export.includeCharacters')}
@@ -108,15 +111,16 @@ function ImportDialog({
           />
           {t('export.includeEmbeddings')}
         </label>
-      </div>
+      </fieldset>
       <div className="mt-5 flex justify-end gap-2">
-        <button onClick={onCancel} className="soft-button soft-button-secondary px-4 py-2 text-sm">{t('common.cancel')}</button>
+        <button onClick={onCancel} disabled={busy} className="soft-button soft-button-secondary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50">{t('common.cancel')}</button>
         <button
           onClick={() => onConfirm({ includeCharacter, includeMemories, includeConversations, includeProfiles, includeEmbeddings })}
-          disabled={nothingSelected}
+          disabled={nothingSelected || busy}
+          aria-busy={busy}
           className="soft-button soft-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {t('import.apply')}
+          {busy ? t('import.applying') : t('import.apply')}
         </button>
       </div>
     </Modal>
@@ -138,6 +142,9 @@ export default function CharacterEditor({ params }: Props) {
   const [aiError, setAiError] = useState('');
   const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [pendingImport, setPendingImport] = useState<{ fileName: string; file: File } | null>(null);
+  const [importing, setImporting] = useState(false);
+  // 同步守卫：state 要等下一次渲染才生效，连点时第二次 click 仍会进来
+  const importingRef = useRef(false);
   const [presetRefreshKey, setPresetRefreshKey] = useState(0);
   const characterImportRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -461,7 +468,9 @@ export default function CharacterEditor({ params }: Props) {
     includeProfiles: boolean;
     includeEmbeddings: boolean;
   }) => {
-    if (!pendingImport || !character) return;
+    if (!pendingImport || !character || importingRef.current) return;
+    importingRef.current = true;
+    setImporting(true);
     const draftRevision = draftRevisionRef.current;
 
     try {
@@ -502,6 +511,8 @@ export default function CharacterEditor({ params }: Props) {
     } catch (err) {
       setImportMsg({ type: 'err', text: err instanceof Error ? err.message : t('editor.importError') });
     } finally {
+      importingRef.current = false;
+      setImporting(false);
       setPendingImport(null);
       if (characterImportRef.current) characterImportRef.current.value = '';
       setTimeout(() => setImportMsg(null), 5000);
@@ -577,6 +588,7 @@ export default function CharacterEditor({ params }: Props) {
       {pendingImport && (
         <ImportDialog
           fileName={pendingImport.fileName}
+          busy={importing}
           onCancel={() => setPendingImport(null)}
           onConfirm={applyPendingImport}
         />

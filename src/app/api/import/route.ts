@@ -302,6 +302,75 @@ function remapSourceMessageIds(value: unknown, messageIdMap: Map<string, string>
   }
 }
 
+/** metadata 中指向其他记忆的字段：归档摘要 ↔ 被覆盖条目、合并结果 ↔ 来源条目 */
+const MEMORY_REF_KEYS = ['summarizedBy', 'mergedInto'] as const;
+const MEMORY_REF_LIST_KEYS = ['coveredMemoryIds', 'mergedFromIds'] as const;
+/** 归档、合并的批次 id：撤销按「角色 + 批次 id」查成员 */
+const BATCH_ID_KEYS = ['archiveBatchId', 'mergeBatchId'] as const;
+
+function hasMemoryMetadataReferences(metadata: Record<string, unknown>): boolean {
+  return [...MEMORY_REF_KEYS, ...MEMORY_REF_LIST_KEYS, ...BATCH_ID_KEYS, 'supersededBy', 'sourceInvalidation']
+    .some(key => metadata[key] !== undefined);
+}
+
+/**
+ * 导入会给记忆和消息换新 id，metadata 里指向它们的引用要同步改写，否则归档摘要、
+ * 合并结果与被覆盖条目之间的链接全部断开：归档列表找不到摘要，Agent 会误判摘要缺失。
+ * 批次 id 每次导入都换新，同一份备份导入同一角色两次时两份数据不共享批次，
+ * 撤销一个批次不会动到另一份的条目。不在本次导入里的记忆/消息 id 原样保留。
+ */
+function remapMemoryMetadataReferences(
+  metadata: Record<string, unknown>,
+  maps: {
+    memoryIdMap: Map<string, string>;
+    messageIdMap: Map<string, string>;
+    batchIdMap: Map<string, string>;
+  },
+): Record<string, unknown> {
+  const remapId = (map: Map<string, string>, value: unknown) =>
+    typeof value === 'string' ? map.get(value) ?? value : value;
+  const remapList = (map: Map<string, string>, value: unknown) =>
+    Array.isArray(value) ? value.map(item => remapId(map, item)) : value;
+  const next: Record<string, unknown> = { ...metadata };
+
+  for (const key of MEMORY_REF_KEYS) {
+    if (key in next) next[key] = remapId(maps.memoryIdMap, next[key]);
+  }
+  for (const key of MEMORY_REF_LIST_KEYS) {
+    if (key in next) next[key] = remapList(maps.memoryIdMap, next[key]);
+  }
+  for (const key of BATCH_ID_KEYS) {
+    const batchId = next[key];
+    if (typeof batchId !== 'string' || !batchId) continue;
+    let mapped = maps.batchIdMap.get(batchId);
+    if (!mapped) {
+      mapped = crypto.randomUUID();
+      maps.batchIdMap.set(batchId, mapped);
+    }
+    next[key] = mapped;
+  }
+
+  const supersededBy = asRecord(next.supersededBy);
+  if (supersededBy) {
+    next.supersededBy = {
+      ...supersededBy,
+      ...('memoryId' in supersededBy ? { memoryId: remapId(maps.memoryIdMap, supersededBy.memoryId) } : {}),
+      ...('sourceMsgIds' in supersededBy ? { sourceMsgIds: remapList(maps.messageIdMap, supersededBy.sourceMsgIds) } : {}),
+    };
+  }
+  const sourceInvalidation = asRecord(next.sourceInvalidation);
+  if (sourceInvalidation) {
+    next.sourceInvalidation = {
+      ...sourceInvalidation,
+      ...('messageId' in sourceInvalidation ? { messageId: remapId(maps.messageIdMap, sourceInvalidation.messageId) } : {}),
+      ...('replacementMessageId' in sourceInvalidation
+        ? { replacementMessageId: remapId(maps.messageIdMap, sourceInvalidation.replacementMessageId) }
+        : {}),
+    };
+  }
+  return next;
+}
+
 function includeParam(value: string | null): boolean {
   return value !== '0';
 }
@@ -951,6 +1020,8 @@ function importPayload({
 
     // ── 导入记忆 ────────────────────────────────────────────────
     // 同时建立 memoryIdMap，供后续 embedding 导入关联新记忆 id。
+    // metadata 里的记忆引用可能指向数组里更靠后的条目，所以全部插入后再统一改写。
+    const memoryMetadataToRemap: Array<{ memoryId: string; metadata: Record<string, unknown> }> = [];
     for (const mem of memoriesToImport) {
       const originalCharId = asString(mem.character_id);
       const newCharId = target_character_id || idMap.get(originalCharId) || originalCharId;
@@ -963,6 +1034,9 @@ function importPayload({
 
       const category = normalizeMemoryCategory(asString(mem.category) || '话题历史');
       const defaults = inferMemoryDefaults(category);
+      const metadataJson = jsonRecordString(mem.metadata);
+      const metadata = JSON.parse(metadataJson) as Record<string, unknown>;
+      if (hasMemoryMetadataReferences(metadata)) memoryMetadataToRemap.push({ memoryId: newMemId, metadata });
       insertMemory.run(
         newMemId,
         newCharId,
@@ -978,11 +1052,20 @@ function importPayload({
         asFlag(mem.pinned),
         asString(mem.last_used_at) || null,
         asNumber(mem.usage_count) ?? 0,
-        jsonRecordString(mem.metadata),
+        metadataJson,
         asString(mem.created_at) || now,
         now,
       );
       results.memoriesImported++;
+    }
+
+    if (memoryMetadataToRemap.length > 0) {
+      const updateMemoryMetadata = db.prepare('UPDATE memories SET metadata = ? WHERE id = ?');
+      const batchIdMap = new Map<string, string>();
+      for (const { memoryId, metadata } of memoryMetadataToRemap) {
+        const remapped = remapMemoryMetadataReferences(metadata, { memoryIdMap, messageIdMap, batchIdMap });
+        updateMemoryMetadata.run(JSON.stringify(remapped), memoryId);
+      }
     }
 
     // ── 导入记忆画像 ────────────────────────────────────────────

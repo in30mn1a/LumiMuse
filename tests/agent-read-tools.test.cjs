@@ -583,6 +583,67 @@ test('get_memory_sources returns source messages with surrounding context and mi
   assert.deepEqual(wrongCharacter.missing_memory_ids, ['mem-b-1']);
 });
 
+test('get_memory_sources keeps one call within the output budget and pages through every source', async t => {
+  const SOURCE_COUNT = 60;
+  const { ctx } = createFixture(t, {
+    seedData: db => {
+      seed(db);
+      insertRow(db, 'conversations', {
+        id: 'conv-long', character_id: 'char-a', title: '长对话',
+        created_at: '2026-10-05T10:00:00.000Z', updated_at: '2026-10-05T12:00:00.000Z',
+      });
+      const sourceIds = [];
+      for (let i = 1; i <= SOURCE_COUNT; i += 1) {
+        const id = `msg-long-${i}`;
+        sourceIds.push(id);
+        addMessage(db, id, 'conv-long', i % 2 ? 'user' : 'assistant', `第${i}条长消息：${'窗外的雨一直下到天亮。'.repeat(120)}`, i, `2026-10-05T10:${String(i).padStart(2, '0')}:00.000Z`);
+      }
+      addMemory(db, { id: 'mem-wide', category: '四季日常', content: '提取窗口很宽的记忆', source: [...sourceIds.slice(0, 30), 'msg-gone', ...sourceIds.slice(30)], importance: 0.5 });
+      addMemory(db, { id: 'mem-wide-twin', category: '四季日常', content: '同一窗口的另一条记忆', source: sourceIds, importance: 0.5 });
+    },
+  });
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+
+  const seen = [];
+  const missing = [];
+  let offset = 0;
+  let pages = 0;
+  while (offset !== null) {
+    const page = await callOk('get_memory_sources', { memory_ids: ['mem-wide'], context: 0, source_offset: offset }, ctx);
+    pages += 1;
+    const [memory] = page.memories;
+    assert.equal(memory.source_total, SOURCE_COUNT + 1);
+    assert.ok(memory.sources.length > 0, 'every page makes progress');
+    const sourceTokens = memory.sources.reduce((sum, source) => sum + estimateTokens(JSON.stringify(source)), 0);
+    assert.ok(sourceTokens <= 20_000, `page ${pages} stays within budget (${sourceTokens})`);
+    assert.equal(page.truncated === true, memory.next_source_offset !== null);
+    if (page.truncated) assert.match(page.note, /source_offset/);
+    seen.push(...memory.sources.map(source => source.message_id));
+    missing.push(...memory.missing_source_ids);
+    offset = memory.next_source_offset;
+    assert.ok(pages < 50, 'paging terminates');
+  }
+  assert.ok(pages > 1, 'the fixture must actually exceed one page');
+  assert.deepEqual(seen, Array.from({ length: SOURCE_COUNT }, (_, i) => `msg-long-${i + 1}`), 'no source skipped or repeated');
+  assert.deepEqual(missing, ['msg-gone']);
+
+  // 预算在整次调用内共享：前一条记忆用满后，后面的记忆不给来源，但标明从哪开始读
+  const shared = await callOk('get_memory_sources', { memory_ids: ['mem-wide', 'mem-wide-twin'], context: 0 }, ctx);
+  assert.equal(shared.truncated, true);
+  const sharedTokens = shared.memories.flatMap(memory => memory.sources)
+    .reduce((sum, source) => sum + estimateTokens(JSON.stringify(source)), 0);
+  assert.ok(sharedTokens <= 20_000);
+  const twin = shared.memories.find(memory => memory.memory_id === 'mem-wide-twin');
+  assert.deepEqual(twin.sources, []);
+  assert.equal(twin.next_source_offset, 0);
+
+  // 小结果不带截断标记
+  const small = await callOk('get_memory_sources', { memory_ids: ['mem-name'] }, ctx);
+  assert.equal(small.truncated, undefined);
+  assert.equal(small.memories[0].next_source_offset, null);
+  assert.equal(small.memories[0].source_total, 1);
+});
+
 test('get_memory_profile reads an existing profile and reports a missing one', async t => {
   const { ctx } = createFixture(t);
   const existing = await callOk('get_memory_profile', { character_id: 'char-a' }, ctx);

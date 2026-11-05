@@ -19,3 +19,14 @@ export function finishAgentRun(sessionId: string, controller: AbortController): 
 export function isAgentRunActive(sessionId: string): boolean {
   return activeRuns.has(sessionId);
 }
+
+/**
+ * 中止该会话正在运行的一轮，供「切走后回来」的页面停止它：那时页面已不持有原来的流。
+ * 登记仍由那一轮收尾时自己移除，中断记录照常入库。没有在运行时返回 false。
+ */
+export function abortAgentRun(sessionId: string): boolean {
+  const controller = activeRuns.get(sessionId);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}

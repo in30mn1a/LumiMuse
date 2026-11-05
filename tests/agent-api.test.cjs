@@ -11,6 +11,7 @@ const ssrfGuard = require('../src/lib/ssrf-guard.ts');
 const chatRoute = require('../src/app/api/agent/chat/route.ts');
 const sessionsRoute = require('../src/app/api/agent/sessions/route.ts');
 const sessionRoute = require('../src/app/api/agent/sessions/[id]/route.ts');
+const stopRoute = require('../src/app/api/agent/sessions/[id]/stop/route.ts');
 const documentsRoute = require('../src/app/api/agent/documents/[key]/route.ts');
 const statusRoute = require('../src/app/api/agent/status/route.ts');
 
@@ -161,6 +162,35 @@ test('a second request on a running session gets 409, and disconnecting aborts t
   const retry = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '继续' }));
   assert.equal(retry.status, 200);
   assert.equal((await readSse(retry)).at(-1).data.status, 'done');
+});
+
+test('the stop endpoint aborts a run that the caller does not hold the stream for', async t => {
+  const { db, upstream } = setup(t);
+  const session = await createSession();
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  upstream.handlers.push(hangingCompletion(() => markStarted()));
+
+  // 不持有客户端中止信号：模拟切走后页面已丢掉原来的流
+  const response = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '慢慢想' }));
+  const eventsPromise = readSse(response);
+  await started;
+
+  const stop = await stopRoute.POST(jsonRequest(`/api/agent/sessions/${session.id}/stop`, 'POST'), routeContext({ id: session.id }));
+  assert.equal(stop.status, 200);
+  assert.deepEqual(await stop.json(), { stopped: true });
+
+  const events = await eventsPromise;
+  assert.deepEqual(events.at(-1), { event: 'done', data: { status: 'aborted', rounds: 1 } });
+  const rows = db.prepare('SELECT role, content FROM agent_messages WHERE session_id = ? ORDER BY id').all(session.id);
+  assert.deepEqual(rows.map(row => [row.role, row.content]), [['user', '慢慢想'], ['event', '{"kind":"interrupted"}']]);
+  const view = await (await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${session.id}`, 'GET'), routeContext({ id: session.id }))).json();
+  assert.equal(view.running, false);
+
+  const idle = await stopRoute.POST(jsonRequest(`/api/agent/sessions/${session.id}/stop`, 'POST'), routeContext({ id: session.id }));
+  assert.deepEqual(await idle.json(), { stopped: false });
+  const missing = await stopRoute.POST(jsonRequest('/api/agent/sessions/missing/stop', 'POST'), routeContext({ id: 'missing' }));
+  assert.equal(missing.status, 404);
 });
 
 test('upstream failures arrive as an error event before done', async t => {

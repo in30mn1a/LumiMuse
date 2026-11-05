@@ -13,12 +13,16 @@ export function agentOutputReserve(settings: Pick<Settings, 'max_tokens'>): numb
 }
 
 /**
- * 自动压缩阈值（token）。输入可用空间是窗口减去输出预留；
- * 预留超过半个窗口时（例如窗口设得很小），仍给输入留一半，免得阈值变成 0 或负数。
+ * 输入可用空间（token）：窗口减去输出预留；预留超过半个窗口时（例如窗口设得很小），
+ * 仍给输入留一半，免得变成 0 或负数。超过它的请求在上游大概率放不下。
  */
+export function agentInputBudget(window: number, reserve: number): number {
+  return Math.max(window - reserve, Math.floor(window / 2));
+}
+
+/** 自动压缩阈值（token）：输入可用空间的固定比例。 */
 export function agentCompactThreshold(window: number, reserve: number): number {
-  const input = Math.max(window - reserve, Math.floor(window / 2));
-  return Math.floor(input * AGENT_COMPACT_RATIO);
+  return Math.floor(agentInputBudget(window, reserve) * AGENT_COMPACT_RATIO);
 }
 
 /** 存在 `agent_sessions.last_usage_json` 里的最近一次上游 usage。 */

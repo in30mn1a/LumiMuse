@@ -424,7 +424,9 @@ test('old tool results fold under context pressure, pairing stays intact and a r
     { text: '读完了' },
   ]);
   const notes = [];
-  const settings = { ...BASE_SETTINGS, agent_context_window: 6000 };
+  // 窗口 20000：输入可用空间 10000、压缩阈值 8000。最新一页（约 7200 token）加固定开销超过阈值、
+  // 但装得下，所以原样保留；两页加起来装不下，旧的那页被折叠
+  const settings = { ...BASE_SETTINGS, agent_context_window: 20000 };
   const result = await runAgentTurn({
     db, sessionId, userContent: '读两页', tools: [readPage], settings, complete, now, events: { onNote: note => notes.push(note) },
   });
@@ -447,6 +449,43 @@ test('old tool results fold under context pressure, pairing stays intact and a r
   assert.equal(JSON.parse(stored[2].content).text, pages[1]);
   // 最新一页本身就超出预算：折叠后仍超出，本轮只提示一次
   assert.deepEqual(notes, [CONTEXT_OVER_LIMIT_NOTE]);
+});
+
+test('a latest tool round that cannot fit the input budget is replaced by an oversized notice, largest first', async t => {
+  const { db, sessionId } = setup(t);
+  const huge = '整段来源原文，'.repeat(6000);
+  const readSource = defineReadTool({
+    name: 'read_source',
+    description: 'returns sources of a given size',
+    schema: z.object({ size: z.enum(['huge', 'small']) }),
+    execute: args => ({ ok: true, text: args.size === 'huge' ? huge : '一小段' }),
+  });
+  const { complete, requests } = scripted([
+    { toolCalls: [call('s1', 'read_source', { size: 'huge' }), call('s2', 'read_source', { size: 'small' })] },
+    { text: '范围太大，我缩小再读。' },
+  ]);
+  const result = await runAgentTurn({
+    db, sessionId, userContent: '读来源', tools: [readSource], complete, now,
+    // 输入可用空间 10000，单条结果远超它
+    settings: { ...BASE_SETTINGS, agent_context_window: 20000 },
+  });
+  assert.equal(result.status, 'done');
+
+  const sent = requests[1].messages.filter(m => m.role === 'tool');
+  assert.deepEqual(sent.map(m => m.tool_call_id), ['s1', 's2']);
+  const notice = JSON.parse(sent[0].content);
+  assert.equal(notice.ok, false);
+  assert.equal(notice.oversized, true);
+  assert.equal(notice.tool, 'read_source');
+  assert.ok(notice.estimated_tokens > 10000);
+  assert.match(notice.error, /缩小范围/);
+  assert.equal(JSON.parse(sent[1].content).text, '一小段', 'results that fit stay intact');
+  assert.ok(JSON.stringify(requests[1]).length < huge.length, 'the oversized text never goes upstream');
+  assertPaired(requests[1].messages);
+
+  // 库里保留完整结果
+  const stored = listAgentMessages(db, sessionId).filter(row => row.role === 'tool');
+  assert.equal(JSON.parse(stored[0].content).text, huge);
 });
 
 test('nothing folds while the context fits', async t => {
@@ -476,7 +515,8 @@ test('folded results retain their own arguments when an upstream reuses a call i
   ]);
   const result = await runAgentTurn({
     db, sessionId, userContent: '读取两页', tools: [readPage], complete, now,
-    settings: { ...BASE_SETTINGS, agent_context_window: 6000 },
+    // 一页约 16000 token：单页装得进输入可用空间（23616），两页超过压缩阈值
+    settings: { ...BASE_SETTINGS, agent_context_window: 40000 },
   });
   assert.equal(result.status, 'done');
   const messages = requests[2].messages;

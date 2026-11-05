@@ -497,6 +497,33 @@ test('stop aborts the request, then history reloads with the interruption', asyn
   assert.equal(view.queryByRole('alert', { name: /AbortError/ }), null, 'a deliberate stop is not shown as an error');
 });
 
+test('a run left in the background can be stopped after coming back to the session', async () => {
+  let running = true;
+  const calls = installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}/stop` && call.method === 'POST') {
+      running = false;
+      return json({ stopped: true });
+    }
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) {
+      const messages = running
+        ? []
+        : [{ id: 10, role: 'event', content: '', tool_calls: null, tool_call_id: null, tool_name: null, tool_ok: null, event: { kind: 'round_limit', rounds: 25 }, created_at: '' }];
+      return json({ session: SESSION, messages, running });
+    }
+    if (call.url === '/api/agent/status') return json(STATUS);
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await view.findByText('agent.runningOnServer');
+
+  fireEvent.click(view.getByRole('button', { name: 'agent.stop' }));
+  await waitFor(() => assert.ok(calls.some(call => call.url === `/api/agent/sessions/${SESSION.id}/stop` && call.method === 'POST')));
+  await view.findByText('agent.event.roundLimit');
+  assert.equal(view.queryByText('agent.runningOnServer'), null);
+  assert.equal(calls.some(call => call.url === '/api/agent/chat'), false);
+});
+
 test('entering with a conversation creates a bound session and switches to it', async () => {
   const bound = { ...SESSION, id: 'agent-session-bound', title: '', conversation_id: 'conv-1', character_id: 'char-1' };
   const calls = installFetch(call => {

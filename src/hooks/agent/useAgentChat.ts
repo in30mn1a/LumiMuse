@@ -108,6 +108,8 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
   /** 最近一次读到的历史，发送时据此确定实时内容从哪条消息之后开始 */
   const detailRef = useRef<AgentSessionDetail | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  /** 本页这条流属于哪个会话；停止当前会话时据此决定中止本地流还是请服务端停 */
+  const streamSessionRef = useRef<string | null>(null);
   const currentIdRef = useRef(sessionId);
   const historyRequestRef = useRef(0);
   const onTurnFinishedRef = useRef(options.onTurnFinished);
@@ -162,6 +164,7 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     if (controllerRef.current) return { kind: 'busy' };
     const controller = new AbortController();
     controllerRef.current = controller;
+    streamSessionRef.current = targetId;
     // 发送前读取的历史不含这一轮，不能在它完成后回写旧消息或 running 状态。
     historyRequestRef.current += 1;
     const known = detailRef.current?.session.id === targetId ? detailRef.current.messages : [];
@@ -206,6 +209,7 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
       }
     } finally {
       controllerRef.current = null;
+      streamSessionRef.current = null;
       if (currentIdRef.current === targetId) {
         if (accepted || !failure) await load(targetId);
         // 发送失败也要重启已失效的历史读取，但不能等 GET 才还原草稿和显示错误。
@@ -217,9 +221,23 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     return failure;
   }, [load]);
 
+  /**
+   * 本页持有当前会话的流就直接中止；否则（切走后回来、刷新页面后）请服务端停止，
+   * 再由 running 轮询等它收尾，中断记录会随历史一起出现。
+   */
   const stop = useCallback(() => {
-    controllerRef.current?.abort();
-  }, []);
+    const id = currentIdRef.current;
+    if (controllerRef.current && streamSessionRef.current === id) {
+      controllerRef.current.abort();
+      return;
+    }
+    if (!id) return;
+    void fetch(`/api/agent/sessions/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+      .catch(() => undefined)
+      .finally(() => {
+        if (currentIdRef.current === id) void load(id);
+      });
+  }, [load]);
 
   const visibleLive = live && live.sessionId === sessionId ? live : null;
   // 只依赖基线数字：流式文本每来一段都会换 live 对象，不能每次都重排整段历史

@@ -325,7 +325,7 @@ function AgentPageInner() {
 
         <AgentComposer
           busy={sendPending || chat.sending || chat.serverRunning}
-          canStop={chat.live !== null}
+          canStop={chat.live !== null || chat.serverRunning}
           onSend={handleSend}
           onStop={chat.stop}
           model={agentModel}

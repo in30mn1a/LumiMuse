@@ -6,6 +6,7 @@ import { tokenizeForRetrieval } from '@/lib/memory-engine';
 import { recallMemoriesByVector } from '@/lib/memory-extraction-reference';
 import { readMemoryProfile } from '@/lib/memory-profile';
 import { resolveMemoryEngineConfig } from '@/lib/memory-retrieval';
+import { estimateTokens } from '@/lib/token-counter';
 import { defineReadTool } from './types';
 import {
   conversationMessageScope,
@@ -197,6 +198,13 @@ export const getMemoriesTool = defineReadTool({
   }),
 });
 
+/**
+ * 单次调用返回来源原文的 token 预算。长期使用的角色每条记忆常挂 50–100 个来源，
+ * 一次读十条记忆曾返回约 500KB、把 Agent 请求撑到五十多万 token。超出的来源不丢：
+ * 结果带 next_source_offset，Agent 翻页继续读。这是 Agent 后台工具，与角色聊天链路无关。
+ */
+const SOURCE_OUTPUT_TOKEN_BUDGET = 20_000;
+
 interface SourceContext {
   message_id: string;
   conversation_id: string;
@@ -207,10 +215,11 @@ interface SourceContext {
 
 export const getMemorySourcesTool = defineReadTool({
   name: 'get_memory_sources',
-  description: '读取记忆的来源消息原文及其前后文（默认前后各 2 条，同一对话内）。修改正文、合并或判定矛盾前用它核对依据。已被删除的来源列在 missing_source_ids。',
+  description: '读取记忆的来源消息原文及其前后文（默认前后各 2 条，同一对话内）。修改正文、合并或判定矛盾前用它核对依据。已被删除的来源列在 missing_source_ids。单次输出有预算：某条记忆的 next_source_offset 不为 null 时表示没读完，对它单独再调用并传 source_offset 继续读。',
   schema: z.object({
     memory_ids: memoryIdsSchema(20).describe('记忆 ID，一次最多 20 个'),
     context: z.number().int().min(0).max(10).default(2).describe('来源消息前后各带几条消息，默认 2'),
+    source_offset: z.number().int().min(0).default(0).describe('从每条记忆的第几个来源开始，翻页时传上次返回的 next_source_offset'),
     character_id: z.string().min(1).optional().describe('限定角色'),
   }),
   execute: (args, ctx) => runReadTool(ctx, () => {
@@ -253,23 +262,40 @@ export const getMemorySourcesTool = defineReadTool({
       };
     };
 
+    let usedTokens = 0;
+    let truncated = false;
     const results = ids.flatMap(id => {
       const memory = memories.get(id);
       if (!memory) return [];
+      const sourceIds = uniqueIds(memory.source_msg_ids);
       const sources: SourceContext[] = [];
       const missingSourceIds: string[] = [];
-      for (const messageId of uniqueIds(memory.source_msg_ids)) {
-        const context = sourceContext(messageId);
-        if (context) sources.push(context);
-        else missingSourceIds.push(messageId);
+      let nextSourceOffset: number | null = null;
+      for (let index = args.source_offset; index < sourceIds.length; index += 1) {
+        const context = sourceContext(sourceIds[index]);
+        if (!context) {
+          missingSourceIds.push(sourceIds[index]);
+          continue;
+        }
+        const cost = estimateTokens(JSON.stringify(context));
+        // 整次调用至少放进一条来源，单条再大也照给，保证翻页总能前进
+        if (usedTokens > 0 && usedTokens + cost > SOURCE_OUTPUT_TOKEN_BUDGET) {
+          nextSourceOffset = index;
+          truncated = true;
+          break;
+        }
+        usedTokens += cost;
+        sources.push(context);
       }
       return [{
         memory_id: memory.id,
         character_id: memory.character_id,
         status: memory.status,
         content: memory.content,
+        source_total: sourceIds.length,
         sources,
         missing_source_ids: missingSourceIds,
+        next_source_offset: nextSourceOffset,
       }];
     });
 
@@ -277,6 +303,10 @@ export const getMemorySourcesTool = defineReadTool({
       ok: true,
       memories: results,
       missing_memory_ids: ids.filter(id => !memories.has(id)),
+      ...(truncated ? {
+        truncated: true,
+        note: '来源超出单次输出预算，没读完的记忆带 next_source_offset：对它单独再调用并传 source_offset，直到为 null。没读完的来源不能当作不存在。',
+      } : {}),
     };
   }),
 });

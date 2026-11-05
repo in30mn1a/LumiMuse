@@ -53,7 +53,9 @@ function fixtureModel() {
 
 test('Agent evaluation drives the actual loop and tools, normalizes proposals and keeps memories unchanged', async () => {
   const model = fixtureModel();
-  const result = await runAgent(sample, model.complete, { retryDelaysMs: [], contextWindow: 9_000 });
+  // 窗口要让「读全部批次 + 来源」那一组装得进输入可用空间（否则会被换成结果过大提示），
+  // 同时后续回合超过压缩阈值，触发旧结果折叠与折叠后重读来源
+  const result = await runAgent(sample, model.complete, { retryDelaysMs: [], contextWindow: 18_000 });
   assert.equal(result.incomplete, false);
   assert.equal(result.memory_unchanged, true);
   assert.equal(result.phases.length, 3);

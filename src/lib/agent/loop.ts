@@ -17,6 +17,7 @@ import { compactAgentHistory } from './compaction';
 import {
   agentCalibrationRatio,
   agentCompactThreshold,
+  agentInputBudget,
   agentOutputReserve,
   publicLastUsage,
   readAgentLastUsage,
@@ -261,13 +262,15 @@ function foldedPlaceholder(name: string, rawArguments: string | undefined): stri
 
 /**
  * 超过预算时从最旧的工具结果开始折叠成占位，`tool_call_id` 不变。
- * 最后一组工具结果是模型刚要的，不折叠，否则它会反复重调。
+ * 最后一组工具结果是模型刚要的，通常不折叠，否则它会反复重调；
+ * 只有它连输入可用空间（`hardLimit`）都装不下时，才把其中过大的结果换成提示。
  */
 function foldToolResults(
   entries: readonly ContextEntry[],
   tokenOf: (entry: ContextEntry) => number,
   fixedTokens: number,
   limit: number,
+  hardLimit: number,
 ): { messages: AgentRequestMessage[]; overLimit: boolean; total: number } {
   let total = fixedTokens;
   for (const entry of entries) total += tokenOf(entry);
@@ -299,7 +302,37 @@ function foldToolResults(
     total += estimateTokens(JSON.stringify(folded)) - tokenOf(entry);
     messages[i] = folded;
   }
+
+  // 折叠完旧结果仍超过输入可用空间：最后一组本身就装不下，原样发出去会把请求撑过窗口
+  // （曾有一组两条结果共约 1MB）。从最大的结果开始换成「结果过大」提示，让模型缩小范围重调；
+  // 库里的原始结果不变。只超压缩阈值、还装得下时照旧原样发送。
+  if (total > hardLimit) {
+    const lastRound = entries
+      .map((entry, index) => ({ entry, index }))
+      .slice(lastToolRoundStart + 1)
+      .filter(({ entry }) => entry.message.role === 'tool')
+      .sort((a, b) => tokenOf(b.entry) - tokenOf(a.entry));
+    for (const { entry, index } of lastRound) {
+      if (total <= hardLimit) break;
+      const tokens = tokenOf(entry);
+      const replaced: AgentRequestMessage = { ...entry.message, content: oversizedPlaceholder(String(entry.message.name), tokens) };
+      const replacedTokens = estimateTokens(JSON.stringify(replaced));
+      if (replacedTokens >= tokens) continue;
+      total += replacedTokens - tokens;
+      messages[index] = replaced;
+    }
+  }
   return { messages, overLimit: total > limit, total };
+}
+
+function oversizedPlaceholder(name: string, tokens: number): string {
+  return JSON.stringify({
+    ok: false,
+    oversized: true,
+    tool: name,
+    estimated_tokens: tokens,
+    error: '这次结果太大，放不进上下文，没有发给你。请缩小范围重新调用：减少一次传入的 ID、调小 limit，或按结果里的 offset 分页读取。没读到的内容不能当作不存在。',
+  });
 }
 
 /** 压缩时交给摘要模型的纯文本记录；无法解析或不发给模型的事件跳过。 */
@@ -339,6 +372,8 @@ interface AgentContextSetup {
   fixedTokens: number;
   window: number;
   threshold: number;
+  /** 输入可用空间：最后一组工具结果超过它时才会被换成「结果过大」提示 */
+  inputBudget: number;
   reserve: number;
 }
 
@@ -365,7 +400,10 @@ function buildContextSetup(
   });
   const fixedTokens = estimateTokens(systemPrompt) + (definitions ? estimateTokens(JSON.stringify(definitions)) : 0);
   const reserve = agentOutputReserve(settings);
-  return { systemPrompt, definitions, fixedTokens, window, threshold: agentCompactThreshold(window, reserve), reserve };
+  return {
+    systemPrompt, definitions, fixedTokens, window,
+    threshold: agentCompactThreshold(window, reserve), inputBudget: agentInputBudget(window, reserve), reserve,
+  };
 }
 
 function createTokenCounter() {
@@ -532,7 +570,8 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
       }
     }
 
-    const { messages: history, overLimit, total } = foldToolResults(entries, tokenOf, fixedTokens, rawLimit);
+    const rawHardLimit = Math.floor(setup.inputBudget / ratio);
+    const { messages: history, overLimit, total } = foldToolResults(entries, tokenOf, fixedTokens, rawLimit, rawHardLimit);
     if (overLimit && !overLimitNoted) {
       overLimitNoted = true;
       events.onNote?.(CONTEXT_OVER_LIMIT_NOTE);

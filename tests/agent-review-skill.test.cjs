@@ -82,6 +82,20 @@ test('batch reads current values, reports removed targets, and refuses wrong rol
   assert.equal((await execute(prepareMemoryReviewTool, { character_id: 'missing' }, ctx)).ok, false);
 });
 
+test('batch gives source counts instead of source id lists', async t => {
+  const { db, ctx } = setup(t, 2);
+  const sourceIds = Array.from({ length: 120 }, (_, i) => `src-msg-${i}`);
+  db.prepare('UPDATE memories SET source_msg_ids = ? WHERE id = ?').run(JSON.stringify(sourceIds), 'review-000');
+  const plan = await execute(prepareMemoryReviewTool, { character_id: 'review-a' }, ctx);
+  const result = await execute(readReviewBatchTool, { plan_id: plan.plan_id, character_id: 'review-a', batch_index: 0 }, ctx);
+  assert.equal(result.ok, true, result.error);
+  const byId = new Map(result.memories.map(memory => [memory.id, memory]));
+  assert.equal(byId.get('review-000').source_count, 120);
+  assert.equal(byId.get('review-001').source_count, 0);
+  assert.equal(result.memories.some(memory => 'source_msg_ids' in memory), false);
+  assert.equal(JSON.stringify(result).includes('src-msg-'), false);
+});
+
 test('expired plans require preparation again and the new plan uses current target membership', async t => {
   const { db, ctx } = setup(t, 3);
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-04T08:00:00Z') });

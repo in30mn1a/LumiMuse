@@ -60,7 +60,7 @@ export const prepareMemoryReviewTool = defineReadTool({
 
 export const readReviewBatchTool = defineReadTool({
   name: 'read_review_batch',
-  description: '按计划读取一批完整记忆。重读同一批可取回被折叠的结果；计划过期请重新 prepare_memory_review。消失或不再 active 的条目单独列出，不把它们算作已审查。',
+  description: '按计划读取一批完整记忆（正文不截断；来源只给条数 source_count，原文用 get_memory_sources 读取）。重读同一批可取回被折叠的结果；计划过期请重新 prepare_memory_review。消失或不再 active 的条目单独列出，不把它们算作已审查。',
   schema: z.object({ plan_id: z.string().min(1), character_id: z.string().min(1), batch_index: z.number().int().min(0) }),
   execute(args, ctx) {
     return runReadTool(ctx, () => {
@@ -70,7 +70,14 @@ export const readReviewBatchTool = defineReadTool({
         WHERE m.character_id = ? AND m.status = 'active' AND m.id IN (${sqlPlaceholders(batchIds.length)})
       `).all(args.character_id, ...batchIds) as Record<string, unknown>[];
       const byId = new Map(rows.map(row => [String(row.id), toMemoryView(row)]));
-      const memories = batchIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []);
+      // 来源 ID 列表只给条数：长期使用的角色每条记忆常挂上百个来源 ID，约占整批结果的四分之三，
+      // 全量审查几十批时会把上下文挤爆。要看原文用 get_memory_sources，要完整条目用 get_memories。
+      const memories = batchIds.flatMap(id => {
+        const memory = byId.get(id);
+        if (!memory) return [];
+        const { source_msg_ids: sourceIds, ...rest } = memory;
+        return [{ ...rest, source_count: sourceIds.length }];
+      });
       return {
         ok: true,
         plan_id: plan.planId,

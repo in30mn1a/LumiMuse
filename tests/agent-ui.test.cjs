@@ -157,7 +157,7 @@ function sseResponse(events, options = {}) {
 function installFetch(handler, { settings = SETTINGS } = {}) {
   const calls = [];
   global.fetch = async (url, init = {}) => {
-    const call = { url: String(url), method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null, signal: init.signal };
+    const call = { url: String(url), method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null, signal: init.signal, headers: new Headers(init.headers) };
     calls.push(call);
     // 输入框的模型选择挂载时读一次设置；读取统一给虚构设置，写入（PUT）仍交给各测试
     if (call.url === '/api/settings' && call.method === 'GET') return json(settings);
@@ -1460,4 +1460,182 @@ test('a live turn updates the meter, shows compaction progress, then the stored 
   fireEvent.click(within(divider).getByText('上下文已压缩（压缩前约 210k token）'));
   assert.equal(divider.open, true);
   assert.equal(view.getAllByText('上下文已压缩（压缩前约 210k token）').length, 1, 'the live divider is replaced by the stored one');
+});
+
+const TASK_PLAN = {
+  goal: '审查星野全部记忆',
+  steps: [{ id: 'duplicates', title: '核对重复事实', status: 'completed', result: 'mem-1 与 mem-2 来源一致' }, { id: 'conflicts', title: '核对时间变化', status: 'pending' }],
+  round_goal: '核对第一批重复事实',
+  progress: '已审查 mem-1、mem-2，其他批次尚未审查',
+  unresolved: ['mem-3 缺少来源，需核验'],
+  next_round: '读取下一批并核验时间变化',
+  recommend_compaction: true,
+};
+
+test('the latest task plan shows results and the next round without rendering its event as an error', async () => {
+  const planEvent = storedMessage(6, 'event', { event: { kind: 'task_plan', plan: TASK_PLAN } });
+  assert.equal(buildAgentDisplayItems([planEvent]).length, 0, 'the independent plan replaces event-note rendering');
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: [...HISTORY, planEvent], running: false, context: CONTEXT, task_plan: TASK_PLAN });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  const plan = (await view.findByText('agent.plan.title')).closest('details');
+  assert.equal(plan.open, false);
+  assert.ok(within(plan).getByText('agent.plan.compactRecommended'));
+  fireEvent.click(within(plan).getByText('agent.plan.title'));
+  assert.equal(plan.open, true);
+  assert.ok(plan.textContent.includes(TASK_PLAN.progress));
+  assert.ok(plan.textContent.includes(TASK_PLAN.next_round));
+  assert.ok(plan.textContent.includes(TASK_PLAN.steps[0].result));
+  assert.ok(plan.textContent.includes(TASK_PLAN.unresolved[0]));
+  assert.equal(view.queryByRole('alert'), null);
+  assert.equal(view.queryByText('agent.event.error'), null);
+});
+
+test('manual compaction sends JSON, blocks decisions and sending, refreshes context, and never starts a round', async t => {
+  withContextLabels(t);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  let compacted = false;
+  const proposalMessages = [
+    storedMessage(6, 'assistant', { tool_calls: [{ id: 'proposal-call', name: 'create_memory_proposal', arguments: '{}' }] }),
+    storedMessage(7, 'tool', { tool_call_id: 'proposal-call', tool_name: 'create_memory_proposal', tool_ok: true, content: '{"ok":true,"proposal_id":71}' }),
+  ];
+  const summary = '已审查 mem-1、mem-2，下一轮继续检查时间变化。';
+  const calls = installFetch(async call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}/compact`) {
+      await gate;
+      compacted = true;
+      return json({ compacted: true });
+    }
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({
+      session: SESSION, running: false, task_plan: TASK_PLAN,
+      context: compacted ? { ...CONTEXT, used: 13600 } : CONTEXT,
+      messages: [...HISTORY, ...proposalMessages, ...(compacted ? [storedMessage(8, 'event', { event: { kind: 'compaction', through_id: 7, summary, tokens_before: 54400 } })] : [])],
+    });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/agent/proposals/71') return json({
+      id: 71, session_id: SESSION.id, character_id: 'char-a', summary: '待确认的虚构提案', status: 'pending', created_at: SESSION.created_at,
+      items: [{ id: 72, seq: 1, op: 'create', reason: '虚构理由', confidence: 0.9, evidence: { message_ids: [] }, before: null, after: { content: '虚构记忆', category: 'fact' }, state: 'pending' }], evidence_messages: [],
+    });
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  const approve = await view.findByRole('button', { name: 'agent.proposal.approveContinue' });
+  assert.equal(approve.disabled, false);
+  const input = view.getByRole('textbox', { name: 'agent.inputLabel' });
+  fireEvent.change(input, { target: { value: '继续下一轮' } });
+  fireEvent.click(await view.findByRole('button', { name: '上下文占用 20%' }));
+  fireEvent.click(view.getByRole('button', { name: 'agent.context.compact' }));
+  await waitFor(() => assert.equal(calls.filter(call => call.url.endsWith('/compact')).length, 1));
+  const compactCall = calls.find(call => call.url.endsWith('/compact'));
+  assert.equal(compactCall.method, 'POST');
+  assert.equal(compactCall.headers.get('content-type'), 'application/json');
+  assert.ok(view.getAllByText('agent.context.compacting').length > 0);
+  assert.equal(approve.disabled, true);
+  assert.equal(view.getByRole('button', { name: 'agent.context.compacting' }).disabled, true);
+  assert.ok(view.getByRole('button', { name: 'agent.stop' }));
+  fireEvent.keyDown(input, { key: 'Enter' });
+  assert.equal(calls.filter(call => call.url === '/api/agent/chat').length, 0);
+  await act(async () => { release(); });
+  await view.findByRole('button', { name: '上下文占用 5%' });
+  await waitFor(() => assert.equal(approve.disabled, false));
+  assert.equal(input.value, '继续下一轮', 'manual compaction preserves the draft');
+  assert.equal(view.getAllByText('上下文已压缩（压缩前约 54.4k token）').length, 1);
+  assert.ok(view.getByText(summary));
+  assert.equal(calls.filter(call => call.url === '/api/agent/chat').length, 0, 'the next round is explicitly started by the user');
+  assert.ok(toasts.some(toast => toast.message === 'agent.context.compacted'));
+});
+
+test('stopping manual compaction aborts the request and restores the idle controls without an error', async t => {
+  withContextLabels(t);
+  let compactSignal;
+  let stopCount = 0;
+  const calls = installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: HISTORY, running: false, context: CONTEXT });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url.endsWith('/compact')) {
+      compactSignal = call.signal;
+      return new Promise((_resolve, reject) => call.signal.addEventListener('abort', () => { stopCount += 1; reject(new DOMException('aborted', 'AbortError')); }, { once: true }));
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: '上下文占用 20%' }));
+  fireEvent.click(view.getByRole('button', { name: 'agent.context.compact' }));
+  await view.findByRole('button', { name: 'agent.stop' });
+  fireEvent.click(view.getByRole('button', { name: 'agent.stop' }));
+  await view.findByRole('button', { name: 'agent.send' });
+  assert.equal(compactSignal.aborted, true);
+  assert.equal(stopCount, 1);
+  assert.equal(toasts.length, 0);
+  assert.equal(calls.filter(call => call.url === '/api/agent/chat').length, 0);
+  assert.equal(view.queryByText('agent.event.compactionShort'), null);
+});
+
+test('failed manual compaction keeps the history and exposes a usable retry', async t => {
+  withContextLabels(t);
+  let attempts = 0;
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: HISTORY, running: false, context: CONTEXT });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url.endsWith('/compact')) {
+      attempts += 1;
+      return attempts === 1 ? json({ error: '虚构摘要接口暂时不可用' }, 500) : json({ compacted: false });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: '上下文占用 20%' }));
+  fireEvent.click(view.getByRole('button', { name: 'agent.context.compact' }));
+  await waitFor(() => assert.ok(toasts.some(toast => toast.message.includes('虚构摘要接口暂时不可用'))));
+  const retry = view.getByRole('button', { name: 'agent.context.compact' });
+  assert.equal(retry.disabled, false);
+  assert.ok(view.getByText('没有失败的提取任务。'));
+  assert.ok(view.getByRole('button', { name: '上下文占用 20%' }));
+  fireEvent.click(retry);
+  await waitFor(() => assert.equal(attempts, 2));
+  await waitFor(() => assert.ok(toasts.some(toast => toast.message === 'agent.context.nothingToCompact')));
+  assert.equal(view.queryByText('agent.event.compactionShort'), null);
+});
+
+test('a late compaction response stays with its session and an A to B to A navigation suppresses stale notices', async t => {
+  withContextLabels(t);
+  const other = { ...SESSION, id: 'agent-session-2', title: '另一个会话' };
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  let compacted = false;
+  const calls = installFetch(async call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION, other], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}/compact`) { await gate; compacted = true; return json({ compacted: true }); }
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: HISTORY, running: false, context: compacted ? { ...CONTEXT, used: 13600 } : CONTEXT });
+    if (call.url === `/api/agent/sessions/${other.id}`) return json({ session: other, messages: [storedMessage(9, 'assistant', { content: '其他会话的历史' })], running: false, context: { ...CONTEXT, used: 27200 } });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  fireEvent.click(await view.findByRole('button', { name: '上下文占用 20%' }));
+  fireEvent.click(view.getByRole('button', { name: 'agent.context.compact' }));
+  await view.findByRole('button', { name: 'agent.stop' });
+  fireEvent.click(view.getByRole('button', { name: /^另一个会话/ }));
+  await view.findByText('其他会话的历史');
+  assert.equal(view.queryByText('agent.context.compacting'), null);
+  assert.ok(view.getByRole('button', { name: '上下文占用 10%' }));
+  assert.equal(view.queryByRole('button', { name: 'agent.stop' }), null);
+  fireEvent.click(view.getByRole('button', { name: new RegExp(`^${SESSION.title}`) }));
+  await view.findByRole('button', { name: 'agent.stop' });
+  await act(async () => { release(); });
+  await view.findByRole('button', { name: '上下文占用 5%' });
+  await view.findByRole('button', { name: 'agent.send' });
+  assert.equal(toasts.length, 0, 'navigation changes invalidate the original operation notice even after returning to A');
+  assert.equal(calls.filter(call => call.url === '/api/agent/chat').length, 0);
+  assert.equal(calls.filter(call => call.url === `/api/agent/sessions/${other.id}`).length, 1, 'completion only refreshes A');
 });

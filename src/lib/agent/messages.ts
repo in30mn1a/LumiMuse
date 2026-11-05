@@ -1,5 +1,6 @@
 import type { ProposalItemOp } from './proposals';
 import type { AgentMessageRole, AgentMessageRow } from './store';
+import type { AgentTaskPlan } from './task-plan';
 
 /** 提案决定后每个被决定项的结果。 */
 export interface ProposalDecisionEventItem {
@@ -17,6 +18,7 @@ export type AgentEventPayload =
   | { kind: 'error'; message: string }
   | { kind: 'memory_undo'; version_id: number }
   | { kind: 'proposal_decision'; proposal_id: number; items: ProposalDecisionEventItem[] }
+  | { kind: 'task_plan'; plan: AgentTaskPlan }
   /**
    * 自动压缩：`through_id` 及更早的消息由 `summary` 代替发给模型，数据库里的原始消息不变。
    * `tokens_before` 是压缩前的预计占用，只用于界面显示。

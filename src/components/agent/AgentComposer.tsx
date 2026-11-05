@@ -20,10 +20,13 @@ interface Props {
   model: AgentModelControls;
   /** 当前会话的上下文占用；没有会话或读不到时为 null，不显示 */
   context?: AgentContextStatus | null;
+  onCompact?: () => void;
+  compacting?: boolean;
+  compactDisabled?: boolean;
 }
 
 /** Agent 输入框，布局同聊天页。桌面 Enter 发送、Shift+Enter 换行；触屏上回车只换行，发送走按钮。 */
-export default function AgentComposer({ busy, canStop, onSend, onStop, model, context = null }: Props) {
+export default function AgentComposer({ busy, canStop, onSend, onStop, model, context = null, onCompact, compacting = false, compactDisabled = true }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState('');
   const [enterInsertsNewline, setEnterInsertsNewline] = useState(false);
@@ -98,7 +101,7 @@ export default function AgentComposer({ busy, canStop, onSend, onStop, model, co
                 <ReasoningEffortPicker reasoningEffort={model.reasoningEffort} onReasoningEffortChange={model.selectReasoningEffort} />
               </>
             )}
-            {context && <AgentContextMeter context={context} />}
+            {context && <AgentContextMeter context={context} onCompact={onCompact} compacting={compacting} compactDisabled={compactDisabled} />}
           </div>
 
           {canStop ? (

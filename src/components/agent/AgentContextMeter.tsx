@@ -19,7 +19,12 @@ const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
  * 输入框工具行里的上下文占用：圆环加百分比，点开看明细。
  * 数值与服务端判断是否自动压缩用的是同一个，接近阈值时变成强调色。
  */
-export default function AgentContextMeter({ context }: { context: AgentContextStatus }) {
+export default function AgentContextMeter({ context, onCompact, compactDisabled = false, compacting = false }: {
+  context: AgentContextStatus;
+  onCompact?: () => void;
+  compactDisabled?: boolean;
+  compacting?: boolean;
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -125,6 +130,17 @@ export default function AgentContextMeter({ context }: { context: AgentContextSt
             )}
           </dl>
           <p className="mt-2 leading-relaxed text-text-muted">{t('agent.context.hint')}</p>
+          {onCompact && (
+            <button
+              type="button"
+              onClick={onCompact}
+              disabled={compactDisabled}
+              aria-busy={compacting}
+              className="soft-button soft-button-secondary mt-3 min-h-11 w-full disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t(compacting ? 'agent.context.compacting' : 'agent.context.compact')}
+            </button>
+          )}
         </div>
       )}
     </div>

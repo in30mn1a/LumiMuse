@@ -12,8 +12,11 @@ const chatRoute = require('../src/app/api/agent/chat/route.ts');
 const sessionsRoute = require('../src/app/api/agent/sessions/route.ts');
 const sessionRoute = require('../src/app/api/agent/sessions/[id]/route.ts');
 const stopRoute = require('../src/app/api/agent/sessions/[id]/stop/route.ts');
+const compactRoute = require('../src/app/api/agent/sessions/[id]/compact/route.ts');
+const proposalRoute = require('../src/app/api/agent/proposals/[id]/route.ts');
 const documentsRoute = require('../src/app/api/agent/documents/[key]/route.ts');
 const statusRoute = require('../src/app/api/agent/status/route.ts');
+const { appendAgentMessage, listAgentMessages } = require('../src/lib/agent/store.ts');
 
 const UPSTREAM_KEY = 'agent-api-test-key';
 
@@ -193,6 +196,118 @@ test('the stop endpoint aborts a run that the caller does not hold the stream fo
   assert.equal(missing.status, 404);
 });
 
+test('manual compaction preserves the first turn, creates no new task and is a no-op without new history', async t => {
+  const { db, upstream } = setup(t);
+  const session = await createSession();
+  const path = `/api/agent/sessions/${session.id}/compact`;
+  assert.deepEqual(await (await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }))).json(), { compacted: false });
+  upstream.handlers.push(completion({ content: '已核对 mem-1，下一轮核对 mem-2。' }));
+  await readSse(await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '检查虚构记忆' })));
+  const before = listAgentMessages(db, session.id);
+  upstream.handlers.push(completion({ content: '主人要求检查虚构记忆；mem-1 已核对，下一轮核对 mem-2。' }));
+  const response = await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { compacted: true });
+  const after = listAgentMessages(db, session.id);
+  assert.deepEqual(after.slice(0, before.length), before);
+  assert.equal(after.length, before.length + 1);
+  assert.equal(JSON.parse(after.at(-1).content).through_id, before.at(-1).id);
+  assert.match(upstream.calls.at(-1).body.messages[1].content, /下一轮核对 mem-2/);
+  assert.equal(upstream.calls.length, 2, 'chat and summary only, without starting a following turn');
+  assert.deepEqual(await (await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }))).json(), { compacted: false });
+  assert.equal(upstream.calls.length, 2);
+  assert.equal((await compactRoute.POST(jsonRequest('/api/agent/sessions/missing/compact', 'POST'), routeContext({ id: 'missing' }))).status, 404);
+});
+
+test('manual compaction shares the chat, delete and proposal lock and the stop endpoint cancels it', async t => {
+  const { db, upstream } = setup(t);
+  const session = await createSession();
+  appendAgentMessage(db, session.id, { role: 'user', content: '检查虚构记忆' }, '2026-11-06T02:00:00.000Z');
+  appendAgentMessage(db, session.id, { role: 'assistant', content: '本轮完成，下一轮继续。' }, '2026-11-06T02:00:00.000Z');
+  const proposalId = Number(db.prepare(`
+    INSERT INTO agent_proposals (session_id, character_id, summary, status, created_at)
+    VALUES (?, 'char-1', '虚构提案', 'pending', '2026-11-06T02:00:00.000Z')
+  `).run(session.id).lastInsertRowid);
+  const before = listAgentMessages(db, session.id);
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  upstream.handlers.push(hangingCompletion(markStarted));
+  const path = `/api/agent/sessions/${session.id}/compact`;
+  const pending = compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }));
+  await started;
+
+  const busyRequests = [
+    await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id })),
+    await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '继续' })),
+    await sessionRoute.DELETE(jsonRequest(`/api/agent/sessions/${session.id}`, 'DELETE'), routeContext({ id: session.id })),
+    await proposalRoute.POST(jsonRequest(`/api/agent/proposals/${proposalId}`, 'POST', { action: 'apply', approved_item_ids: [] }), routeContext({ id: String(proposalId) })),
+  ];
+  for (const response of busyRequests) {
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, 'agent_busy');
+  }
+  const running = await (await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${session.id}`, 'GET'), routeContext({ id: session.id }))).json();
+  assert.equal(running.running, true);
+  const other = await createSession({});
+  upstream.handlers.push(completion({ content: '另一会话照常运行' }));
+  assert.equal((await readSse(await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: other.id, content: '在吗' })))).at(-1).data.status, 'done');
+
+  assert.deepEqual(await (await stopRoute.POST(jsonRequest(`/api/agent/sessions/${session.id}/stop`, 'POST'), routeContext({ id: session.id }))).json(), { stopped: true });
+  const cancelled = await pending;
+  assert.equal(cancelled.status, 499);
+  assert.equal((await cancelled.json()).code, 'agent_compaction_aborted');
+  assert.deepEqual(listAgentMessages(db, session.id), before, 'cancellation writes neither summary nor task interruption');
+  const idle = await (await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${session.id}`, 'GET'), routeContext({ id: session.id }))).json();
+  assert.equal(idle.running, false);
+
+  upstream.handlers.push(completion({ content: '重试成功摘要' }));
+  assert.deepEqual(await (await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }))).json(), { compacted: true });
+});
+
+test('manual compaction disconnect and an already-aborted request save no records and release the lock', async t => {
+  const { db, upstream } = setup(t);
+  const session = await createSession();
+  appendAgentMessage(db, session.id, { role: 'user', content: '虚构任务' }, '2026-11-06T02:00:00.000Z');
+  appendAgentMessage(db, session.id, { role: 'assistant', content: '本轮成果' }, '2026-11-06T02:00:00.000Z');
+  const before = listAgentMessages(db, session.id);
+  const path = `/api/agent/sessions/${session.id}/compact`;
+  const already = new AbortController();
+  already.abort();
+  const rejected = await compactRoute.POST(jsonRequest(path, 'POST', undefined, { signal: already.signal }), routeContext({ id: session.id }));
+  assert.equal(rejected.status, 499);
+  assert.equal(upstream.calls.length, 0);
+
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  upstream.handlers.push(hangingCompletion(markStarted));
+  const client = new AbortController();
+  const pending = compactRoute.POST(jsonRequest(path, 'POST', undefined, { signal: client.signal }), routeContext({ id: session.id }));
+  await started;
+  client.abort();
+  assert.equal((await pending).status, 499);
+  assert.deepEqual(listAgentMessages(db, session.id), before);
+  upstream.handlers.push(completion({ content: '取消后可重新压缩' }));
+  assert.deepEqual(await (await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }))).json(), { compacted: true });
+});
+
+test('manual compaction reports sanitized upstream failure and can retry without losing history', async t => {
+  const { db, upstream } = setup(t);
+  const session = await createSession();
+  appendAgentMessage(db, session.id, { role: 'user', content: '虚构任务' }, '2026-11-06T02:00:00.000Z');
+  appendAgentMessage(db, session.id, { role: 'assistant', content: '本轮成果' }, '2026-11-06T02:00:00.000Z');
+  const before = listAgentMessages(db, session.id);
+  const path = `/api/agent/sessions/${session.id}/compact`;
+  upstream.handlers.push(() => new Response(JSON.stringify({ error: { message: `bad key ${UPSTREAM_KEY}` } }), { status: 401 }));
+  const response = await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }));
+  assert.equal(response.status, 500);
+  const body = await response.json();
+  assert.match(body.error, /401/);
+  assert.equal(JSON.stringify(body).includes(UPSTREAM_KEY), false);
+  assert.deepEqual(listAgentMessages(db, session.id), before);
+  upstream.handlers.push(completion({ content: '重试成功' }));
+  assert.deepEqual(await (await compactRoute.POST(jsonRequest(path, 'POST'), routeContext({ id: session.id }))).json(), { compacted: true });
+});
+
 test('upstream failures arrive as an error event before done', async t => {
   const { upstream } = setup(t);
   const session = await createSession();
@@ -275,7 +390,7 @@ test('agent routes are behind the access password', async t => {
     }
   });
   const { proxy } = require('../src/proxy.ts');
-  for (const path of ['/api/agent/chat', '/api/agent/sessions', '/api/agent/status', '/api/agent/documents/agents']) {
+  for (const path of ['/api/agent/chat', '/api/agent/sessions', '/api/agent/sessions/session-id/compact', '/api/agent/status', '/api/agent/documents/agents']) {
     const response = await proxy(new NextRequest(`http://test.local${path}`));
     assert.equal(response.status, 401, path);
   }

@@ -55,7 +55,7 @@ test('Agent evaluation drives the actual loop and tools, normalizes proposals an
   const model = fixtureModel();
   // 窗口要让「读全部批次 + 来源」那一组装得进输入可用空间（否则会被换成结果过大提示），
   // 同时后续回合超过压缩阈值，触发旧结果折叠与折叠后重读来源
-  const result = await runAgent(sample, model.complete, { retryDelaysMs: [], contextWindow: 18_000 });
+  const result = await runAgent(sample, model.complete, { retryDelaysMs: [], contextWindow: 36_000 });
   assert.equal(result.incomplete, false);
   assert.equal(result.memory_unchanged, true);
   assert.equal(result.phases.length, 3);
@@ -70,9 +70,20 @@ test('Agent evaluation drives the actual loop and tools, normalizes proposals an
   assert.deepEqual(result.normalized.merges[0].source_ids.sort(), [...sample.expected.duplicates[0].memory_ids].sort());
   assert.equal(result.normalized.corrections[0].id, sample.expected.misclassified[0].memory_id);
   assert.ok(result.phases.some(phase => phase.folded_results > 0 && phase.refetched_source_ids_after_fold.length > 0));
+  const toolResults = model.requests.flatMap(body => body.messages.filter(message => message.role === 'tool')
+    .map(message => JSON.parse(message.content.split('\n', 1)[0])));
+  assert.equal(toolResults.some(value => value.oversized), false, 'the latest batch and source group must fit instead of being replaced');
+  assert.ok(toolResults.some(value => value.folded), 'the recalibrated window must still exercise older-result folding');
+  assert.ok(model.requests.some(body => {
+    const source = findTool(body, 'get_memory_sources');
+    const batches = body.messages.filter(message => message.role === 'tool' && message.name === 'read_review_batch')
+      .map(message => JSON.parse(message.content.split('\n', 1)[0]));
+    return source?.ok && !source.folded && batches.length > 0 && batches.every(batch => batch.ok && !batch.folded);
+  }), 'a request must receive the complete latest batch and source group');
   assert.ok(model.requests.some(body => body.tools.some(tool => tool.function.name === 'read_review_batch')));
   assert.match(result.normalized.conflicts[0].evidence, /eval-msg/);
-  const prompts = model.requests.map(body => body.messages.find(message => message.role === 'user').content);
+  // 压缩器输入含已读取的工具原文；答案隔离检查针对评测模型的任务提示，不能把来源数据当成答案泄漏。
+  const prompts = model.requests.filter(body => body.tools).map(body => body.messages.find(message => message.role === 'user').content);
   for (const prompt of prompts) {
     assert.equal(prompt.includes('expected_categories'), false);
     assert.equal(prompt.includes('c1a'), false);

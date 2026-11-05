@@ -98,7 +98,7 @@ export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayIte
         const note = rememberedNote(call.name, result ? result.content : null);
         if (note) items.push({ kind: 'memory', key: `memory-${note.versionId}`, note, undone: undoneVersions.has(note.versionId) });
       }
-    } else if (message.role === 'event' && message.event) {
+    } else if (message.role === 'event' && message.event && message.event.kind !== 'task_plan') {
       items.push({ kind: 'event', key: `m${message.id}`, event: message.event });
     }
   }
@@ -386,7 +386,7 @@ function CompactionDivider({ summary, tokensBefore, appear = false }: { summary:
   );
 }
 
-function EventNote({ event }: { event: Exclude<AgentEventPayload, { kind: 'compaction' }> }) {
+function EventNote({ event }: { event: Exclude<AgentEventPayload, { kind: 'compaction' | 'task_plan' }> }) {
   const { t } = useTranslation();
   const text = event.kind === 'interrupted'
     ? t('agent.event.interrupted')
@@ -465,6 +465,7 @@ export default function AgentMessageList({ messages, live, emptyState, proposalB
     if (item.kind === 'user') return <UserBubble key={item.key} content={item.content} />;
     if (item.kind === 'assistant') return <AssistantBubble key={item.key} content={item.content} copyable />;
     if (item.kind === 'event') {
+      if (item.event.kind === 'task_plan') return null;
       return item.event.kind === 'compaction'
         ? <CompactionDivider key={item.key} summary={item.event.summary} tokensBefore={item.event.tokens_before} />
         : <EventNote key={item.key} event={item.event} />;

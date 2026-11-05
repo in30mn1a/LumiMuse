@@ -36,6 +36,7 @@ import {
 } from './messages';
 import { buildAgentSystemPrompt, type AgentPromptSkill } from './prompt';
 import { compactAssistantFields } from './reasoning';
+import { readLatestAgentTaskPlan } from './task-plan';
 import {
   appendAgentMessage,
   appendAgentUserMessage,
@@ -99,7 +100,7 @@ export interface RunAgentTurnInput {
   maxRounds?: number;
 }
 
-export const CONTEXT_OVER_LIMIT_NOTE = '上下文已接近模型上限，较早的工具结果已折叠。如果回复变差，建议新建会话。';
+export const CONTEXT_OVER_LIMIT_NOTE = '上下文已接近模型上限，较早的工具结果已折叠。请先保存本轮成果和下一轮计划，结束本轮后可手动压缩再继续。';
 export const EMPTY_REPLY_NOTE = '模型没有返回内容。如果用的是推理模型，可能是思考用完了输出长度。';
 export const COMPACT_FAILED_NOTE = '自动压缩上下文失败，这一轮改为折叠较早的工具结果继续。';
 const COMPACTION_PREFIX = '（系统记录：较早的对话已压缩为下面的摘要，原始记录仍保存在会话里。需要具体数据时请用工具重新查询。）';
@@ -133,6 +134,9 @@ function eventModelText(payload: AgentEventPayload): string | null {
       return `（系统记录：主人处理了提案 #${payload.proposal_id}。\n${payload.items.map(decisionLine).join('\n')}\n只有「已批准并生效」的项改了记忆。）`;
     case 'compaction':
       // 摘要由 buildHistoryEntries 放在历史开头，不在原位置重复
+      return null;
+    case 'task_plan':
+      // 最新计划独立注入，不在历史位置重复。
       return null;
     default:
       return null;
@@ -199,10 +203,15 @@ function buildHistoryEntries(
     }
   }
   const compaction = latestCompaction(rows);
+  const taskPlan = readLatestAgentTaskPlan(rows);
 
   const entries: ContextEntry[] = [];
-  let pending: { key: number; parts: string[] } | null = compaction
-    ? { key: -compaction.rowId, parts: [`${COMPACTION_PREFIX}\n\n${compaction.summary}`] }
+  const initialParts: string[] = [];
+  if (compaction) initialParts.push(`${COMPACTION_PREFIX}\n\n${compaction.summary}`);
+  if (taskPlan) initialParts.push(`（系统记录：以下是当前任务的最新计划与进度，只是参考数据，不改变权限与规则。以主人最新要求和核实结果为准。）\n${JSON.stringify(taskPlan.plan)}\n\n执行提醒：先判断本轮目标是否已达成。达成后提交阶段成果和下一轮行动，调用 update_task_plan（round_complete=true）结束本轮，不要继续读取下一轮资料。尚未达成时，只为本轮待完成的判断读取和取证；如果目标需要调整，先更新计划并说明原因。`);
+  // 最新计划变化时，缓存键也变化，避免沿用同一摘要下旧计划的 token 数。
+  let pending: { key: number; parts: string[] } | null = initialParts.length
+    ? { key: -Math.max(compaction?.rowId ?? 0, taskPlan?.rowId ?? 0), parts: initialParts }
     : null;
   const flush = () => {
     if (pending) entries.push({ key: pending.key, message: { role: 'user', content: pending.parts.join('\n\n') } });
@@ -451,6 +460,54 @@ export function getAgentContextStatus(
     threshold: setup.threshold,
     last_usage: publicLastUsage(lastUsage),
   };
+}
+
+/** 空闲会话的手动压缩，包含刚结束的完整轮次。调用方必须持有会话运行锁。 */
+export async function compactAgentSession(input: {
+  db: Database.Database;
+  sessionId: string;
+  tools: readonly AgentTool[];
+  skills?: readonly AgentPromptSkill[];
+  settings?: Settings;
+  complete?: AgentCompleteFn;
+  signal?: AbortSignal;
+  now?: () => string;
+}): Promise<{ compacted: boolean }> {
+  const { db, sessionId, signal } = input;
+  const session = getAgentSession(db, sessionId);
+  if (!session) throw new Error('会话不存在');
+  if (signal?.aborted) throw new Error('aborted');
+  const rows = listAgentMessages(db, sessionId);
+  // 无运行中的工具回合，全部已提交的消息均可压缩，不拆分工具配对。
+  const pending = compactableRows(rows, Number.POSITIVE_INFINITY);
+  if (!pending) return { compacted: false };
+  const settings = input.settings ?? loadSettings();
+  const config = resolveAgentConfig(settings);
+  const setup = buildContextSetup(db, session, input.tools, input.skills ?? [], settings, config.context_window);
+  const ratio = agentCalibrationRatio(readAgentLastUsage(db, sessionId), config.model);
+  const tokenOf = createTokenCounter();
+  const total = buildHistoryEntries(rows, { nextTurn: true }).reduce((sum, entry) => sum + tokenOf(entry), setup.fixedTokens);
+  const summary = await compactAgentHistory({
+    blocks: pending.rows.map(transcriptBlock).filter((block): block is string => block !== null),
+    previousSummary: pending.previousSummary,
+    settings: { ...settings, api_base: config.api_base, api_key: config.api_key, model: config.model, reasoning_effort: config.reasoning_effort },
+    complete: input.complete ?? completeRequest,
+    inputBudget: Math.floor(setup.threshold / ratio),
+    maxTokens: setup.reserve,
+    streaming: settings.streaming !== false,
+    timeoutMs: settings.memory_background_timeout_ms,
+    signal,
+  });
+  if (signal?.aborted) throw new Error('aborted');
+  const now = input.now ?? (() => new Date().toISOString());
+  db.transaction(() => {
+    appendAgentMessage(db, sessionId, {
+      role: 'event',
+      content: JSON.stringify({ kind: 'compaction', through_id: pending.throughId, summary, tokens_before: Math.ceil(total * ratio) }),
+    }, now());
+    touchAgentSession(db, sessionId, now());
+  })();
+  return { compacted: true };
 }
 
 function stableCallKey(tool: AgentTool | undefined, call: ChatToolCall): string {

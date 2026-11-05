@@ -8,6 +8,7 @@ import { isAgentRunActive } from '@/lib/agent/runs';
 import { deleteAgentSession, getAgentSession, listAgentMessages, renameAgentSession } from '@/lib/agent/store';
 import { AGENT_TOOLS } from '@/lib/agent/tools';
 import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
+import { readLatestAgentTaskPlan } from '@/lib/agent/task-plan';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -26,9 +27,11 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   } catch {
     // 占用只是附加信息
   }
+  const rows = listAgentMessages(db, id);
   return NextResponse.json({
     session,
-    messages: listAgentMessages(db, id).map(toAgentMessageView),
+    messages: rows.map(toAgentMessageView),
+    task_plan: readLatestAgentTaskPlan(rows)?.plan ?? null,
     running: isAgentRunActive(id),
     context,
   });

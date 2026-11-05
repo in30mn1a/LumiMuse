@@ -146,8 +146,8 @@ function storedItems(db, proposalId) {
 }
 
 test('registry: character writes require proposals and remember only adds Agent notes', () => {
-  assert.deepEqual(AGENT_WRITE_TOOLS.map(tool => tool.name), ['create_memory_proposal', 'remember']);
-  assert.deepEqual(AGENT_TOOLS.filter(tool => tool.kind === 'write').map(tool => tool.name), ['create_memory_proposal', 'remember']);
+  assert.deepEqual(AGENT_WRITE_TOOLS.map(tool => tool.name), ['create_memory_proposal', 'remember', 'update_task_plan']);
+  assert.deepEqual(AGENT_TOOLS.filter(tool => tool.kind === 'write').map(tool => tool.name), ['create_memory_proposal', 'remember', 'update_task_plan']);
   assert.equal(new Set(AGENT_TOOLS.map(tool => tool.name)).size, AGENT_TOOLS.length);
   for (const definition of toolDefinitions(AGENT_TOOLS)) {
     assert.equal(definition.function.parameters.type, 'object');

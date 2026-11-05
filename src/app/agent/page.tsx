@@ -16,6 +16,7 @@ import AgentMessageList from '@/components/agent/AgentMessageList';
 import AgentSessionList from '@/components/agent/AgentSessionList';
 import AgentSettingsDrawer from '@/components/agent/AgentSettingsDrawer';
 import AgentStatusBar from '@/components/agent/AgentStatusBar';
+import AgentTaskPlan from '@/components/agent/AgentTaskPlan';
 import { useAgentChat } from '@/hooks/agent/useAgentChat';
 import { useAgentModel } from '@/hooks/agent/useAgentModel';
 import { useAgentSessions } from '@/hooks/agent/useAgentSessions';
@@ -141,6 +142,28 @@ function AgentPageInner() {
         showToast(failure.message ? `${label}: ${failure.message}` : label, 'error');
       }
       return failure === null || failure.kind === 'interrupted';
+    } finally {
+      sendPendingRef.current = false;
+      if (mountedRef.current) setSendPending(false);
+    }
+  };
+
+  const handleCompact = async () => {
+    const target = locationRef.current;
+    if (!target.sessionId || sendPendingRef.current) return;
+    sendPendingRef.current = true;
+    setSendPending(true);
+    try {
+      if (!await agentModel.waitForModelWrites(Promise.resolve({ id: target.sessionId, revision: target.revision }))) return;
+      if (!mountedRef.current || locationRef.current.revision !== target.revision) return;
+      const compacted = await chat.compact(target.sessionId);
+      if (compacted !== null && mountedRef.current && locationRef.current.revision === target.revision) {
+        showToast(t(compacted ? 'agent.context.compacted' : 'agent.context.nothingToCompact'), 'success');
+      }
+    } catch (error) {
+      if (mountedRef.current && locationRef.current.revision === target.revision) {
+        showToast(`${t('agent.context.compactFailed')}: ${getErrorMessage(error)}`, 'error');
+      }
     } finally {
       sendPendingRef.current = false;
       if (mountedRef.current) setSendPending(false);
@@ -315,6 +338,14 @@ function AgentPageInner() {
 
         <AgentStatusBar refreshKey={statusKey} />
 
+        {chat.detail?.task_plan && <AgentTaskPlan plan={chat.detail.task_plan} />}
+
+        {chat.compacting && (
+          <p className="border-b border-border-light bg-surface-2/50 px-4 py-2 text-xs text-text-muted" role="status">
+            {t('agent.context.compacting')}
+          </p>
+        )}
+
         {chat.serverRunning && (
           <p className="border-b border-border-light bg-surface-2/50 px-4 py-2 text-xs text-text-muted" role="status">
             {t('agent.runningOnServer')}
@@ -325,11 +356,14 @@ function AgentPageInner() {
 
         <AgentComposer
           busy={sendPending || chat.sending || chat.serverRunning}
-          canStop={chat.live !== null || chat.serverRunning}
+          canStop={chat.live !== null || chat.serverRunning || chat.compacting}
           onSend={handleSend}
           onStop={chat.stop}
           model={agentModel}
           context={chat.context}
+          onCompact={() => void handleCompact()}
+          compacting={chat.compacting}
+          compactDisabled={sendPending || chat.sending || chat.serverRunning || !chat.detail?.messages.some(message => message.role !== 'event')}
         />
       </main>
 

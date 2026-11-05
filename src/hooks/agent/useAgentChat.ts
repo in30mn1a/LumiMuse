@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { AgentContextStatus } from '@/lib/agent/context';
 import type { AgentMessageView } from '@/lib/agent/messages';
 import type { AgentSession } from '@/lib/agent/store';
+import type { AgentTaskPlan } from '@/lib/agent/task-plan';
 import { HttpResponseError, getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { readAgentStream, type AgentStreamEvent } from './agent-stream';
 
@@ -14,6 +15,7 @@ export interface AgentSessionDetail {
   running: boolean;
   /** 当前上下文占用；服务端算不出来时为 null */
   context?: AgentContextStatus | null;
+  task_plan?: AgentTaskPlan | null;
 }
 
 export type LiveSegment =
@@ -105,6 +107,7 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
   const [detail, setDetail] = useState<AgentSessionDetail | null>(null);
   const [loadError, setLoadError] = useState<{ sessionId: string; message: string; notFound: boolean } | null>(null);
   const [live, setLive] = useState<LiveTurn | null>(null);
+  const [compactTarget, setCompactTarget] = useState<string | null>(null);
   /** 最近一次读到的历史，发送时据此确定实时内容从哪条消息之后开始 */
   const detailRef = useRef<AgentSessionDetail | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
@@ -148,7 +151,7 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     if (sessionId) void load(sessionId);
   }, [sessionId, load]);
 
-  const sending = live !== null;
+  const sending = live !== null || compactTarget !== null;
   const currentDetail = detail && detail.session.id === sessionId ? detail : null;
   const serverRunning = Boolean(currentDetail?.running) && !sending;
 
@@ -221,6 +224,32 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     return failure;
   }, [load]);
 
+  /** 压缩本身不添加主人消息，也不自动发送下一轮。与发送共用本页操作约束。 */
+  const compact = useCallback(async (targetId: string): Promise<boolean | null> => {
+    if (controllerRef.current) throw new Error('这个会话正在运行，请先停止');
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    streamSessionRef.current = targetId;
+    historyRequestRef.current += 1;
+    setCompactTarget(targetId);
+    try {
+      const result = await parseJsonResponse<{ compacted: boolean }>(await fetch(
+        `/api/agent/sessions/${encodeURIComponent(targetId)}/compact`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal },
+      ));
+      return result.compacted;
+    } catch (error) {
+      if (controller.signal.aborted) return null;
+      throw error;
+    } finally {
+      controllerRef.current = null;
+      streamSessionRef.current = null;
+      if (currentIdRef.current === targetId) await load(targetId);
+      setCompactTarget(null);
+      onTurnFinishedRef.current?.();
+    }
+  }, [load]);
+
   /**
    * 本页持有当前会话的流就直接中止；否则（切走后回来、刷新页面后）请服务端停止，
    * 再由 running 轮询等它收尾，中断记录会随历史一起出现。
@@ -260,8 +289,10 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     live: visibleLive,
     /** 本页有一条流在进行（可能属于别的会话） */
     sending,
+    compacting: compactTarget === sessionId && compactTarget !== null,
     serverRunning,
     send,
+    compact,
     stop,
     reload: () => (sessionId ? load(sessionId) : Promise.resolve()),
   };

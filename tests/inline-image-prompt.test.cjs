@@ -24,6 +24,20 @@ test('inline image prompt keeps non-intimate scenes user-free without forcing a 
   assert.match(instruction, /固定外貌标签：1girl, silver hair, blue eyes/);
 });
 
+test('inline image requirements preserve multiline content and empty values keep the old instruction', () => {
+  const requirements = '  保留窗边的构图。\n使用柔和侧光。  ';
+  for (const style of ['danbooru', 'nai-v5']) {
+    const original = buildInlinePromptInstruction('silver hair', 'black hair', style);
+    for (const empty of ['', ' \n\t ']) {
+      assert.equal(buildInlinePromptInstruction('silver hair', 'black hair', style, empty), original);
+    }
+    const instruction = buildInlinePromptInstruction('silver hair', 'black hair', style, requirements);
+    assert.ok(instruction.startsWith(original));
+    assert.ok(instruction.endsWith(requirements));
+    assert.match(instruction, /仅用于 \[IMG\] 内的提示词，不写入角色对话正文/);
+  }
+});
+
 test('inline image prompt extracts a case-insensitive multiline block and strips it from the reply', () => {
   const text = '今晚一起看雨吧。\n[img]\n1girl, blue hair, rainy window\n[/IMG]   ';
 

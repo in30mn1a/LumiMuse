@@ -457,13 +457,13 @@ export async function POST(
       db.prepare(`
         INSERT INTO characters (
           id, name, avatar_url, basic_info, personality, scenario, greeting,
-          example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
+          example_dialogue, system_prompt, other_info, image_tags, user_image_tags, image_prompt_other_requirements,
           active_preset_id, memory_chat_injection_mode,
           background_model, image_prompt_model, background_provider_id,
           background_reasoning_by_model, image_prompt_reasoning_by_model,
           background_system_prompt_by_model, image_prompt_system_prompt_by_model,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         newCharacterId,
         newName,
@@ -477,6 +477,7 @@ export async function POST(
         original.other_info || '',
         original.image_tags || '',
         original.user_image_tags || '',
+        original.image_prompt_other_requirements || '',
         original.active_preset_id ?? null,
         original.memory_chat_injection_mode,
         original.background_model || '',

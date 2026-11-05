@@ -445,6 +445,7 @@ export async function assemblePresetPrompt(
       tagsForLlm,
       userTagsForLlm,
       resolveImagePromptStyle(settings.image_gen),
+      character.image_prompt_other_requirements,
     );
   }
   // 'system' 时完整指令进行为/时间隐藏 system；'last_user'（默认）时 system 只留短提醒，

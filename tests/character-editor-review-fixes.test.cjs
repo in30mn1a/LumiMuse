@@ -236,6 +236,48 @@ test('unblurred user tag drafts also trigger discard protection', async () => {
   assert.equal(pushes.length, 0);
 });
 
+test('image prompt other requirements save, reload and clear through the editor', async () => {
+  const requirements = '优先全身构图。\n保持柔和光线，准确描写动作关系。';
+  const view = await mount();
+  fireEvent.click(view.getByRole('tab', { name: 'editor.tabImage' }));
+  const input = view.getByRole('textbox', { name: 'editor.imagePromptOtherRequirements' });
+  assert.equal(input.value, '');
+  assert.equal(document.getElementById(input.getAttribute('aria-describedby')).textContent, 'editor.imagePromptOtherRequirementsHint');
+  fireEvent.change(input, { target: { value: requirements } });
+  const beforeSave = new window.Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(beforeSave);
+  assert.equal(beforeSave.defaultPrevented, true);
+  fireEvent.click(view.getByText('editor.save'));
+  await waitFor(() => assert.equal(pushes.length, 1));
+  assert.equal(JSON.parse(calls.find(call => call.method === 'PUT').body).image_prompt_other_requirements, requirements);
+  assert.equal(db.prepare('SELECT image_prompt_other_requirements FROM characters WHERE id = ?').get(character.id).image_prompt_other_requirements, requirements);
+  view.unmount();
+
+  const reopened = await mount({ marker: false });
+  fireEvent.click(reopened.getByRole('tab', { name: 'editor.tabImage' }));
+  const savedInput = reopened.getByRole('textbox', { name: 'editor.imagePromptOtherRequirements' });
+  assert.equal(savedInput.value, requirements);
+  fireEvent.change(savedInput, { target: { value: '' } });
+  fireEvent.click(reopened.getByText('editor.save'));
+  await waitFor(() => assert.equal(pushes.length, 2));
+  assert.equal(db.prepare('SELECT image_prompt_other_requirements FROM characters WHERE id = ?').get(character.id).image_prompt_other_requirements, '');
+});
+
+test('discard restores saved image prompt other requirements without leaving', async () => {
+  const saved = '保留原有场景光线。\n使用远景构图。';
+  db.prepare('UPDATE characters SET image_prompt_other_requirements = ? WHERE id = ?').run(saved, character.id);
+  const view = await mount();
+  fireEvent.click(view.getByRole('tab', { name: 'editor.tabImage' }));
+  const input = view.getByRole('textbox', { name: 'editor.imagePromptOtherRequirements' });
+  fireEvent.change(input, { target: { value: '未保存要求' } });
+  fireEvent.click(view.getByRole('button', { name: 'common.discardChanges' }));
+  fireEvent.click(view.getByRole('button', { name: 'common.confirm' }));
+  assert.equal(input.value, saved);
+  assert.equal(view.getByRole('button', { name: 'common.discardChanges' }).disabled, true);
+  assert.equal(calls.filter(call => call.method === 'PUT' || call.method === 'DELETE').length, 0);
+  assert.equal(pushes.length, 0);
+});
+
 test('discard restores the saved form and both tag drafts without leaving or deleting a new character', async () => {
   const view = await mount();
   const discard = view.getByRole('button', { name: 'common.discardChanges' });

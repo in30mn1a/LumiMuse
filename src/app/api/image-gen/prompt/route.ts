@@ -159,6 +159,7 @@ export async function POST(request: NextRequest) {
       scenario: string;
       image_tags?: string;
       user_image_tags?: string;
+      image_prompt_other_requirements?: string;
     } | undefined;
     const taskTarget = {
       character: normalizeCharacterTaskModels(character),
@@ -228,6 +229,10 @@ export async function POST(request: NextRequest) {
     for (const msg of messages) {
       const role = msg.role === 'user' ? '用户' : character?.name || 'AI';
       context += `${role}：${stripInlinePrompt(msg.content)}\n`;
+    }
+
+    if (character?.image_prompt_other_requirements?.trim()) {
+      context += `\n【生图其他要求】\n${character.image_prompt_other_requirements}\n`;
     }
 
     if (user_hint) {

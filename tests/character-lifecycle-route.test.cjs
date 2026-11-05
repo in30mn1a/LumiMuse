@@ -82,6 +82,7 @@ function createCharacterDb() {
       other_info TEXT NOT NULL DEFAULT '',
       image_tags TEXT NOT NULL DEFAULT '',
       user_image_tags TEXT NOT NULL DEFAULT '',
+      image_prompt_other_requirements TEXT NOT NULL DEFAULT '',
       active_preset_id TEXT,
       memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full'
         CHECK (memory_chat_injection_mode IN ('full', 'local', 'hybrid', 'vector')),
@@ -276,6 +277,8 @@ function createCharacterDb() {
     sourceCreatedAt,
     sourceUpdatedAt,
   );
+  db.prepare('UPDATE characters SET image_prompt_other_requirements = ? WHERE id = ?')
+    .run('使用柔和逆光。\n背景保留雨夜氛围。', 'char-source');
 
   db.prepare(`
     INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
@@ -649,6 +652,7 @@ test('/api/characters/[id]/duplicate copies committed memory authority and remap
     ]);
     assert.equal(payload.basic_info, '角色基本信息');
     assert.equal(payload.user_image_tags, '1boy, black hair');
+    assert.equal(payload.image_prompt_other_requirements, '使用柔和逆光。\n背景保留雨夜氛围。');
 
     assert.ok(assets.copyCalls.every(call => call.options.generatedCharacterId === payload.id));
     assert.ok(assets.metadataCalls.every(call => call.options.generatedCharacterId === payload.id));

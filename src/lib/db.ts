@@ -784,6 +784,9 @@ function migrate(db: Database.Database): void {
   if (!charCols.some(c => c.name === 'user_image_tags')) {
     db.exec(`ALTER TABLE characters ADD COLUMN user_image_tags TEXT NOT NULL DEFAULT ''`);
   }
+  if (!charCols.some(c => c.name === 'image_prompt_other_requirements')) {
+    db.exec(`ALTER TABLE characters ADD COLUMN image_prompt_other_requirements TEXT NOT NULL DEFAULT ''`);
+  }
   if (!charCols.some(c => c.name === 'background_model')) {
     db.exec(`ALTER TABLE characters ADD COLUMN background_model TEXT NOT NULL DEFAULT ''`);
   }

@@ -114,6 +114,7 @@ function createImportDb() {
       other_info TEXT NOT NULL DEFAULT '',
       image_tags TEXT NOT NULL DEFAULT '',
       user_image_tags TEXT NOT NULL DEFAULT '',
+      image_prompt_other_requirements TEXT NOT NULL DEFAULT '',
       memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full'
         CHECK (memory_chat_injection_mode IN ('full', 'local', 'hybrid', 'vector')),
       background_model TEXT NOT NULL DEFAULT '',
@@ -419,6 +420,7 @@ test('/api/import accepts a real SillyTavern v2 character card fixture', async (
   assert.equal(imported.personality, '安静、敏锐');
   assert.equal(imported.greeting, '你终于来了。');
   assert.equal(imported.image_tags, 'librarian, moonlight');
+  assert.equal(imported.image_prompt_other_requirements, '');
   assert.equal(imported.memory_chat_injection_mode, 'full');
   assert.match(imported.basic_info, /【角色描述】\n来自月光图书馆的记录员。/);
   assert.match(imported.basic_info, /【创作者】\nfixture-author/);
@@ -1556,6 +1558,9 @@ test('/api/export response imports unchanged into a second database with stable 
     '2026-07-01T00:00:00.000Z',
     '2026-07-02T00:00:00.000Z',
   );
+  const imagePromptRequirements = '使用柔和逆光。\n背景保留雨夜氛围。';
+  sourceDb.prepare('UPDATE characters SET image_prompt_other_requirements = ? WHERE id = ?')
+    .run(imagePromptRequirements, sourceCharacterId);
   sourceDb.prepare(`
     INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -1689,6 +1694,7 @@ test('/api/export response imports unchanged into a second database with stable 
   );
   assert.equal(exportedPayload.character.name, '串联测试角色');
   assert.equal(exportedPayload.character.memory_chat_injection_mode, 'vector');
+  assert.equal(exportedPayload.character.image_prompt_other_requirements, imagePromptRequirements);
 
   const importRoute = loadImportRoute(targetDb);
   const importResponse = await importRoute.POST(rawImportRequest(
@@ -1712,6 +1718,7 @@ test('/api/export response imports unchanged into a second database with stable 
   assert.equal(importedCharacter.personality, '温柔而坚定');
   assert.equal(importedCharacter.system_prompt, '始终保持角色表现');
   assert.equal(importedCharacter.image_tags, 'cat_ears, blue_hair');
+  assert.equal(importedCharacter.image_prompt_other_requirements, imagePromptRequirements);
   assert.equal(importedCharacter.memory_chat_injection_mode, 'vector');
   assert.equal(importedCharacter.created_at, '2026-07-01T00:00:00.000Z');
 

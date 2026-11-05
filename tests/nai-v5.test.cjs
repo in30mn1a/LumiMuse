@@ -169,6 +169,11 @@ test('image prompt instructions do not ask for UC and require genital detail for
   assert.doesNotMatch(promptGenerationUserFooterForStyle('nai-v5'), /Character \/ UC/);
 });
 
+test('V5 prompt generation keeps English as the main language without a Chinese fallback instruction', () => {
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /英文为主。/);
+  assert.doesNotMatch(NAI_V5_PROMPT_GENERATION_SYSTEM, /很长、结构复杂|英文容易歧义|句子可以直接写中文/);
+});
+
 test('stripGeneratedUndesiredContent drops UC blocks and keeps the positive prompt', () => {
   const structured = naiImage.stripGeneratedUndesiredContent(`Prompt:
 1girl, from side

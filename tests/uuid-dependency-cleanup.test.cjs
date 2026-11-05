@@ -94,7 +94,7 @@ function createCharacterDb() {
       }
       if (sql.includes('INSERT INTO characters')) {
         return {
-          run(id, name, avatarUrl, basicInfo, personality, scenario, greeting, exampleDialogue, systemPrompt, otherInfo, imageTags, userImageTags, activePresetId, sortOrder, createdAt, updatedAt) {
+          run(id, name, avatarUrl, basicInfo, personality, scenario, greeting, exampleDialogue, systemPrompt, otherInfo, imageTags, userImageTags, imagePromptRequirements, activePresetId, sortOrder, createdAt, updatedAt) {
             inserted = {
               id,
               name,
@@ -108,6 +108,7 @@ function createCharacterDb() {
               other_info: otherInfo,
               image_tags: imageTags,
               user_image_tags: userImageTags,
+              image_prompt_other_requirements: imagePromptRequirements,
               active_preset_id: activePresetId,
               sort_order: sortOrder,
               created_at: createdAt,

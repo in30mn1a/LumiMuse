@@ -756,13 +756,13 @@ function importPayload({
   const insertCharacter = db.prepare(`
     INSERT INTO characters (
       id, name, avatar_url, basic_info, personality, scenario, greeting,
-      example_dialogue, system_prompt, other_info, image_tags, user_image_tags,
+      example_dialogue, system_prompt, other_info, image_tags, user_image_tags, image_prompt_other_requirements,
       memory_chat_injection_mode, created_at, updated_at,
       background_model, image_prompt_model, background_provider_id,
       background_reasoning_by_model, image_prompt_reasoning_by_model,
       background_system_prompt_by_model, image_prompt_system_prompt_by_model, active_preset_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertConversation = db.prepare(`
     INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
@@ -922,6 +922,7 @@ function importPayload({
         asString(char.other_info),
         asString(char.image_tags),
         asString(char.user_image_tags),
+        asString(char.image_prompt_other_requirements),
         normalizeCharacterMemoryChatInjectionMode(char.memory_chat_injection_mode),
         asString(char.created_at) || now,
         now,

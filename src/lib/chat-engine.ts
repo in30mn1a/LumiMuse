@@ -498,6 +498,7 @@ export async function assemblePrompt(
         prepareImageTagsForLlm(character.image_tags).tagsForLlm,
         prepareImageTagsForLlm(character.user_image_tags).tagsForLlm,
         resolveImagePromptStyle(settings.image_gen),
+        character.image_prompt_other_requirements,
       )
     : '';
   const inlinePromptInSystem = settings.image_gen?.inline_prompt_position === 'system';

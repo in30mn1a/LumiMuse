@@ -32,6 +32,7 @@ test('normalizeCharacterCard maps a real v2 card and normalizes optional fields'
   assert.equal(draft.greeting, '你终于来了。');
   assert.equal(draft.image_tags, ' librarian , moonlight');
   assert.equal(draft.user_image_tags, '');
+  assert.equal(draft.image_prompt_other_requirements, '');
   assert.equal(draft.memory_chat_injection_mode, 'full');
   assert.match(draft.basic_info, /【版本】\n1.2/);
   assert.match(draft.other_info, /【作者备注】\n边界 fixture/);
@@ -60,4 +61,12 @@ test('normalizeCharacterCard preserves valid LumiMuse memory mode and defaults i
 test('normalizeCharacterCard rejects arrays and nameless cards', () => {
   assert.equal(normalizeCharacterCard([]), null);
   assert.equal(normalizeCharacterCard({ data: { description: 'missing name' } }), null);
+});
+
+test('normalizeCharacterCard preserves multiline image prompt requirements and defaults legacy cards to empty', () => {
+  const requirements = '使用柔和逆光。\n背景保留雨夜氛围。';
+  assert.equal(normalizeCharacterCard({
+    character: { name: '生图角色', image_prompt_other_requirements: requirements },
+  }).image_prompt_other_requirements, requirements);
+  assert.equal(normalizeCharacterCard({ name: '旧角色' }).image_prompt_other_requirements, '');
 });

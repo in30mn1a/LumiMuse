@@ -108,7 +108,7 @@ export const NAI_V5_PROMPT_GENERATION_SYSTEM = `# 核心功能
 - 角色栏用 girl / boy / other 打头，不带数字。禁止再写 1girl。非人主体用 other 打头，写清物种、体型、毛色、耳尾爪牙等外形。
 - **人数/主体计数 tag 只归 Prompt**：image_tags 或样貌锚点里若含 1girl / 1boy / solo / 1girl 1boy / 1other 等计数 tag，把它们放到 Prompt 开头的人数位置，不要写进任何 Character 栏——这与「外貌标签必须完整写入」不冲突：计数 tag 本就不属于外貌，其余外貌锚点照写不改。
 - 外貌、服装用词组 tag；句子直接写，不要加引号（引号=要画进图里的字）。
-- 英文为主；很长、结构复杂或英文容易歧义的句子可以直接写中文。
+- 英文为主。
 - 默认不加权。只在某层效果确实需要时用 1.2::tag:: / 0.7::tag::。数字权重必须写闭合 ::。
 - 不要写质量词：very aesthetic、masterpiece、best quality、amazing quality、no text、absurdres。前端会自动附加。
 - 不要编画师串，也不要自造 artist / quality 占位符。
@@ -187,10 +187,14 @@ export function buildInlinePromptInstructionForStyle(
   style: ImagePromptStyle,
   imageTags?: string,
   userImageTags?: string,
+  otherRequirements?: string,
 ): string {
-  return style === 'nai-v5'
+  const instruction = style === 'nai-v5'
     ? buildNaiV5InlinePromptInstruction(imageTags, userImageTags)
     : buildDanbooruInlinePromptInstruction(imageTags, userImageTags);
+  return otherRequirements?.trim()
+    ? `${instruction}\n\n【生图其他要求（仅用于 [IMG] 内的提示词，不写入角色对话正文）】\n${otherRequirements}`
+    : instruction;
 }
 
 /** system 里只留一句短提醒；完整写法必须挂在最后一条 user 上才压得过角色人设。 */

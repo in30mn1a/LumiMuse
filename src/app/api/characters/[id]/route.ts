@@ -67,6 +67,7 @@ export async function PUT(
       UPDATE characters SET
         name = ?, avatar_url = ?, basic_info = ?, personality = ?, scenario = ?,
         greeting = ?, example_dialogue = ?, system_prompt = ?, other_info = ?, image_tags = ?, user_image_tags = ?,
+        image_prompt_other_requirements = ?,
         active_preset_id = ?, memory_chat_injection_mode = ?,
         background_model = ?, image_prompt_model = ?, background_provider_id = ?,
         background_reasoning_by_model = ?, image_prompt_reasoning_by_model = ?,
@@ -85,6 +86,7 @@ export async function PUT(
       body.other_info ?? existing.other_info ?? '',
       body.image_tags ?? existing.image_tags ?? '',
       body.user_image_tags ?? existing.user_image_tags ?? '',
+      body.image_prompt_other_requirements ?? existing.image_prompt_other_requirements ?? '',
       // 预设绑定：未传 active_preset_id 时保留旧值；显式 null/''/'__none__' 表示不使用预设
       body.active_preset_id !== undefined
         ? (body.active_preset_id === null || body.active_preset_id === '' ? null : body.active_preset_id)
@@ -135,7 +137,7 @@ export async function DELETE(
     if (cleanupCreatedAt !== null && cleanupCreatedAt !== undefined) {
       const emptyFields = [
         'avatar_url', 'basic_info', 'personality', 'scenario', 'greeting', 'example_dialogue',
-        'system_prompt', 'other_info', 'image_tags', 'user_image_tags',
+        'system_prompt', 'other_info', 'image_tags', 'user_image_tags', 'image_prompt_other_requirements',
         'background_model', 'image_prompt_model', 'background_provider_id',
       ];
       const mapFields = [

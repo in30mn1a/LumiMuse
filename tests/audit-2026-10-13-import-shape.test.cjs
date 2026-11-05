@@ -61,6 +61,7 @@ function createImportDb() {
       other_info TEXT NOT NULL DEFAULT '',
       image_tags TEXT NOT NULL DEFAULT '',
       user_image_tags TEXT NOT NULL DEFAULT '',
+      image_prompt_other_requirements TEXT NOT NULL DEFAULT '',
       memory_chat_injection_mode TEXT NOT NULL DEFAULT 'full'
         CHECK (memory_chat_injection_mode IN ('full', 'local', 'hybrid', 'vector')),
       background_model TEXT NOT NULL DEFAULT '',

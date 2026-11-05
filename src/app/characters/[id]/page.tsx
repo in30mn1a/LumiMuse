@@ -937,6 +937,19 @@ export default function CharacterEditor({ params }: Props) {
               placeholder="1boy, black hair, brown eyes, glasses..."
             />
           </div>
+          <div>
+            <label htmlFor="editor-image-prompt-other-requirements" className={FIELD_LABEL}>{t('editor.imagePromptOtherRequirements')}</label>
+            <p id="editor-image-prompt-other-requirements-hint" className="mb-2 text-xs leading-relaxed text-text-muted">{t('editor.imagePromptOtherRequirementsHint')}</p>
+            <textarea
+              id="editor-image-prompt-other-requirements"
+              aria-describedby="editor-image-prompt-other-requirements-hint"
+              value={character.image_prompt_other_requirements ?? ''}
+              onChange={e => update('image_prompt_other_requirements', e.target.value)}
+              rows={4}
+              placeholder={t('editor.imagePromptOtherRequirementsPlaceholder')}
+              className="textarea-rich"
+            />
+          </div>
         </section>
       </main>
 

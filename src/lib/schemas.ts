@@ -346,6 +346,7 @@ export const characterCreateSchema = z.object({
   other_info: z.string().max(MAX_MEDIUM_TEXT).optional(),
   image_tags: z.string().max(MAX_MEDIUM_TEXT).optional(),
   user_image_tags: z.string().max(MAX_MEDIUM_TEXT).optional(),
+  image_prompt_other_requirements: z.string().optional(),
   // 预设提示词绑定（null/'__none__'=不使用预设 / uuid=具体预设）。
   // 创建时未传则服务端默认 '__none__'（LumiMuse 传统骨架）。
   active_preset_id: z.string().max(64).nullable().optional(),

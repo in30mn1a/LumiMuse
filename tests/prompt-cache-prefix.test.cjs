@@ -317,6 +317,36 @@ test('inline_prompt_position=system 时完整指令进 system，user 不再被�
   assert.match(lastUserContent(prompt), /陪我聊聊天/, '用户原话保持干净');
 });
 
+test('传统组装在两种风格和位置传递生图其他要求，空值不改变请求或原始消息', async () => {
+  const requirements = '  保留窗边的构图。\n使用柔和侧光。  ';
+  for (const style of ['danbooru', 'nai-v5']) {
+    for (const position of ['last_user', 'system']) {
+      const imageGen = {
+        enabled: true,
+        inline_prompt: true,
+        inline_prompt_position: position,
+        ...(style === 'nai-v5' ? { engine: 'nai', nai_model: 'nai-diffusion-5-full' } : {}),
+      };
+      const settings = baseSettings({ image_gen: imageGen });
+      const messages = [message({ content: '陪我看雨。' })];
+      const originalMessages = structuredClone(messages);
+      const original = await assemblePrompt(baseCharacter(), messages, settings, '');
+      for (const empty of ['', ' \n\t ']) {
+        const emptyPrompt = await assemblePrompt(baseCharacter({ image_prompt_other_requirements: empty }), messages, settings, '');
+        assert.deepEqual(emptyPrompt, original);
+      }
+      const prompt = await assemblePrompt(baseCharacter({ image_prompt_other_requirements: requirements }), messages, settings, '');
+      const target = position === 'system' ? prompt[0].content : lastUserContent(prompt);
+      assert.ok(target.includes(requirements), `${style}/${position} 未收到完整要求`);
+      assert.match(target, /仅用于 \[IMG\] 内的提示词，不写入角色对话正文/);
+      assert.match(target, style === 'nai-v5' ? /NovelAI Diffusion V5/ : /英文 danbooru/);
+      const other = position === 'system' ? lastUserContent(prompt) : prompt[0].content;
+      assert.ok(!other.includes(requirements));
+      assert.deepEqual(messages, originalMessages, '临时生成指令不得改写聊天原始消息');
+    }
+  }
+});
+
 test('核心：相同 full 记忆时第 N 轮是第 N+1 轮的严格前缀（续聊命中的条件）', async () => {
   const character = baseCharacter({ image_tags: 'shinosawa hiro' });
   const settings = stampedSettings();

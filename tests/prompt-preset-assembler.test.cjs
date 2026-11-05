@@ -104,6 +104,43 @@ test.afterEach(() => {
   try { db && db.close(); } catch {}
 });
 
+test('预设组装在两种风格和位置传递生图其他要求，空值不改变请求或原始消息', async () => {
+  const preset = lib.createPreset({ name: 'image-other-requirements' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', is_marker: true, marker_key: 'chatHistory', sort_order: 10 });
+  const entries = lib.loadEnabledEntries(preset.id);
+  const requirements = '  保留窗边的构图。\n使用柔和侧光。  ';
+  for (const style of ['danbooru', 'nai-v5']) {
+    for (const position of ['last_user', 'system']) {
+      const settings = {
+        ...DEFAULT_SETTINGS,
+        show_timestamps: false,
+        image_gen: {
+          ...DEFAULT_SETTINGS.image_gen,
+          enabled: true,
+          inline_prompt: true,
+          inline_prompt_position: position,
+          ...(style === 'nai-v5' ? { engine: 'nai', nai_model: 'nai-diffusion-5-full' } : { engine: 'sd' }),
+        },
+      };
+      const messages = [makeMessage(1, 'user', '陪我看雨。')];
+      const originalMessages = structuredClone(messages);
+      const assemble = character => assembler.assemblePresetPrompt(character, messages, settings, '', undefined, preset, entries);
+      const original = await assemble(makeCharacter());
+      for (const empty of ['', ' \n\t ']) {
+        assert.deepEqual(await assemble(makeCharacter({ image_prompt_other_requirements: empty })), original);
+      }
+      const prompt = await assemble(makeCharacter({ image_prompt_other_requirements: requirements }));
+      const target = prompt.find(message => String(message.content).includes(requirements));
+      assert.ok(target, `${style}/${position} 未收到完整要求`);
+      assert.equal(target.role, position === 'system' ? 'system' : 'user');
+      assert.match(target.content, /仅用于 \[IMG\] 内的提示词，不写入角色对话正文/);
+      assert.match(target.content, style === 'nai-v5' ? /NovelAI Diffusion V5/ : /英文 danbooru/);
+      assert.equal(prompt.filter(message => String(message.content).includes(requirements)).length, 1);
+      assert.deepEqual(messages, originalMessages, '临时生成指令不得改写聊天原始消息');
+    }
+  }
+});
+
 test('标准内容宏映射角色字段及最近消息，用户宏样式正文保持原文', async () => {
   const preset = lib.createPreset({ name: 'standard-macros' });
   lib.upsertEntry({ preset_id: preset.id, name: 'Content', role: 'system', content: '{{description}}|{{personality}}|{{scenario}}|{{mesExamples}}|{{mesExamplesRaw}}|{{lastCharMessage}}', sort_order: 10 });

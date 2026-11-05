@@ -46,13 +46,15 @@ const INLINE_PROMPT_HAS_CONTENT = /[\p{L}\p{N}]/u;
  * @param imageTags 角色固定外貌标签，要求模型务必包含，保证人物外观一致
  * @param userImageTags 用户本人外貌标签，仅当用户出现在画面中时才包含（单人/独白场景忽略）
  * @param style 生图提示词风格；NAI V5 时改为 Prompt / Character 字段
+ * @param otherRequirements 角色级其他要求，只用于生成图片提示词
  */
 export function buildInlinePromptInstruction(
   imageTags?: string,
   userImageTags?: string,
   style: ImagePromptStyle = 'danbooru',
+  otherRequirements?: string,
 ): string {
-  return buildInlinePromptInstructionForStyle(style, imageTags, userImageTags);
+  return buildInlinePromptInstructionForStyle(style, imageTags, userImageTags, otherRequirements);
 }
 
 /**

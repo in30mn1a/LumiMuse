@@ -13,6 +13,8 @@ export interface Character {
   other_info: string;
   image_tags: string;
   user_image_tags: string;
+  /** 生成该角色生图提示词时一并发送的其他要求。 */
+  image_prompt_other_requirements?: string;
   /**
    * 角色绑定的预设提示词。
    * - `null` / `'__none__'`：不使用预设（LumiMuse 传统骨架）

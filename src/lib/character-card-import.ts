@@ -13,6 +13,7 @@ export type CharacterDraft = Pick<Character,
   'other_info' |
   'image_tags' |
   'user_image_tags' |
+  'image_prompt_other_requirements' |
   'model_preset_bindings' |
   'memory_chat_injection_mode' |
   'background_provider_id' |
@@ -80,6 +81,7 @@ export function normalizeCharacterCard(payload: unknown): CharacterDraft | null 
       other_info: text(lumimuseCharacter.other_info),
       image_tags: text(lumimuseCharacter.image_tags),
       user_image_tags: text(lumimuseCharacter.user_image_tags),
+      image_prompt_other_requirements: text(lumimuseCharacter.image_prompt_other_requirements),
       memory_chat_injection_mode: normalizeMemoryChatInjectionMode(
         lumimuseCharacter.memory_chat_injection_mode,
       ),
@@ -109,6 +111,7 @@ export function normalizeCharacterCard(payload: unknown): CharacterDraft | null 
     ]),
     image_tags: tagsToText(data.tags),
     user_image_tags: '',
+    image_prompt_other_requirements: '',
     memory_chat_injection_mode: 'full',
     ...EMPTY_CHARACTER_TASK_MODELS,
   };

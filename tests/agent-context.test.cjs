@@ -129,13 +129,15 @@ test('the compact threshold reserves output space and keeps half the window for 
   assert.equal(agentCompactThreshold(10000, 16384), 4000);
 });
 
-test('calibration only scales up, is capped and ignores other models', () => {
+test('calibration scales both ways within bounds and ignores other models', () => {
   const usage = (prompt, estimated, model = 'm') => ({
     model, prompt_tokens: prompt, completion_tokens: 1, estimated_prompt_tokens: estimated, at: '',
   });
   assert.equal(agentCalibrationRatio(null, 'm'), 1);
   assert.equal(agentCalibrationRatio(usage(150, 100), 'm'), 1.5);
-  assert.equal(agentCalibrationRatio(usage(50, 100), 'm'), 1);
+  // 实测：本地估 203872，上游 137934
+  assert.equal(agentCalibrationRatio(usage(137934, 203872), 'm'), 137934 / 203872);
+  assert.equal(agentCalibrationRatio(usage(10, 100), 'm'), 0.5);
   assert.equal(agentCalibrationRatio(usage(1000, 100), 'm'), 3);
   assert.equal(agentCalibrationRatio(usage(150, 100, 'other'), 'm'), 1);
   assert.equal(agentCalibrationRatio(usage(150, 0), 'm'), 1);
@@ -432,6 +434,88 @@ test('real usage from the same model makes compaction start earlier', async t =>
       assert.equal(compactionEvents(db, sessionId).length, expected);
     });
   }
+});
+
+test('real usage below the estimate lets compaction wait until it is really needed', async t => {
+  // 默认历史的估算超过 8000 的阈值；上次真实输入只有估算的六成时按真实量计，不必压缩
+  for (const [label, usage, expected] of [
+    ['uncalibrated', null, 1],
+    ['calibrated down', { model: 'agent-test-model', prompt_tokens: 600, completion_tokens: 1, estimated_prompt_tokens: 1000, at: '' }, 0],
+  ]) {
+    await t.test(label, async t2 => {
+      const { db, sessionId } = setup(t2);
+      seedHistory(db, sessionId);
+      if (usage) saveAgentLastUsage(db, sessionId, usage);
+      const { complete, compactions } = fakeUpstream({ main: [{ text: '好' }] });
+      await runAgentTurn({ db, sessionId, userContent: '继续', tools: [lookup], settings: SMALL, complete, now });
+      assert.equal(compactions.length > 0 ? 1 : 0, expected);
+      assert.equal(compactionEvents(db, sessionId).length, expected);
+    });
+  }
+});
+
+// ---- 思考链 ----
+
+const fragments = text => [...text].map(char => ({ type: 'reasoning.text', text: char, format: 'unknown', index: 0 }));
+
+test('streamed reasoning fragments are merged per block and unknown parts are kept in place', () => {
+  const { mergeReasoningDetails, compactAssistantFields } = require('../src/lib/agent/reasoning.ts');
+  const signedTail = { type: 'reasoning.text', text: '。', format: 'anthropic-claude-v1', index: 1, signature: 'sig-1' };
+  const merged = mergeReasoningDetails([
+    ...fragments('先查'),
+    { type: 'reasoning.text', text: '记忆', format: 'unknown', index: 0, id: 'r1' },
+    { type: 'reasoning.text', text: '另一块', format: 'anthropic-claude-v1', index: 1 },
+    signedTail,
+    { type: 'reasoning.text', text: '签名后的新块', format: 'anthropic-claude-v1', index: 1 },
+    { type: 'reasoning.encrypted', data: 'opaque' },
+    { type: 'reasoning.text', text: '加密之后', format: 'unknown', index: 0 },
+    { type: 'reasoning.text', text: '带陌生字段', format: 'unknown', index: 0, extra: true },
+  ]);
+  assert.deepEqual(merged, [
+    { type: 'reasoning.text', text: '先查记忆', format: 'unknown', index: 0, id: 'r1' },
+    { type: 'reasoning.text', text: '另一块。', format: 'anthropic-claude-v1', index: 1, signature: 'sig-1' },
+    { type: 'reasoning.text', text: '签名后的新块', format: 'anthropic-claude-v1', index: 1 },
+    { type: 'reasoning.encrypted', data: 'opaque' },
+    { type: 'reasoning.text', text: '加密之后', format: 'unknown', index: 0 },
+    { type: 'reasoning.text', text: '带陌生字段', format: 'unknown', index: 0, extra: true },
+  ]);
+  const fields = { reasoning_content: '原样', reasoning_details: fragments('一二三') };
+  assert.deepEqual(compactAssistantFields(fields), { reasoning_content: '原样', reasoning_details: [{ type: 'reasoning.text', text: '一二三', format: 'unknown', index: 0 }] });
+  const plain = { reasoning_content: '只有文本' };
+  assert.equal(compactAssistantFields(plain), plain);
+});
+
+test('reasoning is stored and replayed merged, and a finished turn no longer counts it', async t => {
+  const { db, sessionId } = setup(t);
+  const thinking = '我先想想要查哪些记忆，再决定怎么回答。'.repeat(20);
+  const { complete, requests } = fakeUpstream({
+    main: [
+      { toolCalls: [{ id: 'c1', name: 'lookup', arguments: '{"a":1}' }], assistantFields: { reasoning_details: fragments(thinking) } },
+      { text: '查完了', assistantFields: { reasoning_details: fragments(thinking) } },
+    ],
+  });
+  await runAgentTurn({ db, sessionId, userContent: '查一下', tools: [lookup], settings: BASE_SETTINGS, complete, now });
+
+  const stored = listAgentMessages(db, sessionId).filter(row => row.role === 'assistant')
+    .map(row => JSON.parse(row.assistant_fields_json).reasoning_details);
+  assert.deepEqual(stored, [
+    [{ type: 'reasoning.text', text: thinking, format: 'unknown', index: 0 }],
+    [{ type: 'reasoning.text', text: thinking, format: 'unknown', index: 0 }],
+  ]);
+  const replayed = requests[1].messages.find(message => message.role === 'assistant');
+  assert.deepEqual(replayed.reasoning_details, [{ type: 'reasoning.text', text: thinking, format: 'unknown', index: 0 }]);
+
+  // 这一轮已结束：下次请求不带思考链，空闲占用也不算它
+  const status = getAgentContextStatus(db, sessionId, { tools: [lookup], settings: BASE_SETTINGS });
+  const withoutReasoning = estimateTokens(JSON.stringify(requests[1].tools))
+    + estimateTokens(requests[1].messages[0].content)
+    + buildAgentHistoryMessages(listAgentMessages(db, sessionId))
+      .map(message => {
+        const { reasoning_details: _dropped, ...rest } = message;
+        return estimateTokens(JSON.stringify(rest));
+      })
+      .reduce((sum, tokens) => sum + tokens, 0);
+  assert.equal(status.used, withoutReasoning);
 });
 
 // ---- 滚动摘要 ----

@@ -4,8 +4,12 @@ import type { Settings } from '@/types';
 
 /** 预计输入超过「窗口减去输出预留」的这个比例时自动压缩较早的对话。 */
 export const AGENT_COMPACT_RATIO = 0.8;
-/** 真实 usage 与估算的比值上限，防止一次异常的 usage 让阈值失真。 */
+/**
+ * 真实 usage 与估算之比的上下限，防止一次异常的 usage 让阈值失真。允许向下：本地用 cl100k 计数，
+ * 对中文比常见上游的分词器数得多，只许放大时估算会一直系统性偏高。
+ */
 const MAX_CALIBRATION_RATIO = 3;
+const MIN_CALIBRATION_RATIO = 0.5;
 
 /** Agent 请求的 `max_tokens`：沿用全局设置，并至少留出推理模型需要的输出空间。 */
 export function agentOutputReserve(settings: Pick<Settings, 'max_tokens'>): number {
@@ -90,12 +94,12 @@ export function toAgentLastUsage(usage: LlmUsage, model: string, estimated: numb
 }
 
 /**
- * 本地估算到上游真实 token 的放大系数。只在同一模型的 usage 上校准，只放大不缩小：
- * 估算偏高时只会提前压缩，偏低时才需要纠正，避免请求被上游拒绝。
+ * 本地估算到上游真实 token 的换算系数，只在同一模型的 usage 上校准。两个方向都校准：
+ * 偏低会让请求被上游拒绝；偏高会让界面占用失真，并过早折叠、压缩，Agent 白白丢掉还装得下的上下文。
  */
 export function agentCalibrationRatio(last: AgentLastUsage | null, model: string): number {
   if (!last || last.model !== model || last.estimated_prompt_tokens <= 0 || last.prompt_tokens <= 0) return 1;
-  return Math.min(MAX_CALIBRATION_RATIO, Math.max(1, last.prompt_tokens / last.estimated_prompt_tokens));
+  return Math.min(MAX_CALIBRATION_RATIO, Math.max(MIN_CALIBRATION_RATIO, last.prompt_tokens / last.estimated_prompt_tokens));
 }
 
 export function publicLastUsage(last: AgentLastUsage | null): AgentContextStatus['last_usage'] {

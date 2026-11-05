@@ -35,6 +35,7 @@ import {
   type StoredToolCall,
 } from './messages';
 import { buildAgentSystemPrompt, type AgentPromptSkill } from './prompt';
+import { compactAssistantFields } from './reasoning';
 import {
   appendAgentMessage,
   appendAgentUserMessage,
@@ -186,10 +187,16 @@ function isCompactionRow(row: AgentMessageRow): boolean {
  * - 思考链等 `assistant_fields` 只回传本轮（最后一条 user 之后）的 assistant：
  *   上游要求工具循环内带回，而部分上游拒绝历史轮次里的思考链。
  */
-function buildHistoryEntries(rows: readonly AgentMessageRow[]): ContextEntry[] {
-  let lastUserId = 0;
-  for (const row of rows) {
-    if (row.role === 'user') lastUserId = row.id;
+function buildHistoryEntries(
+  rows: readonly AgentMessageRow[],
+  options: { nextTurn?: boolean } = {},
+): ContextEntry[] {
+  // nextTurn：按「主人再发一条」时的请求来建，已结束这一轮的思考链不会再回传
+  let lastUserId = options.nextTurn ? Number.POSITIVE_INFINITY : 0;
+  if (!options.nextTurn) {
+    for (const row of rows) {
+      if (row.role === 'user') lastUserId = row.id;
+    }
   }
   const compaction = latestCompaction(rows);
 
@@ -216,7 +223,9 @@ function buildHistoryEntries(rows: readonly AgentMessageRow[]): ContextEntry[] {
     if (row.role === 'assistant') {
       const message: AgentRequestMessage = { role: 'assistant', content: row.content };
       if (row.id > lastUserId) {
-        Object.assign(message, parseJson<Record<string, unknown>>(row.assistant_fields_json) ?? {});
+        // 早先按碎片保存的思考链在这里合并，回传与计数都按合并后的
+        const fields = parseJson<Record<string, unknown>>(row.assistant_fields_json);
+        if (fields) Object.assign(message, compactAssistantFields(fields));
       }
       const toolCalls = parseStoredToolCalls(row.tool_calls_json);
       if (toolCalls) message.tool_calls = toolCalls;
@@ -420,7 +429,7 @@ function createTokenCounter() {
 
 /**
  * 会话当前的上下文占用（不在运行时给界面用）：系统提示、工具定义和上次压缩后的完整历史，
- * 不含折叠——下一轮开始时超过阈值会先压缩。
+ * 不含折叠——下一轮开始时超过阈值会先压缩。按下一次请求计：已结束这一轮的思考链不计入。
  */
 export function getAgentContextStatus(
   db: Database.Database,
@@ -434,7 +443,7 @@ export function getAgentContextStatus(
   const setup = buildContextSetup(db, session, input.tools, input.skills ?? [], settings, config.context_window);
   const tokenOf = createTokenCounter();
   let total = setup.fixedTokens;
-  for (const entry of buildHistoryEntries(listAgentMessages(db, sessionId))) total += tokenOf(entry);
+  for (const entry of buildHistoryEntries(listAgentMessages(db, sessionId), { nextTurn: true })) total += tokenOf(entry);
   const lastUsage = readAgentLastUsage(db, sessionId);
   return {
     window: setup.window,
@@ -637,7 +646,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
           appendAgentMessage(db, sessionId, {
             role: 'assistant',
             content: result.text,
-            assistant_fields_json: result.assistantFields ? JSON.stringify(result.assistantFields) : null,
+            assistant_fields_json: result.assistantFields ? JSON.stringify(compactAssistantFields(result.assistantFields)) : null,
           }, now());
         }
         touchAgentSession(db, sessionId, now());
@@ -718,7 +727,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
           role: 'assistant',
           content: result.text,
           tool_calls_json: JSON.stringify(storedCalls),
-          assistant_fields_json: result.assistantFields ? JSON.stringify(result.assistantFields) : null,
+          assistant_fields_json: result.assistantFields ? JSON.stringify(compactAssistantFields(result.assistantFields)) : null,
         }, createdAt);
         for (let i = 0; i < calls.length; i += 1) {
           appendAgentMessage(db, sessionId, {

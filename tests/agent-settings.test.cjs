@@ -321,9 +321,12 @@ for (const reopen of [false, true]) {
     const server = createServer();
     const fetchMock = global.fetch;
     const gate = deferred();
-    t.after(() => gate.resolve());
+    const modelsGate = deferred();
+    let holdModelList = false;
+    t.after(() => { gate.resolve(); modelsGate.resolve(); });
     global.fetch = async (url, init = {}) => {
       if (String(url) === '/api/settings' && init.method === 'PUT') await gate.promise;
+      if (String(url) === '/api/models' && holdModelList) await modelsGate.promise;
       return fetchMock(url, init);
     };
     const view = renderDrawer();
@@ -332,13 +335,19 @@ for (const reopen of [false, true]) {
     fireEvent.change(view.getByLabelText('agent.settings.model'), { target: { value: 'alt-large' } });
     fireEvent.click(view.getByRole('button', { name: 'common.save' }));
     if (reopen) {
+      holdModelList = true;
       fireEvent.click(view.getByRole('tab', { name: 'Agents.md' }));
       fireEvent.click(view.getByRole('button', { name: 'common.close' }));
       fireEvent.click(view.getByRole('button', { name: 'reopen' }));
       fireEvent.click(view.getByRole('tab', { name: 'agent.settings.tabModel' }));
       await view.findByRole('option', { name: 'alt-large' });
+      // 当前草稿也会生成选项，不能用它判断接口模型列表已加载。
+      assert.equal(view.queryByRole('option', { name: 'alt-small' }), null, 'the draft option is available before the model list');
+      await act(async () => { modelsGate.resolve(); });
+      await view.findByRole('option', { name: 'alt-small' });
     }
     fireEvent.change(view.getByLabelText('agent.settings.model'), { target: { value: 'alt-small' } });
+    assert.equal(view.getByLabelText('agent.settings.model').value, 'alt-small', 'the later selection is applied before saving finishes');
     await act(async () => { gate.resolve(); });
     await waitFor(() => assert.ok(toasts.some(item => item.message === 'agent.settings.saved')));
     assert.equal(server.settings.agent_model, 'alt-large');

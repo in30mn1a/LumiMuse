@@ -232,7 +232,11 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
       return;
     }
     if (!id) return;
-    void fetch(`/api/agent/sessions/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+    // 写请求必须带 JSON Content-Type：设了访问密码时 proxy 的 CSRF 校验会以 415 拒绝其它类型
+    void fetch(`/api/agent/sessions/${encodeURIComponent(id)}/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
       .catch(() => undefined)
       .finally(() => {
         if (currentIdRef.current === id) void load(id);

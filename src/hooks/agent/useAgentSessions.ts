@@ -62,7 +62,10 @@ export function useAgentSessions() {
   }, []);
 
   const remove = useCallback(async (id: string) => {
-    await expectOkResponse(await fetch(`/api/agent/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+    await expectOkResponse(await fetch(`/api/agent/sessions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    }));
     setSessions(prev => prev.filter(session => session.id !== id));
   }, []);
 

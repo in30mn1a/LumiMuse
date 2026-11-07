@@ -9,7 +9,7 @@
  *
  * 与 chat-engine.assemblePrompt 关系：
  *   - 启用预设时由 chat-engine.runChat 主动调用本模块，**完全替代** LumiMuse 原骨架；
- *   - 但 buildHistoryMessages（历史构建）/ parseExampleDialogue / mergeConsecutiveRoles / inline image prompt
+ *   - 但 buildHistoryMessages（历史构建）/ mergeConsecutiveRoles / inline image prompt
  *     这些子流程**复用** chat-engine / merge-messages，保证两条路径的"历史、附件、预算截断、合并"行为完全一致。
  */
 
@@ -126,7 +126,7 @@ function formatBehaviorAndTimeSystemContent(
  * 渲染单条启用条目为 0..N 条 ChatMessage。
  *  - 非 marker：单条 message（保留 role，做宏替换；空 content 跳过）。
  *  - chatHistory marker：返回 []（由调用方在主循环里处理占位）。
- *  - 其余 marker：按当前角色字段渲染，可能产生多条（dialogueExamples 按行拆 user/assistant）。
+ *  - 其余 marker：按当前角色字段渲染（dialogueExamples 渲染为一整段，不拆 user/assistant）。
  */
 /** 把对话历史渲染成 chatHistory marker 的内容（**只含历史正文本身**，不带 <story_history> 容器 tag）。
  *

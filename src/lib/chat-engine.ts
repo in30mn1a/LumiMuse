@@ -249,6 +249,7 @@ function renderLegacyMemoryContext(memories: string[], settings: Settings): stri
 
 function buildSystemPrompt(
   character: Character,
+  exampleDialogue: string,
   memoryText: string,
   timeInstruction: string,
   inlinePromptInstruction: string,
@@ -280,6 +281,10 @@ function buildSystemPrompt(
     prompt += `## 其他补充信息\n${character.other_info}\n\n`;
   }
 
+  if (exampleDialogue) {
+    prompt += `${exampleDialogue}\n\n`;
+  }
+
   if (memoryText) {
     prompt += `${normalizeMemoryContextText(memoryText)}\n\n`;
   }
@@ -301,21 +306,35 @@ function buildSystemPrompt(
   return prompt;
 }
 
-function parseExampleDialogue(raw: string): ChatMessage[] {
-  if (!raw) return [];
+const EXAMPLE_MACRO_RE = /\{\{(user|char)\}\}/gi;
+const EXAMPLE_START_LINE_RE = /^\s*<START>\s*$/i;
 
-  const messages: ChatMessage[] = [];
-  for (const line of raw.split('\n')) {
-    const userMatch = line.match(/^{{user}}[:：]\s*(.+)/);
-    const charMatch = line.match(/^{{char}}[:：]\s*(.+)/);
-    if (userMatch) {
-      messages.push({ role: 'user', content: userMatch[1] });
-    } else if (charMatch) {
-      messages.push({ role: 'assistant', content: charMatch[1] });
-    }
-  }
+/**
+ * 把角色示例对话渲染成 system 里一段带标注的文本，而不是拆成 user/assistant 轮次。
+ *
+ * 拆成轮次时，模型会把示例当成本次对话已经发生的内容：示例里的事件、情绪和用户的话
+ * （如"别碰我""今天很烦"）会延续到正式聊天里。示例又多以 {{char}} 结尾，开场白是第一条
+ * assistant 消息，mergeConsecutiveRoles 会把两者合成一条，示例和正式对话之间完全没有边界。
+ *
+ * 原文多行内容与分组空行原样保留；SillyTavern 的 <START> 分隔行转成空行。
+ */
+export function renderExampleDialogue(raw: string, charName: string): string {
+  const speakerChar = charName.trim() || '角色';
+  const body = raw
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => (EXAMPLE_START_LINE_RE.test(line) ? '' : line.trimEnd()))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .replace(EXAMPLE_MACRO_RE, (_, name: string) => (name.toLowerCase() === 'char' ? speakerChar : '用户'));
+  if (!body) return '';
 
-  return messages;
+  return [
+    '## 示例对话',
+    `以下示例只用于示范${speakerChar}的说话风格和互动方式，各组相互独立，不是本次对话中已经发生的内容。示例里的事件、动作和用户说过的话都不能当作真实经历或已知信息，回复时也不要照搬原句。`,
+    `<example_dialogue>\n${body}\n</example_dialogue>`,
+  ].join('\n\n');
 }
 
 /**
@@ -506,16 +525,15 @@ export async function assemblePrompt(
 
   const systemPrompt = buildSystemPrompt(
     character,
+    settings.example_dialogue && character.example_dialogue
+      ? renderExampleDialogue(character.example_dialogue, character.name)
+      : '',
     memoryIsStable ? memoryText : '',
     useStableTimeInstruction ? buildTimestampAnchoredTimeInstruction(timeContext) : '',
     inlinePromptInstruction,
     inlinePromptInSystem,
   );
   const result: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
-
-  if (settings.example_dialogue && character.example_dialogue) {
-    result.push(...parseExampleDialogue(character.example_dialogue));
-  }
 
   const tailBlock = [
     memoryIsStable ? '' : (memoryText ? normalizeMemoryContextText(memoryText) : ''),
@@ -524,11 +542,9 @@ export async function assemblePrompt(
       : '',
   ].filter(Boolean).join('\n\n');
 
+  // 示例对话已在 systemPrompt 里，systemTokens 已经计入。
   const systemTokens = estimateTokens(systemPrompt);
   let baseTokens = systemTokens;
-  if (settings.example_dialogue) {
-    baseTokens += estimateTokens(character.example_dialogue);
-  }
   // 尾部块不在 systemPrompt 里，但同样占请求预算，必须计入，否则历史会按偏小的基数多留消息而超预算。
   if (tailBlock) {
     baseTokens += estimateTokens(tailBlock);

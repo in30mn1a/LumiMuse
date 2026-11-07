@@ -144,9 +144,10 @@ test('the system prompt carries the base rules, documents and session context', 
   await runAgentTurn({ db, sessionId, userContent: '你好', tools: [], settings: BASE_SETTINGS, complete, now });
 
   const system = requests[0].messages[0].content;
-  assert.ok(system.startsWith(AGENT_BASE_PROMPT));
+  assert.ok(system.startsWith('## Agents.md'), 'Agents.md must lead the system prompt');
+  assert.ok(system.indexOf('叫我队长。') < system.indexOf(AGENT_BASE_PROMPT));
   assert.ok(AGENT_BASE_PROMPT.includes('本轮正文第一句就告诉主人'), 'system faults must be reported up front');
-  assert.ok(system.indexOf('叫我队长。') > AGENT_BASE_PROMPT.length);
+  assert.ok(system.indexOf('主人喜欢先看结论。') > system.indexOf(AGENT_BASE_PROMPT));
   assert.ok(system.indexOf('主人喜欢先看结论。') > system.indexOf('叫我队长。'));
   assert.match(system, /星野（char-1）/);
   assert.match(system, /conv-1/);

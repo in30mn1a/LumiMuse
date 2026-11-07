@@ -57,7 +57,7 @@ function latest(db, sessionId) {
   return readLatestAgentTaskPlan(listAgentMessages(db, sessionId));
 }
 
-test('task plan schema validates complete snapshots, unique step IDs and one active step', () => {
+test('task plan schema validates complete snapshots and unique step IDs, and allows several active steps', () => {
   assert.equal(agentTaskPlanSchema.safeParse(plan()).success, true);
   for (const invalid of [
     { ...plan(), goal: ' ' },
@@ -66,9 +66,10 @@ test('task plan schema validates complete snapshots, unique step IDs and one act
     { ...plan(), recommend_compaction: 'yes' },
     { ...plan(), round_complete: 'yes' },
     { ...plan(), steps: [{ id: 'same', title: 'A', status: 'pending' }, { id: 'same', title: 'B', status: 'completed' }] },
-    { ...plan(), steps: [{ id: 'a', title: 'A', status: 'in_progress' }, { id: 'b', title: 'B', status: 'in_progress' }] },
     { ...plan(), steps: [{ id: 'a', title: 'A', status: 'read' }] },
   ]) assert.equal(agentTaskPlanSchema.safeParse(invalid).success, false);
+  const parallel = { ...plan(), steps: [{ id: 'a', title: 'A', status: 'in_progress' }, { id: 'b', title: 'B', status: 'in_progress' }] };
+  assert.equal(agentTaskPlanSchema.safeParse(parallel).success, true, 'reading batches and proposing can run side by side');
   const { next_round: omitted, ...partial } = plan();
   assert.ok(omitted);
   assert.equal(agentTaskPlanSchema.safeParse(partial).success, false, 'updates must include the full snapshot');

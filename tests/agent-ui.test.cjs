@@ -85,7 +85,7 @@ require.extensions['.ts'] = loadTs;
 require.extensions['.tsx'] = loadTs;
 
 const AgentPage = require('../src/app/agent/page.tsx').default;
-const { buildAgentDisplayItems, groupAgentDisplayItems } = require('../src/components/agent/AgentMessageList.tsx');
+const { buildAgentDisplayItems, groupAgentDisplayItems, hasUndecidedProposal } = require('../src/components/agent/AgentMessageList.tsx');
 const { readAgentStream } = require('../src/hooks/agent/agent-stream.ts');
 
 // ---- 虚构数据 ----
@@ -1493,6 +1493,117 @@ test('the latest task plan shows results and the next round without rendering it
   assert.ok(plan.textContent.includes(TASK_PLAN.unresolved[0]));
   assert.equal(view.queryByRole('alert'), null);
   assert.equal(view.queryByText('agent.event.error'), null);
+});
+
+/** 一轮：主人消息 → 保存计划 → 以工具调用收尾；`after` 是收尾后同一轮里的其他记录 */
+function planRound(firstId, plan, { text = '', after = [] } = {}) {
+  return [
+    storedMessage(firstId, 'user', { content: `第 ${firstId} 条主人消息` }),
+    storedMessage(firstId + 1, 'event', { event: { kind: 'task_plan', plan } }),
+    storedMessage(firstId + 2, 'assistant', { content: text, tool_calls: [{ id: `call_${firstId}`, name: 'update_task_plan', arguments: '{}' }] }),
+    storedMessage(firstId + 3, 'tool', { content: '{"ok":true,"saved":true,"round_complete":true}', tool_call_id: `call_${firstId}`, tool_name: 'update_task_plan', tool_ok: true }),
+    ...after.map((fields, index) => storedMessage(firstId + 4 + index, fields.role, fields)),
+  ];
+}
+
+test('rounds that end on a tool call get a summary from the plan saved in that round', () => {
+  const finished = planRound(1, { ...TASK_PLAN, progress: '已读完第 0–1 批', next_round: '读第 2 批' }, {
+    text: '现在更新计划并汇报。',
+    after: [{ role: 'event', event: { kind: 'proposal_decision', proposal_id: 1, items: [] } }],
+  });
+  const answered = [
+    storedMessage(20, 'user', { content: '为什么停了' }),
+    storedMessage(21, 'assistant', { content: '因为本轮目标已达成。' }),
+  ];
+  const interrupted = planRound(30, TASK_PLAN, { after: [{ role: 'event', event: { kind: 'interrupted' } }] });
+  const noPlan = [
+    storedMessage(40, 'user', { content: '答辩是 27 号' }),
+    storedMessage(41, 'assistant', { content: '', tool_calls: [{ id: 'call_41', name: 'create_memory_proposal', arguments: '{}' }] }),
+    storedMessage(42, 'tool', { content: '{"ok":true,"proposal_id":9}', tool_call_id: 'call_41', tool_name: 'create_memory_proposal', tool_ok: true }),
+  ];
+  const last = planRound(50, { ...TASK_PLAN, progress: '已读完第 2 批', next_round: '' });
+  const messages = [...finished, ...answered, ...interrupted, ...noPlan, ...last];
+
+  const items = buildAgentDisplayItems(messages);
+  const summaries = items.filter(item => item.kind === 'round_summary');
+  assert.deepEqual(summaries.map(item => [item.key, item.progress, item.nextRound]), [
+    ['summary-3', '已读完第 0–1 批', '读第 2 批'],
+    ['summary-52', '已读完第 2 批', ''],
+  ]);
+  const kinds = items.map(item => item.kind);
+  assert.deepEqual(kinds.slice(0, 5), ['user', 'assistant', 'tool', 'round_summary', 'event'], 'the summary follows the tools, before later decisions');
+
+  const blocks = groupAgentDisplayItems(buildAgentDisplayItems(noPlan.concat(last)));
+  assert.deepEqual(blocks.map(block => block.kind === 'tools' ? 'tools' : block.item.kind), ['user', 'tools', 'proposal', 'user', 'tools', 'round_summary']);
+
+  const running = buildAgentDisplayItems(messages, { lastRoundOpen: true }).filter(item => item.kind === 'round_summary');
+  assert.deepEqual(running.map(item => item.key), ['summary-3'], 'a round still running on the server gets no summary yet');
+});
+
+test('a proposal waiting for a decision holds back the continue button until it is decided', async () => {
+  const proposalResult = (id, pending) => storedMessage(id, 'tool', {
+    content: `${JSON.stringify({ ok: true, proposal_id: id, pending_items: pending, reported_conflicts: 0 })}\n[提醒] 重复调用`,
+    tool_call_id: `call_p${id}`, tool_name: 'create_memory_proposal', tool_ok: true,
+  });
+  const decision = (id, proposalId) => storedMessage(id, 'event', { event: { kind: 'proposal_decision', proposal_id: proposalId, items: [] } });
+  assert.equal(hasUndecidedProposal([proposalResult(1, 2)]), true);
+  assert.equal(hasUndecidedProposal([proposalResult(1, 2), decision(2, 1)]), false);
+  assert.equal(hasUndecidedProposal([proposalResult(1, 0)]), false, 'a conflict-only proposal has nothing to decide');
+  assert.equal(hasUndecidedProposal([proposalResult(1, 2), decision(2, 7)]), true, 'another proposal\'s decision does not count');
+  assert.equal(hasUndecidedProposal([storedMessage(1, 'tool', { content: '{"ok":false,"error":"提案未创建"}', tool_name: 'create_memory_proposal', tool_ok: false })]), false);
+
+  let messages = [...planRound(1, TASK_PLAN), storedMessage(5, 'assistant', { content: '', tool_calls: [{ id: 'call_p9', name: 'create_memory_proposal', arguments: '{}' }] }), proposalResult(9, 1)];
+  installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages, running: false, context: CONTEXT, task_plan: TASK_PLAN });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/agent/proposals/9') {
+      return json({ id: 9, session_id: SESSION.id, character_id: 'char-a', summary: '虚构提案', status: 'pending', created_at: '', decided_at: null, items: [], evidence_messages: [] });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  await waitFor(() => assert.ok(view.container.querySelector('[data-round-summary]')));
+  assert.equal(view.queryByRole('button', { name: 'agent.continueRound' }), null);
+  cleanup();
+
+  messages = [...messages, decision(11, 9)];
+  const decided = renderPage(`session=${SESSION.id}`);
+  assert.ok(await decided.findByRole('button', { name: 'agent.continueRound' }));
+});
+
+test('the page shows round summaries and a continue button that sends the continue prompt', async () => {
+  const first = { ...TASK_PLAN, progress: '已读完第 0 批', next_round: '读第 1 批' };
+  const plan = { ...TASK_PLAN, progress: '已读完第 0–1 批', next_round: '读第 2 批' };
+  let messages = [...planRound(1, first), ...planRound(10, plan)];
+  let taskPlan = plan;
+  const calls = installFetch(call => {
+    if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages, running: false, context: CONTEXT, task_plan: taskPlan });
+    if (call.url === '/api/agent/status') return json(STATUS);
+    if (call.url === '/api/agent/chat') {
+      messages = [...messages, storedMessage(5, 'user', { content: call.body.content }), storedMessage(6, 'assistant', { content: '全部完成。' })];
+      taskPlan = { ...plan, steps: plan.steps.map(step => ({ ...step, status: 'completed' })) };
+      return sseResponse([['text', { text: '全部完成。' }], ['done', { status: 'done', rounds: 1 }]]);
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = renderPage(`session=${SESSION.id}`);
+  const [older, summary] = await waitFor(() => {
+    const elements = view.container.querySelectorAll('[data-round-summary]');
+    assert.equal(elements.length, 2);
+    return elements;
+  });
+  assert.equal(older.open, false, 'earlier cumulative summaries start collapsed');
+  assert.equal(summary.open, true, 'the latest summary is open');
+  assert.match(summary.textContent, /已读完第 0–1 批/);
+  assert.match(summary.textContent, /读第 2 批/);
+
+  fireEvent.click(await view.findByRole('button', { name: 'agent.continueRound' }));
+  await view.findByText('全部完成。');
+  assert.deepEqual(calls.find(call => call.url === '/api/agent/chat').body, { session_id: SESSION.id, content: 'agent.proposal.continuePrompt' });
+  await waitFor(() => assert.equal(view.queryByRole('button', { name: 'agent.continueRound' }), null, 'a finished plan offers no continue button'));
+  assert.equal(view.container.querySelectorAll('[data-round-summary]').length, 2, 'the answered round needs no summary');
 });
 
 test('manual compaction sends JSON, blocks decisions and sending, refreshes context, and never starts a round', async t => {

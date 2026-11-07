@@ -20,7 +20,8 @@ type DisplayItem =
   | { kind: 'tool'; key: string; callId: string; name: string; arguments: string; result: string | null; ok: boolean | null }
   | { kind: 'event'; key: string; event: AgentEventPayload }
   | { kind: 'memory'; key: string; note: AgentMemoryNoteData; undone: boolean }
-  | { kind: 'proposal'; key: string; proposalId: number };
+  | { kind: 'proposal'; key: string; proposalId: number }
+  | { kind: 'round_summary'; key: string; progress: string; nextRound: string };
 
 type ToolState = 'running' | 'ok' | 'error' | 'unknown';
 
@@ -66,9 +67,73 @@ function createdProposalId(name: string, result: string | null): number | null {
   }
 }
 
+/**
+ * 本会话里有没有还在等主人决定的提案：创建时含可执行项，之后还没有对应的决定记录。
+ * 这时继续由卡片上的「批准并继续」负责；另给一个「继续」会让提案悬着、Agent 接着往下做。
+ */
+export function hasUndecidedProposal(messages: readonly AgentMessageView[]): boolean {
+  const pending = new Set<number>();
+  for (const message of messages) {
+    if (message.role === 'tool' && message.tool_name === 'create_memory_proposal') {
+      try {
+        const parsed = JSON.parse(message.content.split('\n', 1)[0]) as { ok?: unknown; proposal_id?: unknown; pending_items?: unknown };
+        if (parsed.ok === true && typeof parsed.proposal_id === 'number' && typeof parsed.pending_items === 'number' && parsed.pending_items > 0) {
+          pending.add(parsed.proposal_id);
+        }
+      } catch {
+        // 不认识的结果不算待决定
+      }
+    } else if (message.event?.kind === 'proposal_decision') {
+      pending.delete(message.event.proposal_id);
+    }
+  }
+  return pending.size > 0;
+}
+
+interface RoundSummary {
+  progress: string;
+  nextRound: string;
+}
+
+/**
+ * 以工具调用收尾的回合（可执行提案或 round_complete 会立即结束本轮）模型看不到结果，也就没有收尾回复。
+ * 这一轮保存过任务计划时，用计划里的进度和下一轮补一段小结，挂在本轮最后一条 assistant 后面。
+ * 中断、出错和达到回合上限的回合已有提示，不补。`lastRoundOpen` 时最后一轮还在服务端运行，也不补。
+ */
+function roundSummaries(messages: AgentMessageView[], lastRoundOpen: boolean): Map<number, RoundSummary> {
+  const summaries = new Map<number, RoundSummary>();
+  let lastAssistant: AgentMessageView | null = null;
+  let plan: RoundSummary | null = null;
+  let stopped = false;
+  const finish = () => {
+    if (lastAssistant?.tool_calls?.length && plan && !stopped && (plan.progress || plan.nextRound)) {
+      summaries.set(lastAssistant.id, plan);
+    }
+    lastAssistant = null;
+    plan = null;
+    stopped = false;
+  };
+  for (const message of messages) {
+    if (message.role === 'user') finish();
+    else if (message.role === 'assistant') lastAssistant = message;
+    else if (message.event?.kind === 'task_plan') {
+      const { progress, next_round: nextRound } = message.event.plan ?? {};
+      plan = {
+        progress: typeof progress === 'string' ? progress.trim() : '',
+        nextRound: typeof nextRound === 'string' ? nextRound.trim() : '',
+      };
+    } else if (message.event?.kind === 'interrupted' || message.event?.kind === 'error' || message.event?.kind === 'round_limit') {
+      stopped = true;
+    }
+  }
+  if (!lastRoundOpen) finish();
+  return summaries;
+}
+
 /** 把存储的消息排成显示顺序：每轮先是回复正文，再是这轮的工具调用（与结果配对）。 */
-export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayItem[] {
+export function buildAgentDisplayItems(messages: AgentMessageView[], options: { lastRoundOpen?: boolean } = {}): DisplayItem[] {
   const undoneVersions = new Set(messages.flatMap(message => message.event?.kind === 'memory_undo' ? [message.event.version_id] : []));
+  const summaries = roundSummaries(messages, options.lastRoundOpen ?? false);
   const items: DisplayItem[] = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
@@ -98,6 +163,8 @@ export function buildAgentDisplayItems(messages: AgentMessageView[]): DisplayIte
         const note = rememberedNote(call.name, result ? result.content : null);
         if (note) items.push({ kind: 'memory', key: `memory-${note.versionId}`, note, undone: undoneVersions.has(note.versionId) });
       }
+      const summary = summaries.get(message.id);
+      if (summary) items.push({ kind: 'round_summary', key: `summary-${message.id}`, ...summary });
     } else if (message.role === 'event' && message.event && message.event.kind !== 'task_plan') {
       items.push({ kind: 'event', key: `m${message.id}`, event: message.event });
     }
@@ -386,6 +453,30 @@ function CompactionDivider({ summary, tokensBefore, appear = false }: { summary:
   );
 }
 
+/**
+ * 计划里的进度是累计的，每轮小结都会重复前面的内容：只展开最新的一段，较早的折叠成一行。
+ * 有了更新的小结后，原来展开的那段随之收起。
+ */
+function RoundSummaryNote({ progress, nextRound, latest }: RoundSummary & { latest: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <details
+      open={latest}
+      className="group rounded-xl border border-border-light bg-surface-2/60 px-3 py-1 text-xs leading-relaxed text-text-secondary [overflow-wrap:anywhere]"
+      data-round-summary=""
+    >
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1 font-medium text-text-primary [&::-webkit-details-marker]:hidden">
+        <span className="min-w-0 flex-1">{t('agent.roundSummary')}</span>
+        <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 text-text-muted transition-transform group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="pb-1.5">
+        {progress && <p className="whitespace-pre-wrap"><span className="font-medium">{t('agent.plan.progress')}：</span>{progress}</p>}
+        {nextRound && <p className="mt-1 whitespace-pre-wrap"><span className="font-medium">{t('agent.plan.nextRound')}：</span>{nextRound}</p>}
+      </div>
+    </details>
+  );
+}
+
 function EventNote({ event }: { event: Exclude<AgentEventPayload, { kind: 'compaction' | 'task_plan' }> }) {
   const { t } = useTranslation();
   const text = event.kind === 'interrupted'
@@ -419,16 +510,20 @@ interface Props {
   emptyState: React.ReactNode;
   /** 会话正在运行，提案暂时不能批准 */
   proposalBusy?: boolean;
+  /** 本轮在服务端后台运行，历史里的最后一轮还没结束 */
+  runningOnServer?: boolean;
   onProposalDecided?: (continueNext: boolean) => void;
 }
 
 /** 消息流。贴近底部时新内容自动滚到底；主人往上翻时不打扰。 */
-export default function AgentMessageList({ messages, live, emptyState, proposalBusy = false, onProposalDecided }: Props) {
+export default function AgentMessageList({ messages, live, emptyState, proposalBusy = false, runningOnServer = false, onProposalDecided }: Props) {
   const { t } = useTranslation();
   const history = useMemo(() => {
     const counts = new Map<string, number>();
-    return { blocks: groupAgentDisplayItems(buildAgentDisplayItems(messages), counts), counts };
-  }, [messages]);
+    const blocks = groupAgentDisplayItems(buildAgentDisplayItems(messages, { lastRoundOpen: runningOnServer }), counts);
+    const latestSummary = blocks.findLast(block => block.kind === 'item' && block.item.kind === 'round_summary');
+    return { blocks, counts, latestSummaryKey: latestSummary?.kind === 'item' ? latestSummary.item.key : null };
+  }, [messages, runningOnServer]);
   const liveBlocks = useMemo(
     () => (live ? groupLiveSegments(live.segments, new Map(history.counts)) : []),
     [live, history],
@@ -471,6 +566,9 @@ export default function AgentMessageList({ messages, live, emptyState, proposalB
         : <EventNote key={item.key} event={item.event} />;
     }
     if (item.kind === 'memory') return <AgentMemoryNote key={item.key} note={item.note} undone={item.undone} disabled={proposalBusy} />;
+    if (item.kind === 'round_summary') {
+      return <RoundSummaryNote key={item.key} progress={item.progress} nextRound={item.nextRound} latest={item.key === history.latestSummaryKey} />;
+    }
     return <ProposalCard key={item.key} proposalId={item.proposalId} busy={proposalBusy} onDecided={onProposalDecided} />;
   };
 

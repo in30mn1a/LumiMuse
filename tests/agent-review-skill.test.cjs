@@ -37,7 +37,7 @@ test('skill uses the shared tag source and spells out evidence, cross-batch and 
   assert.equal(result.ok, true);
   assert.equal(result.skill.content, MEMORY_REVIEW_SKILL.content);
   assert.ok(result.skill.content.includes(TAG_SPEC_PROMPT_SECTION));
-  for (const rule of ['get_memory_sources', 'search_memories', 'get_memories', 'folded', '宁长勿简', 'report_conflict', '不得因「只是时间变化」而跳过', 'retire', '置顶', '角色自称「我」', 'create_memory_proposal']) assert.ok(result.skill.content.includes(rule), rule);
+  for (const rule of ['get_memory_sources', 'search_memories', 'get_memories', 'folded', '宁长勿简', 'report_conflict', '不得因「只是时间变化」而跳过', 'retire', '置顶', '角色自称「我」', 'create_memory_proposal', 'status（如 archived）', '不要用 query_table 的 offset 翻页', 'all_batches_read', 'unread_batch_indices', '归档摘要同样宁长勿简', '逐字照抄', '写进 reason 或 evidence.note', '每轮至少读完 2 批', '矛盾建议退场', '只报告，不附退场']) assert.ok(result.skill.content.includes(rule), rule);
   assert.deepEqual(AGENT_SKILLS.map(skill => skill.name), ['memory-review']);
   assert.equal(loadSkillTool.schema.safeParse({ name: '../../secret' }).success, false);
 });
@@ -108,6 +108,64 @@ test('expired plans require preparation again and the new plan uses current targ
   const fresh = await execute(prepareMemoryReviewTool, { character_id: 'review-a' }, ctx);
   assert.equal(fresh.ok, true);
   assert.equal(fresh.total_memories, 2);
+});
+
+test('archived plans freeze membership, list targets that left the status, and track coverage on the server', async t => {
+  const { db, ctx } = setup(t, 3);
+  const insert = db.prepare('INSERT INTO memories (id, character_id, category, content, status, importance) VALUES (?, ?, ?, ?, ?, ?)');
+  for (let i = 0; i < 90; i += 1) {
+    insert.run(`archived-${String(i).padStart(3, '0')}`, 'review-a', '四季日常', `第${i}条虚构归档记忆：${'甲乙丙丁戊己庚辛壬癸'[i % 10]}${i}号细节。`, 'archived', 0.5);
+  }
+  insert.run('archived-other', 'review-b', '基础信息', '其他角色的归档内容。', 'archived', 0.5);
+  const plan = await execute(prepareMemoryReviewTool, { character_id: 'review-a', status: 'archived' }, ctx);
+  assert.equal(plan.ok, true, plan.error);
+  assert.equal(plan.status, 'archived');
+  assert.equal(plan.total_memories, 90);
+  assert.ok(plan.total_batches >= 3, `expected several batches, got ${plan.total_batches}`);
+
+  // 审查期间：一条 active 被归档（不进计划），一条计划成员被撤销归档（读取时列为 stale）
+  db.prepare("UPDATE memories SET status = 'archived' WHERE id = 'review-000'").run();
+  db.prepare("UPDATE memories SET status = 'active' WHERE id = 'archived-005'").run();
+  const order = [...Array(plan.total_batches).keys()].reverse();
+  const seen = [];
+  const stale = [];
+  for (const [step, index] of order.entries()) {
+    const result = await execute(readReviewBatchTool, { plan_id: plan.plan_id, character_id: 'review-a', batch_index: index }, ctx);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.status, 'archived');
+    assert.ok(result.memories.every(memory => memory.status === 'archived'));
+    seen.push(...result.memories.map(memory => memory.id));
+    stale.push(...result.stale_ids);
+    assert.equal(result.progress.read_batches, step + 1);
+    assert.deepEqual(result.progress.unread_batch_indices, order.slice(step + 1).sort((a, b) => a - b));
+    assert.equal(result.progress.all_batches_read, step === order.length - 1);
+  }
+  assert.equal(seen.length, 89);
+  assert.equal(new Set(seen).size, 89);
+  assert.equal(seen.includes('review-000'), false, 'newly archived rows stay out of the frozen plan');
+  assert.equal(seen.includes('archived-other'), false);
+  assert.deepEqual(stale, ['archived-005']);
+
+  const reread = await execute(readReviewBatchTool, { plan_id: plan.plan_id, character_id: 'review-a', batch_index: 0 }, ctx);
+  assert.equal(reread.progress.read_batches, plan.total_batches);
+  assert.equal(reread.progress.read_memories, 89);
+  assert.equal(reread.progress.all_batches_read, true);
+});
+
+test('plans in use slide their expiry while idle plans still expire', async t => {
+  const { ctx } = setup(t, 3);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-07T08:00:00Z') });
+  const plan = await execute(prepareMemoryReviewTool, { character_id: 'review-a' }, ctx);
+  const args = { plan_id: plan.plan_id, character_id: 'review-a', batch_index: 0 };
+  for (let i = 0; i < 3; i += 1) {
+    t.mock.timers.tick(MEMORY_REVIEW_PLAN_TTL_MS - 1000);
+    const result = await execute(readReviewBatchTool, args, ctx);
+    assert.equal(result.ok, true, `read ${i + 1} should keep the plan alive: ${result.error}`);
+  }
+  t.mock.timers.tick(MEMORY_REVIEW_PLAN_TTL_MS + 1);
+  const expired = await execute(readReviewBatchTool, args, ctx);
+  assert.equal(expired.ok, false);
+  assert.match(expired.error, /过期.*重新/);
 });
 
 test('empty roles return an empty plan and known credentials in batch data are redacted', async t => {

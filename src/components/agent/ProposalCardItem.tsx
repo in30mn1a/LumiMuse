@@ -219,9 +219,16 @@ function Evidence({ item, messages }: { item: ProposalItemView; messages: Map<st
   const { t } = useTranslation();
   const ids = item.evidence.message_ids;
   const note = item.evidence.note;
-  if (ids.length === 0 && (!note || note === NO_EVIDENCE_NOTE)) return null;
+  const ownerQuote = item.evidence.owner_quote;
+  if (ids.length === 0 && !ownerQuote && (!note || note === NO_EVIDENCE_NOTE)) return null;
   return (
     <div className="space-y-1.5">
+      {ownerQuote && (
+        <blockquote className="rounded-lg border-l-2 border-accent/40 bg-surface-2/40 px-2.5 py-1.5" data-owner-quote="">
+          <p className="mb-0.5 text-[11px] text-text-muted">{t('agent.proposal.ownerQuote')}</p>
+          <p className="whitespace-pre-wrap leading-relaxed">{ownerQuote}</p>
+        </blockquote>
+      )}
       {ids.length > 0 && (
         <details className="group">
           <summary className="inline-flex min-h-8 cursor-pointer list-none items-center text-[11px] font-medium text-accent-dark [&::-webkit-details-marker]:hidden">
@@ -311,6 +318,7 @@ export default function ProposalCardItem({ item, flags, messages, selection, und
           {flags.lowConfidence && ` · ${t('agent.proposal.flag.lowConfidence')}`}
         </span>
         {flags.noEvidence && <span className={`text-[11px] ${WARNING_CHIP}`}>{t('agent.proposal.flag.noEvidence')}</span>}
+        {flags.conflictRetire && <span className={`text-[11px] ${WARNING_CHIP}`} data-flag="conflict-retire">{t('agent.proposal.flag.conflictRetire')}</span>}
         {item.state !== 'pending' && (
           <span className={`ml-auto rounded-md border px-1.5 py-0.5 text-[11px] ${STATE_STYLE[item.state]}`} data-proposal-state={item.state}>
             {t(`agent.proposal.state.${item.state}`)}
@@ -321,6 +329,21 @@ export default function ProposalCardItem({ item, flags, messages, selection, und
       {flags.duplicateRiskCount !== null && (
         <p className={`text-[11px] ${WARNING_CHIP}`}>
           {formatTemplate(t('agent.proposal.flag.duplicateRisk'), { count: flags.duplicateRiskCount })}
+        </p>
+      )}
+      {flags.shrink && (
+        <p className={`text-[11px] ${WARNING_CHIP}`} data-flag="shrink">
+          {formatTemplate(t('agent.proposal.flag.shrink'), { percent: flags.shrink.percent, before: flags.shrink.before, after: flags.shrink.after })}
+        </p>
+      )}
+      {flags.missingQuotes.length > 0 && (
+        <p className={`text-[11px] ${WARNING_CHIP}`} data-flag="missing-quotes">
+          {formatTemplate(t('agent.proposal.flag.missingQuotes'), { quotes: flags.missingQuotes.map(quote => `「${quote}」`).join('') })}
+        </p>
+      )}
+      {flags.unfamiliarChars.length > 0 && (
+        <p className={`text-[11px] ${WARNING_CHIP}`} data-flag="unfamiliar-chars">
+          {formatTemplate(t('agent.proposal.flag.unfamiliarChars'), { chars: flags.unfamiliarChars.join('、') })}
         </p>
       )}
 

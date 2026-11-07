@@ -145,6 +145,7 @@ test('the system prompt carries the base rules, documents and session context', 
 
   const system = requests[0].messages[0].content;
   assert.ok(system.startsWith(AGENT_BASE_PROMPT));
+  assert.ok(AGENT_BASE_PROMPT.includes('本轮正文第一句就告诉主人'), 'system faults must be reported up front');
   assert.ok(system.indexOf('叫我队长。') > AGENT_BASE_PROMPT.length);
   assert.ok(system.indexOf('主人喜欢先看结论。') > system.indexOf('叫我队长。'));
   assert.match(system, /星野（char-1）/);
@@ -401,7 +402,8 @@ test('tool failures go back to the model and the turn keeps going', async t => {
   assert.deepEqual(results.map(item => item.ok), [false, false, false, false, false]);
   assert.match(results[0].error, /未知工具：missing_tool/);
   assert.match(results[1].error, /^参数无效：a:/);
-  assert.equal(results[2].error, '参数不是合法的 JSON');
+  assert.match(results[2].error, /^参数不是合法的 JSON：.*position 1/);
+  assert.match(results[2].error, /出错位置附近："\{" ⟨此处⟩ "not json"$/);
   assert.equal(results[3].error, '工具执行失败');
   assert.equal(results[4].error, '找不到这个角色');
   assertPaired(requests[1].messages);

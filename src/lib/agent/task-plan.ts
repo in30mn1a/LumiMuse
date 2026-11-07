@@ -10,15 +10,14 @@ export const agentTaskPlanSchema = z.object({
     status: z.enum(['pending', 'in_progress', 'completed']),
     result: z.string().trim().max(8000).optional().describe('该步骤实际得到的结果，不把读取算作审查完成'),
   })).min(1).max(40).superRefine((steps, ctx) => {
+    // 只校验 ID 唯一。进行中的步骤不限个数：审查时「读批次」和「出提案」本来就并行推进，
+    // 限成一个只会让模型反复报错重试（2026-11-06 实跑 7 次）。
     const ids = new Set<string>();
     for (let index = 0; index < steps.length; index += 1) {
       if (ids.has(steps[index].id)) {
         ctx.addIssue({ code: 'custom', path: [index, 'id'], message: '步骤 ID 不能重复' });
       }
       ids.add(steps[index].id);
-    }
-    if (steps.filter(step => step.status === 'in_progress').length > 1) {
-      ctx.addIssue({ code: 'custom', message: '一次只聚焦一个进行中的步骤' });
     }
   }),
   round_goal: z.string().trim().min(1).max(4000).describe('本轮要完成什么，以及完成的标准'),

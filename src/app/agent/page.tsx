@@ -12,7 +12,7 @@ import ContentState from '@/components/ui/ContentState';
 import ConfirmModal from '@/components/ui/ConfirmModal';
 import Modal from '@/components/ui/Modal';
 import AgentComposer from '@/components/agent/AgentComposer';
-import AgentMessageList from '@/components/agent/AgentMessageList';
+import AgentMessageList, { hasUndecidedProposal } from '@/components/agent/AgentMessageList';
 import AgentSessionList from '@/components/agent/AgentSessionList';
 import AgentSettingsDrawer from '@/components/agent/AgentSettingsDrawer';
 import AgentStatusBar from '@/components/agent/AgentStatusBar';
@@ -244,6 +244,11 @@ function AgentPageInner() {
     </div>
   );
 
+  // 计划还有没做完的步骤时，空闲状态下给一个「继续」按钮，省得主人一遍遍手打；有提案待决定时由卡片上的「批准并继续」负责
+  const canContinue = !sendPending && !chat.sending && !chat.serverRunning && !chat.compacting && !chat.loadError
+    && Boolean(chat.detail?.task_plan?.steps.some(step => step.status !== 'completed'))
+    && !hasUndecidedProposal(chat.detail?.messages ?? []);
+
   let body: ReactNode;
   if (activeId && chat.loadError) {
     body = (
@@ -269,6 +274,7 @@ function AgentPageInner() {
         live={chat.live}
         emptyState={emptyState}
         proposalBusy={sendPending || chat.sending || chat.serverRunning}
+        runningOnServer={chat.serverRunning}
         onProposalDecided={continueNext => void handleProposalDecided(continueNext)}
       />
     );
@@ -364,6 +370,7 @@ function AgentPageInner() {
           onCompact={() => void handleCompact()}
           compacting={chat.compacting}
           compactDisabled={sendPending || chat.sending || chat.serverRunning || !chat.detail?.messages.some(message => message.role !== 'event')}
+          onContinue={canContinue ? () => void handleSend(t('agent.proposal.continuePrompt')) : undefined}
         />
       </main>
 

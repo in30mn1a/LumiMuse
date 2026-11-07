@@ -15,7 +15,7 @@ const { MAX_MEMORY_CONTENT } = require('../src/lib/schemas.ts');
 const { AGENT_TOOLS, AGENT_WRITE_TOOLS } = require('../src/lib/agent/tools/index.ts');
 const { parseToolArguments, toolDefinitions } = require('../src/lib/agent/tools/registry.ts');
 const { NO_EVIDENCE_NOTE } = require('../src/lib/agent/proposals.ts');
-const { createAgentSession, listAgentMessages } = require('../src/lib/agent/store.ts');
+const { appendAgentMessage, createAgentSession, listAgentMessages } = require('../src/lib/agent/store.ts');
 const { runAgentTurn } = require('../src/lib/agent/loop.ts');
 
 const T0 = '2026-10-01T00:00:00.000Z';
@@ -144,6 +144,16 @@ function storedItems(db, proposalId) {
     after: JSON.parse(row.after_json),
   }));
 }
+
+test('registry: invalid JSON says why and where, so a long argument can be fixed', () => {
+  const near = (before, after) => `出错位置附近：${JSON.stringify(before)} ⟨此处⟩ ${JSON.stringify(after)}`;
+  const extraBrace = parseToolArguments(proposalTool, '{"character_id":"char-a","items":[]}}');
+  assert.equal(extraBrace.ok, false);
+  assert.match(extraBrace.error, /^参数不是合法的 JSON：.*position 36/);
+  assert.ok(extraBrace.error.endsWith(near('acter_id":"char-a","items":[]}', '}')), extraBrace.error);
+  const unquoted = parseToolArguments(proposalTool, '{"character_id": 123f4567, "limit": 3}');
+  assert.ok(unquoted.error.endsWith(near('{"character_id": 123', 'f4567, "limit": 3}')), unquoted.error);
+});
 
 test('registry: character writes require proposals and remember only adds Agent notes', () => {
   assert.deepEqual(AGENT_WRITE_TOOLS.map(tool => tool.name), ['create_memory_proposal', 'remember', 'update_task_plan']);
@@ -358,6 +368,156 @@ test('evidence: content, retire, merge, archive and conflicts need message ids o
     ]));
     assert.equal(outcome.result.ok, true, outcome.result.error);
     assert.deepEqual(storedItems(ctx.db, outcome.result.proposal_id)[0].evidence, { message_ids: [], note: NO_EVIDENCE_NOTE });
+  });
+});
+
+test('fidelity: source notes in new content are rejected unless the source already had them', async t => {
+  const rejected = [
+    ['archive', item('archive', { memory_ids: ['m-walk1', 'm-walk2'], fields: { content: '和主人散步（早期记录，无具体日期）：河边、公园。' }, evidence }), /第 1 项（archive）：正文含来源说明「早期记录」「无具体日期」/],
+    ['merge', item('merge', { memory_ids: ['m-cat1', 'm-cat2'], fields: { content: '主人养了一只橘猫（批量导入条目，无原文来源可核）' }, evidence }), /正文含来源说明「批量导入」/],
+    ['update', item('update', { memory_id: 'm-tea', fields: { content: '主人喜欢喝无糖乌龙茶（无原文依据）' }, evidence }), /正文含来源说明「无原文依据」/],
+    ['create', item('create', { fields: { content: '主人喜欢栗子蛋糕（早期记录）', category: '偏好习惯' }, evidence }), /正文含来源说明「早期记录」/],
+  ];
+  for (const [name, bad, expected] of rejected) {
+    await t.test(name, t2 => {
+      const ctx = setup(t2);
+      const outcome = propose(ctx, proposal([bad]));
+      assert.equal(outcome.result.ok, false);
+      assert.match(outcome.result.error, expected);
+      assert.match(outcome.result.error, /写进 reason 或 evidence\.note/);
+      assert.equal(proposalCount(ctx.db), 0);
+    });
+  }
+
+  await t.test('a phrase that was already in the source text is kept', t2 => {
+    const ctx = setup(t2);
+    addMemory(ctx.db, 'm-diary', '主人翻看早期记录时笑了');
+    const outcome = propose(ctx, proposal([
+      item('update', { memory_id: 'm-diary', fields: { content: '主人翻看早期记录时笑了，说想重温那段日子' }, evidence }),
+    ]));
+    assert.equal(outcome.result.ok, true, outcome.result.error);
+  });
+});
+
+test('fidelity: dropped quotes and new rare characters are created but flagged for the model', t => {
+  const ctx = setup(t);
+  addMemory(ctx.db, 'm-night1', '主人睡前向我撒娇，说「晚安，明天见。」');
+  addMemory(ctx.db, 'm-night2', '主人睡前说“做个好梦”，问我是否满足');
+  const outcome = propose(ctx, proposal([
+    item('archive', { memory_ids: ['m-night1', 'm-night2'], fields: { content: '主人睡前会撒嬻，用「晚安」开头祝我好梦，问我是否满足。' }, evidence }),
+    item('merge', { memory_ids: ['m-cat1', 'm-cat2'], fields: { content: '主人养了一只橘猫，家里有只橘色的猫' }, evidence }),
+  ]));
+  assert.equal(outcome.result.ok, true, outcome.result.error);
+  assert.equal(outcome.terminate, true);
+  assert.deepEqual(outcome.result.warnings, [
+    '第 1 项：正文没有逐字保留来源里的原话：「晚安，明天见」「做个好梦」；正文出现来源里没有的生僻字：嬻，请核对是不是错字。卡片已标出并默认不勾选',
+  ]);
+
+  const kept = propose(ctx, proposal([
+    item('archive', { memory_ids: ['m-walk1', 'm-walk2'], fields: { content: '和主人在河边、公园散步' }, evidence }),
+  ]));
+  assert.equal(kept.result.ok, true, kept.result.error);
+  assert.equal(kept.result.warnings, undefined);
+});
+
+test('fidelity: an update that drops most of the text is created but flagged', t => {
+  const ctx = setup(t);
+  addMemory(ctx.db, 'm-summary-long', `【学业】三月答辩。${'【兴趣】喜欢读小说和看电影。'.repeat(6)}`);
+  const outcome = propose(ctx, proposal([
+    item('update', { memory_id: 'm-summary-long', fields: { content: '【学业】四月答辩。' }, evidence }),
+  ]));
+  assert.equal(outcome.result.ok, true, outcome.result.error);
+  assert.deepEqual(outcome.result.warnings, ['第 1 项：正文比原文短了 90%（93 → 9 字），请核对是否删掉了内容。卡片已标出并默认不勾选']);
+});
+
+test('a conflict and the suggested retirement of its old memory fit in one proposal', t => {
+  const ctx = setup(t);
+  const outcome = propose(ctx, proposal([
+    item('report_conflict', { memory_ids: ['m-sweet', 'm-bake'], evidence: { message_ids: ['msg-a2'] } }),
+    item('retire', { memory_id: 'm-sweet', evidence: { message_ids: ['msg-a2'] } }),
+  ]));
+  assert.equal(outcome.result.ok, true, outcome.result.error);
+  assert.equal(outcome.terminate, true, 'the suggested retirement waits for the owner');
+  assert.deepEqual(storedItems(ctx.db, outcome.result.proposal_id).map(row => [row.op, row.state]), [['report_conflict', 'reported'], ['retire', 'pending']]);
+});
+
+test('ids: unique prefixes of at least 8 characters resolve to full ids; ambiguous ones list candidates', async t => {
+  const longIds = (ctx) => {
+    addMemory(ctx.db, 'abcd1234-5678-90ef-aaaa-000000000001', '主人周末去爬山');
+    addMemory(ctx.db, 'abcd1234-5678-90ef-aaaa-000000000002', '主人周末去海边');
+    addMemory(ctx.db, 'feed5678-aaaa-bbbb-cccc-000000000003', '主人喜欢栗子蛋糕');
+    insertRow(ctx.db, 'messages', { id: 'msgx1234-0001', conversation_id: 'conv-a', role: 'user', content: '我现在不爬山了', created_at: T0 });
+  };
+
+  await t.test('unique prefixes are stored as full ids', t2 => {
+    const ctx = setup(t2);
+    longIds(ctx);
+    const outcome = propose(ctx, proposal([
+      item('retire', { memory_id: 'feed5678-aaaa', evidence: { message_ids: ['msgx1234'] } }),
+      item('report_conflict', { memory_ids: ['abcd1234-5678-90ef-aaaa-000000000001', 'm-sweet'], evidence: { message_ids: ['msgx1234-0001'] } }),
+    ]));
+    assert.equal(outcome.result.ok, true, outcome.result.error);
+    const [retire, conflict] = storedItems(ctx.db, outcome.result.proposal_id);
+    assert.equal(retire.before.memories[0].id, 'feed5678-aaaa-bbbb-cccc-000000000003');
+    assert.deepEqual(retire.evidence.message_ids, ['msgx1234-0001']);
+    assert.deepEqual(conflict.before.memories.map(memory => memory.id), ['abcd1234-5678-90ef-aaaa-000000000001', 'm-sweet']);
+  });
+
+  await t.test('ambiguous, too short or glob prefixes are not guessed', t2 => {
+    const ctx = setup(t2);
+    longIds(ctx);
+    const ambiguous = propose(ctx, proposal([item('retire', { memory_id: 'abcd1234-5678', evidence })]));
+    assert.equal(ambiguous.result.ok, false);
+    assert.match(ambiguous.result.error, /记忆 ID abcd1234-5678 对应多条：abcd1234-5678-90ef-aaaa-000000000001、abcd1234-5678-90ef-aaaa-000000000002，请写完整 ID/);
+    assert.doesNotMatch(ambiguous.result.error, /不存在/, 'an ambiguous id is reported once, not also as missing');
+    const short = propose(ctx, proposal([item('retire', { memory_id: 'feed567', evidence })]));
+    assert.match(short.result.error, /记忆 feed567 不存在或不属于该角色/);
+    const glob = propose(ctx, proposal([item('retire', { memory_id: 'feed5678*', evidence })]));
+    assert.match(glob.result.error, /记忆 feed5678\* 不存在或不属于该角色/);
+    const otherCharacter = propose(ctx, proposal([item('retire', { memory_id: 'm-tea', evidence: { message_ids: ['msg-b1-prefix'] } })]));
+    assert.match(otherCharacter.result.error, /依据消息不存在或不属于该角色的对话：msg-b1-prefix/);
+    assert.equal(proposalCount(ctx.db), 0);
+  });
+});
+
+test('evidence: allowed fields are listed, the no-evidence note may explain itself, and owner quotes count', async t => {
+  await t.test('extra fields name what is allowed', t2 => {
+    const ctx = setup(t2);
+    const outcome = propose(ctx, proposal([item('archive', { memory_ids: ['m-walk1'], fields: { content: '摘要', tags: ['散步'] }, evidence })]));
+    assert.match(outcome.result.error, /archive 的 fields 不能包含：tags（允许：content）/);
+  });
+
+  await t.test('a note that starts with the no-evidence phrase is accepted as is', t2 => {
+    const ctx = setup(t2);
+    const note = `${NO_EVIDENCE_NOTE}（这批条目没有来源消息）`;
+    const outcome = propose(ctx, proposal([item('retire', { memory_id: 'm-tea', evidence: { message_ids: [], note } })]));
+    assert.equal(outcome.result.ok, true, outcome.result.error);
+    assert.deepEqual(storedItems(ctx.db, outcome.result.proposal_id)[0].evidence, { message_ids: [], note });
+  });
+
+  await t.test('a quote of the owner from this session is evidence', t2 => {
+    const ctx = setup(t2);
+    appendAgentMessage(ctx.db, ctx.sessionId, { role: 'user', content: '答辩应该是 27 号，不是 31 号' }, now());
+    appendAgentMessage(ctx.db, ctx.sessionId, { role: 'assistant', content: '好的，我记下了：答辩是 4 月 27 日' }, now());
+    const ok = propose(ctx, proposal([
+      item('update', { memory_id: 'm-tea', fields: { content: '主人喜欢喝无糖乌龙茶，答辩在 27 号' }, evidence: { message_ids: [], owner_quote: ' 答辩应该是27号 ' } }),
+    ]));
+    assert.equal(ok.result.ok, true, ok.result.error);
+    assert.deepEqual(storedItems(ctx.db, ok.result.proposal_id)[0].evidence, { message_ids: [], owner_quote: '答辩应该是27号' });
+
+    for (const [quote, why] of [['答辩是 4 月 27 日', 'the assistant said it, not the owner'], ['27号', 'too short to mean anything'], ['答辩应该是28号', 'not what the owner said']]) {
+      const bad = propose(ctx, proposal([item('retire', { memory_id: 'm-sweet', evidence: { message_ids: [], owner_quote: quote } })]));
+      assert.equal(bad.result.ok, false, why);
+      assert.match(bad.result.error, /owner_quote 要逐字摘自本会话里主人发的消息/, why);
+    }
+  });
+
+  await t.test('owner quotes need a session', t2 => {
+    const ctx = setup(t2);
+    appendAgentMessage(ctx.db, ctx.sessionId, { role: 'user', content: '这条可以退场了' }, now());
+    const outcome = propose({ ...ctx, sessionId: null }, proposal([item('retire', { memory_id: 'm-tea', evidence: { message_ids: [], owner_quote: '这条可以退场了' } })]));
+    assert.equal(outcome.result.ok, false);
+    assert.match(outcome.result.error, /owner_quote/);
   });
 });
 

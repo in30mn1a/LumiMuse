@@ -20,8 +20,9 @@ export const createMemoryProposalTool = defineWriteTool({
 - archive：把 memory_ids 归档成一条摘要，fields 只填 content（摘要正文）。
 - repair_candidate：把 candidate_id 指向的待修复提取记录补回成记忆。memories 列出要补回的每条记忆（各自必填 content、category），批准时整体生效。来源默认取原提取任务的消息，evidence.message_ids 只能在其中收窄。原任务已成功时补回可能重复，先用 list_repairable_candidates 看任务状态，再用 search_memories 查是否已有。
 - discard_candidate：丢弃 candidate_id 指向的待修复提取记录。
-- report_conflict：报告 memory_ids（至少 2 条）之间无法合并的矛盾。只记录发现，不会执行，也不结束本轮。
-依据：新增、修改正文、退场、合并、归档和矛盾报告必须在 evidence.message_ids 给出角色对话中的真实消息 ID；补回只在原任务没有可用的来源消息时才需要自己给出。确实没有原文依据时 message_ids 留空，note 写「${NO_EVIDENCE_NOTE}」。
+- report_conflict：报告 memory_ids（至少 2 条）之间无法合并的矛盾。只记录发现，不会执行，也不结束本轮。时间先后清楚时，可以在同一份提案里附上对旧记忆的 retire，卡片会标成「矛盾建议退场」并默认不勾选，由主人确认。
+依据：新增、修改正文、退场、合并、归档和矛盾报告必须在 evidence.message_ids 给出角色对话中的真实消息 ID；依据是主人在本会话里的指示（例如确认了日期、要求删掉某句话）时，把主人的原话逐字写进 evidence.owner_quote；补回只在原任务没有可用的来源消息时才需要自己给出。确实没有原文依据时 message_ids 留空，note 以「${NO_EVIDENCE_NOTE}」开头，后面可以写原因。
+记忆 ID 和消息 ID 可以写至少 8 位的唯一前缀，系统会补全；对应多条时会列出候选，按完整 ID 重试。
 「修改前」由系统从数据库读取，无需提供。任何一项不合法时整份提案不会创建，按返回的原因修正后重试。
 含可执行项时，提案生成后本轮立即结束，等主人决定；不要声称已经修改。`,
   schema: createMemoryProposalSchema,

@@ -689,3 +689,9 @@ test('live compaction segments run, finish in place, and disappear on failure', 
   const context = { window: 100, used: 10, threshold: 80, last_usage: null };
   assert.equal(applyAgentStreamEvent(base, { type: 'context', context }).context, context);
 });
+
+test('compaction prompt keeps in-progress batch and paging parameters', () => {
+  for (const term of ['plan_id', '记忆状态', '已读批次编号', 'offset', '排序方向', '已读到的范围']) {
+    assert.ok(COMPACTION_SYSTEM_PROMPT.includes(term), term);
+  }
+});

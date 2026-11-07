@@ -12,7 +12,8 @@ import { MAX_MEMORY_CONTENT, MAX_TAG_LENGTH, MAX_TAGS } from '@/lib/schemas';
 import { normalizeTags } from '@/lib/memory-tag-spec';
 import { getMergeSourceIssue, type MemoryMergeSourceIssue } from '@/lib/memory-merge';
 import { memoryBusinessSnapshot, type MemoryBusinessSnapshot } from '@/lib/memory-mutations';
-import { NO_EVIDENCE_NOTE } from './proposal-flags';
+import { contentFidelityIssues, findSourceNotePhrases } from './content-fidelity';
+import { NO_EVIDENCE_NOTE, declaresNoEvidence } from './proposal-flags';
 
 export const PROPOSAL_ITEM_OPS = [
   'create',
@@ -35,6 +36,12 @@ const MAX_TARGET_IDS = 500;
 const MAX_EVIDENCE_MESSAGES = 50;
 const MAX_REASON = 2000;
 const MAX_SUMMARY = 500;
+const MAX_OWNER_QUOTE = 500;
+/** 太短的「原话」（如「继续」「好」）说明不了任何修改 */
+const MIN_OWNER_QUOTE = 4;
+/** 模型常把 ID 截短（库里同时有 8、12、36 位的 ID）；至少这么长、且只对应一条时补全 */
+const MIN_ID_PREFIX = 8;
+const MAX_ID_CANDIDATES = 5;
 
 /** 模型可以提议的操作。 */
 const PROPOSABLE_OPS = [
@@ -75,7 +82,9 @@ const evidenceSchema = z.object({
   message_ids: z.array(z.string().min(1)).max(MAX_EVIDENCE_MESSAGES).default([])
     .describe('支持这项修改的角色对话消息 ID，须是查到的真实 ID'),
   note: z.string().max(MAX_REASON).optional()
-    .describe(`补充说明；确实没有原文依据时 message_ids 留空，note 写「${NO_EVIDENCE_NOTE}」`),
+    .describe(`补充说明；确实没有原文依据时 message_ids 留空，note 以「${NO_EVIDENCE_NOTE}」开头，后面可以写原因`),
+  owner_quote: z.string().max(MAX_OWNER_QUOTE).optional()
+    .describe('依据是主人在本会话里的指示时（例如确认了日期、要求删掉某句话），逐字摘录主人的原话'),
 });
 
 const proposalItemSchema = z.object({
@@ -103,6 +112,8 @@ type ProposalItemInput = CreateMemoryProposalInput['items'][number];
 export interface ProposalEvidence {
   message_ids: string[];
   note?: string;
+  /** 主人在本会话里说过的原话，服务端已核对 */
+  owner_quote?: string;
 }
 
 export interface ProposalMemoryTarget {
@@ -246,6 +257,20 @@ function toTarget(row: MemoryRow): ProposalMemoryTarget {
   return { id: row.id, snapshot: memoryBusinessSnapshot(row) };
 }
 
+function targetContent(target: ProposalMemoryTarget): string {
+  return typeof target.snapshot.content === 'string' ? target.snapshot.content : '';
+}
+
+/** 改写类操作的保真提示：卡片用同一组检查标出并默认不勾选，这里把同样的内容告诉模型。 */
+function fidelityWarning(op: string, content: string, sources: readonly string[]): string | null {
+  const { missingQuotes, unfamiliarChars, shrink } = contentFidelityIssues(op, content, sources);
+  const parts: string[] = [];
+  if (shrink) parts.push(`正文比原文短了 ${shrink.percent}%（${shrink.before} → ${shrink.after} 字），请核对是否删掉了内容`);
+  if (missingQuotes.length > 0) parts.push(`正文没有逐字保留来源里的原话：「${missingQuotes.join('」「')}」`);
+  if (unfamiliarChars.length > 0) parts.push(`正文出现来源里没有的生僻字：${unfamiliarChars.join('、')}，请核对是不是错字`);
+  return parts.length > 0 ? `${parts.join('；')}。卡片已标出并默认不勾选` : null;
+}
+
 function sameTagSet(a: readonly string[], b: readonly string[]): boolean {
   const set = new Set(a);
   return set.size === new Set(b).size && b.every(tag => set.has(tag));
@@ -288,6 +313,70 @@ function existingMessageIds(db: Database.Database, characterId: string, ids: rea
   `).all(characterId, ...ids) as { id: string }[]).map(row => row.id));
 }
 
+/**
+ * 把至少 MIN_ID_PREFIX 位、只对应一条的 ID 前缀补全成完整 ID。精确命中优先；对应多条时报错列出候选；
+ * 一条都没有就原样返回，由后面的校验报「不存在」。前缀里有 GLOB 通配符时不补全。
+ */
+function resolveIdPrefixes(
+  ids: readonly string[],
+  exact: (ids: readonly string[]) => Set<string>,
+  byPrefix: (pattern: string, limit: number) => string[],
+  label: string,
+  errors: string[],
+): string[] {
+  const found = exact(ids);
+  return ids.map(id => {
+    if (found.has(id) || id.length < MIN_ID_PREFIX || /[*?[\]]/.test(id)) return id;
+    const matches = byPrefix(`${id}*`, MAX_ID_CANDIDATES + 1);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      const shown = matches.slice(0, MAX_ID_CANDIDATES).join('、');
+      errors.push(`${label} ${id} 对应多条：${shown}${matches.length > MAX_ID_CANDIDATES ? ' 等' : ''}，请写完整 ID`);
+    }
+    return id;
+  });
+}
+
+/** 提案里的记忆 ID 与依据消息 ID 先补全前缀，存下的提案一律是完整 ID。 */
+function resolveItemIds(db: Database.Database, characterId: string, item: ProposalItemInput, errors: string[]): ProposalItemInput {
+  const memoryExact = (ids: readonly string[]) => new Set(ids.length === 0 ? [] : (db.prepare(`
+    SELECT id FROM memories WHERE character_id = ? AND id IN (${placeholders(ids.length)})
+  `).all(characterId, ...ids) as { id: string }[]).map(row => row.id));
+  const memoryPrefix = (pattern: string, limit: number) => (db.prepare(`
+    SELECT id FROM memories WHERE character_id = ? AND id GLOB ? ORDER BY id LIMIT ?
+  `).all(characterId, pattern, limit) as { id: string }[]).map(row => row.id);
+  const messagePrefix = (pattern: string, limit: number) => (db.prepare(`
+    SELECT m.id FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    WHERE c.character_id = ? AND m.id GLOB ? ORDER BY m.id LIMIT ?
+  `).all(characterId, pattern, limit) as { id: string }[]).map(row => row.id);
+
+  const resolved: ProposalItemInput = { ...item };
+  if (item.memory_id !== undefined) {
+    resolved.memory_id = resolveIdPrefixes([item.memory_id], memoryExact, memoryPrefix, '记忆 ID', errors)[0];
+  }
+  if (item.memory_ids !== undefined) {
+    resolved.memory_ids = resolveIdPrefixes(item.memory_ids, memoryExact, memoryPrefix, '记忆 ID', errors);
+  }
+  if (item.evidence?.message_ids?.length) {
+    resolved.evidence = {
+      ...item.evidence,
+      message_ids: resolveIdPrefixes(item.evidence.message_ids, ids => existingMessageIds(db, characterId, ids), messagePrefix, '消息 ID', errors),
+    };
+  }
+  return resolved;
+}
+
+/** owner_quote 必须出自本会话里主人发的消息；空白差异不算。 */
+function ownerSaid(db: Database.Database, sessionId: string | null, quote: string): boolean {
+  if (!sessionId) return false;
+  const compact = (text: string) => text.replace(/\s+/g, '');
+  const needle = compact(quote);
+  if ([...needle].length < MIN_OWNER_QUOTE) return false;
+  const rows = db.prepare("SELECT content FROM agent_messages WHERE session_id = ? AND role = 'user'").all(sessionId) as { content: string }[];
+  return rows.some(row => compact(row.content).includes(needle));
+}
+
 function parseIdList(value: string | null): string[] {
   if (!value) return [];
   try {
@@ -299,32 +388,43 @@ function parseIdList(value: string | null): string[] {
 }
 
 /**
- * 校验依据：message_ids 必须是该角色对话里的消息；没有消息依据时，必须是 required 以外的情况，
- * 或者明确写了「无原文依据」。
+ * 校验依据：message_ids 必须是该角色对话里的消息；owner_quote 必须出自本会话里主人的消息。
+ * required 时三者至少有一：消息依据、主人原话，或 note 以「无原文依据」开头。
  */
 function checkEvidence(
   db: Database.Database,
   characterId: string,
   input: ProposalItemInput['evidence'],
   required: boolean,
+  sessionId: string | null,
   errors: string[],
 ): ProposalEvidence {
   const messageIds = [...new Set(input?.message_ids ?? [])];
   const note = input?.note?.trim() || undefined;
+  const ownerQuote = input?.owner_quote?.trim() || undefined;
   if (messageIds.length > 0) {
     const found = existingMessageIds(db, characterId, messageIds);
     const missing = messageIds.filter(id => !found.has(id));
     if (missing.length > 0) errors.push(`依据消息不存在或不属于该角色的对话：${missing.join('、')}`);
-  } else if (required && note !== NO_EVIDENCE_NOTE) {
-    errors.push(`缺少依据：请在 evidence.message_ids 给出来源消息 ID；确实没有原文依据时，note 写「${NO_EVIDENCE_NOTE}」`);
   }
-  return note === undefined ? { message_ids: messageIds } : { message_ids: messageIds, note };
+  if (ownerQuote !== undefined && !ownerSaid(db, sessionId, ownerQuote)) {
+    errors.push(`owner_quote 要逐字摘自本会话里主人发的消息（至少 ${MIN_OWNER_QUOTE} 个字），没有找到：${ownerQuote}`);
+  }
+  if (required && messageIds.length === 0 && ownerQuote === undefined && !declaresNoEvidence(note)) {
+    errors.push(`缺少依据：请在 evidence.message_ids 给出来源消息 ID；依据是主人在本会话里的指示时，把原话逐字写进 owner_quote；确实没有原文依据时，note 以「${NO_EVIDENCE_NOTE}」开头`);
+  }
+  return {
+    message_ids: messageIds,
+    ...(note === undefined ? {} : { note }),
+    ...(ownerQuote === undefined ? {} : { owner_quote: ownerQuote }),
+  };
 }
 
 function prepareItem(
   db: Database.Database,
   characterId: string,
   item: ProposalItemInput,
+  sessionId: string | null,
   errors: string[],
 ): PreparedItem | null {
   const rule = OP_RULES[item.op];
@@ -339,7 +439,7 @@ function prepareItem(
       errors.push(`${item.op} 不使用 fields`);
     } else {
       const extra = Object.keys(item.fields).filter(key => !rule.fields!.includes(key as MemoryField));
-      if (extra.length > 0) errors.push(`${item.op} 的 fields 不能包含：${extra.join('、')}`);
+      if (extra.length > 0) errors.push(`${item.op} 的 fields 不能包含：${extra.join('、')}（允许：${rule.fields.join('、')}）`);
     }
   }
   if (rule.memoryId && item.memory_id === undefined) errors.push(`${item.op} 需要 memory_id`);
@@ -362,11 +462,20 @@ function prepareItem(
   let evidenceInput = item.evidence;
   let warning: string | null = null;
 
+  /** 来源与依据说明只该写在 reason 或 evidence.note 里，写进正文会随记忆注入角色聊天。来源原文本来就有的词不算。 */
+  const checkSourceNotes = (content: string, sources: readonly string[], label: string) => {
+    const phrases = findSourceNotePhrases(content, sources);
+    if (phrases.length > 0) {
+      errors.push(`${label}正文含来源说明「${phrases.join('」「')}」：来源和依据写进 reason 或 evidence.note，正文只写记忆本身`);
+    }
+  };
+
   /** create 与 repair_candidate 的新记忆：必填正文和分类，与已有 active 记忆完全相同则没有意义。 */
   const checkNewMemory = (memory: MemoryFields, path: string, label: string) => {
     if (memory.content === undefined) errors.push(`${item.op} 需要 ${path}.content`);
     if (memory.category === undefined) errors.push(`${item.op} 需要 ${path}.category`);
     if (!memory.content) return;
+    checkSourceNotes(memory.content, [], label);
     const duplicate = db.prepare(`
       SELECT id FROM memories WHERE character_id = ? AND status = 'active' AND content = ? LIMIT 1
     `).get(characterId, memory.content) as { id: string } | undefined;
@@ -400,6 +509,10 @@ function prepareItem(
       const changes = changedFields(fields, target.snapshot);
       if (Object.keys(changes).length === 0) errors.push(`对记忆 ${row.id} 没有实际改动`);
       evidenceRequired = changes.content !== undefined;
+      if (changes.content) {
+        checkSourceNotes(changes.content, [targetContent(target)], '');
+        warning = fidelityWarning(item.op, changes.content, [targetContent(target)]);
+      }
       after = changes;
       break;
     }
@@ -437,6 +550,11 @@ function prepareItem(
           }
         }
         if (fields.content === undefined) errors.push('archive 需要 fields.content（摘要正文）');
+      }
+      if (item.op !== 'report_conflict' && fields.content) {
+        const sources = targets.map(targetContent);
+        checkSourceNotes(fields.content, sources, '');
+        warning = fidelityWarning(item.op, fields.content, sources);
       }
       before = { memories: targets };
       memoryTargets = item.op === 'report_conflict' ? [] : ids;
@@ -513,7 +631,7 @@ function prepareItem(
     }
   }
 
-  const evidence = checkEvidence(db, characterId, evidenceInput, evidenceRequired, errors);
+  const evidence = checkEvidence(db, characterId, evidenceInput, evidenceRequired, sessionId, errors);
   if (errors.length > startErrors) return null;
   return {
     op: item.op,
@@ -549,10 +667,11 @@ export function createMemoryProposal(
   const prepared: PreparedItem[] = [];
   const memoryClaims = new Map<string, number>();
   const candidateClaims = new Map<number, number>();
-  input.items.forEach((item, index) => {
+  input.items.forEach((rawItem, index) => {
     const seq = index + 1;
     const itemErrors: string[] = [];
-    const ready = prepareItem(db, characterId, item, itemErrors);
+    const item = resolveItemIds(db, characterId, rawItem, itemErrors);
+    const ready = itemErrors.length === 0 ? prepareItem(db, characterId, item, context.sessionId, itemErrors) : null;
     if (ready) {
       // 同一提案里两项动同一条记忆，后一项批准时必然过期，不如创建时就指出
       for (const id of ready.memoryTargets) {

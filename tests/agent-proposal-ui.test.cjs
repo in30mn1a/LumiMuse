@@ -229,6 +229,10 @@ test('flags: low confidence, no evidence and a succeeded original task leave an 
   assert.equal(proposalItemFlags({ ...base, evidence: { message_ids: [] } }).noEvidence, false,
     'evidence that is optional and simply absent is not flagged');
   assert.equal(proposalItemFlags({ ...base, evidence: { message_ids: ['msg-1'], note: '无原文依据' } }).noEvidence, false);
+  assert.equal(proposalItemFlags({ ...base, evidence: { message_ids: [], note: '无原文依据（导入时没有来源）' } }).noEvidence, true,
+    'a note that starts with the phrase still declares no evidence');
+  assert.equal(proposalItemFlags({ ...base, evidence: { message_ids: [], note: '无原文依据', owner_quote: '答辩是 27 号' } }).noEvidence, false,
+    'what the owner said in this session is evidence');
 
   const repair = { op: 'repair_candidate', evidence: { message_ids: ['msg-1'] }, confidence: 0.9 };
   const succeeded = proposalItemFlags({ ...repair, before: { candidate: candidate(1, { status: 'failed', result_committed: true, result_insert_count: 3 }) } });
@@ -238,6 +242,105 @@ test('flags: low confidence, no evidence and a succeeded original task leave an 
   assert.equal(proposalItemFlags({ ...repair, before: { candidate: candidate(1, null) } }).duplicateRiskCount, null);
   assert.equal(proposalItemFlags({ ...repair, op: 'discard_candidate', before: { candidate: candidate(1, { status: 'done', result_committed: true, result_insert_count: 1 }) } }).duplicateRiskCount, null,
     'discarding cannot duplicate anything');
+});
+
+test('flags: rewrites that drop source quotes or add rare characters start unchecked', () => {
+  const sources = { memories: [
+    { id: 'm-1', snapshot: snapshot('用户睡前向我撒娇，说「晚安，明天见。」') },
+    { id: 'm-2', snapshot: snapshot('用户睡前说“做个好梦”') },
+  ] };
+  const archive = { op: 'archive', evidence: { message_ids: ['msg-1'] }, confidence: 0.9, before: sources };
+  const clean = proposalItemFlags({ ...archive, after: { content: '用户睡前向我撒娇，说「晚安，明天见」「做个好梦」' } });
+  assert.deepEqual([clean.missingQuotes, clean.unfamiliarChars], [[], []]);
+  assert.equal(isCheckedByDefault(clean), true);
+
+  const lossy = proposalItemFlags({ ...archive, after: { content: '用户睡前会撒嬻，用「晚安」开头祝我好梦' } });
+  assert.deepEqual(lossy.missingQuotes, ['晚安，明天见', '做个好梦']);
+  assert.deepEqual(lossy.unfamiliarChars, ['嬻']);
+  assert.equal(isCheckedByDefault(lossy), false);
+
+  const tagOnly = proposalItemFlags({ ...archive, op: 'update', before: { memories: [sources.memories[0]] }, after: { tags: ['睡前'] } });
+  assert.deepEqual([tagOnly.missingQuotes, tagOnly.unfamiliarChars], [[], []], 'an update that leaves the text alone is not checked');
+  const create = proposalItemFlags({ ...archive, op: 'create', before: null, after: { content: '用户会撒嬻', category: 'fact' } });
+  assert.deepEqual(create.unfamiliarChars, [], 'new memories have no source text to compare against');
+
+  const longText = `【学业】三月答辩。${'【兴趣】喜欢读小说和看电影。'.repeat(6)}`;
+  const cut = proposalItemFlags({ ...archive, op: 'update', before: { memories: [{ id: 'm-7', snapshot: snapshot(longText) }] }, after: { content: '【学业】四月答辩。' } });
+  assert.deepEqual(cut.shrink, { before: 93, after: 9, percent: 90 });
+  assert.equal(isCheckedByDefault(cut), false);
+  assert.equal(lossy.shrink, null, 'archive summaries are not length-checked');
+});
+
+test('a retire that answers a conflict in the same proposal is flagged and left unchecked', async () => {
+  const conflict = item(10, 'report_conflict', {
+    state: 'reported',
+    evidence: { message_ids: ['msg-1'] },
+    before: { memories: [{ id: 'm-old-plan', snapshot: snapshot('用户打算去 A 城读书') }, { id: 'm-new-plan', snapshot: snapshot('用户最后选了 B 城') }] },
+  });
+  const suggested = item(11, 'retire', {
+    evidence: { message_ids: ['msg-1'] },
+    before: { memories: [{ id: 'm-old-plan', snapshot: snapshot('用户打算去 A 城读书') }] },
+    after: { status: 'superseded' },
+  });
+  const unrelated = item(12, 'retire', {
+    evidence: { message_ids: ['msg-1'] },
+    before: { memories: [{ id: 'm-chore', snapshot: snapshot('用户周三要交房租') }] },
+    after: { status: 'superseded' },
+  });
+  assert.equal(proposalItemFlags(suggested).conflictRetire, false, 'without the proposal context nothing is flagged');
+  const flagged = proposalItemFlags(suggested, { conflictMemoryIds: new Set(['m-old-plan', 'm-new-plan']) });
+  assert.equal(flagged.conflictRetire, true);
+  assert.equal(isCheckedByDefault(flagged), false);
+
+  installFetch(call => {
+    if (call.url === proposalUrl && call.method === 'GET') return json(proposalView({ items: [conflict, suggested, unrelated] }));
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const { container } = await renderCard();
+  assert.equal(checkbox(container, 11).checked, false);
+  assert.equal(checkbox(container, 12).checked, true);
+  assert.equal(itemElement(container, 11).querySelector('[data-flag="conflict-retire"]').textContent, '矛盾建议退场，需要你确认');
+  assert.equal(itemElement(container, 12).querySelector('[data-flag="conflict-retire"]') === null, true);
+});
+
+test('the card shows the owner quote as evidence and keeps the item checked', async () => {
+  const quoted = item(9, 'retire', {
+    evidence: { message_ids: [], owner_quote: '答辩应该是 27 号' },
+    before: { memories: [{ id: 'm-8', snapshot: snapshot('用户 3 月 31 日完成答辩') }] },
+    after: { status: 'superseded' },
+  });
+  installFetch(call => {
+    if (call.url === proposalUrl && call.method === 'GET') return json(proposalView({ items: [quoted] }));
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const { container } = await renderCard();
+  assert.equal(checkbox(container, 9).checked, true);
+  const quote = itemElement(container, 9).querySelector('[data-owner-quote]');
+  assert.equal(quote.textContent, '依据：主人在本会话里说过答辩应该是 27 号');
+  assert.doesNotMatch(itemElement(container, 9).textContent, /无原文依据/);
+});
+
+test('the card lists dropped quotes and rare characters and leaves the item unchecked', async () => {
+  const lossy = item(8, 'archive', {
+    evidence: { message_ids: ['msg-1'] },
+    before: { memories: [
+      { id: 'm-5', snapshot: snapshot('用户睡前向我撒娇，说「晚安，明天见。」') },
+      { id: 'm-6', snapshot: snapshot('用户睡前说“做个好梦”') },
+    ] },
+    after: { content: '用户睡前会撒嬻，用「晚安」开头祝我好梦' },
+  });
+  installFetch(call => {
+    if (call.url === proposalUrl && call.method === 'GET') return json(proposalView({ items: [PENDING_ITEMS[0], lossy] }));
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const { container } = await renderCard();
+  assert.equal(checkbox(container, 1).checked, true);
+  assert.equal(checkbox(container, 8).checked, false);
+  const element = itemElement(container, 8);
+  assert.equal(element.querySelector('[data-flag="missing-quotes"]').textContent, '新正文没有逐字保留来源里的原话：「晚安，明天见」「做个好梦」');
+  assert.equal(element.querySelector('[data-flag="unfamiliar-chars"]').textContent, '新正文出现来源里没有的生僻字：嬻，可能是错字');
+  assert.equal(element.querySelector('[data-flag="shrink"]') === null, true);
+  assert.equal(itemElement(container, 1).querySelector('[data-flag]') === null, true);
 });
 
 test('repair flags use the task\'s current state while the proposal keeps its historical snapshot', async () => {

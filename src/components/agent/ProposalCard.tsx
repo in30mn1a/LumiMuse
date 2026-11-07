@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProposalEvidenceMessage, ProposalItemView, ProposalView } from '@/lib/agent/proposals';
-import { isCheckedByDefault, proposalItemFlags } from '@/lib/agent/proposal-flags';
+import { conflictMemoryIds, isCheckedByDefault, proposalItemFlags } from '@/lib/agent/proposal-flags';
 import { getErrorMessage, HttpResponseError, parseJsonResponse } from '@/lib/http';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
@@ -15,8 +15,9 @@ function isPendingDecision(item: ProposalItemView): boolean {
 }
 
 function defaultSelection(view: ProposalView): Set<number> {
+  const conflicts = conflictMemoryIds(view.items);
   return new Set(view.items
-    .filter(item => isPendingDecision(item) && isCheckedByDefault(proposalItemFlags(item)))
+    .filter(item => isPendingDecision(item) && isCheckedByDefault(proposalItemFlags(item, { conflictMemoryIds: conflicts })))
     .map(item => item.id));
 }
 
@@ -153,8 +154,9 @@ export default function ProposalCard({ proposalId, initialView, busy = false, de
     }
   };
 
+  const conflictTargets = conflictMemoryIds(conflicts);
   const renderItem = (item: ProposalItemView) => {
-    const flags = proposalItemFlags(item);
+    const flags = proposalItemFlags(item, { conflictMemoryIds: conflictTargets });
     const selectable = decidable && isPendingDecision(item);
     return (
       <ProposalCardItem

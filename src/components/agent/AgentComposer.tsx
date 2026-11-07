@@ -23,10 +23,12 @@ interface Props {
   onCompact?: () => void;
   compacting?: boolean;
   compactDisabled?: boolean;
+  /** 任务计划还有没做完的步骤、会话空闲时提供：点一下等于发送「继续」 */
+  onContinue?: () => void;
 }
 
 /** Agent 输入框，布局同聊天页。桌面 Enter 发送、Shift+Enter 换行；触屏上回车只换行，发送走按钮。 */
-export default function AgentComposer({ busy, canStop, onSend, onStop, model, context = null, onCompact, compacting = false, compactDisabled = true }: Props) {
+export default function AgentComposer({ busy, canStop, onSend, onStop, model, context = null, onCompact, compacting = false, compactDisabled = true, onContinue }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState('');
   const [enterInsertsNewline, setEnterInsertsNewline] = useState(false);
@@ -69,6 +71,13 @@ export default function AgentComposer({ busy, canStop, onSend, onStop, model, co
     // 手机底边只让出 home indicator 本身（安全区减 1rem，无安全区保底 0.5rem）
     <div className="px-2.5 pb-[max(0.5rem,calc(env(safe-area-inset-bottom)_-_1rem))] md:px-5 md:pb-4 md:pt-1 lg:px-6">
       <div className="mx-auto max-w-3xl">
+        {onContinue && !busy && !canStop && (
+          <div className="mb-1.5 flex">
+            <button type="button" onClick={onContinue} className="soft-button soft-button-secondary min-h-9 rounded-xl px-3 text-xs">
+              {t('agent.continueRound')}
+            </button>
+          </div>
+        )}
         <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[minmax(0,1fr)_auto] md:gap-y-1">
           <div className="col-start-1 row-start-1 min-w-0 md:col-span-2 md:px-2 md:pt-1">
             <textarea

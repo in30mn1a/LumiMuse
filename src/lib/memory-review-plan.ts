@@ -1,6 +1,6 @@
 /**
- * AI 整理批次计划：一次性冻结 memory id 成员，跨请求稳定取批。
- * 进程内 Map + TTL（项目假设单写入实例）。
+ * 记忆审查批次计划：一次性冻结某一状态的 memory id 成员，跨请求稳定取批，并记录读过哪些批。
+ * 进程内 Map + 滑动 TTL（每次取批顺延；项目假设单写入实例）。
  */
 import {
   buildMemoryReviewBatches,
@@ -14,15 +14,24 @@ export const PLAN_NOT_FOUND_CODE = 'PLAN_NOT_FOUND';
 export type MemoryReviewPlan = {
   planId: string;
   characterId: string;
+  /** 计划成员所属的记忆状态，读取时只认仍处于该状态的条目 */
+  status: string;
   createdAt: number;
   expiresAt: number;
-  /** 计划时点全部 active id（稳定序展平后的并集顺序：按 batches 拼接）。 */
+  ttlMs: number;
+  /** 计划时点该状态的全部 id（稳定序展平后的并集顺序：按 batches 拼接）。 */
   memoryIds: string[];
   batches: string[][];
+  /** 已成功读取的批次编号；覆盖进度由服务端统计，不靠模型自己记 */
+  readBatches: Set<number>;
+  /** 读取时实际返回了正文的条目 */
+  readMemoryIds: Set<string>;
 };
 
 export type CreateMemoryReviewPlanParams = {
   characterId: string;
+  /** 默认 active */
+  status?: string;
   memories: MemoryReviewClusterItem[];
   now?: number;
   ttlMs?: number;
@@ -62,10 +71,14 @@ export function createMemoryReviewPlan(params: CreateMemoryReviewPlanParams): Me
   const plan: MemoryReviewPlan = {
     planId: params.planId ?? crypto.randomUUID(),
     characterId: params.characterId,
+    status: params.status ?? 'active',
     createdAt: now,
     expiresAt: now + ttlMs,
+    ttlMs,
     memoryIds,
     batches,
+    readBatches: new Set(),
+    readMemoryIds: new Set(),
   };
   planCache.set(plan.planId, plan);
   return plan;
@@ -96,5 +109,7 @@ export function getMemoryReviewPlanBatch(params: {
   if (!Number.isInteger(params.batchIndex) || params.batchIndex < 0 || params.batchIndex >= plan.batches.length) {
     throw new MemoryReviewPlanError('BATCH_INDEX_OUT_OF_RANGE', 'batch_index out of range');
   }
+  // 持续使用的计划不过期：长任务中途过期会丢掉已读进度，只能从头再读
+  plan.expiresAt = now + plan.ttlMs;
   return { plan, batchIds: plan.batches[params.batchIndex] };
 }

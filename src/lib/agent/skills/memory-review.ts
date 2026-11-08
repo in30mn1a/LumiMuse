@@ -22,6 +22,8 @@ export const MEMORY_REVIEW_SKILL = {
 不要只比较同批条目。对每条有疑点的记忆，用 search_memories 在该角色全部 active 记忆中查询同一主体、事实和主题，必要时换措辞并翻页。
 vector_used 为 false 时，关键词未命中不代表没有关联；继续读后续批次并保留待比对事项。措辞差异大的矛盾不能仅靠词面排除。
 修改正文、合并或判断矛盾前，用 get_memory_sources 读取真实来源消息及上下文。正文只能依据原文修改，不得凭推断补全。
+来源粒度看 source_attribution.granularity：message 表示模型逐条选定且编号经过校验，编号合法不等于内容真实；batch 是整批兜底范围，mixed 含逐条与较粗来源，unknown 是未标注或无效标注。batch、mixed、unknown 的来源 ID 只是待核实的来源范围，不得将所有关联消息都当成直接证据；逐条阅读原文，只把实际支撑判断的真实消息 ID 写入 evidence.message_ids。
+确认来源范围过宽或关联错误时，用 create_memory_proposal 的 update 显式设置 fields.source_msg_ids 为完整、实际支撑正文的消息 ID 列表；可以补上已核实的遗漏来源，不能凭推断编造。[] 表示清空来源，需说明依据；未传该字段不会修改来源。evidence.message_ids 只是提案依据，不能代替来源字段。单独修正来源时保留原正文，等待主人批准后生效。
 读取工具的结果显示 folded 时，用其中原参数重新调用；需要完整条目时用 get_memories，不能把占位符当成原文或编造消息 ID。写入工具的结果被折叠时不得重复 remember 或重复创建原提案。
 跨批发现仍要使用真实 memory_ids 和 evidence.message_ids；实在没有来源，明确写 note 为「无原文依据」。
 

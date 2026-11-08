@@ -157,6 +157,36 @@ function assertUndoRejected(ctx, proposalId, itemId, pattern) {
   assert.equal(itemRow(ctx.db, itemId).state, 'applied');
 }
 
+test('撤销来源修正或清空会恢复完整旧来源、粒度和其他 metadata', async t => {
+  for (const granularity of ['unknown', 'message', 'batch', 'mixed']) {
+    for (const sources of [['msg-a2'], []]) {
+      await t.test(`${granularity}-${sources.length ? 'replace' : 'clear'}`, subtest => {
+        const ctx = setup(subtest);
+        const metadata = { note: '原始附注' };
+        if (granularity !== 'unknown') metadata.sourceAttribution = { granularity };
+        ctx.db.prepare("UPDATE memories SET source_msg_ids = ?, metadata = ? WHERE id = 'm-tea'")
+          .run(JSON.stringify(['msg-a1', 'msg-a2']), JSON.stringify(metadata));
+        const before = snapshot(ctx.db, 'm-tea');
+        const proposal = proposeAndApply(ctx, [item('update', { memory_id: 'm-tea', fields: { source_msg_ids: sources } })]);
+        assert.deepEqual(JSON.parse(memory(ctx.db, 'm-tea').source_msg_ids), sources);
+        assert.equal(JSON.parse(memory(ctx.db, 'm-tea').metadata).sourceAttribution.granularity, sources.length ? 'message' : 'unknown');
+        const outcome = undo(ctx, proposal.id, proposal.itemIds[0]);
+        assert.equal(outcome.ok, true, outcome.error);
+        assert.deepEqual(snapshot(ctx.db, 'm-tea'), before);
+        assert.deepEqual(embeddingTaskIds(ctx.db), []);
+        assert.equal(undoRevisions(ctx.db, proposal.itemIds[0]).length, 1);
+      });
+    }
+  }
+});
+
+test('来源修正批准后又被修改时，撤销拒绝覆盖后续来源', t => {
+  const ctx = setup(t);
+  const proposal = proposeAndApply(ctx, [item('update', { memory_id: 'm-tea', fields: { source_msg_ids: ['msg-a2'] } })]);
+  applyMemoryUpdate(ctx.db, 'm-tea', { source_msg_ids: ['msg-a1', 'msg-a2'] }, now());
+  assertUndoRejected(ctx, proposal.id, proposal.itemIds[0], /m-tea.*批准后又被改动/);
+});
+
 test('undo update restores only the changed fields and leaves later chat and memories alone', t => {
   const ctx = setup(t);
   const original = snapshot(ctx.db, 'm-tea');

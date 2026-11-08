@@ -12,7 +12,8 @@ import { applyBackgroundSystemPrompt } from '@/lib/background-system-prompt';
 import { loadCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '@/lib/character-task-models';
 import { buildBackgroundChatExtraBody, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
-import { parseMemoryMetadata } from '@/lib/metadata';
+import { getMemorySourceAttribution, parseMemoryMetadata } from '@/lib/metadata';
+import type { MemorySourceAttribution } from '@/lib/metadata';
 import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { contentSimilarity, supersedeTextSimilarity } from '@/lib/text-similarity';
 // 仅类型导入：编译期擦除，不会与 memory-extraction-reference → memory-retrieval → memory-engine
@@ -271,6 +272,14 @@ function mergeMemories(existing: Memory[], newMemories: Memory[]): Memory[] {
       const threshold = shorterLen < 20 ? 0.85 : 0.72;
       if (bestSimilarity >= threshold) {
         const existingEntry = result[bestIndex];
+        const existingAttribution = getMemorySourceAttribution(existingEntry.metadata);
+        const newAttribution = getMemorySourceAttribution(newEntry.metadata);
+        // 未标注旧来源与批次兜底仍保持未标注，避免无变化提取制造一次有效更新。
+        const sourceAttribution = existingAttribution.granularity === 'unknown' && newAttribution.granularity !== 'message'
+          ? undefined
+          : existingAttribution.granularity === newAttribution.granularity
+            ? existingAttribution
+            : { granularity: 'mixed' as const };
         result[bestIndex] = {
           ...existingEntry,
           content: newEntry.content.length > existingEntry.content.length ? newEntry.content : existingEntry.content,
@@ -280,6 +289,7 @@ function mergeMemories(existing: Memory[], newMemories: Memory[]): Memory[] {
           memory_kind: newEntry.importance >= existingEntry.importance ? newEntry.memory_kind : existingEntry.memory_kind,
           importance: Math.max(existingEntry.importance, newEntry.importance),
           emotional_weight: Math.max(existingEntry.emotional_weight, newEntry.emotional_weight),
+          metadata: sourceAttribution ? { ...existingEntry.metadata, sourceAttribution } : existingEntry.metadata,
           updated_at: new Date().toISOString(),
         };
         continue;
@@ -348,6 +358,7 @@ interface RawMemoryData {
   importance: number;
   emotional_weight: number;
   lifecycle_action: 'insert' | 'upsert' | 'supersede' | 'ignore';
+  source_refs?: unknown;
   /** 阶段二模型指认的「被取代/被合并」目标记忆 id；阶段一不产出 */
   supersede_target_ids?: string[];
 }
@@ -377,6 +388,8 @@ export interface ExtractionReferenceProvider {
 
 interface ExtractMemoryOptions {
   messageIds?: string[];
+  /** 本次实际提供给模型的消息编号到真实 ID 的映射；messageIds 仍保留完整任务范围。 */
+  messageRefs?: Record<string, string>;
   taskId?: number;
   conversationId?: string;
   reference?: ExtractionReferenceProvider;
@@ -457,6 +470,7 @@ function normalizeRawMemoryItem(value: unknown): RawMemoryData | null {
     importance: toBoundedNumber(record.importance, defaults.importance),
     emotional_weight: toBoundedNumber(record.emotional_weight, defaults.emotional_weight),
     lifecycle_action: normalizeLifecycleAction(record.lifecycle_action),
+    source_refs: record.source_refs,
   });
 }
 
@@ -821,21 +835,47 @@ export async function extractMemories(
   }
 
   const validCategories = new Set<string>(MEMORY_CATEGORIES);
-  const sourceMsgIds = uniqueStrings(options.messageIds || []);
-  const ignoredItems = rawData.filter(item => item.lifecycle_action === 'ignore');
+  const taskMessageIds = uniqueStrings(options.messageIds || []);
+  const taskMessageIdSet = new Set(taskMessageIds);
+  const messageRefs = new Map(Object.entries(options.messageRefs || {}).filter(
+    ([ref, id]) => /^M[1-9]\d*$/.test(ref) && taskMessageIdSet.has(id),
+  ));
+  const batchSourceIds = options.messageRefs === undefined ? taskMessageIds : uniqueStrings([...messageRefs.values()]);
+  const attributedItems = rawData.map(item => {
+    const refs = item.source_refs;
+    const selectedIds = Array.isArray(refs)
+      ? refs.map(ref => typeof ref === 'string' ? messageRefs.get(ref.trim()) : undefined)
+      : [];
+    // 任一编号非法时整条降级；不能静默删掉错误编号后宣称剩余来源是完整、精确的证据。
+    const precise = selectedIds.length > 0 && selectedIds.every(id => id !== undefined);
+    const sourceAttribution: MemorySourceAttribution = precise
+      ? { granularity: 'message' }
+      : {
+        granularity: 'batch',
+        reason: refs === undefined || (Array.isArray(refs) && refs.length === 0)
+          ? 'missing_refs'
+          : !Array.isArray(refs) || options.messageRefs !== undefined ? 'invalid_refs' : 'missing_mapping',
+      };
+    return {
+      ...item,
+      source_msg_ids: precise ? uniqueStrings(selectedIds) : batchSourceIds,
+      metadata: { sourceAttribution },
+    };
+  });
+  const ignoredItems = attributedItems.filter(item => item.lifecycle_action === 'ignore');
   for (const item of ignoredItems) {
     insertCandidate({
       db,
       characterId,
       options,
-      rawCandidateJson: { ...item, source_msg_ids: sourceMsgIds },
+      rawCandidateJson: item,
       rawResponse: response,
       status: 'ignored',
       errorReason: 'lifecycle_action_ignore',
     });
   }
 
-  const newEntries: NewMemoryEntry[] = rawData
+  const newEntries: NewMemoryEntry[] = attributedItems
     .filter(item => item.content && validCategories.has(item.category) && item.lifecycle_action !== 'ignore')
     .map((item): NewMemoryEntry => ({
       // 48 bit (12 hex) 碰撞概率远低于 32 bit；不会影响已有数据，仅新插入条目变长
@@ -845,7 +885,7 @@ export async function extractMemories(
       content: item.content,
       confidence: Math.min(Math.max(item.confidence || 0.8, 0), 1),
       tags: canonicalizeTags(item.tags).slice(0, 3),
-      source_msg_ids: sourceMsgIds,
+      source_msg_ids: item.source_msg_ids,
       memory_kind: item.memory_kind,
       importance: item.importance,
       emotional_weight: item.emotional_weight,
@@ -853,7 +893,7 @@ export async function extractMemories(
       pinned: false,
       last_used_at: null,
       usage_count: 0,
-      metadata: {},
+      metadata: item.metadata,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       lifecycle_action: item.lifecycle_action,
@@ -907,8 +947,8 @@ export async function extractMemories(
     const insertMemory = (entry: NewMemoryEntry) => {
       insertCount++;
       db.prepare(`
-        INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, memory_kind, importance, emotional_weight, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO memories (id, character_id, category, content, confidence, tags, source_msg_ids, memory_kind, importance, emotional_weight, metadata, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         entry.id,
         entry.character_id,
@@ -920,6 +960,7 @@ export async function extractMemories(
         entry.memory_kind,
         entry.importance,
         entry.emotional_weight,
+        JSON.stringify(entry.metadata),
         entry.created_at,
         entry.updated_at,
       );
@@ -974,7 +1015,8 @@ export async function extractMemories(
           JSON.stringify(existing.source_msg_ids) !== JSON.stringify(entry.source_msg_ids) ||
           existing.memory_kind !== entry.memory_kind ||
           existing.importance !== entry.importance ||
-          existing.emotional_weight !== entry.emotional_weight;
+          existing.emotional_weight !== entry.emotional_weight ||
+          JSON.stringify(existing.metadata) !== JSON.stringify(entry.metadata);
 
         if (isChanged) {
           // content/tags 变化后，检索 token 集缓存按 hash 自动失效；
@@ -987,7 +1029,7 @@ export async function extractMemories(
           //   把本轮合并信息作为新 active 记忆插入，双保留、不丢内容
           const result = db.prepare(`
             UPDATE memories
-            SET content = ?, confidence = ?, tags = ?, source_msg_ids = ?, memory_kind = ?, importance = ?, emotional_weight = ?, updated_at = ?
+            SET content = ?, confidence = ?, tags = ?, source_msg_ids = ?, memory_kind = ?, importance = ?, emotional_weight = ?, metadata = ?, updated_at = ?
             WHERE id = ? AND status = 'active' AND updated_at = ?
           `).run(
             entry.content,
@@ -997,6 +1039,7 @@ export async function extractMemories(
             entry.memory_kind,
             entry.importance,
             entry.emotional_weight,
+            JSON.stringify(entry.metadata),
             entry.updated_at,
             entry.id,
             existing.updated_at,

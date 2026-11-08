@@ -14,13 +14,19 @@ import { NO_EVIDENCE_NOTE, type ProposalItemFlags } from '@/lib/agent/proposal-f
 import { diffText } from '@/lib/text-diff';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
+import { getMemorySourceAttribution } from '@/lib/metadata';
+import type { CharacterCardField, CharacterCardSnapshot, ProposalCharacterFields } from '@/lib/agent/character-card';
 
 type MemoryField = keyof ProposalMemoryFields;
 /** 快照与提案字段都按这个形状读；值来自 JSON，逐个判断类型再显示。 */
-type MemoryLike = Partial<Record<MemoryField, unknown>>;
+type MemoryLike = Partial<Record<MemoryField, unknown>> & { metadata?: unknown };
 
 const META_FIELDS: readonly MemoryField[] = ['category', 'memory_kind', 'importance', 'emotional_weight', 'tags', 'pinned'];
-const FIELD_ORDER: readonly MemoryField[] = ['content', ...META_FIELDS];
+const FIELD_ORDER: readonly MemoryField[] = ['content', ...META_FIELDS, 'source_msg_ids'];
+const CHARACTER_FIELD_ORDER: readonly CharacterCardField[] = [
+  'name', 'basic_info', 'personality', 'scenario', 'greeting', 'example_dialogue',
+  'system_prompt', 'other_info', 'image_tags', 'user_image_tags', 'image_prompt_other_requirements',
+];
 
 const STATE_STYLE: Record<ProposalItemView['state'], string> = {
   pending: 'border-border-light text-text-muted',
@@ -39,6 +45,7 @@ function useFieldValue() {
   return (field: MemoryField, value: unknown): string => {
     if (value === undefined || value === null) return '—';
     if (field === 'pinned') return value ? t('agent.proposal.yes') : t('agent.proposal.no');
+    if (field === 'source_msg_ids' && Array.isArray(value)) return value.length > 0 ? value.join('\n') : t('agent.proposal.noSources');
     if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : '—';
     if (typeof value === 'number') return String(Math.round(value * 100) / 100);
     return String(value);
@@ -100,17 +107,58 @@ function UpdateDiff({ before, changes }: { before: MemoryLike; changes: MemoryLi
   const fieldValue = useFieldValue();
   return (
     <div className="space-y-2">
+      {'source_msg_ids' in changes && !('content' in changes) && <MemoryBox memory={before} muted />}
       {FIELD_ORDER.filter(field => field in changes).map(field => (
         <Labeled key={field} label={t(`agent.proposal.field.${field}`)}>
           {field === 'content'
             ? <ContentDiff before={String(before.content ?? '')} after={String(changes.content ?? '')} />
             : (
-              <p className="leading-relaxed">
+              <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">
                 <del className="text-text-muted decoration-danger/60">{fieldValue(field, before[field])}</del>
                 <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
                 <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{fieldValue(field, changes[field])}</ins>
               </p>
             )}
+        </Labeled>
+      ))}
+      {'source_msg_ids' in changes && (
+        <Labeled label={t('agent.proposal.sourceAttribution')}>
+          <p className="leading-relaxed">
+            <del className="text-text-muted decoration-danger/60">{t(`agent.proposal.attribution.${getMemorySourceAttribution(before.metadata).granularity}`)}</del>
+            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
+            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{t(`agent.proposal.attribution.${Array.isArray(changes.source_msg_ids) && changes.source_msg_ids.length > 0 ? 'message' : 'unknown'}`)}</ins>
+          </p>
+        </Labeled>
+      )}
+    </div>
+  );
+}
+
+function CharacterUpdateDiff({ before, changes, id }: { before: CharacterCardSnapshot; changes: ProposalCharacterFields; id: string }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-2">
+      <p className="font-medium">{formatTemplate(t('agent.proposal.character'), { name: before.name || id })}</p>
+      {CHARACTER_FIELD_ORDER.filter(field => field in changes).map(field => (
+        <Labeled key={field} label={t(`agent.proposal.field.${field}`)}>
+          <ContentDiff before={before[field]} after={changes[field] ?? ''} />
+        </Labeled>
+      ))}
+    </div>
+  );
+}
+
+function CharacterCreation({ fields }: { fields: ProposalCharacterFields }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-2">
+      <p className="font-medium [overflow-wrap:anywhere]">{formatTemplate(t('agent.proposal.character'), { name: fields.name ?? '' })}</p>
+      <p className="text-[11px] leading-relaxed text-text-muted">{t('agent.proposal.characterCreateHint')}</p>
+      {CHARACTER_FIELD_ORDER.map(field => (
+        <Labeled key={field} label={t(`agent.proposal.field.${field}`)}>
+          <p className="whitespace-pre-wrap rounded-lg border border-border-light bg-surface px-2.5 py-2 leading-relaxed [overflow-wrap:anywhere]">
+            {fields[field] || '—'}
+          </p>
         </Labeled>
       ))}
     </div>
@@ -170,8 +218,14 @@ function ItemChange({ item }: { item: ProposalItemView }) {
   const candidate = candidateOf(item);
   switch (item.op) {
     case 'create':
+      if (item.before && 'character_creation' in item.before) {
+        return <CharacterCreation fields={(item.after ?? {}) as ProposalCharacterFields} />;
+      }
       return <Labeled label={t('agent.proposal.new')}><MemoryBox memory={after} /></Labeled>;
     case 'update':
+      if (item.before && 'character' in item.before) {
+        return <CharacterUpdateDiff before={item.before.character.snapshot} changes={(item.after ?? {}) as ProposalCharacterFields} id={item.before.character.id} />;
+      }
       return <UpdateDiff before={before[0] ?? {}} changes={after} />;
     case 'retire':
       return (
@@ -294,7 +348,9 @@ interface Props {
 export default function ProposalCardItem({ item, flags, messages, selection, undo }: Props) {
   const { t } = useTranslation();
   const checkboxId = `proposal-item-${item.id}`;
-  const opLabel = t(`agent.proposal.op.${item.op}`);
+  const opLabel = t(item.before && 'character_creation' in item.before
+    ? 'agent.proposal.op.characterCreate'
+    : item.before && 'character' in item.before ? 'agent.proposal.op.characterUpdate' : `agent.proposal.op.${item.op}`);
   return (
     <li className="min-w-0 space-y-2 rounded-xl border border-border-light bg-surface-raised px-3 py-2.5" data-proposal-item={item.id}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

@@ -1,19 +1,29 @@
 /**
- * Agent 记忆提案的创建：校验与入库。
+ * Agent 修改提案的创建：校验与入库。
  *
- * 提案只写 agent_proposals / agent_proposal_items，不碰 memories；批准与撤销另行处理。
- * 「修改前」一律由服务端从数据库读取：模型额外传的 before 等字段会被 schema 丢弃。
- * 批准时用 memoryBusinessSnapshot 与这里存下的快照比较，判断目标是否已被改动。
+ * 提案只写 agent_proposals / agent_proposal_items，不碰角色卡或记忆；批准与撤销另行处理。
+ * 「修改前」一律由服务端从数据库读取，不能由模型指定。
+ * 批准时用对应的完整业务快照与这里存下的快照比较，判断目标是否已被改动。
  */
 import type Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { MEMORY_CATEGORIES, MEMORY_KINDS, type MemoryCategory } from '@/types';
 import { MAX_MEMORY_CONTENT, MAX_TAG_LENGTH, MAX_TAGS } from '@/lib/schemas';
 import { normalizeTags } from '@/lib/memory-tag-spec';
 import { getMergeSourceIssue, type MemoryMergeSourceIssue } from '@/lib/memory-merge';
 import { memoryBusinessSnapshot, type MemoryBusinessSnapshot } from '@/lib/memory-mutations';
+import { getMemorySourceAttribution } from '@/lib/metadata';
 import { contentFidelityIssues, findSourceNotePhrases } from './content-fidelity';
 import { NO_EVIDENCE_NOTE, declaresNoEvidence } from './proposal-flags';
+import {
+  CHARACTER_CARD_FIELDS,
+  characterCardCreateSchema,
+  characterCardUpdateSchema,
+  completeCharacterCard,
+  loadCharacterCard,
+  type CharacterCardSnapshot,
+} from './character-card';
 
 export const PROPOSAL_ITEM_OPS = [
   'create',
@@ -68,6 +78,8 @@ const memoryFieldsSchema = z.strictObject({
   importance: z.number().min(0).max(1).optional(),
   emotional_weight: z.number().min(0).max(1).optional(),
   pinned: z.boolean().optional(),
+  source_msg_ids: z.array(z.string().trim().min(1)).optional()
+    .describe('仅 update：替换完整来源消息 ID 列表；空数组清空，未提供则不修改来源'),
 });
 type MemoryFields = z.infer<typeof memoryFieldsSchema>;
 type MemoryField = keyof MemoryFields;
@@ -77,6 +89,7 @@ export type ProposalMemoryFields = MemoryFields;
 const ALL_FIELDS: readonly MemoryField[] = [
   'content', 'category', 'tags', 'memory_kind', 'importance', 'emotional_weight', 'pinned',
 ];
+const UPDATE_FIELDS: readonly MemoryField[] = [...ALL_FIELDS, 'source_msg_ids'];
 
 const evidenceSchema = z.object({
   message_ids: z.array(z.string().min(1)).max(MAX_EVIDENCE_MESSAGES).default([])
@@ -109,6 +122,21 @@ export const createMemoryProposalSchema = z.object({
 export type CreateMemoryProposalInput = z.infer<typeof createMemoryProposalSchema>;
 type ProposalItemInput = CreateMemoryProposalInput['items'][number];
 
+export const createCharacterProposalSchema = z.strictObject({
+  character_id: z.string().min(1).describe('要修改的角色 ID，先用 get_character 读取当前角色卡'),
+  summary: z.string().max(MAX_SUMMARY).describe('一句话概括这份角色卡提案'),
+  fields: characterCardUpdateSchema.describe('只写需要修改的角色卡文本字段；空字符串清空，未提供的字段保持原值'),
+  reason: z.string().max(MAX_REASON).describe('说明为什么这样修改，写给主人看'),
+  evidence: evidenceSchema.optional(),
+  confidence: z.number().min(0).max(1).describe('对这项建议的把握（0–1）'),
+});
+export type CreateCharacterProposalInput = z.infer<typeof createCharacterProposalSchema>;
+
+export const createCharacterSchema = createCharacterProposalSchema.omit({ character_id: true }).extend({
+  fields: characterCardCreateSchema.describe('新角色卡文本设定，name 必填；未提供的可选文本为空，不接受运行配置或头像'),
+});
+export type CreateCharacterInput = z.infer<typeof createCharacterSchema>;
+
 export interface ProposalEvidence {
   message_ids: string[];
   note?: string;
@@ -119,6 +147,11 @@ export interface ProposalEvidence {
 export interface ProposalMemoryTarget {
   id: string;
   snapshot: MemoryBusinessSnapshot;
+}
+
+export interface ProposalCharacterTarget {
+  id: string;
+  snapshot: CharacterCardSnapshot;
 }
 
 /** 待修复记录的原提取任务。任务重试成功后不会关闭旧记录，所以要连同任务状态一起看。 */
@@ -148,6 +181,8 @@ export interface ProposalRepairAfter {
 export type ProposalBefore =
   | { memories: ProposalMemoryTarget[] }
   | { candidate: ProposalCandidateTarget }
+  | { character: ProposalCharacterTarget }
+  | { character_creation: { id: string } }
   | null;
 
 export interface CreatedProposalItem {
@@ -170,7 +205,7 @@ interface OpRule {
   memories: boolean;
   /** 允许的 fields 键；null 表示不接受 fields */
   fields: readonly MemoryField[] | null;
-  /** required：必须有依据；content：改正文时必须有依据；optional：给了就校验 */
+  /** required：必须有依据；content：改正文或来源时必须有依据；optional：给了就校验 */
   evidence: 'required' | 'content' | 'optional';
 }
 
@@ -178,7 +213,7 @@ const NO_TARGETS = { memoryId: false, memoryIds: false, candidateId: false, memo
 
 const OP_RULES: Record<ProposableOp, OpRule> = {
   create: { ...NO_TARGETS, fields: ALL_FIELDS, evidence: 'required' },
-  update: { ...NO_TARGETS, memoryId: true, fields: ALL_FIELDS, evidence: 'content' },
+  update: { ...NO_TARGETS, memoryId: true, fields: UPDATE_FIELDS, evidence: 'content' },
   retire: { ...NO_TARGETS, memoryId: true, fields: null, evidence: 'required' },
   merge: {
     ...NO_TARGETS, memoryIds: true,
@@ -271,30 +306,33 @@ function fidelityWarning(op: string, content: string, sources: readonly string[]
   return parts.length > 0 ? `${parts.join('；')}。卡片已标出并默认不勾选` : null;
 }
 
-function sameTagSet(a: readonly string[], b: readonly string[]): boolean {
+function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
   const set = new Set(a);
   return set.size === new Set(b).size && b.every(tag => set.has(tag));
 }
 
-/** 规整新值：正文去首尾空白、标签归一。不判断是否为空，由各操作自己决定。 */
+/** 规整新值：正文去首尾空白、标签归一、来源去重。不判断是否为空，由各操作自己决定。 */
 function normalizeFields(fields: MemoryFields): MemoryFields {
   const result: MemoryFields = { ...fields };
   if (fields.content !== undefined) result.content = fields.content.trim();
   if (fields.tags !== undefined) result.tags = normalizeTags(fields.tags);
+  if (fields.source_msg_ids !== undefined) result.source_msg_ids = [...new Set(fields.source_msg_ids)];
   return result;
 }
 
 /** update 中与当前值相同的字段剔除；结果为空就是「没有实际改动」。 */
 function changedFields(fields: MemoryFields, snapshot: MemoryBusinessSnapshot): MemoryFields {
   const changes: MemoryFields = {};
-  for (const field of ALL_FIELDS) {
+  for (const field of UPDATE_FIELDS) {
     const next = fields[field];
     if (next === undefined) continue;
     const current = snapshot[field];
-    const same = field === 'tags'
-      ? Array.isArray(current) && sameTagSet(current as string[], next as string[])
+    const same = field === 'tags' || field === 'source_msg_ids'
+      ? Array.isArray(current) && sameStringSet(current as string[], next as string[])
       : current === next;
-    if (!same) Object.assign(changes, { [field]: next });
+    const sameAttribution = field !== 'source_msg_ids'
+      || getMemorySourceAttribution(snapshot.metadata).granularity === (Array.isArray(next) && next.length > 0 ? 'message' : 'unknown');
+    if (!same || !sameAttribution) Object.assign(changes, { [field]: next });
   }
   return changes;
 }
@@ -304,13 +342,13 @@ function uniqueList(ids: readonly string[]): { ids: string[]; duplicated: boolea
   return { ids: unique, duplicated: unique.length !== ids.length };
 }
 
-function existingMessageIds(db: Database.Database, characterId: string, ids: readonly string[]): Set<string> {
+export function existingMessageIds(db: Database.Database, characterId: string, ids: readonly string[]): Set<string> {
   if (ids.length === 0) return new Set();
   return new Set((db.prepare(`
     SELECT m.id FROM messages m
     JOIN conversations c ON c.id = m.conversation_id
-    WHERE c.character_id = ? AND m.id IN (${placeholders(ids.length)})
-  `).all(characterId, ...ids) as { id: string }[]).map(row => row.id));
+    WHERE c.character_id = ? AND m.id IN (SELECT value FROM json_each(?))
+  `).all(characterId, JSON.stringify(ids)) as { id: string }[]).map(row => row.id));
 }
 
 /**
@@ -358,6 +396,12 @@ function resolveItemIds(db: Database.Database, characterId: string, item: Propos
   if (item.memory_ids !== undefined) {
     resolved.memory_ids = resolveIdPrefixes(item.memory_ids, memoryExact, memoryPrefix, '记忆 ID', errors);
   }
+  if (item.fields?.source_msg_ids !== undefined) {
+    resolved.fields = {
+      ...item.fields,
+      source_msg_ids: resolveIdPrefixes(item.fields.source_msg_ids, ids => existingMessageIds(db, characterId, ids), messagePrefix, '来源消息 ID', errors),
+    };
+  }
   if (item.evidence?.message_ids?.length) {
     resolved.evidence = {
       ...item.evidence,
@@ -393,7 +437,7 @@ function parseIdList(value: string | null): string[] {
  */
 function checkEvidence(
   db: Database.Database,
-  characterId: string,
+  characterId: string | null,
   input: ProposalItemInput['evidence'],
   required: boolean,
   sessionId: string | null,
@@ -403,7 +447,7 @@ function checkEvidence(
   const note = input?.note?.trim() || undefined;
   const ownerQuote = input?.owner_quote?.trim() || undefined;
   if (messageIds.length > 0) {
-    const found = existingMessageIds(db, characterId, messageIds);
+    const found = characterId === null ? new Set<string>() : existingMessageIds(db, characterId, messageIds);
     const missing = messageIds.filter(id => !found.has(id));
     if (missing.length > 0) errors.push(`依据消息不存在或不属于该角色的对话：${missing.join('、')}`);
   }
@@ -472,6 +516,7 @@ function prepareItem(
 
   /** create 与 repair_candidate 的新记忆：必填正文和分类，与已有 active 记忆完全相同则没有意义。 */
   const checkNewMemory = (memory: MemoryFields, path: string, label: string) => {
+    if (memory.source_msg_ids !== undefined) errors.push(`${path}.source_msg_ids 仅支持 update 来源修改`);
     if (memory.content === undefined) errors.push(`${item.op} 需要 ${path}.content`);
     if (memory.category === undefined) errors.push(`${item.op} 需要 ${path}.category`);
     if (!memory.content) return;
@@ -508,7 +553,15 @@ function prepareItem(
       }
       const changes = changedFields(fields, target.snapshot);
       if (Object.keys(changes).length === 0) errors.push(`对记忆 ${row.id} 没有实际改动`);
-      evidenceRequired = changes.content !== undefined;
+      evidenceRequired = changes.content !== undefined || changes.source_msg_ids !== undefined;
+      if (changes.source_msg_ids !== undefined) {
+        const found = existingMessageIds(db, characterId, changes.source_msg_ids);
+        const missing = changes.source_msg_ids.filter(id => !found.has(id));
+        if (missing.length > 0) errors.push(`来源消息不存在或不属于该角色的对话：${missing.join('、')}`);
+        if (changes.source_msg_ids.length > 0 && !evidenceInput?.message_ids?.length) {
+          evidenceInput = { ...evidenceInput, message_ids: changes.source_msg_ids };
+        }
+      }
       if (changes.content) {
         checkSourceNotes(changes.content, [targetContent(target)], '');
         warning = fidelityWarning(item.op, changes.content, [targetContent(target)]);
@@ -690,6 +743,17 @@ export function createMemoryProposal(
   });
   if (errors.length > 0) return { ok: false, errors };
 
+  return savePreparedProposal(db, characterId, summary, prepared, context);
+}
+
+/** 提案共用保存流程；具体目标和字段在各自创建入口校验。 */
+function savePreparedProposal(
+  db: Database.Database,
+  characterId: string | null,
+  summary: string,
+  prepared: readonly PreparedItem[],
+  context: { sessionId: string | null; now: string },
+): CreateProposalOutcome {
   const status: ProposalStatus = prepared.some(item => item.state === 'pending') ? 'pending' : 'decided';
   return db.transaction((): CreateProposalOutcome => {
     const proposalId = Number(db.prepare(`
@@ -723,10 +787,60 @@ export function createMemoryProposal(
   })();
 }
 
+/** 创建一项角色卡修改建议，沿用提案批准流程，创建时不写 characters。 */
+export function createCharacterProposal(
+  db: Database.Database,
+  input: CreateCharacterProposalInput,
+  context: { sessionId: string | null; now: string },
+): CreateProposalOutcome {
+  const snapshot = loadCharacterCard(db, input.character_id);
+  if (!snapshot) return { ok: false, errors: [`角色 ${input.character_id} 不存在`] };
+  const errors: string[] = [];
+  const summary = input.summary.trim();
+  const reason = input.reason.trim();
+  if (!summary) errors.push('缺少提案概述（summary）');
+  if (!reason) errors.push('缺少理由');
+  const changes = Object.fromEntries(CHARACTER_CARD_FIELDS
+    .filter(field => input.fields[field] !== undefined && input.fields[field] !== snapshot[field])
+    .map(field => [field, input.fields[field]]));
+  if (Object.keys(changes).length === 0) errors.push(`对角色 ${input.character_id} 没有实际改动`);
+  // 复用角色内消息唯一前缀补全和当前 Agent 会话的主人原话核验。
+  const resolved = resolveItemIds(db, input.character_id, {
+    op: 'update', reason, confidence: input.confidence, evidence: input.evidence,
+  }, errors);
+  const evidence = checkEvidence(db, input.character_id, resolved.evidence, true, context.sessionId, errors);
+  if (errors.length > 0) return { ok: false, errors };
+  return savePreparedProposal(db, input.character_id, summary, [{
+    op: 'update', reason, evidence, confidence: input.confidence,
+    before: { character: { id: input.character_id, snapshot } }, after: changes,
+    state: 'pending', memoryTargets: [], candidateTarget: null, warning: null,
+  }], context);
+}
+
+/** 新角色在批准前不存在，创建提案不绑定角色外键，撤销后仍保留历史。 */
+export function createCharacter(
+  db: Database.Database,
+  input: CreateCharacterInput,
+  context: { sessionId: string | null; now: string },
+): CreateProposalOutcome {
+  const errors: string[] = [];
+  const summary = input.summary.trim();
+  const reason = input.reason.trim();
+  if (!summary) errors.push('缺少提案概述（summary）');
+  if (!reason) errors.push('缺少理由');
+  const evidence = checkEvidence(db, null, input.evidence, true, context.sessionId, errors);
+  if (errors.length > 0) return { ok: false, errors };
+  return savePreparedProposal(db, null, summary, [{
+    op: 'create', reason, evidence, confidence: input.confidence,
+    before: { character_creation: { id: randomUUID().slice(0, 12) } }, after: completeCharacterCard(input.fields),
+    state: 'pending', memoryTargets: [], candidateTarget: null, warning: null,
+  }], context);
+}
+
 export interface ProposalRow {
   id: number;
   session_id: string | null;
-  character_id: string;
+  character_id: string | null;
   summary: string;
   status: ProposalStatus;
   created_at: string;
@@ -794,13 +908,16 @@ export function getProposalView(db: Database.Database, proposalId: number): Prop
 /** 修改历史：新的在前。会话删除后提案仍在，从这里查看和撤销。 */
 export function listProposalViews(
   db: Database.Database,
-  characterId: string,
+  characterId: string | null,
   limit: number,
   offset: number,
 ): { proposals: ProposalView[]; has_more: boolean } {
+  const filter = characterId === null ? '' : `WHERE character_id = ? OR id IN (
+    SELECT proposal_id FROM agent_proposal_items WHERE json_extract(before_json, '$.character_creation.id') = ?
+  )`;
   const rows = db.prepare(`
-    SELECT ${PROPOSAL_COLUMNS} FROM agent_proposals WHERE character_id = ? ORDER BY id DESC LIMIT ? OFFSET ?
-  `).all(characterId, limit + 1, offset) as ProposalRow[];
+    SELECT ${PROPOSAL_COLUMNS} FROM agent_proposals ${filter} ORDER BY id DESC LIMIT ? OFFSET ?
+  `).all(...(characterId === null ? [] : [characterId, characterId]), limit + 1, offset) as ProposalRow[];
   return { proposals: rows.slice(0, limit).map(row => toProposalView(db, row)), has_more: rows.length > limit };
 }
 
@@ -821,16 +938,16 @@ function toProposalView(db: Database.Database, proposal: ProposalRow): ProposalV
       reject_reason: row.reject_reason,
       result: row.result_json ? JSON.parse(row.result_json) as unknown : null,
       applied_at: row.applied_at,
-      ...(candidate ? { current_candidate_task: loadCandidateTask(db, proposal.character_id, candidate.task_id) } : {}),
+      ...(candidate && proposal.character_id ? { current_candidate_task: loadCandidateTask(db, proposal.character_id, candidate.task_id) } : {}),
     };
   });
   const messageIds = [...new Set(items.flatMap(item => item.evidence.message_ids))];
   const evidenceMessages = messageIds.length === 0 ? [] : db.prepare(`
     SELECT m.id, m.role, m.content, m.created_at FROM messages m
     JOIN conversations c ON c.id = m.conversation_id
-    WHERE c.character_id = ? AND m.id IN (${placeholders(messageIds.length)})
+    WHERE c.character_id = ? AND m.id IN (SELECT value FROM json_each(?))
     ORDER BY m.created_at, m.id
-  `).all(proposal.character_id, ...messageIds) as ProposalEvidenceMessage[];
+  `).all(proposal.character_id, JSON.stringify(messageIds)) as ProposalEvidenceMessage[];
   return { ...proposal, items, evidence_messages: evidenceMessages };
 }
 

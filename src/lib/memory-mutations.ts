@@ -111,7 +111,7 @@ function enqueueEmbeddingAfterWrite(
 export function applyMemoryUpdate(
   db: Database.Database,
   id: string,
-  patch: MemoryUpdate,
+  patch: MemoryUpdate & { source_msg_ids?: string[] },
   now: string,
 ): MemoryUpdateResult {
   const existing = db.prepare('SELECT character_id FROM memories WHERE id = ?').get(id) as
@@ -136,6 +136,7 @@ export function applyMemoryUpdate(
   if (patch.content !== undefined) { fields.push('content = ?'); values.push(patch.content); }
   if (patch.confidence !== undefined) { fields.push('confidence = ?'); values.push(patch.confidence); }
   if (patch.tags !== undefined) { fields.push('tags = ?'); values.push(JSON.stringify(patch.tags)); }
+  if (patch.source_msg_ids !== undefined) { fields.push('source_msg_ids = ?'); values.push(JSON.stringify(patch.source_msg_ids)); }
   if (patch.memory_kind !== undefined) { fields.push('memory_kind = ?'); values.push(patch.memory_kind); }
   if (patch.importance !== undefined) { fields.push('importance = ?'); values.push(patch.importance); }
   if (patch.emotional_weight !== undefined) { fields.push('emotional_weight = ?'); values.push(patch.emotional_weight); }

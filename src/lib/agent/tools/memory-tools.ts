@@ -7,6 +7,7 @@ import { recallMemoriesByVector } from '@/lib/memory-extraction-reference';
 import { readMemoryProfile } from '@/lib/memory-profile';
 import { resolveMemoryEngineConfig } from '@/lib/memory-retrieval';
 import { estimateTokens } from '@/lib/token-counter';
+import { getMemorySourceAttribution } from '@/lib/metadata';
 import { defineReadTool } from './types';
 import {
   conversationMessageScope,
@@ -215,7 +216,7 @@ interface SourceContext {
 
 export const getMemorySourcesTool = defineReadTool({
   name: 'get_memory_sources',
-  description: '读取记忆的来源消息原文及其前后文（默认前后各 2 条，同一对话内）。修改正文、合并或判定矛盾前用它核对依据。已被删除的来源列在 missing_source_ids。单次输出有预算：某条记忆的 next_source_offset 不为 null 时表示没读完，对它单独再调用并传 source_offset 继续读。',
+  description: '读取记忆的来源消息原文及其前后文（默认前后各 2 条，同一对话内）。source_attribution 标明 message/batch/mixed/unknown 粒度；批次、混合和未标注来源只是待核实范围。修改正文、合并或判定矛盾前用它核对依据。已被删除的来源列在 missing_source_ids。单次输出有预算：某条记忆的 next_source_offset 不为 null 时表示没读完，对它单独再调用并传 source_offset 继续读。',
   schema: z.object({
     memory_ids: memoryIdsSchema(20).describe('记忆 ID，一次最多 20 个'),
     context: z.number().int().min(0).max(10).default(2).describe('来源消息前后各带几条消息，默认 2'),
@@ -292,6 +293,7 @@ export const getMemorySourcesTool = defineReadTool({
         character_id: memory.character_id,
         status: memory.status,
         content: memory.content,
+        source_attribution: getMemorySourceAttribution(memory.metadata),
         source_total: sourceIds.length,
         sources,
         missing_source_ids: missingSourceIds,

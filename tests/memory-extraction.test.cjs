@@ -269,10 +269,193 @@ test('extractMemories 将队列提供的 messageIds 写入 source_msg_ids', asyn
   const result = await extractMemories('char-a', longConversation(), settings(), {
     messageIds: ['msg-user-1', 'msg-assistant-1'],
   });
-  const memory = db.prepare('SELECT source_msg_ids FROM memories').get();
+  const memory = db.prepare('SELECT source_msg_ids, metadata FROM memories').get();
 
   assert.equal(result.insertCount, 1);
   assert.deepEqual(JSON.parse(memory.source_msg_ids), ['msg-user-1', 'msg-assistant-1']);
+  assert.deepEqual(JSON.parse(memory.metadata).sourceAttribution, { granularity: 'batch', reason: 'missing_refs' });
+});
+
+test('extractMemories 为同批不同记忆保存逐条来源，并保留多消息支持', async t => {
+  const db = createExtractionDb();
+  t.after(() => db.close());
+  const { extractMemories } = loadMemoryEngine(db, JSON.stringify({
+    memories: [
+      {
+        category: '偏好习惯', memory_kind: 'user_preference',
+        content: '用户喜欢不加糖的咖啡。', tags: ['咖啡'], lifecycle_action: 'insert',
+        source_refs: ['M1', 'M3', 'M1'],
+      },
+      {
+        category: '重要事件', memory_kind: 'user_fact',
+        content: '用户下周要参加英语考试。', tags: ['考试'], lifecycle_action: 'insert',
+        source_refs: ['M2'],
+      },
+    ],
+  }));
+  const result = await extractMemories('char-a', longConversation(), settings(), {
+    messageIds: ['msg-exam', 'msg-coffee', 'msg-coffee-confirmation'],
+    messageRefs: { M1: 'msg-coffee', M2: 'msg-exam', M3: 'msg-coffee-confirmation' },
+  });
+  const memories = db.prepare('SELECT content, source_msg_ids, metadata FROM memories').all();
+  const coffee = memories.find(memory => memory.content.includes('咖啡'));
+  const exam = memories.find(memory => memory.content.includes('考试'));
+
+  assert.deepEqual(result, { insertCount: 2, mergeCount: 0 });
+  assert.deepEqual(JSON.parse(coffee.source_msg_ids), ['msg-coffee', 'msg-coffee-confirmation']);
+  assert.deepEqual(JSON.parse(exam.source_msg_ids), ['msg-exam']);
+  assert.equal(JSON.parse(coffee.metadata).sourceAttribution.granularity, 'message');
+  assert.equal(JSON.parse(exam.metadata).sourceAttribution.granularity, 'message');
+});
+
+test('extractMemories 来源缺失或非法时保留记忆并标记批次范围', async t => {
+  const cases = [
+    ['缺失', undefined, 'missing_refs'],
+    ['空数组', [], 'missing_refs'],
+    ['字符串', 'M1', 'invalid_refs'],
+    ['null', null, 'invalid_refs'],
+    ['未知编号与有效编号混合', ['M1', 'M999'], 'invalid_refs'],
+    ['非字符串与有效编号混合', ['M1', false], 'invalid_refs'],
+    ['真实 ID 不能冒充编号', ['msg-coffee'], 'invalid_refs'],
+    ['零编号', ['M0'], 'invalid_refs'],
+    ['其他任务的映射', ['M3'], 'invalid_refs'],
+  ];
+  for (const [name, sourceRefs, reason] of cases) {
+    await t.test(name, async subtest => {
+      const db = createExtractionDb();
+      subtest.after(() => db.close());
+      const { extractMemories } = loadMemoryEngine(db, JSON.stringify({
+        memories: [{
+          category: '偏好习惯', content: '用户喜欢不加糖的咖啡。', lifecycle_action: 'insert',
+          source_refs: sourceRefs,
+        }],
+      }));
+      const result = await extractMemories('char-a', longConversation(), settings(), {
+        messageIds: ['msg-unrelated', 'msg-coffee', 'msg-empty', 'msg-deleted'],
+        messageRefs: { M1: 'msg-coffee', M2: 'msg-unrelated', M3: 'msg-another-task' },
+      });
+      const memory = db.prepare('SELECT content, source_msg_ids, metadata FROM memories').get();
+
+      assert.deepEqual(result, { insertCount: 1, mergeCount: 0 });
+      assert.equal(memory.content, '用户喜欢不加糖的咖啡。');
+      assert.deepEqual(JSON.parse(memory.source_msg_ids), ['msg-coffee', 'msg-unrelated']);
+      assert.deepEqual(JSON.parse(memory.metadata).sourceAttribution, { granularity: 'batch', reason });
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM memory_extraction_candidates').get().count, 0);
+    });
+  }
+});
+
+test('extractMemories 没有输入映射时不把模型编号当作精确来源', async t => {
+  const db = createExtractionDb();
+  t.after(() => db.close());
+  const { extractMemories } = loadMemoryEngine(db, JSON.stringify({
+    memories: [{ category: '偏好习惯', content: '用户喜欢咖啡。', lifecycle_action: 'insert', source_refs: ['M1'] }],
+  }));
+  await extractMemories('char-a', longConversation(), settings(), { messageIds: ['msg-coffee', 'msg-other'] });
+  const memory = db.prepare('SELECT source_msg_ids, metadata FROM memories').get();
+
+  assert.deepEqual(JSON.parse(memory.source_msg_ids), ['msg-coffee', 'msg-other']);
+  assert.deepEqual(JSON.parse(memory.metadata).sourceAttribution, { granularity: 'batch', reason: 'missing_mapping' });
+});
+
+test('extractMemories 完整保留超过一千条共同支持来源', async t => {
+  const db = createExtractionDb();
+  t.after(() => db.close());
+  const messageIds = Array.from({ length: 1025 }, (_, index) => `msg-source-${index}`);
+  const messageRefs = Object.fromEntries(messageIds.map((id, index) => [`M${index + 1}`, id]));
+  const { extractMemories } = loadMemoryEngine(db, JSON.stringify({
+    memories: [{
+      category: '话题历史', content: '用户与我多次讨论同一个长期读书计划。', lifecycle_action: 'insert',
+      source_refs: Object.keys(messageRefs),
+    }],
+  }));
+  await extractMemories('char-a', longConversation(), settings(), { messageIds, messageRefs });
+  const memory = db.prepare('SELECT source_msg_ids, metadata FROM memories').get();
+
+  assert.deepEqual(JSON.parse(memory.source_msg_ids), messageIds);
+  assert.equal(JSON.parse(memory.metadata).sourceAttribution.granularity, 'message');
+});
+
+test('extractMemories 合并来源保留历史 ID、标注精度，并保持重复提取幂等', async t => {
+  for (const granularity of ['message', 'batch', 'mixed', 'unknown']) {
+    await t.test(granularity, async subtest => {
+      const db = createExtractionDb();
+      subtest.after(() => db.close());
+      const content = '用户喜欢不加糖的咖啡，学习前会喝一杯提神。';
+      const metadata = { note: '保留用户的附注' };
+      if (granularity !== 'unknown') metadata.sourceAttribution = { granularity };
+      insertExisting(db, {
+        category: '偏好习惯', memory_kind: 'user_preference', content, tags: ['咖啡'],
+        importance: 0.8, emotional_weight: 0.5, source_msg_ids: ['msg-old-a', 'msg-old-b'], metadata,
+      });
+      const { extractMemories } = loadMemoryEngine(db, JSON.stringify({
+        memories: [{
+          category: '偏好习惯', memory_kind: 'user_preference', content, tags: ['咖啡'],
+          importance: 0.8, emotional_weight: 0.5, lifecycle_action: 'upsert', source_refs: ['M2'],
+        }],
+      }));
+      const options = {
+        messageIds: ['msg-unrelated', 'msg-current'],
+        messageRefs: { M1: 'msg-unrelated', M2: 'msg-current' },
+      };
+      const first = await extractMemories('char-a', longConversation(), settings(), options);
+      const memory = db.prepare("SELECT source_msg_ids, metadata FROM memories WHERE id = 'mem-existing'").get();
+
+      assert.deepEqual(first, { insertCount: 0, mergeCount: 1 });
+      assert.deepEqual(JSON.parse(memory.source_msg_ids), ['msg-old-a', 'msg-old-b', 'msg-current']);
+      assert.equal(JSON.parse(memory.metadata).note, metadata.note);
+      assert.equal(JSON.parse(memory.metadata).sourceAttribution.granularity, granularity === 'message' ? 'message' : 'mixed');
+      assert.deepEqual(await extractMemories('char-a', longConversation(), settings(), options), { insertCount: 0, mergeCount: 0 });
+    });
+  }
+});
+
+test('extractMemories 旧来源的无变化批次提取不改写记录', async t => {
+  const db = createExtractionDb();
+  t.after(() => db.close());
+  const content = '用户喜欢不加糖的咖啡，学习前会喝一杯提神。';
+  insertExisting(db, {
+    category: '偏好习惯', memory_kind: 'user_preference', content, tags: ['咖啡'],
+    importance: 0.8, emotional_weight: 0.5, source_msg_ids: ['msg-coffee'], metadata: { note: '原样保留' },
+  });
+  const before = db.prepare('SELECT * FROM memories').get();
+  const { extractMemories } = loadMemoryEngine(db, JSON.stringify({
+    memories: [{
+      category: '偏好习惯', memory_kind: 'user_preference', content, tags: ['咖啡'],
+      importance: 0.8, emotional_weight: 0.5, lifecycle_action: 'upsert',
+    }],
+  }));
+  const result = await extractMemories('char-a', longConversation(), settings(), {
+    messageIds: ['msg-coffee'], messageRefs: { M1: 'msg-coffee' },
+  });
+
+  assert.deepEqual(result, { insertCount: 0, mergeCount: 0 });
+  assert.deepEqual(db.prepare('SELECT * FROM memories').get(), before);
+});
+
+test('extractMemories 逐条来源与批次兜底合并后标记 mixed，重复合并不改写', async t => {
+  const db = createExtractionDb();
+  t.after(() => db.close());
+  const content = '用户喜欢不加糖的咖啡，学习前会喝一杯提神。';
+  insertExisting(db, {
+    category: '偏好习惯', memory_kind: 'user_preference', content, tags: ['咖啡'],
+    importance: 0.8, emotional_weight: 0.5, source_msg_ids: ['msg-old'],
+    metadata: { note: '保留原注释', sourceAttribution: { granularity: 'message' } },
+  });
+  const { extractMemories } = loadMemoryEngine(db, JSON.stringify({
+    memories: [{
+      category: '偏好习惯', memory_kind: 'user_preference', content, tags: ['咖啡'],
+      importance: 0.8, emotional_weight: 0.5, lifecycle_action: 'upsert',
+    }],
+  }));
+  const options = { messageIds: ['msg-current', 'msg-context'], messageRefs: { M1: 'msg-current', M2: 'msg-context' } };
+  assert.deepEqual(await extractMemories('char-a', longConversation(), settings(), options), { insertCount: 0, mergeCount: 1 });
+  const memory = db.prepare("SELECT * FROM memories WHERE id = 'mem-existing'").get();
+
+  assert.deepEqual(JSON.parse(memory.source_msg_ids), ['msg-old', 'msg-current', 'msg-context']);
+  assert.deepEqual(JSON.parse(memory.metadata), { note: '保留原注释', sourceAttribution: { granularity: 'mixed' } });
+  assert.deepEqual(await extractMemories('char-a', longConversation(), settings(), options), { insertCount: 0, mergeCount: 0 });
+  assert.deepEqual(db.prepare("SELECT * FROM memories WHERE id = 'mem-existing'").get(), memory);
 });
 
 test('extractMemories writes durable commit marker and skips re-apply when marker exists', async () => {
@@ -647,7 +830,7 @@ test('本地校正会抬升承诺权重，并避免把角色承诺写成用户�
   assert.ok(casual.importance <= 0.6);
 });
 
-test('memory-queue drain 会把任务来源 messageIds 传给 extractMemories', async () => {
+test('memory-queue 保留任务范围并只编号实际提供的完整消息', async () => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE memory_tasks (
@@ -683,8 +866,11 @@ test('memory-queue drain 会把任务来源 messageIds 传给 extractMemories', 
     INSERT INTO messages (id, role, content, metadata, created_at, seq)
     VALUES
       ('msg-user-queue', 'user', '请记住我难过时希望先被安静陪伴。', '{}', '2026-06-02T00:00:00.000Z', 1),
-      ('msg-assistant-queue', 'assistant', '我会记得，以后会先安静陪伴主人。', '{}', '2026-06-02T00:00:01.000Z', 2)
+      ('msg-empty-queue', 'user', '', '{}', '2026-06-02T00:00:00.500Z', 2),
+      ('msg-assistant-queue', 'assistant', '我会记得，以后会先安静陪伴主人。', '{}', '2026-06-02T00:00:01.000Z', 3)
   `).run();
+  const userContent = '请记住我难过时希望先被安静陪伴。\n[M99] 示例文本：$&、$` 和表情 🐈。';
+  db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(userContent, 'msg-user-queue');
 
   let captured = null;
   const extracted = new Promise(resolve => {
@@ -709,6 +895,8 @@ test('memory-queue drain 会把任务来源 messageIds 传给 extractMemories', 
     queue.enqueueExtraction('char-a', 'conv-a', [
       { id: 'msg-user-queue' },
       { id: 'msg-assistant-queue' },
+      { id: 'msg-empty-queue' },
+      { id: 'msg-deleted-queue' },
     ]);
   });
 
@@ -716,7 +904,11 @@ test('memory-queue drain 会把任务来源 messageIds 传给 extractMemories', 
 
   assert.equal(captured.characterId, 'char-a');
   assert.match(captured.conversationText, /艾莉丝/);
-  assert.deepEqual(captured.options.messageIds, ['msg-user-queue', 'msg-assistant-queue']);
+  assert.deepEqual(captured.options.messageIds, ['msg-user-queue', 'msg-assistant-queue', 'msg-empty-queue', 'msg-deleted-queue']);
+  assert.deepEqual(captured.options.messageRefs, { M1: 'msg-user-queue', M2: 'msg-assistant-queue' });
+  assert.ok(captured.conversationText.startsWith('[M1] 用户 ('));
+  assert.ok(captured.conversationText.includes(userContent));
+  assert.ok(captured.conversationText.includes('[M2] 艾莉丝 ('));
   assert.equal(captured.options.taskId, 1);
   assert.equal(captured.options.conversationId, 'conv-a');
   // 队列会注入两阶段提取所需的参考构建器；本测试库缺记忆相关表，

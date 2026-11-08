@@ -39,7 +39,7 @@ export function loadCharacterList(): Promise<Character[]> {
 
   const epochAtStart = writeEpoch;
 
-  inflight = fetch('/api/characters')
+  const request: Promise<Character[]> = fetch('/api/characters')
     .then((response) => parseJsonResponse<Character[]>(response))
     .then((data) => {
       // 飞行期间若发生过乐观写入，丢弃陈旧 GET，保留本地缓存
@@ -55,10 +55,18 @@ export function loadCharacterList(): Promise<Character[]> {
       return data;
     })
     .finally(() => {
-      inflight = null;
+      if (inflight === request) inflight = null;
     });
 
-  return inflight;
+  inflight = request;
+  return request;
+}
+
+/** 服务端角色变更后重新读取；批准前的在飞请求不能覆盖这次结果。 */
+export function refreshCharacterList(): Promise<Character[]> {
+  writeEpoch += 1;
+  inflight = null;
+  return loadCharacterList();
 }
 
 /** 测试 / 调试用：清空缓存与订阅。 */

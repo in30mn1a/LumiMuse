@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { RefreshIcon, SparkIcon, StopIcon } from '@/components/ui/icons';
-import type { MemoryArchiveAiProposal, UseMemoryArchivePanelResult } from '@/hooks/settings/useMemoryArchivePanel';
+import { RefreshIcon } from '@/components/ui/icons';
+import type { UseMemoryArchivePanelResult } from '@/hooks/settings/useMemoryArchivePanel';
 
 interface MemoryArchivePanelProps {
   t: (key: string) => string;
@@ -10,12 +10,6 @@ interface MemoryArchivePanelProps {
 
 export function MemoryArchivePanel(props: MemoryArchivePanelProps) {
   return <MemoryArchivePanelContent key={props.memoryManagementCharacterId} {...props} />;
-}
-
-function isExecutableAiProposal(proposal: MemoryArchiveAiProposal): boolean {
-  return (proposal.status === 'pending' || proposal.status === 'failed')
-    && proposal.selectedIds.length > 0
-    && proposal.summary.trim().length > 0;
 }
 
 function MemoryArchivePanelContent({
@@ -65,9 +59,6 @@ function MemoryArchivePanelContent({
     archive.clearMemoryArchiveSelection();
   };
 
-  const executableAiProposalKeys = archive.memoryArchiveAiProposals
-    .filter(isExecutableAiProposal)
-    .map(proposal => proposal.key);
   const manualArchiveReady = archive.selectedMemoryArchiveIds.length > 0 && archive.memoryArchiveSummary.trim().length > 0;
 
   return (
@@ -80,140 +71,8 @@ function MemoryArchivePanelContent({
         <p role="alert" className="mb-3 text-xs text-red-500">{archive.memoryArchiveError}</p>
       )}
 
-      {/* ── AI 归档建议：AI 只出方案，逐组确认后才执行 ── */}
-      <section>
-        <h4 className="text-sm font-medium text-text-secondary">{t('settings.memoryArchiveAiSection')}</h4>
-        <p className="mt-1 text-xs text-text-muted">{t('settings.memoryArchiveAiHint')}</p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void archive.handleMemoryArchiveAi()}
-            disabled={archive.memoryArchiveLoading || archive.memoryArchiveAiRunning || !memoryManagementCharacterId}
-            className="soft-button soft-button-primary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {archive.memoryArchiveAiRunning ? (
-              <span className="spinner-sm" aria-hidden="true" />
-            ) : (
-              <SparkIcon className="h-3.5 w-3.5" />
-            )}
-            {archive.memoryArchiveAiRunning ? t('settings.memoryArchiveAiRunning') : t('settings.memoryArchiveAi')}
-          </button>
-          {archive.memoryArchiveAiRunning && (
-            <button
-              type="button"
-              onClick={archive.handleStopMemoryArchiveAi}
-              className="soft-button soft-button-danger px-2.5 py-1 text-xs"
-            >
-              <StopIcon className="h-3.5 w-3.5" />
-              {t('settings.memoryArchiveAiStop')}
-            </button>
-          )}
-          {executableAiProposalKeys.length > 1 && (
-            <button
-              type="button"
-              onClick={() => void archive.handleExecuteMemoryArchiveAiProposals(executableAiProposalKeys)}
-              disabled={archive.memoryArchiveLoading}
-              className="soft-button soft-button-secondary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {t('settings.memoryArchiveAiExecuteAll').replace('{count}', String(executableAiProposalKeys.length))}
-            </button>
-          )}
-        </div>
-        {archive.memoryArchiveAiProposals.length > 0 && (
-          <ul className="mt-3 space-y-3">
-            {archive.memoryArchiveAiProposals.map((proposal, index) => {
-              const settled = proposal.status === 'archived' || proposal.status === 'stale';
-              const summaryInputId = `memory-archive-ai-summary-${proposal.key}`;
-              return (
-                <li
-                  key={proposal.key}
-                  className={`rounded-xl border border-border-light bg-surface/60 p-3 ${settled ? 'opacity-70' : ''}`}
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-text-primary">
-                      {proposal.title || t('settings.memoryArchiveAiGroup').replace('{index}', String(index + 1))}
-                    </span>
-                    {proposal.status === 'archived' && (
-                      <span className="chip chip-active text-xs">{t('settings.memoryArchiveAiArchivedBadge')}</span>
-                    )}
-                    {proposal.status === 'stale' && (
-                      <span className="chip text-xs">{t('settings.memoryArchiveAiStaleBadge')}</span>
-                    )}
-                  </div>
-                  {settled ? (
-                    <p className="mt-2 whitespace-pre-wrap break-words text-sm text-text-secondary">{proposal.summary}</p>
-                  ) : (
-                    <>
-                      <label htmlFor={summaryInputId} className="mt-2 block text-xs font-medium text-text-secondary">
-                        {t('settings.memoryArchiveSummary')}
-                      </label>
-                      <textarea
-                        id={summaryInputId}
-                        value={proposal.summary}
-                        onChange={e => archive.setMemoryArchiveAiProposalSummary(proposal.key, e.target.value)}
-                        disabled={archive.memoryArchiveLoading}
-                        rows={4}
-                        className="textarea-rich mt-1 w-full rounded-xl border border-border-light bg-surface/80 px-3 py-2 text-sm disabled:opacity-70"
-                      />
-                      <div className="mt-2 text-xs font-medium text-text-secondary">
-                        {t('settings.memoryArchiveAiCovered')
-                          .replace('{selected}', String(proposal.selectedIds.length))
-                          .replace('{total}', String(proposal.memories.length))}
-                      </div>
-                      <div className="mt-1 max-h-48 space-y-1 overflow-auto">
-                        {proposal.memories.map(memory => (
-                          <label
-                            key={memory.id}
-                            className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-xs text-text-secondary hover:bg-surface/70"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={proposal.selectedIds.includes(memory.id)}
-                              onChange={() => archive.toggleMemoryArchiveAiProposalMemory(proposal.key, memory.id)}
-                              disabled={archive.memoryArchiveLoading}
-                              className="mt-0.5"
-                            />
-                            <span className="min-w-0 flex-1 break-words">
-                              <span className="mr-1 text-text-muted">[{memory.category}]</span>
-                              {memory.content}
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                  {proposal.error && (
-                    <p role="alert" className="mt-2 text-xs text-red-500">{proposal.error}</p>
-                  )}
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {!settled && (
-                      <button
-                        type="button"
-                        onClick={() => void archive.handleExecuteMemoryArchiveAiProposals([proposal.key])}
-                        disabled={archive.memoryArchiveLoading || !isExecutableAiProposal(proposal)}
-                        className="soft-button soft-button-primary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {t('settings.memoryArchiveAiExecuteGroup').replace('{count}', String(proposal.selectedIds.length))}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => archive.dismissMemoryArchiveAiProposal(proposal.key)}
-                      disabled={archive.memoryArchiveLoading}
-                      className="soft-button soft-button-secondary px-2.5 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {settled ? t('settings.memoryArchiveAiRemove') : t('settings.memoryArchiveAiDismiss')}
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
       {/* ── 手动归档：自己挑记忆、自己写摘要 ── */}
-      <section className="mt-4 border-t border-border-light pt-4">
+      <section>
         <h4 className="text-sm font-medium text-text-secondary">{t('settings.memoryArchiveManualSection')}</h4>
         <p className="mb-2 mt-1 text-xs text-text-muted">
           {t('settings.memoryArchiveSelectMemories')}

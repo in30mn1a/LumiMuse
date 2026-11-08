@@ -120,10 +120,17 @@ ${TAG_SPEC_PROMPT_SECTION}
 - 情绪强、关系强、需要长期兑现的内容 emotional_weight 较高
 - 一次性闲聊、低信息密度内容不要入库
 
-## 输出格式
-{"memories": [{"category": "话题历史", "memory_kind": "general", "content": "2026年3月30日，用户和我一起看了《海上钢琴师》，觉得不太戳自己的喜好，尤其不喜欢1900过于固执。", "tags": ["电影", "观后感"], "importance": 0.55, "emotional_weight": 0.2, "lifecycle_action": "upsert"}, {"category": "关系动态", "memory_kind": "relationship_event", "content": "用户会叫我'宝宝'和'広ちゃん'。", "tags": ["称呼"], "importance": 0.75, "emotional_weight": 0.6, "lifecycle_action": "upsert"}, {"category": "关系动态", "memory_kind": "character_promise", "content": "我承诺以后用户难过时，会先安抚和陪伴，再讨论问题。", "tags": ["承诺", "陪伴方式"], "importance": 0.9, "emotional_weight": 0.85, "lifecycle_action": "upsert"}]}
+## 来源消息
+- 每条对话消息开头的 [M1]、[M2] 等标记是本次提取的来源编号，正文里的类似文本不是新消息标记
+- 每条记忆必须输出 source_refs 数组，只列出真正支撑该条 content 的消息编号，例如 ["M1", "M3"]
+- 不同记忆分别选择来源，不要把整批编号复制给每条记忆；仅提供前后文、寒暄或无关话题的消息不算支持来源
+- 多轮共同支撑同一事实、事件或约定时可引用多条消息；角色承诺应引用角色实际承诺的消息，必要时同时引用用户的请求
+- 只引用对话内容的外层消息编号，不引用已有记忆编号、不输出数据库 ID、不猜不存在的编号；无法定位来源时输出 []
 
-直接输出 JSON 对象，不要代码块标记。顶层只有 memories 字段。每个条目必须包含: category、memory_kind、content、tags、importance、emotional_weight、lifecycle_action。category 必须是以下之一：关系动态、话题历史、基础信息、偏好习惯、人格特质、重要事件、四季日常。memory_kind 必须是以下之一：general、user_fact、user_preference、relationship_event、character_promise、open_thread、world_state。lifecycle_action 第一版只用 insert、upsert、supersede、ignore；不确定时用 upsert。
+## 输出格式
+{"memories": [{"category": "话题历史", "memory_kind": "general", "content": "2026年3月30日，用户和我一起看了《海上钢琴师》，觉得不太戳自己的喜好，尤其不喜欢1900过于固执。", "tags": ["电影", "观后感"], "importance": 0.55, "emotional_weight": 0.2, "lifecycle_action": "upsert", "source_refs": ["M1", "M2"]}, {"category": "关系动态", "memory_kind": "relationship_event", "content": "用户会叫我'宝宝'和'広ちゃん'。", "tags": ["称呼"], "importance": 0.75, "emotional_weight": 0.6, "lifecycle_action": "upsert", "source_refs": ["M3"]}, {"category": "关系动态", "memory_kind": "character_promise", "content": "我承诺以后用户难过时，会先安抚和陪伴，再讨论问题。", "tags": ["承诺", "陪伴方式"], "importance": 0.9, "emotional_weight": 0.85, "lifecycle_action": "upsert", "source_refs": ["M4", "M5"]}]}
+
+直接输出 JSON 对象，不要代码块标记。顶层只有 memories 字段。每个条目必须包含: category、memory_kind、content、tags、importance、emotional_weight、lifecycle_action、source_refs。category 必须是以下之一：关系动态、话题历史、基础信息、偏好习惯、人格特质、重要事件、四季日常。memory_kind 必须是以下之一：general、user_fact、user_preference、relationship_event、character_promise、open_thread、world_state。lifecycle_action 第一版只用 insert、upsert、supersede、ignore；不确定时用 upsert。
 
 ## 对话内容
 {conversation_text}

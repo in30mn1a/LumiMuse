@@ -236,8 +236,13 @@ test('history is listed per character, newest first, in pages', async t => {
   assert.equal(fallback.body.proposals.length, 3);
   assert.deepEqual((await listHistory('character_id=char-b')).body.proposals.map(proposal => proposal.id), [foreign.id]);
   assert.deepEqual((await listHistory('character_id=nobody')).body, { proposals: [], has_more: false });
-  assert.equal((await listHistory('limit=5')).status, 400);
-  assert.equal((await listHistory('character_id=%20')).status, 400);
+  const all = await listHistory('limit=5');
+  assert.equal(all.status, 200);
+  assert.deepEqual(all.body.proposals.map(proposal => proposal.id), [foreign.id, ...ids.toReversed()]);
+  assert.equal(all.body.has_more, false);
+  const blankFilter = await listHistory('character_id=%20');
+  assert.equal(blankFilter.status, 200);
+  assert.deepEqual(blankFilter.body.proposals.map(proposal => proposal.id), all.body.proposals.map(proposal => proposal.id));
 });
 
 test('deleting the character removes its history, including proposals of deleted sessions', async t => {

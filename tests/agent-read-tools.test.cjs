@@ -583,6 +583,41 @@ test('get_memory_sources returns source messages with surrounding context and mi
   assert.deepEqual(wrongCharacter.missing_memory_ids, ['mem-b-1']);
 });
 
+test('get_memory_sources 区分逐条、批次、混合和未标注来源，保留原文与丢失来源', async t => {
+  const cases = [
+    [{ sourceAttribution: { granularity: 'message' } }, { granularity: 'message' }],
+    [{ sourceAttribution: { granularity: 'batch', reason: 'invalid_refs' } }, { granularity: 'batch', reason: 'invalid_refs' }],
+    [{ sourceAttribution: { granularity: 'mixed' } }, { granularity: 'mixed' }],
+    [{ note: '未标注的旧记录' }, { granularity: 'unknown' }],
+    [{ sourceAttribution: { granularity: 'invented', reason: 'invalid_refs' } }, { granularity: 'unknown' }],
+    [{ sourceAttribution: 'message' }, { granularity: 'unknown' }],
+    [{ sourceAttribution: { granularity: 'batch', reason: 'invented' } }, { granularity: 'batch' }],
+  ];
+  const memoryIds = cases.map((_, index) => `mem-attribution-${index}`);
+  const { ctx } = createFixture(t, {
+    seedData: db => {
+      seed(db);
+      cases.forEach(([metadata], index) => addMemory(db, {
+        id: memoryIds[index], category: '偏好习惯', content: '用户不爱吃甜食。',
+        source: ['msg-a1-3', 'msg-deleted'], metadata,
+      }));
+    },
+  });
+  const result = await callOk('get_memory_sources', { memory_ids: memoryIds, context: 0 }, ctx);
+
+  assert.deepEqual(result.missing_memory_ids, []);
+  result.memories.forEach((memory, index) => {
+    assert.equal(memory.memory_id, memoryIds[index]);
+    assert.deepEqual(memory.source_attribution, cases[index][1]);
+    assert.equal(memory.source_total, 2);
+    assert.deepEqual(memory.sources.map(source => source.message_id), ['msg-a1-3']);
+    assert.deepEqual(ids(memory.sources[0].messages), ['msg-a1-3']);
+    assert.equal(memory.sources[0].messages[0].is_source, true);
+    assert.deepEqual(memory.missing_source_ids, ['msg-deleted']);
+    assert.equal(memory.next_source_offset, null);
+  });
+});
+
 test('get_memory_sources keeps one call within the output budget and pages through every source', async t => {
   const SOURCE_COUNT = 60;
   const { ctx } = createFixture(t, {
@@ -598,7 +633,7 @@ test('get_memory_sources keeps one call within the output budget and pages throu
         sourceIds.push(id);
         addMessage(db, id, 'conv-long', i % 2 ? 'user' : 'assistant', `第${i}条长消息：${'窗外的雨一直下到天亮。'.repeat(120)}`, i, `2026-10-05T10:${String(i).padStart(2, '0')}:00.000Z`);
       }
-      addMemory(db, { id: 'mem-wide', category: '四季日常', content: '提取窗口很宽的记忆', source: [...sourceIds.slice(0, 30), 'msg-gone', ...sourceIds.slice(30)], importance: 0.5 });
+      addMemory(db, { id: 'mem-wide', category: '四季日常', content: '提取窗口很宽的记忆', source: [...sourceIds.slice(0, 30), 'msg-gone', ...sourceIds.slice(30)], importance: 0.5, metadata: { sourceAttribution: { granularity: 'batch', reason: 'missing_refs' } } });
       addMemory(db, { id: 'mem-wide-twin', category: '四季日常', content: '同一窗口的另一条记忆', source: sourceIds, importance: 0.5 });
     },
   });
@@ -613,6 +648,7 @@ test('get_memory_sources keeps one call within the output budget and pages throu
     pages += 1;
     const [memory] = page.memories;
     assert.equal(memory.source_total, SOURCE_COUNT + 1);
+    assert.deepEqual(memory.source_attribution, { granularity: 'batch', reason: 'missing_refs' });
     assert.ok(memory.sources.length > 0, 'every page makes progress');
     const sourceTokens = memory.sources.reduce((sum, source) => sum + estimateTokens(JSON.stringify(source)), 0);
     assert.ok(sourceTokens <= 20_000, `page ${pages} stays within budget (${sourceTokens})`);

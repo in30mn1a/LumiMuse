@@ -88,7 +88,7 @@ const ProposalCard = require('../src/components/agent/ProposalCard.tsx').default
 const AgentProposalHistory = require('../src/components/agent/AgentProposalHistory.tsx').default;
 const AgentSettingsDrawer = require('../src/components/agent/AgentSettingsDrawer.tsx').default;
 const AgentPage = require('../src/app/agent/page.tsx').default;
-const { buildAgentDisplayItems } = require('../src/components/agent/AgentMessageList.tsx');
+const { buildAgentDisplayItems, hasUndecidedProposal } = require('../src/components/agent/AgentMessageList.tsx');
 const { proposalItemFlags, isCheckedByDefault, LOW_CONFIDENCE_THRESHOLD } = require('../src/lib/agent/proposal-flags.ts');
 const { diffText } = require('../src/lib/text-diff.ts');
 const { __migrateForTests, __setDbForTests } = require('../src/lib/db.ts');
@@ -97,6 +97,7 @@ const { AGENT_TOOLS } = require('../src/lib/agent/tools/index.ts');
 const { createAgentSession, listAgentMessages } = require('../src/lib/agent/store.ts');
 const { toAgentMessageView } = require('../src/lib/agent/messages.ts');
 const { runAgentTurn } = require('../src/lib/agent/loop.ts');
+const { getCharacterListCache, resetCharacterListCache } = require('../src/lib/character-list-cache.ts');
 
 // ---- 虚构数据 ----
 function snapshot(content, extra = {}) {
@@ -207,6 +208,7 @@ async function renderCard(props = {}) {
 test.afterEach(async () => {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   cleanup();
+  resetCharacterListCache();
   global.fetch = originalFetch;
 });
 test.after(() => {
@@ -407,6 +409,141 @@ test('text diff keeps the shared prefix and suffix and never splits a surrogate 
   assert.deepEqual(diffText('喜欢😀', '喜欢😃'), { prefix: '喜欢', removed: '😀', added: '😃', suffix: '' });
   assert.deepEqual(diffText('', '新'), { prefix: '', removed: '', added: '新', suffix: '' });
 });
+
+test('来源单独修正显示完整正文、消息 ID 和粒度变化，清空及相同 ID 升级也可见', () => {
+  const sourceId = '完整来源消息-abcdefghijklmnopqrstuvwxyz-0123456789';
+  const sourceUpdate = item(81, 'update', {
+    before: { memories: [{ id: 'source-memory', snapshot: snapshot('完整保留的记忆正文😀', {
+      source_msg_ids: [sourceId, '无关的旧来源'], metadata: { sourceAttribution: { granularity: 'batch' } },
+    }) }] },
+    after: { source_msg_ids: [sourceId] },
+  });
+  const view = render(React.createElement(ProposalCard, { proposalId: 7, initialView: proposalView({ items: [sourceUpdate] }) }));
+  assert.ok(view.getByText('完整保留的记忆正文😀'));
+  const sourceRow = view.getByText('来源消息').parentElement;
+  assert.equal(sourceRow.querySelector('del').textContent, `${sourceId}\n无关的旧来源`);
+  assert.equal(sourceRow.querySelector('ins').textContent, sourceId);
+  assert.ok(view.getByText('批次范围'));
+  assert.ok(view.getByText('逐条选定'));
+  view.unmount();
+  const cleared = render(React.createElement(ProposalCard, { proposalId: 8, initialView: proposalView({ id: 8, items: [{ ...sourceUpdate, after: { source_msg_ids: [] } }] }) }));
+  assert.ok(cleared.getByText('无来源'));
+  assert.ok(cleared.getByText('未标注'));
+  cleared.unmount();
+  const upgraded = render(React.createElement(ProposalCard, { proposalId: 9, initialView: proposalView({ id: 9, items: [{
+    ...sourceUpdate, before: { memories: [{ id: 'source-memory', snapshot: snapshot('原正文', { source_msg_ids: [sourceId] }) }] },
+  }] }) }));
+  assert.ok(upgraded.getByText('未标注'));
+  assert.ok(upgraded.getByText('逐条选定'));
+});
+
+test('角色卡提案完整展示名称、字段差异和清空，支持批准和撤销', async () => {
+  const longText = '完整保留画面要求😀\n'.repeat(900);
+  const change = item(91, 'update', {
+    before: { character: { id: 'char-a', snapshot: { name: '星野', personality: '安静温柔', greeting: '欢迎回来', image_prompt_other_requirements: '旧要求' } } },
+    after: { personality: '活泼温柔', greeting: '', image_prompt_other_requirements: longText },
+  });
+  const pending = proposalView({ items: [change], summary: '修改星野设定' });
+  let state = 'pending';
+  const calls = installFetch(call => {
+    if (call.url === '/api/characters') return json([{ id: 'char-a', name: '星野', personality: state === 'applied' ? '活泼温柔' : '安静温柔' }]);
+    state = call.body.action === 'undo' ? 'undone' : 'applied';
+    return json({ ...pending, status: 'decided', items: [{ ...change, state }] });
+  });
+  const view = render(React.createElement(ProposalCard, { proposalId: 7, initialView: pending }));
+  assert.ok(view.getByRole('checkbox', { name: '修改角色卡' }));
+  assert.ok(view.getByText('角色：星野'));
+  assert.equal(view.getByText('性格').parentElement.querySelector('del').textContent, '安静');
+  assert.equal(view.getByText('性格').parentElement.querySelector('ins').textContent, '活泼');
+  assert.equal(view.getByText('开场白').parentElement.querySelector('del').textContent, '欢迎回来');
+  assert.equal(view.getByText('生图其他要求').parentElement.querySelector('ins').textContent, longText);
+  fireEvent.click(view.getByRole('button', { name: '批准所选（1）' }));
+  await waitFor(() => assert.ok(view.getByText('已生效')));
+  await waitFor(() => assert.equal(getCharacterListCache()?.[0]?.personality, '活泼温柔'));
+  assert.deepEqual(calls[0].body.approved_item_ids, [91]);
+  fireEvent.click(view.getByRole('button', { name: '撤销' }));
+  await waitFor(() => assert.ok(view.getByText('已撤销')));
+  await waitFor(() => assert.equal(getCharacterListCache()?.[0]?.personality, '安静温柔'));
+  assert.deepEqual(calls.filter(call => call.method === 'POST')[1].body, { action: 'undo', item_id: 91 });
+});
+
+test('角色卡工具结果紧跟工具调用显示提案，待批状态由决定事件关闭', () => {
+  const messages = [
+    { id: 1, role: 'assistant', content: '', tool_calls: [{ id: 'character-call', name: 'create_character_proposal', arguments: '{}' }] },
+    { id: 2, role: 'tool', content: '{"ok":true,"proposal_id":42,"pending_items":1}', tool_call_id: 'character-call', tool_name: 'create_character_proposal', tool_ok: true },
+  ];
+  const items = buildAgentDisplayItems(messages);
+  assert.deepEqual(items.map(entry => entry.kind), ['tool', 'proposal']);
+  assert.equal(items[1].proposalId, 42);
+  assert.equal(hasUndecidedProposal(messages), true);
+  assert.equal(hasUndecidedProposal([...messages, { id: 3, role: 'event', event: { kind: 'proposal_decision', proposal_id: 42, items: [] } }]), false);
+});
+
+test('从零创建角色卡完整展示所有文本，批准及撤销同步角色列表', async () => {
+  const fields = {
+    name: '暮星', basic_info: '观星者', personality: '温柔好奇', scenario: '夜晚的观测台',
+    greeting: '来看看今夜的星星吧。', example_dialogue: '主人：那颗星叫什么？\n暮星：让我陪你一起找。',
+    system_prompt: '以暮星的身份回复。', other_info: '', image_tags: 'starry sky', user_image_tags: '',
+    image_prompt_other_requirements: '完整保留生图要求😀\n'.repeat(900),
+  };
+  const creation = item(92, 'create', {
+    before: { character_creation: { id: 'new-character' } }, after: fields,
+    evidence: { message_ids: [], owner_quote: '创建一个温柔的观星者角色' },
+  });
+  const pending = proposalView({ character_id: null, items: [creation], summary: '创建暮星角色卡' });
+  let state = 'pending';
+  const calls = installFetch(call => {
+    if (call.url === '/api/characters') return json(state === 'applied' ? [{ id: 'new-character', ...fields }] : []);
+    assert.equal(call.url, '/api/agent/proposals/7');
+    state = call.body.action === 'undo' ? 'undone' : 'applied';
+    return json({ ...pending, status: 'decided', items: [{ ...creation, state }] });
+  });
+  const view = render(React.createElement(ProposalCard, { proposalId: 7, initialView: pending }));
+  assert.ok(view.getByRole('checkbox', { name: '创建角色卡' }));
+  assert.ok(view.getByText('角色：暮星'));
+  for (const [field, value] of Object.entries(fields)) {
+    const label = zh[`agent.proposal.field.${field}`];
+    assert.equal(view.getByText(label).parentElement.lastElementChild.textContent, value || '—');
+  }
+  assert.equal(calls.length, 0, '待批准时不创建或刷新角色');
+  fireEvent.click(view.getByRole('button', { name: '批准所选（1）' }));
+  await waitFor(() => assert.deepEqual(getCharacterListCache()?.map(character => character.id), ['new-character']));
+  assert.ok(view.getByText('已生效'));
+  assert.deepEqual(calls.find(call => call.method === 'POST').body.approved_item_ids, [92]);
+  fireEvent.click(view.getByRole('button', { name: '撤销' }));
+  await waitFor(() => assert.deepEqual(getCharacterListCache(), []));
+  assert.ok(view.getByText('已撤销'));
+  assert.equal(calls.filter(call => call.url === '/api/characters').length, 2);
+});
+
+test('创建角色工具结果展示提案并等待决定，失败结果不生成卡片', () => {
+  const messages = [
+    { id: 1, role: 'assistant', content: '', tool_calls: [{ id: 'create-call', name: 'create_character', arguments: '{}' }] },
+    { id: 2, role: 'tool', content: '{"ok":true,"proposal_id":43,"pending_items":1}', tool_call_id: 'create-call', tool_name: 'create_character', tool_ok: true },
+  ];
+  assert.deepEqual(buildAgentDisplayItems(messages).map(entry => entry.kind), ['tool', 'proposal']);
+  assert.equal(hasUndecidedProposal(messages), true);
+  assert.equal(hasUndecidedProposal([...messages, { id: 3, role: 'event', event: { kind: 'proposal_decision', proposal_id: 43, items: [] } }]), false);
+  assert.deepEqual(buildAgentDisplayItems([messages[0], { ...messages[1], content: '{"ok":false,"error":"缺少名称"}', tool_ok: false }]).map(entry => entry.kind), ['tool']);
+});
+
+for (const state of ['rejected', 'failed']) {
+  test(`创建角色提案 ${state} 时不刷新角色列表`, async () => {
+    const creation = item(93, 'create', {
+      before: { character_creation: { id: 'not-created' } }, after: { name: '尚未创建' },
+    });
+    const pending = proposalView({ character_id: null, items: [creation] });
+    const calls = installFetch(call => {
+      assert.equal(call.url, '/api/agent/proposals/7');
+      return json({ ...pending, status: 'decided', items: [{ ...creation, state }] });
+    });
+    const view = render(React.createElement(ProposalCard, { proposalId: 7, initialView: pending }));
+    fireEvent.click(view.getByRole('button', { name: state === 'rejected' ? '全部拒绝' : '批准所选（1）' }));
+    await waitFor(() => assert.equal(itemElement(view.container, 93).querySelector('[data-proposal-state]').dataset.proposalState, state));
+    assert.equal(calls.length, 1);
+    assert.equal(getCharacterListCache(), null);
+  });
+}
 
 test('a create_memory_proposal result adds a card right after its tool call', () => {
   const base = { tool_calls: null, tool_call_id: null, tool_name: null, tool_ok: null, event: null, created_at: '' };
@@ -632,6 +769,7 @@ test('history lists proposals per character, including deleted sessions, without
     if (call.url === '/api/agent/proposals?character_id=char-b&limit=20&offset=0') return json({ proposals: [deletedSession], has_more: true });
     if (call.url === '/api/agent/proposals?character_id=char-b&limit=20&offset=1') return json({ proposals: [deletedSession, pendingElsewhere], has_more: false });
     if (call.url === '/api/agent/proposals?character_id=char-a&limit=20&offset=0') return json({ proposals: [], has_more: false });
+    if (call.url === '/api/agent/proposals?limit=20&offset=0') return json({ proposals: [deletedSession, pendingElsewhere], has_more: false });
     throw new Error(`unexpected fetch ${call.method} ${call.url}`);
   });
   const view = render(React.createElement(AgentProposalHistory, { defaultCharacterId: 'char-b' }));
@@ -649,26 +787,73 @@ test('history lists proposals per character, including deleted sessions, without
 
   fireEvent.change(view.getByLabelText('角色'), { target: { value: 'char-a' } });
   await view.findByText('这个角色还没有修改历史');
+  fireEvent.change(view.getByLabelText('角色'), { target: { value: '' } });
+  await view.findByText('已删除会话里的提案');
+  assert.ok(view.getByText('还在等批准的提案'));
   assert.equal(calls.filter(call => call.url.startsWith('/api/agent/proposals/')).length, 0, 'cards reuse the listed views');
 });
 
-test('history falls back to the first character and handles having none', async () => {
+test('history falls back to all characters and handles having none', async () => {
   installFetch(call => {
     if (call.url === '/api/characters') return json([{ id: 'char-a', name: '小雪' }]);
-    if (call.url === '/api/agent/proposals?character_id=char-a&limit=20&offset=0') return json({ proposals: [], has_more: false });
+    if (call.url === '/api/agent/proposals?limit=20&offset=0') return json({ proposals: [], has_more: false });
     throw new Error(`unexpected fetch ${call.method} ${call.url}`);
   });
   const first = render(React.createElement(AgentProposalHistory, { defaultCharacterId: 'char-gone' }));
-  await first.findByText('这个角色还没有修改历史');
-  assert.equal(first.getByLabelText('角色').value, 'char-a');
+  await first.findByText('还没有修改历史');
+  assert.equal(first.getByLabelText('角色').value, '');
+  assert.ok(first.getByRole('option', { name: '全部角色' }));
   cleanup();
 
   installFetch(call => {
     if (call.url === '/api/characters') return json([]);
+    if (call.url === '/api/agent/proposals?limit=20&offset=0') return json({ proposals: [], has_more: false });
     throw new Error(`unexpected fetch ${call.method} ${call.url}`);
   });
   const second = render(React.createElement(AgentProposalHistory, { defaultCharacterId: null }));
-  await second.findByText('还没有角色');
+  await second.findByText('还没有修改历史');
+  assert.equal(second.getByRole('option', { name: '全部角色' }).value, '');
+});
+
+test('零角色时仍显示已删除会话的新建角色历史', async () => {
+  const creation = item(94, 'create', {
+    before: { character_creation: { id: 'deleted-character' } }, after: { name: '旧创作' }, state: 'undone',
+  });
+  const saved = proposalView({ session_id: null, character_id: null, items: [creation], status: 'decided', summary: '已删除会话的新建角色' });
+  installFetch(call => {
+    if (call.url === '/api/characters') return json([]);
+    if (call.url === '/api/agent/proposals?limit=20&offset=0') return json({ proposals: [saved], has_more: false });
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = render(React.createElement(AgentProposalHistory, { defaultCharacterId: null }));
+  await view.findByText('已删除会话的新建角色');
+  assert.ok(view.getByText('创建角色卡'));
+  assert.ok(view.getByText('已撤销'));
+  assert.equal(view.queryByRole('button', { name: '撤销' }), null);
+});
+
+test('已删除会话的新建角色可从全部历史撤销并同步角色列表', async () => {
+  const creation = item(94, 'create', {
+    before: { character_creation: { id: 'created-character' } }, after: { name: '旧创作' }, state: 'applied',
+  });
+  const saved = proposalView({ session_id: null, character_id: null, items: [creation], status: 'decided', summary: '已删除会话的新建角色' });
+  let undone = false;
+  const calls = installFetch(call => {
+    if (call.url === '/api/characters') return json(undone ? [] : [{ id: 'created-character', name: '旧创作' }]);
+    if (call.url === '/api/agent/proposals?limit=20&offset=0') return json({ proposals: [saved], has_more: false });
+    if (call.url === '/api/agent/proposals/7' && call.method === 'POST') {
+      undone = true;
+      return json({ ...saved, items: [{ ...creation, state: 'undone' }] });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  });
+  const view = render(React.createElement(AgentProposalHistory, { defaultCharacterId: null }));
+  await view.findByText('已删除会话的新建角色');
+  assert.ok(view.getByText('创建角色卡'));
+  fireEvent.click(view.getByRole('button', { name: '撤销' }));
+  await view.findByText('已撤销');
+  await waitFor(() => assert.deepEqual(getCharacterListCache(), []));
+  assert.equal(calls.filter(call => call.url === '/api/characters').length, 2);
 });
 
 test('the settings drawer opens change history for the current character', async () => {

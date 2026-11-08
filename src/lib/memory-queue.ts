@@ -56,19 +56,22 @@ function buildExtractionText(
   messages: Array<{ id: string; role: string; content: string; created_at: string }>,
   characterName: string,
   timeZone: string,
-): { text: string; includedCompleteUserIds: Set<string> } {
+): { text: string; includedCompleteUserIds: Set<string>; messageRefs: Record<string, string> } {
   const lines: string[] = [];
   const includedCompleteUserIds = new Set<string>();
+  const messageRefs: Record<string, string> = {};
 
   for (const message of messages) {
     if (!message.content) continue;
 
     const line = formatExtractionMessage(message, characterName, timeZone);
-    lines.push(line);
+    const ref = `M${lines.length + 1}`;
+    messageRefs[ref] = message.id;
+    lines.push(`[${ref}] ${line}`);
     if (message.role === 'user') includedCompleteUserIds.add(message.id);
   }
 
-  return { text: lines.join('\n'), includedCompleteUserIds };
+  return { text: lines.join('\n'), includedCompleteUserIds, messageRefs };
 }
 
 function hasTable(db: ReturnType<typeof getDb>, tableName: string): boolean {
@@ -344,7 +347,7 @@ async function processOneExtractionTask(): Promise<{ claimed: number }> {
       const charRow = db.prepare('SELECT name FROM characters WHERE id = ?').get(task.character_id) as { name: string } | undefined;
       const characterName = charRow?.name || '角色';
 
-      const { text: convText, includedCompleteUserIds } = buildExtractionText(
+      const { text: convText, includedCompleteUserIds, messageRefs } = buildExtractionText(
         messages,
         characterName,
         settings.client_timezone,
@@ -362,6 +365,7 @@ async function processOneExtractionTask(): Promise<{ claimed: number }> {
       if (!alreadyCommitted) {
         const extracted = await extractMemories(task.character_id, convText, settings, {
           messageIds,
+          messageRefs,
           taskId: task.id,
           conversationId: task.conversation_id,
           reference: buildExtractionReferenceProvider(task.character_id, settings),

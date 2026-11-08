@@ -197,6 +197,44 @@ function insertExisting(db, overrides = {}) {
   );
 }
 
+test('两阶段提取在替代和忽略时保留第一阶段的逐条来源', async t => {
+  for (const action of ['supersede', 'ignore']) {
+    await t.test(action, async subtest => {
+      const db = createExtractionDb();
+      subtest.after(() => db.close());
+      insertExisting(db);
+      const extracted = JSON.parse(EXTRACTED);
+      extracted.memories[0].source_refs = ['M2'];
+      const { extractMemories } = loadEngineWithResponses(db, [
+        JSON.stringify(extracted),
+        JSON.stringify({ decisions: [{ index: 0, lifecycle_action: action, target: 0, source_refs: ['M1'] }] }),
+      ]);
+      await extractMemories('char-a', longConversation(), settings(), {
+        messageIds: ['msg-unrelated', 'msg-sweet'],
+        messageRefs: { M1: 'msg-unrelated', M2: 'msg-sweet' },
+        reference: fakeReference(),
+      });
+
+      if (action === 'ignore') {
+        const candidate = db.prepare("SELECT raw_candidate_json FROM memory_extraction_candidates WHERE status = 'ignored'").get();
+        const raw = JSON.parse(candidate.raw_candidate_json);
+        assert.deepEqual(raw.source_refs, ['M2']);
+        assert.deepEqual(raw.source_msg_ids, ['msg-sweet']);
+        assert.equal(raw.metadata.sourceAttribution.granularity, 'message');
+        assert.equal(db.prepare("SELECT status FROM memories WHERE id = 'mem-sweet'").get().status, 'active');
+      } else {
+        const memory = db.prepare("SELECT source_msg_ids, metadata FROM memories WHERE id != 'mem-sweet'").get();
+        assert.deepEqual(JSON.parse(memory.source_msg_ids), ['msg-sweet']);
+        assert.equal(JSON.parse(memory.metadata).sourceAttribution.granularity, 'message');
+        const previous = db.prepare("SELECT source_msg_ids, metadata, status FROM memories WHERE id = 'mem-sweet'").get();
+        assert.equal(previous.status, 'superseded');
+        assert.deepEqual(JSON.parse(previous.source_msg_ids), []);
+        assert.deepEqual(JSON.parse(previous.metadata).supersededBy.sourceMsgIds, ['msg-sweet']);
+      }
+    });
+  }
+});
+
 test('stage two decision overrides the stage one lifecycle action', async () => {
   const db = createExtractionDb();
   const { extractMemories, calls } = loadEngineWithResponses(db, [

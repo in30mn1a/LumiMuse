@@ -2,8 +2,8 @@
  * 主人对 Agent 提案的决定：逐项批准或拒绝，以及撤销已生效的项。
  *
  * 整个决定在一个事务里完成，每个批准项再套一层 savepoint：单项出错只把该项记为 failed，
- * 不影响其他项。应用前用 memoryBusinessSnapshot 与提案时的快照比较，不一致就记为 stale 跳过，
- * 不覆盖后来的修改；只变使用次数、最近使用时间不算改动。撤销用同样的比较对照应用后快照。
+ * 不影响其他项。应用前用完整记忆或角色卡快照与提案时的快照比较，不一致就记为 stale 跳过，
+ * 不覆盖后来的修改；记忆使用次数、最近使用时间不算改动。撤销用同样的比较对照应用后快照。
  */
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
@@ -25,10 +25,12 @@ import type { MemoryStatus } from '@/types';
 import type { ProposalDecisionEventItem } from './messages';
 import {
   candidateTaskSucceeded,
+  existingMessageIds,
   loadCandidateTask,
   listProposalItems,
   MAX_PROPOSAL_ITEMS,
   type ProposalBefore,
+  type ProposalCharacterTarget,
   type ProposalEvidence,
   type ProposalItemRow,
   type ProposalMemoryFields,
@@ -37,6 +39,10 @@ import {
   type ProposalRow,
 } from './proposals';
 import { appendAgentMessage } from './store';
+import {
+  applyCharacterCardCreate, applyCharacterCardUpdate, characterCardCreateSchema, completeCharacterCard,
+  loadCharacterCard, type CreatedCharacterSnapshot, type ProposalCharacterFields,
+} from './character-card';
 
 const MAX_REJECT_REASON = 2000;
 
@@ -64,6 +70,10 @@ export interface ProposalApplyResult {
   batch_id: string | null;
   /** 每一行应用后的业务快照 */
   after: ProposalMemoryTarget[];
+  /** 角色卡修改的应用后快照；角色卡不写入记忆修订表。 */
+  character?: ProposalCharacterTarget;
+  /** 新建角色整行快照，撤销不能删除后来编辑或使用过的角色。 */
+  created_character?: CreatedCharacterSnapshot;
 }
 
 type DecisionFailure = { ok: false; status: 400 | 404 | 409; error: string };
@@ -187,6 +197,39 @@ function newMemoryDuplicateIssue(
 function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): ItemOutcome {
   const characterId = proposal.character_id;
   const before = JSON.parse(item.before_json) as ProposalBefore;
+  if (before && 'character_creation' in before) {
+    if (item.op !== 'create' || characterId !== null) throw new Error('角色创建提案格式不正确');
+    const id = before.character_creation.id;
+    if (db.prepare('SELECT 1 FROM characters WHERE id = ?').get(id)) {
+      return { state: 'stale', detail: `角色 ID ${id} 已被使用，没有创建` };
+    }
+    const fields = completeCharacterCard(characterCardCreateSchema.parse(JSON.parse(item.after_json)));
+    const created = applyCharacterCardCreate(db, id, fields, now);
+    return {
+      state: 'applied', indexIds: [],
+      result: {
+        memory_ids: [], created_memory_id: null, batch_id: null, after: [],
+        character: { id, snapshot: fields }, created_character: created,
+      },
+    };
+  }
+  if (!characterId) throw new Error('提案缺少目标角色');
+  if (before && 'character' in before) {
+    const target = before.character;
+    const current = loadCharacterCard(db, characterId);
+    if (target.id !== characterId || !current || JSON.stringify(current) !== JSON.stringify(target.snapshot)) {
+      return { state: 'stale', detail: `角色卡 ${target.id} 在提案生成后已被改动或删除，没有修改` };
+    }
+    if (item.op !== 'update') throw new Error(`${item.op} 不能用于角色卡修改`);
+    applyCharacterCardUpdate(db, characterId, JSON.parse(item.after_json) as ProposalCharacterFields, now);
+    return {
+      state: 'applied', indexIds: [],
+      result: {
+        memory_ids: [], created_memory_id: null, batch_id: null, after: [],
+        character: { id: characterId, snapshot: loadCharacterCard(db, characterId)! },
+      },
+    };
+  }
   const after = JSON.parse(item.after_json) as ProposalMemoryFields;
   const targets = before && 'memories' in before ? before.memories : [];
 
@@ -216,9 +259,21 @@ function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalI
       createdId = createProposalMemory(db, characterId, item, after, {}, now);
       break;
     }
-    case 'update':
-      applyMemoryUpdate(db, targetIds[0], after, now);
+    case 'update': {
+      const patch: MemoryUpdate & { source_msg_ids?: string[] } = { ...after };
+      if (after.source_msg_ids !== undefined) {
+        const found = existingMessageIds(db, characterId, after.source_msg_ids);
+        const missing = after.source_msg_ids.filter(id => !found.has(id));
+        if (missing.length > 0) return { state: 'stale', detail: `来源消息 ${missing.join('、')} 已删除或不再属于该角色，没有修改` };
+        const metadata = targets[0].snapshot.metadata;
+        patch.metadata = {
+          ...(isObject(metadata) ? metadata : {}),
+          sourceAttribution: { granularity: after.source_msg_ids.length > 0 ? 'message' : 'unknown' },
+        };
+      }
+      applyMemoryUpdate(db, targetIds[0], patch, now);
       break;
+    }
     case 'retire': {
       const { snapshot } = targets[0];
       const metadata = isObject(snapshot.metadata) ? snapshot.metadata : {};
@@ -317,7 +372,8 @@ function decidableError(item: ProposalItemRow | undefined, id: number, verb: str
   return null;
 }
 
-function queueIndexing(db: Database.Database, characterId: string, memoryIds: readonly string[]): void {
+function queueIndexing(db: Database.Database, characterId: string | null, memoryIds: readonly string[]): void {
+  if (!characterId) return;
   let queued = false;
   for (const memoryId of memoryIds) {
     try {
@@ -339,7 +395,7 @@ export function applyProposalDecision(
   input: ProposalDecisionInput,
   now: string,
 ): ApplyProposalOutcome {
-  let characterId = '';
+  let characterId: string | null = null;
   const indexIds: string[] = [];
   const outcome = db.transaction((): ApplyProposalOutcome => {
     const proposal = db.prepare(`
@@ -484,6 +540,40 @@ function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalIt
   const characterId = proposal.character_id;
   const result = JSON.parse(item.result_json!) as ProposalApplyResult;
   const before = JSON.parse(item.before_json) as ProposalBefore;
+  if (before && 'character_creation' in before) {
+    const id = before.character_creation.id;
+    const current = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as CreatedCharacterSnapshot | undefined;
+    if (item.op !== 'create' || characterId !== null || !result.created_character || result.created_character.id !== id
+      || !current || JSON.stringify(current) !== JSON.stringify(result.created_character)) {
+      throw new ProposalUndoConflict(`角色卡 ${id} 在创建后已被改动或删除，不能撤销`);
+    }
+    // 在删除事务内检查全部角色关联表；未来新增的数据也默认保留。
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      .all() as { name: string }[];
+    for (const { name } of tables) {
+      const quotedName = `"${name.replaceAll('"', '""')}"`;
+      const columns = db.prepare(`PRAGMA table_info(${quotedName})`).all() as { name: string }[];
+      if (columns.some(column => column.name === 'character_id')
+        && db.prepare(`SELECT 1 FROM ${quotedName} WHERE character_id = ? LIMIT 1`).get(id)) {
+        throw new ProposalUndoConflict(`角色 ${id} 已有关联数据，不能撤销创建`);
+      }
+    }
+    db.prepare('DELETE FROM characters WHERE id = ?').run(id);
+    return [];
+  }
+  if (!characterId) throw new ProposalUndoConflict('提案缺少目标角色，不能撤销');
+  if (before && 'character' in before) {
+    const applied = result.character;
+    const current = loadCharacterCard(db, characterId);
+    if (!applied || before.character.id !== characterId || applied.id !== characterId
+      || !current || JSON.stringify(current) !== JSON.stringify(applied.snapshot)) {
+      throw new ProposalUndoConflict(`角色卡 ${characterId} 在批准后又被改动或删除，不能撤销`);
+    }
+    const changedKeys = Object.keys(JSON.parse(item.after_json) as ProposalCharacterFields);
+    const restore = Object.fromEntries(changedKeys.map(key => [key, before.character.snapshot[key as keyof ProposalCharacterFields]]));
+    applyCharacterCardUpdate(db, characterId, restore, now);
+    return [];
+  }
   const targets = before && 'memories' in before ? before.memories : [];
   const candidateId = before && 'candidate' in before ? before.candidate.id : null;
 
@@ -520,6 +610,7 @@ function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalIt
       const changedKeys = Object.keys(JSON.parse(item.after_json) as ProposalMemoryFields);
       const original = targets[0].snapshot;
       const restore = Object.fromEntries(changedKeys.map(key => [key, original[key as keyof MemoryBusinessSnapshot]]));
+      if (changedKeys.includes('source_msg_ids')) restore.metadata = isObject(original.metadata) ? original.metadata : {};
       applyMemoryUpdate(db, targets[0].id, restore as MemoryUpdate, now);
       break;
     }
@@ -579,7 +670,7 @@ export function undoProposalItem(
   itemId: number,
   now: string,
 ): UndoProposalOutcome {
-  let characterId = '';
+  let characterId: string | null = null;
   let indexIds: string[] = [];
   const outcome = db.transaction((): UndoProposalOutcome => {
     const proposal = db.prepare(`

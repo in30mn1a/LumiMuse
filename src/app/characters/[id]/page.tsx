@@ -13,7 +13,6 @@ import PresetSelectField from '@/components/ui/PresetSelectField';
 import ModelPresetBindingsField from '@/components/ui/ModelPresetBindingsField';
 import CharacterTaskModelsField from '@/components/ui/CharacterTaskModelsField';
 import { CharacterExportDialog } from '@/components/characters/CharacterExportDialog';
-import { CharacterAiGeneratorPanel } from '@/components/characters/CharacterAiGeneratorPanel';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { clearCharacterContext } from '@/lib/character-context-cache';
 import { getCharacterListCache, setCharacterListCache } from '@/lib/character-list-cache';
@@ -135,11 +134,7 @@ export default function CharacterEditor({ params }: Props) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
-  const [showAiGenerator, setShowAiGenerator] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-  const [aiRequirement, setAiRequirement] = useState('');
-  const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiError, setAiError] = useState('');
   const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [pendingImport, setPendingImport] = useState<{ fileName: string; file: File } | null>(null);
   const [importing, setImporting] = useState(false);
@@ -201,8 +196,6 @@ export default function CharacterEditor({ params }: Props) {
           setDirty(false);
           setTagDrafts({ image_tags: '', user_image_tags: '' });
           setTagResetRevision(value => value + 1);
-          setAiGenerating(false);
-          setAiError('');
         }
       } catch (error) {
         if (!cancelled) {
@@ -307,8 +300,6 @@ export default function CharacterEditor({ params }: Props) {
     setDirty(false);
     setTagDrafts({ image_tags: '', user_image_tags: '' });
     setTagResetRevision(value => value + 1);
-    setAiGenerating(false);
-    setAiError('');
     setConfirmAction(null);
   };
 
@@ -518,49 +509,6 @@ export default function CharacterEditor({ params }: Props) {
       setTimeout(() => setImportMsg(null), 5000);
     }
   };
-  const handleGenerateCharacter = async () => {
-    if (!character || !aiRequirement.trim()) return;
-    const draftRevision = draftRevisionRef.current;
-    setAiGenerating(true);
-    setAiError('');
-
-    try {
-      const response = await fetch('/api/characters/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requirement: aiRequirement,
-          current_character: character,
-        }),
-      });
-      const data = await response.json();
-      if (draftRevisionRef.current !== draftRevision) return;
-      if (!response.ok) {
-        throw new Error(data.error || t('editor.aiGenerateError'));
-      }
-
-      setDirty(true);
-      setCharacter({
-        ...character,
-        name: data.name ?? character.name,
-        basic_info: data.basic_info ?? character.basic_info,
-        personality: data.personality ?? character.personality,
-        scenario: data.scenario ?? character.scenario,
-        greeting: data.greeting ?? character.greeting,
-        example_dialogue: data.example_dialogue ?? character.example_dialogue,
-        system_prompt: data.system_prompt ?? character.system_prompt,
-        other_info: data.other_info ?? character.other_info,
-        image_tags: data.image_tags ?? character.image_tags,
-      });
-    } catch (err) {
-      if (draftRevisionRef.current === draftRevision) {
-        setAiError(err instanceof Error ? err.message : t('editor.aiGenerateError'));
-      }
-    } finally {
-      if (draftRevisionRef.current === draftRevision) setAiGenerating(false);
-    }
-  };
-
   const update = (field: keyof Character, value: string) => {
     if (!character) return;
     // 任意字段被修改即标记为 dirty，触发未保存提示
@@ -671,9 +619,6 @@ export default function CharacterEditor({ params }: Props) {
                 onClick={() => setMoreOpen(false)}
                 className="absolute right-0 top-full z-50 mt-1 min-w-[12rem] overflow-hidden rounded-2xl border border-border-light bg-surface py-1 shadow-lg"
               >
-                <button type="button" role="menuitem" onClick={() => setShowAiGenerator(value => !value)} className={MENU_ITEM}>
-                  {t('editor.aiGenerate')}
-                </button>
                 <button type="button" role="menuitem" onClick={handleDuplicate} disabled={duplicating} className={MENU_ITEM}>
                   {duplicating ? t('editor.duplicating') : t('editor.duplicate')}
                 </button>
@@ -719,18 +664,6 @@ export default function CharacterEditor({ params }: Props) {
             {importMsg.text}
           </div>
         )}
-        {showAiGenerator && (
-          <div className="mb-4">
-            <CharacterAiGeneratorPanel
-              aiRequirement={aiRequirement}
-              aiGenerating={aiGenerating}
-              aiError={aiError}
-              onChangeRequirement={setAiRequirement}
-              onGenerate={handleGenerateCharacter}
-            />
-          </div>
-        )}
-
         {/* 非当前页签只隐藏不卸载：标签输入框的草稿、预设下拉的加载状态都留在原处 */}
         <section role="tabpanel" id="editor-panel-identity" aria-labelledby="editor-tab-identity" hidden={tab !== 'identity'} className={PANEL}>
           <div className="flex items-center gap-4">

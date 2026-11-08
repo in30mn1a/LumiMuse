@@ -15,6 +15,7 @@ export const QUERYABLE_TABLES = {
   characters: [
     'id', 'name', 'avatar_url', 'basic_info', 'personality', 'scenario', 'greeting',
     'example_dialogue', 'system_prompt', 'other_info', 'image_tags', 'user_image_tags',
+    'image_prompt_other_requirements',
     'background_provider_id', 'background_model', 'image_prompt_model',
     'background_reasoning_by_model', 'image_prompt_reasoning_by_model',
     'background_system_prompt_by_model', 'image_prompt_system_prompt_by_model',

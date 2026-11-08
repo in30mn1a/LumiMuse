@@ -14,7 +14,7 @@ const { DEFAULT_SETTINGS } = require('../src/types/index.ts');
 const { MAX_MEMORY_CONTENT } = require('../src/lib/schemas.ts');
 const { AGENT_TOOLS, AGENT_WRITE_TOOLS } = require('../src/lib/agent/tools/index.ts');
 const { parseToolArguments, toolDefinitions } = require('../src/lib/agent/tools/registry.ts');
-const { NO_EVIDENCE_NOTE } = require('../src/lib/agent/proposals.ts');
+const { getProposalView, NO_EVIDENCE_NOTE } = require('../src/lib/agent/proposals.ts');
 const { appendAgentMessage, createAgentSession, listAgentMessages } = require('../src/lib/agent/store.ts');
 const { runAgentTurn } = require('../src/lib/agent/loop.ts');
 
@@ -156,13 +156,93 @@ test('registry: invalid JSON says why and where, so a long argument can be fixed
 });
 
 test('registry: character writes require proposals and remember only adds Agent notes', () => {
-  assert.deepEqual(AGENT_WRITE_TOOLS.map(tool => tool.name), ['create_memory_proposal', 'remember', 'update_task_plan']);
-  assert.deepEqual(AGENT_TOOLS.filter(tool => tool.kind === 'write').map(tool => tool.name), ['create_memory_proposal', 'remember', 'update_task_plan']);
+  assert.deepEqual(AGENT_WRITE_TOOLS.map(tool => tool.name), ['create_memory_proposal', 'create_character_proposal', 'create_character', 'remember', 'update_task_plan']);
+  assert.deepEqual(AGENT_TOOLS.filter(tool => tool.kind === 'write').map(tool => tool.name), ['create_memory_proposal', 'create_character_proposal', 'create_character', 'remember', 'update_task_plan']);
   assert.equal(new Set(AGENT_TOOLS.map(tool => tool.name)).size, AGENT_TOOLS.length);
   for (const definition of toolDefinitions(AGENT_TOOLS)) {
     assert.equal(definition.function.parameters.type, 'object');
     assert.equal(definition.function.parameters.$schema, undefined);
   }
+});
+
+test('Agent 可以提议逐条修正来源，未批准时不改记忆，来源与依据分别保存', t => {
+  const ctx = setup(t);
+  const bytes = memoryBytes(ctx.db);
+  const outcome = propose(ctx, proposal([
+    item('update', { memory_id: 'm-bake', fields: { source_msg_ids: ['msg-a1', 'msg-a1'] } }),
+  ]));
+
+  assert.equal(outcome.parseError, undefined, outcome.parseError);
+  assert.equal(outcome.result.ok, true, outcome.result.error);
+  assert.equal(outcome.terminate, true);
+  assert.equal(memoryBytes(ctx.db), bytes);
+  const [stored] = storedItems(ctx.db, outcome.result.proposal_id);
+  assert.deepEqual(stored.after, { source_msg_ids: ['msg-a1'] });
+  assert.deepEqual(stored.evidence.message_ids, ['msg-a1']);
+  assert.deepEqual(stored.before.memories[0].snapshot.source_msg_ids, ['msg-a1']);
+  const definition = toolDefinitions([proposalTool])[0].function.parameters;
+  assert.equal(definition.properties.items.items.properties.fields.properties.source_msg_ids.type, 'array');
+});
+
+test('来源修正拒绝不存在和跨角色消息，其他操作不接受来源字段', t => {
+  const ctx = setup(t);
+  const bytes = memoryBytes(ctx.db);
+  for (const id of ['msg-missing', 'msg-b1']) {
+    const outcome = propose(ctx, proposal([
+      item('update', { memory_id: 'm-bake', fields: { source_msg_ids: [id] }, evidence }),
+    ]));
+    assert.equal(outcome.parseError, undefined, outcome.parseError);
+    assert.equal(outcome.result.ok, false);
+    assert.match(outcome.result.error, /来源消息不存在或不属于该角色/);
+  }
+  for (const entry of [
+    item('create', { fields: { content: '新事实', category: '基础信息', source_msg_ids: ['msg-a1'] }, evidence }),
+    item('repair_candidate', { candidate_id: 1, memories: [{ content: '补回事实', category: '基础信息', source_msg_ids: ['msg-a1'] }], evidence }),
+  ]) {
+    const outcome = propose(ctx, proposal([entry]));
+    assert.equal(outcome.parseError, undefined, outcome.parseError);
+    assert.equal(outcome.result.ok, false);
+    assert.match(outcome.result.error, /source_msg_ids/);
+  }
+  assert.equal(proposalCount(ctx.db), 0);
+  assert.equal(memoryBytes(ctx.db), bytes);
+});
+
+test('来源列表补全唯一前缀，清空需要依据，已经逐条标注的相同来源是无变化', t => {
+  const ctx = setup(t);
+  insertRow(ctx.db, 'messages', { id: 'source-12345678-full', conversation_id: 'conv-a', role: 'user', content: '我喜欢无糖乌龙茶', created_at: T0 });
+  const outcome = propose(ctx, proposal([
+    item('update', { memory_id: 'm-tea', fields: { source_msg_ids: ['source-12345678', 'source-12345678-full'] } }),
+  ]));
+  assert.equal(outcome.parseError, undefined, outcome.parseError);
+  assert.equal(outcome.result.ok, true, outcome.result.error);
+  assert.deepEqual(storedItems(ctx.db, outcome.result.proposal_id)[0].after.source_msg_ids, ['source-12345678-full']);
+
+  const noEvidence = propose(ctx, proposal([item('update', { memory_id: 'm-bake', fields: { source_msg_ids: [] } })]));
+  assert.equal(noEvidence.result.ok, false);
+  assert.match(noEvidence.result.error, /缺少依据/);
+  ctx.db.prepare("UPDATE memories SET metadata = ? WHERE id = 'm-bake'").run(JSON.stringify({ sourceAttribution: { granularity: 'message' } }));
+  const noChange = propose(ctx, proposal([item('update', { memory_id: 'm-bake', fields: { source_msg_ids: ['msg-a1'] }, evidence })]));
+  assert.equal(noChange.result.ok, false);
+  assert.match(noChange.result.error, /没有实际改动/);
+});
+
+test('来源修改与卡片完整接收超过 SQLite 占位符数量的消息，不受依据参数条数限制', t => {
+  const ctx = setup(t);
+  const sourceIds = Array.from({ length: 32768 }, (_, index) => `source-many-${index}`);
+  const insert = ctx.db.prepare('INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)');
+  for (const id of sourceIds) insert.run(id, 'conv-a', 'user', '持续讨论同一读书计划', T0);
+  const outcome = propose(ctx, proposal([
+    item('update', { memory_id: 'm-bake', fields: { source_msg_ids: sourceIds } }),
+  ]));
+  assert.equal(outcome.parseError, undefined, outcome.parseError);
+  assert.equal(outcome.result.ok, true, outcome.result.error);
+  const [stored] = storedItems(ctx.db, outcome.result.proposal_id);
+  assert.deepEqual(stored.after.source_msg_ids, sourceIds);
+  assert.deepEqual(stored.evidence.message_ids, sourceIds);
+  const view = getProposalView(ctx.db, outcome.result.proposal_id);
+  assert.equal(view.evidence_messages.length, sourceIds.length);
+  assert.deepEqual(view.items[0].after.source_msg_ids, sourceIds);
 });
 
 test('a valid proposal stores server-read before snapshots and leaves memories byte-identical', t => {

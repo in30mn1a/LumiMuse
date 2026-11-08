@@ -5,6 +5,7 @@ installMemoryOnlyTestGuard(test);
 const { registerTsLoader } = require('./helpers/register-ts-loader.cjs');
 registerTsLoader();
 const { loadSample } = require('../scripts/agent-eval/fixtures.cjs');
+const { REASONING_SAFE_MAX_TOKENS } = require('../src/lib/api-client.ts');
 const { runAgent, goalPrompt, createAgentModelCaller } = require('../scripts/agent-eval/agent-review.cjs');
 const { aggregateScores, evaluateAgentGate, scoreRun } = require('../scripts/agent-eval/score.cjs');
 const { buildAgentReport, foldedEvidenceItems } = require('../scripts/agent-eval-memory-review.cjs');
@@ -53,9 +54,11 @@ function fixtureModel() {
 
 test('Agent evaluation drives the actual loop and tools, normalizes proposals and keeps memories unchanged', async () => {
   const model = fixtureModel();
-  // 窗口要让「读全部批次 + 来源」那一组装得进输入可用空间（否则会被换成结果过大提示），
-  // 同时后续回合超过压缩阈值，触发旧结果折叠与折叠后重读来源
-  const result = await runAgent(sample, model.complete, { retryDelaysMs: [], contextWindow: 36_000 });
+  // 新建角色工具定义及提示增加约 834 token，当前完整「全部批次 + 来源」输入约 20,300 token。
+  // 为输入明确保留 21,000 token；折叠阈值仍为 16,800，继续验证旧结果折叠和来源重读。
+  const result = await runAgent(sample, model.complete, {
+    retryDelaysMs: [], contextWindow: REASONING_SAFE_MAX_TOKENS + 21_000,
+  });
   assert.equal(result.incomplete, false);
   assert.equal(result.memory_unchanged, true);
   assert.equal(result.phases.length, 3);

@@ -57,8 +57,10 @@ function rememberedNote(name: string, result: string | null): AgentMemoryNoteDat
 }
 
 /** 提案工具成功时返回 proposal_id；卡片紧跟在这次工具调用后面。 */
+const PROPOSAL_TOOL_NAMES = new Set(['create_memory_proposal', 'create_character_proposal', 'create_character']);
+
 function createdProposalId(name: string, result: string | null): number | null {
-  if (name !== 'create_memory_proposal' || result === null) return null;
+  if (!PROPOSAL_TOOL_NAMES.has(name) || result === null) return null;
   try {
     const parsed = JSON.parse(result.split('\n', 1)[0]) as { ok?: unknown; proposal_id?: unknown };
     return parsed.ok === true && typeof parsed.proposal_id === 'number' ? parsed.proposal_id : null;
@@ -74,7 +76,7 @@ function createdProposalId(name: string, result: string | null): number | null {
 export function hasUndecidedProposal(messages: readonly AgentMessageView[]): boolean {
   const pending = new Set<number>();
   for (const message of messages) {
-    if (message.role === 'tool' && message.tool_name === 'create_memory_proposal') {
+    if (message.role === 'tool' && PROPOSAL_TOOL_NAMES.has(message.tool_name ?? '')) {
       try {
         const parsed = JSON.parse(message.content.split('\n', 1)[0]) as { ok?: unknown; proposal_id?: unknown; pending_items?: unknown };
         if (parsed.ok === true && typeof parsed.proposal_id === 'number' && typeof parsed.pending_items === 'number' && parsed.pending_items > 0) {

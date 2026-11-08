@@ -326,6 +326,49 @@ export function ensureMemoryProfileTables(db: Database.Database): void {
   `);
 }
 
+/** 创建角色提案不需要已有角色；旧角色关联提案继续沿用级联删除语义。 */
+function allowCharacterlessAgentProposals(db: Database.Database): void {
+  const columns = db.prepare('PRAGMA table_info(agent_proposals)').all() as { name: string; notnull: number }[];
+  if (!columns.some(column => column.name === 'character_id' && column.notnull === 1)) return;
+  // SQLite 在事务内忽略 foreign_keys 开关，必须在开始重建前完成切换。
+  if (db.inTransaction) throw new Error('Agent 提案迁移必须在外部事务之外执行');
+  const foreignKeys = Number(db.pragma('foreign_keys', { simple: true }));
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'agent_proposals'")
+        .get() as { seq: number } | undefined;
+      const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'agent_proposals' AND sql IS NOT NULL")
+        .all() as { sql: string }[];
+      db.exec(`
+        CREATE TABLE __agent_proposals_nullable (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+          character_id TEXT REFERENCES characters(id) ON DELETE CASCADE,
+          summary TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('pending', 'decided')),
+          created_at TEXT NOT NULL,
+          decided_at TEXT
+        );
+        INSERT INTO __agent_proposals_nullable (id, session_id, character_id, summary, status, created_at, decided_at)
+          SELECT id, session_id, character_id, summary, status, created_at, decided_at FROM agent_proposals;
+        DROP TABLE agent_proposals;
+        ALTER TABLE __agent_proposals_nullable RENAME TO agent_proposals;
+      `);
+      for (const index of indexes) db.exec(index.sql);
+      // 显式 ID 复制只保留现存最大 ID；还须保留曾经分配、后来被删除的 ID 高水位。
+      if (sequence) {
+        db.prepare("DELETE FROM sqlite_sequence WHERE name = 'agent_proposals'").run();
+        db.prepare('INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)').run('agent_proposals', sequence.seq);
+      }
+      const foreignKeyIssues = db.pragma('foreign_key_check') as unknown[];
+      if (foreignKeyIssues.length > 0) throw new Error('Agent 提案迁移外键校验失败');
+    })();
+  } finally {
+    db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
+  }
+}
+
 function migrate(db: Database.Database): void {
   const schemaVersion = Number(db.pragma('user_version', { simple: true }));
   if (schemaVersion > CURRENT_SCHEMA_VERSION) {
@@ -1115,11 +1158,11 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_agent_document_versions_key ON agent_document_versions(key, id);
 
-    -- 提案随角色删除；会话删除后保留（SET NULL），修改历史仍可查看和撤销
+    -- 已关联角色的提案随角色删除；创建角色提案不绑定角色，会话删除后历史仍保留
     CREATE TABLE IF NOT EXISTS agent_proposals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
-      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      character_id TEXT REFERENCES characters(id) ON DELETE CASCADE,
       summary TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('pending', 'decided')),
       created_at TEXT NOT NULL,
@@ -1166,6 +1209,8 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_memory_revisions_memory ON memory_revisions(character_id, memory_id, id);
     CREATE INDEX IF NOT EXISTS idx_memory_revisions_item ON memory_revisions(proposal_item_id);
   `);
+
+  allowCharacterlessAgentProposals(db);
 
   // Agent 会话最近一次上游 usage，供占用显示和估算校准；旧镜像按显式列名读取，加列不影响回滚
   const agentSessionCols = db.prepare("PRAGMA table_info(agent_sessions)").all() as { name: string }[];

@@ -37,6 +37,8 @@ test('skill uses the shared tag source and spells out evidence, cross-batch and 
   assert.equal(result.ok, true);
   assert.equal(result.skill.content, MEMORY_REVIEW_SKILL.content);
   assert.ok(result.skill.content.includes(TAG_SPEC_PROMPT_SECTION));
+  for (const rule of ['source_attribution.granularity', 'message', 'batch', 'mixed', 'unknown', '编号合法不等于内容真实', '只是待核实的来源范围']) assert.ok(result.skill.content.includes(rule), rule);
+  for (const rule of ['fields.source_msg_ids', '完整、实际支撑正文', '单独修正来源时保留原正文']) assert.ok(result.skill.content.includes(rule), rule);
   for (const rule of ['get_memory_sources', 'search_memories', 'get_memories', 'folded', '宁长勿简', 'report_conflict', '不得因「只是时间变化」而跳过', 'retire', '置顶', '角色自称「我」', 'create_memory_proposal', 'status（如 archived）', '不要用 query_table 的 offset 翻页', 'all_batches_read', 'unread_batch_indices', '归档摘要同样宁长勿简', '逐字照抄', '写进 reason 或 evidence.note', '每轮至少读完 2 批', '矛盾建议退场', '只报告，不附退场']) assert.ok(result.skill.content.includes(rule), rule);
   assert.deepEqual(AGENT_SKILLS.map(skill => skill.name), ['memory-review']);
   assert.equal(loadSkillTool.schema.safeParse({ name: '../../secret' }).success, false);

@@ -54,6 +54,7 @@ const {
   setCharacterListCache,
   subscribeCharacterList,
   loadCharacterList,
+  refreshCharacterList,
   resetCharacterListCache,
 } = require('../src/lib/character-list-cache.ts');
 
@@ -144,4 +145,33 @@ test('in-flight loadCharacterList does not overwrite optimistic setCharacterList
   assert.equal(fetchCount, 1);
   // 陈旧 GET 不得盖掉乐观列表
   assert.deepEqual(getCharacterListCache()?.map((c) => c.id), ['new-char', 'stale-a', 'stale-b']);
+});
+
+test('refreshCharacterList skips a stale in-flight GET and keeps its replacement deduplicated', async () => {
+  const pending = [];
+  global.fetch = () => new Promise(resolve => pending.push(resolve));
+  setCharacterListCache(sampleCharacters(['before']));
+  const oldRequest = loadCharacterList();
+  const freshRequest = refreshCharacterList();
+  assert.equal(pending.length, 2, '批准后必须发出新 GET');
+  pending[0](jsonResponse(sampleCharacters(['stale'])));
+  await oldRequest;
+  assert.deepEqual(getCharacterListCache().map(character => character.id), ['before']);
+  const joinedRequest = loadCharacterList();
+  assert.equal(pending.length, 2, '旧 GET 完成不能清除新的在飞请求');
+  pending[1](jsonResponse(sampleCharacters(['created', 'before'])));
+  await Promise.all([freshRequest, joinedRequest]);
+  assert.deepEqual(getCharacterListCache().map(character => character.id), ['created', 'before']);
+});
+
+test('a later character refresh wins when earlier refresh replies last', async () => {
+  const pending = [];
+  global.fetch = () => new Promise(resolve => pending.push(resolve));
+  const createdRequest = refreshCharacterList();
+  const undoRequest = refreshCharacterList();
+  pending[1](jsonResponse([]));
+  await undoRequest;
+  pending[0](jsonResponse(sampleCharacters(['already-undone'])));
+  await createdRequest;
+  assert.deepEqual(getCharacterListCache(), []);
 });

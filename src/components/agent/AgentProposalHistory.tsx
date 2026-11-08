@@ -30,12 +30,12 @@ interface Props {
   defaultCharacterId: string | null;
 }
 
-/** 修改历史：按角色列出全部提案，新的在前。已生效的项在这里也能撤销，包括已删除会话产生的。 */
+/** 修改历史：列出全部提案或按角色筛选，新的在前。已生效的项在这里也能撤销，包括已删除会话产生的。 */
 export default function AgentProposalHistory({ defaultCharacterId }: Props) {
   const { t } = useTranslation();
   const [characters, setCharacters] = useState<CharacterOption[] | null>(null);
   const [charactersError, setCharactersError] = useState<string | null>(null);
-  const [characterId, setCharacterId] = useState('');
+  const [characterId, setCharacterId] = useState<string | null>(null);
   const [history, setHistory] = useState<LoadedHistory | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -48,9 +48,9 @@ export default function AgentProposalHistory({ defaultCharacterId }: Props) {
       const list = await parseJsonResponse<CharacterOption[]>(await fetch('/api/characters'));
       setCharacters(list.map(({ id, name }) => ({ id, name })));
       setCharacterId(current => {
-        if (current && list.some(character => character.id === current)) return current;
+        if (current !== null && (current === '' || list.some(character => character.id === current))) return current;
         if (defaultCharacterId && list.some(character => character.id === defaultCharacterId)) return defaultCharacterId;
-        return list[0]?.id ?? '';
+        return '';
       });
     } catch (error) {
       setCharactersError(getErrorMessage(error));
@@ -62,7 +62,10 @@ export default function AgentProposalHistory({ defaultCharacterId }: Props) {
     setHistoryError(null);
     setLoadingMore(offset > 0);
     try {
-      const params = new URLSearchParams({ character_id: id, limit: String(PAGE_SIZE), offset: String(offset) });
+      const params = new URLSearchParams();
+      if (id) params.set('character_id', id);
+      params.set('limit', String(PAGE_SIZE));
+      params.set('offset', String(offset));
       const page = await parseJsonResponse<HistoryPage>(await fetch(`/api/agent/proposals?${params}`));
       if (request !== requestRef.current) return;
       setHistory(current => {
@@ -91,7 +94,7 @@ export default function AgentProposalHistory({ defaultCharacterId }: Props) {
   useEffect(() => {
     // 同步写入的只有清掉上一次的错误和翻页状态，列表在请求返回后才更新
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (characterId) void loadHistory(characterId, 0);
+    if (characterId !== null) void loadHistory(characterId, 0);
   }, [characterId, loadHistory]);
 
   if (charactersError) {
@@ -105,7 +108,7 @@ export default function AgentProposalHistory({ defaultCharacterId }: Props) {
     );
   }
   if (!characters) return <ContentState mode="loading" title={t('common.loading')} />;
-  if (characters.length === 0) return <ContentState mode="empty" title={t('agent.history.noCharacters')} />;
+  if (characterId === null) return <ContentState mode="loading" title={t('common.loading')} />;
 
   const current = history?.characterId === characterId ? history : null;
   let list: ReactNode;
@@ -121,7 +124,7 @@ export default function AgentProposalHistory({ defaultCharacterId }: Props) {
       )
       : <ContentState mode="loading" title={t('common.loading')} />;
   } else if (current.proposals.length === 0) {
-    list = <ContentState mode="empty" title={t('agent.history.empty')} />;
+    list = <ContentState mode="empty" title={t(characterId ? 'agent.history.empty' : 'agent.history.emptyAll')} />;
   } else {
     list = (
       <div className="space-y-3">
@@ -155,6 +158,7 @@ export default function AgentProposalHistory({ defaultCharacterId }: Props) {
           onChange={event => setCharacterId(event.target.value)}
           className="select-rich w-full"
         >
+          <option value="">{t('agent.history.allCharacters')}</option>
           {characters.map(character => <option key={character.id} value={character.id}>{character.name}</option>)}
         </select>
         <p className="mt-2 text-xs leading-relaxed text-text-muted">{t('agent.history.hint')}</p>

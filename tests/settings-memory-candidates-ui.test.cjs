@@ -218,12 +218,10 @@ test('settings save flow surfaces other-target index hint after target change', 
   assert.match(settingsPage, /提示失败不阻塞保存主流程/);
 });
 
-test('settings memory tab exposes unindexed index action, AI archive stop, and profile version deletion', () => {
+test('settings memory tab exposes unindexed index action and profile version deletion', () => {
   const settingsPage = readProjectFile('src/app/settings/page.tsx');
   const memoryIndexHook = readProjectFile('src/hooks/settings/useMemoryIndexPanel.ts');
   const memoryIndexPanel = readProjectFile('src/components/settings/memory/MemoryIndexPanel.tsx');
-  const archiveHook = readProjectFile('src/hooks/settings/useMemoryArchivePanel.ts');
-  const archivePanel = readProjectFile('src/components/settings/memory/MemoryArchivePanel.tsx');
   const profileHook = readProjectFile('src/hooks/settings/useMemoryProfilePanel.ts');
   const profilePanel = readProjectFile('src/components/settings/memory/MemoryProfilePanel.tsx');
   const i18n = readProjectFile('src/lib/i18n.ts');
@@ -240,21 +238,6 @@ test('settings memory tab exposes unindexed index action, AI archive stop, and p
     "t('settings.memoryIndexIndexUnindexed')",
   ]) {
     assert.ok(memoryIndexPanel.includes(snippet), `missing memory index panel snippet: ${snippet}`);
-  }
-
-  for (const snippet of [
-    'memoryArchiveAiControllerRef',
-    'handleStopMemoryArchiveAi',
-    'signal: controller.signal',
-    'memoryArchiveAiRunning',
-  ]) {
-    assert.ok(archiveHook.includes(snippet), `missing archive hook snippet: ${snippet}`);
-  }
-
-  for (const snippet of [
-    "t('settings.memoryArchiveAiStop')",
-  ]) {
-    assert.ok(archivePanel.includes(snippet), `missing archive panel snippet: ${snippet}`);
   }
 
   for (const snippet of [
@@ -280,8 +263,6 @@ test('settings memory tab exposes unindexed index action, AI archive stop, and p
     'settings.memoryIndexIndexingUnindexed',
     'settings.memoryIndexIndexUnindexedQueued',
     'settings.memoryIndexIndexUnindexedFailed',
-    'settings.memoryArchiveAiStop',
-    'settings.memoryArchiveAiStopping',
     'settings.memoryProfileDeleteVersion',
     'settings.memoryProfileDeleteVersionConfirm',
     'settings.memoryProfileVersionDeleted',
@@ -479,7 +460,7 @@ test('settings memory archive non-AI responses are bound to the initiating chara
   for (const [handler, nextMarker] of [
     ['handleMemoryArchivePreview', 'const handleMemoryArchiveExecute'],
     ['handleMemoryArchiveExecute', 'const handleMemoryArchiveUndo'],
-    ['handleMemoryArchiveUndo', 'const handleMemoryArchiveAi'],
+    ['handleMemoryArchiveUndo', 'const loadMemoryArchiveBatchDetail'],
   ]) {
     const handlerBlock = sourceBlock(
       archiveHook,
@@ -671,8 +652,7 @@ test('settings memory archive actions refresh index status after changing archiv
 
   for (const [handler, nextMarker] of [
     ['handleMemoryArchiveExecute', 'const handleMemoryArchiveUndo'],
-    ['handleMemoryArchiveUndo', 'const handleMemoryArchiveAi'],
-    ['handleMemoryArchiveAi', 'const loadMemoryArchiveBatchDetail'],
+    ['handleMemoryArchiveUndo', 'const loadMemoryArchiveBatchDetail'],
   ]) {
     const handlerStart = archiveHook.indexOf(`const ${handler} = async () => {`);
     assert.notEqual(handlerStart, -1, `missing handler: ${handler}`);
@@ -684,42 +664,6 @@ test('settings memory archive actions refresh index status after changing archiv
       handlerBlock.includes('await loadMemoryIndexStatus();'),
       `${handler} does not refresh memory index status`,
     );
-  }
-});
-
-test('settings memory AI archive binds results to the initiating character', () => {
-  const archiveHook = readProjectFile('src/hooks/settings/useMemoryArchivePanel.ts');
-
-  const handlerStart = archiveHook.indexOf('const handleMemoryArchiveAi = async () => {');
-  assert.notEqual(handlerStart, -1, 'missing handleMemoryArchiveAi');
-  const handlerEnd = archiveHook.indexOf('const handleStopMemoryArchiveAi', handlerStart);
-  assert.notEqual(handlerEnd, -1, 'missing handleMemoryArchiveAi end marker');
-  const handlerBlock = archiveHook.slice(handlerStart, handlerEnd);
-
-  for (const snippet of [
-    'const requestedCharacterId = characterId;',
-    "body: JSON.stringify({ action: 'ai_archive', character_id: requestedCharacterId })",
-    'isCurrentMemoryArchiveAiRequest(requestedCharacterId, requestSeq, controller)',
-  ]) {
-    assert.ok(handlerBlock.includes(snippet), `missing snippet: ${snippet}`);
-  }
-  // AI 只提出方案；真正归档（以及随后的列表刷新）发生在用户确认之后。
-  assert.equal(handlerBlock.includes("action: 'execute'"), false);
-
-  const executeStart = archiveHook.indexOf('const handleExecuteMemoryArchiveAiProposals = async (');
-  assert.notEqual(executeStart, -1, 'missing handleExecuteMemoryArchiveAiProposals');
-  const executeEnd = archiveHook.indexOf('const loadMemoryArchiveBatchDetail', executeStart);
-  assert.notEqual(executeEnd, -1, 'missing handleExecuteMemoryArchiveAiProposals end marker');
-  const executeBlock = archiveHook.slice(executeStart, executeEnd);
-
-  for (const snippet of [
-    'const requestedCharacterId = characterId;',
-    'character_id: requestedCharacterId,',
-    'isCurrentMemoryArchiveActionRequest(requestedCharacterId, requestSeq)',
-    'await loadMemoryArchiveMemories(requestedCharacterId);',
-    'await loadMemoryArchiveBatches(requestedCharacterId);',
-  ]) {
-    assert.ok(executeBlock.includes(snippet), `missing snippet: ${snippet}`);
   }
 });
 

@@ -6,6 +6,7 @@ import { conflictMemoryIds, isCheckedByDefault, proposalItemFlags } from '@/lib/
 import { getErrorMessage, HttpResponseError, parseJsonResponse } from '@/lib/http';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
+import { refreshCharacterList } from '@/lib/character-list-cache';
 import ProposalCardItem from './ProposalCardItem';
 
 type DecideMode = 'apply' | 'continue' | 'reject';
@@ -19,6 +20,17 @@ function defaultSelection(view: ProposalView): Set<number> {
   return new Set(view.items
     .filter(item => isPendingDecision(item) && isCheckedByDefault(proposalItemFlags(item, { conflictMemoryIds: conflicts })))
     .map(item => item.id));
+}
+
+function refreshChangedCharacters(previous: ProposalView, next: ProposalView): void {
+  const changed = next.items.some(item => {
+    if (!item.before || !('character' in item.before || 'character_creation' in item.before)) return false;
+    const previousState = previous.items.find(before => before.id === item.id)?.state;
+    return (previousState === 'pending' && item.state === 'applied')
+      || (previousState === 'applied' && item.state === 'undone');
+  });
+  // 决定已成功，列表刷新失败不应把它显示为批准或撤销失败。
+  if (changed) void refreshCharacterList().catch(() => {});
 }
 
 async function postDecision(proposalId: number, body: unknown): Promise<ProposalView> {
@@ -41,7 +53,7 @@ interface Props {
   onDecided?: (continueNext: boolean) => void;
 }
 
-/** 记忆提案卡片：逐项勾选后统一批准，已生效的项可以撤销。 */
+/** 修改提案卡片：逐项勾选后统一批准，已生效的项可以撤销。 */
 export default function ProposalCard({ proposalId, initialView, busy = false, decidable = true, onDecided }: Props) {
   const { t } = useTranslation();
   const [view, setView] = useState<ProposalView | null>(initialView ?? null);
@@ -118,6 +130,7 @@ export default function ProposalCard({ proposalId, initialView, busy = false, de
     setDecideError(null);
     try {
       const next = await postDecision(proposalId, { action: 'apply', approved_item_ids: approved, rejected_items: rejected });
+      refreshChangedCharacters(view, next);
       if (!mountedRef.current) return;
       setView(next);
       setRejectReason('');
@@ -145,6 +158,7 @@ export default function ProposalCard({ proposalId, initialView, busy = false, de
     });
     try {
       const next = await postDecision(proposalId, { action: 'undo', item_id: itemId });
+      refreshChangedCharacters(view, next);
       if (mountedRef.current) setView(next);
     } catch (error) {
       if (mountedRef.current) setUndoErrors(current => ({ ...current, [itemId]: getErrorMessage(error) }));

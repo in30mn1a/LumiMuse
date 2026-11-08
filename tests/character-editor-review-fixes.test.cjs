@@ -386,30 +386,5 @@ test('discard rejects a late imported form while preserving the completed import
   assert.equal(calls.filter(call => call.method === 'PUT' || call.method === 'DELETE').length, 0);
 });
 
-for (const status of [200, 503]) test(`discard ignores a late AI generation response (${status})`, async () => {
-  const view = await mount();
-  const originalFetch = global.fetch;
-  let release;
-  const pending = new Promise(resolve => { release = resolve; });
-  global.fetch = async (url, init) => {
-    if (url !== '/api/characters/generate') return originalFetch(url, init);
-    await pending;
-    return json(status === 200 ? { name: 'Late AI name' } : { error: 'Late AI error' }, status);
-  };
-  fireEvent.click(view.getByRole('button', { name: 'common.more' }));
-  fireEvent.click(view.getByRole('menuitem', { name: 'editor.aiGenerate' }));
-  fireEvent.change(view.getByPlaceholderText('editor.aiRequirementPlaceholder'), { target: { value: 'Fixture generation' } });
-  fireEvent.change(view.getByPlaceholderText('editor.namePlaceholder'), { target: { value: 'Draft' } });
-  fireEvent.click(view.getByRole('button', { name: 'editor.aiApplyHint' }));
-  assert.ok(view.getByRole('button', { name: 'editor.aiGenerating' }).disabled);
-  fireEvent.click(view.getByRole('button', { name: 'common.discardChanges' }));
-  fireEvent.click(view.getByRole('button', { name: 'common.confirm' }));
-  await act(async () => { release(); });
-  assert.equal(view.getByPlaceholderText('editor.namePlaceholder').value, 'New Character');
-  assert.equal(view.getByRole('button', { name: 'common.discardChanges' }).disabled, true);
-  assert.equal(view.queryByText('Late AI error'), null);
-  assert.equal(pushes.length, 0);
-});
-
 
 

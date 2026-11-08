@@ -133,6 +133,66 @@ function memoryBytes(db) {
   return JSON.stringify(db.prepare('SELECT * FROM memories ORDER BY id').all());
 }
 
+test('批准来源修正只替换来源与粒度，保留完整正文和其他字段，并记录前后版本', t => {
+  const ctx = setup(t);
+  ctx.db.prepare("UPDATE memories SET source_msg_ids = ?, metadata = ? WHERE id = 'm-bake'")
+    .run(JSON.stringify(['msg-a1', 'msg-a2']), JSON.stringify({ note: '保留备注', sourceAttribution: { granularity: 'batch', reason: 'missing_refs' } }));
+  const before = memory(ctx.db, 'm-bake');
+  const proposal = propose(ctx, [item('update', { memory_id: 'm-bake', fields: { source_msg_ids: ['msg-a1'] } })]);
+  const outcome = decide(ctx, proposal.id, proposal.itemIds);
+  assert.equal(outcome.ok, true, outcome.error);
+  assert.equal(outcome.items[0].state, 'applied');
+  const after = memory(ctx.db, 'm-bake');
+  for (const key of Object.keys(before).filter(key => !['source_msg_ids', 'metadata', 'updated_at'].includes(key))) assert.deepEqual(after[key], before[key], key);
+  assert.deepEqual(JSON.parse(after.source_msg_ids), ['msg-a1']);
+  assert.deepEqual(JSON.parse(after.metadata), { note: '保留备注', sourceAttribution: { granularity: 'message' } });
+  assert.deepEqual(embeddingTaskIds(ctx.db), []);
+  const [revision] = revisions(ctx.db, proposal.itemIds[0]);
+  assert.deepEqual(JSON.parse(revision.before_json).source_msg_ids, ['msg-a1', 'msg-a2']);
+  assert.deepEqual(JSON.parse(revision.after_json).source_msg_ids, ['msg-a1']);
+});
+
+test('普通更新的 evidence 不会隐式替换来源或来源粒度', t => {
+  const ctx = setup(t);
+  const before = memory(ctx.db, 'm-tea');
+  const proposal = propose(ctx, [item('update', { memory_id: 'm-tea', fields: { tags: ['茶'] }, evidence: { message_ids: ['msg-a2'] } })]);
+  const outcome = decide(ctx, proposal.id, proposal.itemIds);
+  assert.equal(outcome.items[0].state, 'applied');
+  assert.equal(memory(ctx.db, 'm-tea').source_msg_ids, before.source_msg_ids);
+  assert.equal(memory(ctx.db, 'm-tea').metadata, before.metadata);
+});
+
+test('批准来源修正前重新核对消息存在与角色归属，失效时整项不写入', async t => {
+  for (const change of ['delete', 'move']) {
+    await t.test(change, subtest => {
+      const ctx = setup(subtest);
+      const proposal = propose(ctx, [item('update', { memory_id: 'm-bake', fields: { source_msg_ids: ['msg-a2'], importance: 0.9 } })]);
+      if (change === 'delete') ctx.db.prepare("DELETE FROM messages WHERE id = 'msg-a2'").run();
+      else {
+        insertRow(ctx.db, 'conversations', { id: 'conv-b', character_id: 'char-b', title: '其他角色' });
+        ctx.db.prepare("UPDATE messages SET conversation_id = 'conv-b' WHERE id = 'msg-a2'").run();
+      }
+      const before = memoryBytes(ctx.db);
+      const outcome = decide(ctx, proposal.id, proposal.itemIds);
+      assert.equal(outcome.ok, true, outcome.error);
+      assert.equal(outcome.items[0].state, 'stale');
+      assert.equal(memoryBytes(ctx.db), before);
+      assert.deepEqual(revisions(ctx.db, proposal.itemIds[0]), []);
+    });
+  }
+});
+
+test('批准来源修正完整保存超过一千条来源', t => {
+  const ctx = setup(t);
+  const sourceIds = Array.from({ length: 1025 }, (_, index) => `source-apply-${index}`);
+  const insert = ctx.db.prepare('INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)');
+  for (const id of sourceIds) insert.run(id, 'conv-a', 'user', '共同支持一个持续事件', T0);
+  const proposal = propose(ctx, [item('update', { memory_id: 'm-bake', fields: { source_msg_ids: sourceIds } })]);
+  const outcome = decide(ctx, proposal.id, proposal.itemIds);
+  assert.equal(outcome.items[0].state, 'applied');
+  assert.deepEqual(JSON.parse(memory(ctx.db, 'm-bake').source_msg_ids), sourceIds);
+});
+
 test('partial approval applies only the checked items, records the decision and queues indexing', t => {
   const ctx = setup(t);
   const proposal = propose(ctx, [

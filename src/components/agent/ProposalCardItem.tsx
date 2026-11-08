@@ -45,7 +45,6 @@ function useFieldValue() {
   return (field: MemoryField, value: unknown): string => {
     if (value === undefined || value === null) return '—';
     if (field === 'pinned') return value ? t('agent.proposal.yes') : t('agent.proposal.no');
-    if (field === 'source_msg_ids' && Array.isArray(value)) return value.length > 0 ? value.join('\n') : t('agent.proposal.noSources');
     if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : '—';
     if (typeof value === 'number') return String(Math.round(value * 100) / 100);
     return String(value);
@@ -102,6 +101,50 @@ function ContentDiff({ before, after }: { before: string; after: string }) {
   );
 }
 
+function idList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+/**
+ * 来源列表按集合比较：新列表完整列出（新增的高亮），移除的旧来源折叠。
+ * 批次来源可能上百条，细化成逐条后整列删除线会把卡片撑得很长。
+ */
+function SourceDiff({ before, after }: { before: unknown; after: unknown }) {
+  const { t } = useTranslation();
+  const beforeIds = idList(before);
+  const afterIds = idList(after);
+  const beforeSet = new Set(beforeIds);
+  const afterSet = new Set(afterIds);
+  const removed = beforeIds.filter(id => !afterSet.has(id));
+  return (
+    <div className="space-y-1 leading-relaxed [overflow-wrap:anywhere]">
+      {afterIds.length > 0 ? (
+        <ul data-sources="after">
+          {afterIds.map(id => (
+            <li key={id}>
+              {beforeSet.has(id)
+                ? id
+                : <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{id}</ins>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="font-medium text-emerald-800 dark:text-emerald-200">{t('agent.proposal.noSources')}</p>
+      )}
+      {removed.length > 0 && (
+        <details>
+          <summary className="inline-flex min-h-8 cursor-pointer list-none items-center text-[11px] font-medium text-accent-dark [&::-webkit-details-marker]:hidden">
+            {formatTemplate(t('agent.proposal.sourcesRemoved'), { count: removed.length })}
+          </summary>
+          <ul data-sources="removed">
+            {removed.map(id => <li key={id}><del className="text-text-muted decoration-danger/60">{id}</del></li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function UpdateDiff({ before, changes }: { before: MemoryLike; changes: MemoryLike }) {
   const { t } = useTranslation();
   const fieldValue = useFieldValue();
@@ -112,6 +155,8 @@ function UpdateDiff({ before, changes }: { before: MemoryLike; changes: MemoryLi
         <Labeled key={field} label={t(`agent.proposal.field.${field}`)}>
           {field === 'content'
             ? <ContentDiff before={String(before.content ?? '')} after={String(changes.content ?? '')} />
+            : field === 'source_msg_ids'
+            ? <SourceDiff before={before.source_msg_ids} after={changes.source_msg_ids} />
             : (
               <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">
                 <del className="text-text-muted decoration-danger/60">{fieldValue(field, before[field])}</del>

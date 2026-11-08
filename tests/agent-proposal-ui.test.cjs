@@ -421,13 +421,22 @@ test('来源单独修正显示完整正文、消息 ID 和粒度变化，清空�
   const view = render(React.createElement(ProposalCard, { proposalId: 7, initialView: proposalView({ items: [sourceUpdate] }) }));
   assert.ok(view.getByText('完整保留的记忆正文😀'));
   const sourceRow = view.getByText('来源消息').parentElement;
-  assert.equal(sourceRow.querySelector('del').textContent, `${sourceId}\n无关的旧来源`);
-  assert.equal(sourceRow.querySelector('ins').textContent, sourceId);
+  // 新列表完整列出；保留下来的 ID 不算新增，移除的旧来源折叠在 details 里
+  assert.equal(sourceRow.querySelector('[data-sources="after"]').textContent, sourceId);
+  assert.equal(sourceRow.querySelector('ins'), null);
+  const removed = sourceRow.querySelector('details');
+  assert.equal(removed.open, false);
+  assert.equal(removed.querySelector('summary').textContent, '移除的原来源：1 条');
+  assert.equal(removed.querySelector('del').textContent, '无关的旧来源');
   assert.ok(view.getByText('批次范围'));
   assert.ok(view.getByText('逐条选定'));
   view.unmount();
+  const replaced = render(React.createElement(ProposalCard, { proposalId: 10, initialView: proposalView({ id: 10, items: [{ ...sourceUpdate, after: { source_msg_ids: [sourceId, '补上的来源'] } }] }) }));
+  assert.equal(replaced.getByText('来源消息').parentElement.querySelector('ins').textContent, '补上的来源');
+  replaced.unmount();
   const cleared = render(React.createElement(ProposalCard, { proposalId: 8, initialView: proposalView({ id: 8, items: [{ ...sourceUpdate, after: { source_msg_ids: [] } }] }) }));
   assert.ok(cleared.getByText('无来源'));
+  assert.ok(cleared.getByText('移除的原来源：2 条'));
   assert.ok(cleared.getByText('未标注'));
   cleared.unmount();
   const upgraded = render(React.createElement(ProposalCard, { proposalId: 9, initialView: proposalView({ id: 9, items: [{

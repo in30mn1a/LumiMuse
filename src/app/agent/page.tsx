@@ -220,6 +220,7 @@ function AgentPageInner() {
     t('agent.quick.recentErrors'),
     t('agent.quick.memoryHealth'),
     t('agent.quick.memoryReview'),
+    t('agent.quick.newCharacter'),
   ];
   const emptyState = (
     <div className="mx-auto flex max-w-xl flex-col items-center px-6 py-12 text-center">

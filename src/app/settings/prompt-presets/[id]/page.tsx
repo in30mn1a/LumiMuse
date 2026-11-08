@@ -1,6 +1,7 @@
 'use client';
 
 import ContentState from '@/components/ui/ContentState';
+import NumberInput from '@/components/ui/NumberInput';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -649,11 +650,10 @@ export default function PresetDetailPage({ params }: Props) {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-text-secondary">{t('preset.entrySortOrder')}</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     className="input-rich"
                     value={draft.sort_order ?? 0}
-                    onChange={(e) => setDraft({ ...draft, sort_order: Number(e.target.value) })}
+                    onValueChange={v => setDraft({ ...draft, sort_order: v })}
                     disabled={pendingAction !== null}
                   />
                 </div>
@@ -662,21 +662,19 @@ export default function PresetDetailPage({ params }: Props) {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="mb-1 block text-xs font-medium text-text-secondary">{t('preset.entryDepth')}</label>
-                    <input
-                      type="number"
+                    <NumberInput
                       className="input-rich"
                       value={draft.injection_depth ?? 4}
-                      onChange={(e) => setDraft({ ...draft, injection_depth: Number(e.target.value) })}
+                      onValueChange={v => setDraft({ ...draft, injection_depth: v })}
                       disabled={pendingAction !== null}
                     />
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-text-secondary">{t('preset.entryOrder')}</label>
-                    <input
-                      type="number"
+                    <NumberInput
                       className="input-rich"
                       value={draft.injection_order ?? 100}
-                      onChange={(e) => setDraft({ ...draft, injection_order: Number(e.target.value) })}
+                      onValueChange={v => setDraft({ ...draft, injection_order: v })}
                       disabled={pendingAction !== null}
                     />
                   </div>

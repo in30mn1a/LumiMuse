@@ -296,19 +296,19 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
         dialogClassName="surface-panel flex w-full max-w-3xl flex-col overflow-hidden outline-none"
       >
         <div style={{ maxHeight: '90dvh' }} className="flex flex-col">
-          {/* 标题栏 */}
-          <div className="flex shrink-0 items-center justify-between border-b border-border-light px-5 py-4">
-            <div className="flex items-center gap-3">
-              <h3 className="section-title text-lg">{t('chat.imageManagerTitle')}</h3>
-              <span className="chip text-xs">{formatTemplate(t('chat.imageCount'), { count: images.length })}</span>
+          {/* 标题栏：手机上操作按钮放不下时整行换到标题下方，避免挤压标题、溢出弹窗 */}
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border-light px-4 py-3 sm:px-5 sm:py-4">
+            <div className="order-1 flex min-w-0 flex-1 items-center gap-3">
+              <h3 className="section-title whitespace-nowrap text-lg">{t('chat.imageManagerTitle')}</h3>
+              <span className="chip whitespace-nowrap text-xs">{formatTemplate(t('chat.imageCount'), { count: images.length })}</span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="order-3 flex w-full flex-wrap items-center justify-end gap-2 empty:hidden sm:order-2 sm:w-auto">
               {selected.size > 0 && (
                 <>
                   <button
                     onClick={() => void handleDownload()}
                     disabled={downloading}
-                    className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
+                    className="soft-button soft-button-secondary whitespace-nowrap px-3 py-1.5 text-sm"
                   >
                     <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
                       <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
@@ -318,13 +318,16 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
                   </button>
                   <button
                     onClick={() => void handleBatchDelete()}
-                    className="soft-button soft-button-danger px-3 py-1.5 text-sm"
+                    className="soft-button soft-button-danger whitespace-nowrap px-3 py-1.5 text-sm"
                   >
                     <TrashIcon className="h-3.5 w-3.5" />
                     <span>{formatTemplate(t('chat.imageDeleteSelected'), { count: selected.size })}</span>
                   </button>
                 </>
               )}
+            </div>
+            {/* 全选与关闭固定在标题这一行；窄屏时只有下载/删除换到第二行 */}
+            <div className="order-2 flex items-center gap-2 sm:order-3">
               {images.length > 0 && (
                 <button
                   onClick={() => {
@@ -334,7 +337,7 @@ function ImageManagerModalInner({ character, onClose, onAfterBatchDelete, showTo
                       setSelected(new Set(images.map(img => img.url)));
                     }
                   }}
-                  className="soft-button soft-button-secondary px-3 py-1.5 text-sm"
+                  className="soft-button soft-button-secondary whitespace-nowrap px-3 py-1.5 text-sm"
                 >
                   {selected.size === images.length ? t('chat.imageUnselectAll') : t('chat.imageSelectAll')}
                 </button>

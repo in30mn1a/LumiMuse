@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import type { ApiProvider } from '@/types';
 import { MoreVerticalIcon, PlusIcon } from '@/components/ui/icons';
 import { formatTemplate } from '@/lib/i18n';
+import NumberInput from '@/components/ui/NumberInput';
 
 interface ProviderSettingsSectionProps {
   providers: ApiProvider[];
@@ -14,7 +15,6 @@ interface ProviderSettingsSectionProps {
   onDeleteProvider: (id: string) => void;
   onSaveProvider: () => void;
   onSaveCurrentAsProvider: () => void;
-  parseNumber: (value: string) => number;
   t: (key: string) => string;
   busy?: boolean;
   loading?: boolean;
@@ -31,7 +31,6 @@ export function ProviderSettingsSection({
   onDeleteProvider,
   onSaveProvider,
   onSaveCurrentAsProvider,
-  parseNumber,
   t,
   busy = false,
   loading = false,
@@ -196,36 +195,33 @@ export function ProviderSettingsSection({
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
               <label htmlFor="settings-provider-temperature" className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.temperature')}</label>
-              <input
+              <NumberInput
                 id="settings-provider-temperature"
-                type="number"
                 min="0"
                 max="2"
                 step="0.1"
                 value={editingProvider.temperature ?? 1}
-                onChange={event => setEditingProvider(previous => previous ? { ...previous, temperature: parseNumber(event.target.value) } : null)}
+                onValueChange={v => setEditingProvider(previous => previous ? { ...previous, temperature: v } : null)}
                 className="input-rich"
               />
             </div>
             <div>
               <label htmlFor="settings-provider-max-tokens" className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.maxTokens')}</label>
-              <input
+              <NumberInput
                 id="settings-provider-max-tokens"
-                type="number"
                 min="1"
                 value={editingProvider.max_tokens ?? 4096}
-                onChange={event => setEditingProvider(previous => previous ? { ...previous, max_tokens: parseNumber(event.target.value) } : null)}
+                onValueChange={v => setEditingProvider(previous => previous ? { ...previous, max_tokens: v } : null)}
                 className="input-rich"
               />
             </div>
             <div>
               <label htmlFor="settings-provider-context-window" className="mb-1.5 block text-xs font-medium text-text-secondary">{t('settings.contextWindow')}</label>
-              <input
+              <NumberInput
                 id="settings-provider-context-window"
-                type="number"
                 min="1"
                 value={editingProvider.context_window ?? 131072}
-                onChange={event => setEditingProvider(previous => previous ? { ...previous, context_window: parseNumber(event.target.value) } : null)}
+                onValueChange={v => setEditingProvider(previous => previous ? { ...previous, context_window: v } : null)}
                 className="input-rich"
               />
             </div>

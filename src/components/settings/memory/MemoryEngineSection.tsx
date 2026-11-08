@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { MemoryEngineSettings, Settings } from '@/types';
+import NumberInput from '@/components/ui/NumberInput';
 
 type SettingsWithMemoryEngine = Settings & {
   memory_engine: MemoryEngineSettings;
@@ -69,14 +70,13 @@ export function MemoryEngineSection({
         <div className="space-y-4 rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
           <div>
             <label htmlFor="settings-memory-background-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryBackgroundTimeout')}</label>
-            <input
+            <NumberInput
               id="settings-memory-background-timeout"
-              type="number"
               min="0"
               step="1"
               value={Math.round(settings.memory_background_timeout_ms / 60_000)}
-              onChange={e => {
-                const minutes = Math.max(0, Math.round(parseNumber(e.target.value) || 0));
+              onValueChange={v => {
+                const minutes = Math.max(0, Math.round(v || 0));
                 update('memory_background_timeout_ms', minutes * 60_000);
               }}
               className="input-rich"
@@ -162,12 +162,11 @@ export function MemoryEngineSection({
             </div>
             <div>
               <label htmlFor="settings-memory-embedding-dimension" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.memoryEmbeddingDimension')}</label>
-              <input
+              <NumberInput
                 id="settings-memory-embedding-dimension"
-                type="number"
                 min="0"
                 value={settings.memory_engine.embedding_dimension || ''}
-                onChange={e => updateMemoryEngine('embedding_dimension', parseNumber(e.target.value))}
+                onValueChange={v => updateMemoryEngine('embedding_dimension', v)}
                 className="input-rich"
                 placeholder="0"
               />
@@ -285,13 +284,12 @@ export function MemoryEngineSection({
         {settings.memory_trigger_interval_enabled && (
           <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
             <label htmlFor="settings-memory-extraction-interval" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.extractionInterval')}</label>
-            <input
+            <NumberInput
               id="settings-memory-extraction-interval"
-              type="number"
               min="1"
               max="50"
               value={settings.memory_interval}
-              onChange={e => update('memory_interval', parseNumber(e.target.value))}
+              onValueChange={v => update('memory_interval', v)}
               className="input-rich"
             />
           </div>
@@ -309,13 +307,12 @@ export function MemoryEngineSection({
         {settings.memory_trigger_time_enabled && (
           <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
             <label htmlFor="settings-memory-trigger-time" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.triggerTimeHours')}</label>
-            <input
+            <NumberInput
               id="settings-memory-trigger-time"
-              type="number"
               min="1"
               max="72"
               value={settings.memory_trigger_time_hours}
-              onChange={e => update('memory_trigger_time_hours', parseNumber(e.target.value))}
+              onValueChange={v => update('memory_trigger_time_hours', v)}
               className="input-rich"
             />
           </div>
@@ -367,13 +364,12 @@ export function MemoryEngineSection({
           <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
             <label htmlFor="settings-memory-max-inject" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.maxMemoriesInject')}</label>
             <p className="mb-3 text-xs leading-relaxed text-text-muted">{t('settings.limitInjectHint')}</p>
-            <input
+            <NumberInput
               id="settings-memory-max-inject"
-              type="number"
               min="5"
               max="100"
               value={settings.memory_max_inject}
-              onChange={e => update('memory_max_inject', parseNumber(e.target.value))}
+              onValueChange={v => update('memory_max_inject', v)}
               className="input-rich"
             />
           </div>

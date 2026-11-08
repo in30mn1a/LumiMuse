@@ -20,6 +20,7 @@ import { useTranslation } from '@/lib/i18n-context';
 import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon } from '@/components/ui/icons';
 import ErrorBoundary from '@/components/ui/ErrorBoundary';
+import NumberInput from '@/components/ui/NumberInput';
 import { useMemoryIndexPanel } from '@/hooks/settings/useMemoryIndexPanel';
 import { useMemoryManagementCharacters } from '@/hooks/settings/useMemoryManagementCharacters';
 import { useMemoryProfilePanel } from '@/hooks/settings/useMemoryProfilePanel';
@@ -572,7 +573,6 @@ export default function SettingsPage() {
               loading={providersLoading}
               error={providersError}
               onRetry={() => void loadProviders()}
-              parseNumber={parseNumber}
               t={t}
             />
             <ApiSettingsSection
@@ -614,38 +614,35 @@ export default function SettingsPage() {
               <div className="grid gap-4 md:grid-cols-3">
                 <div>
                   <label htmlFor="settings-temperature" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.temperature')}</label>
-                  <input
+                  <NumberInput
                     id="settings-temperature"
-                    type="number"
                     min="0"
                     max="2"
                     step="0.1"
                     value={settings.temperature}
-                    onChange={e => update('temperature', parseNumber(e.target.value))}
+                    onValueChange={v => update('temperature', v)}
                     className="input-rich"
                   />
                 </div>
 
                 <div>
                   <label htmlFor="settings-max-tokens" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.maxTokens')}</label>
-                  <input
+                  <NumberInput
                     id="settings-max-tokens"
-                    type="number"
                     min="1"
                     value={settings.max_tokens}
-                    onChange={e => update('max_tokens', parseNumber(e.target.value))}
+                    onValueChange={v => update('max_tokens', v)}
                     className="input-rich"
                   />
                 </div>
 
                 <div>
                   <label htmlFor="settings-context-window" className="mb-2 block text-sm font-medium text-text-secondary">{t('settings.contextWindow')}</label>
-                  <input
+                  <NumberInput
                     id="settings-context-window"
-                    type="number"
                     min="1"
                     value={settings.context_window}
-                    onChange={e => update('context_window', parseNumber(e.target.value))}
+                    onValueChange={v => update('context_window', v)}
                     className="input-rich"
                   />
                 </div>
@@ -666,7 +663,6 @@ export default function SettingsPage() {
                   defaultValue={0.9}
                   min={0} max={1} step={0.01}
                   onChange={v => update('top_p', v)}
-                  parseNumber={parseNumber}
                 />
                 <SamplingParamRow
                   id="settings-top-k"
@@ -675,7 +671,6 @@ export default function SettingsPage() {
                   defaultValue={40}
                   min={1} max={1000} step={1}
                   onChange={v => update('top_k', v)}
-                  parseNumber={parseNumber}
                 />
                 <SamplingParamRow
                   id="settings-frequency-penalty"
@@ -684,7 +679,6 @@ export default function SettingsPage() {
                   defaultValue={0}
                   min={-2} max={2} step={0.05}
                   onChange={v => update('frequency_penalty', v)}
-                  parseNumber={parseNumber}
                 />
                 <SamplingParamRow
                   id="settings-presence-penalty"
@@ -693,7 +687,6 @@ export default function SettingsPage() {
                   defaultValue={0}
                   min={-2} max={2} step={0.05}
                   onChange={v => update('presence_penalty', v)}
-                  parseNumber={parseNumber}
                 />
                 <SamplingParamRow
                   id="settings-repetition-penalty"
@@ -702,7 +695,6 @@ export default function SettingsPage() {
                   defaultValue={1.1}
                   min={0} max={10} step={0.01}
                   onChange={v => update('repetition_penalty', v)}
-                  parseNumber={parseNumber}
                 />
                 <SamplingParamRow
                   id="settings-seed"
@@ -711,7 +703,6 @@ export default function SettingsPage() {
                   defaultValue={0}
                   min={0} max={2147483647} step={1}
                   onChange={v => update('seed', v)}
-                  parseNumber={parseNumber}
                 />
               </div>
             </section>
@@ -826,7 +817,7 @@ export default function SettingsPage() {
 
             <div hidden={activeTab !== 'advanced'} className="space-y-4">
             <ErrorBoundary>
-              <ImageGenSettingsSection settings={settings} update={update} parseNumber={parseNumber} t={t} />
+              <ImageGenSettingsSection settings={settings} update={update} t={t} />
             </ErrorBoundary>
 
             <MaintenanceSection t={t} />
@@ -898,10 +889,9 @@ interface SamplingParamRowProps {
   max: number;
   step: number;
   onChange: (v: number | null) => void;
-  parseNumber: (v: string) => number;
 }
 
-function SamplingParamRow({ id, label, value, defaultValue, min, max, step, onChange, parseNumber }: SamplingParamRowProps) {
+function SamplingParamRow({ id, label, value, defaultValue, min, max, step, onChange }: SamplingParamRowProps) {
   const enabled = value !== null;
   return (
     <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
@@ -923,15 +913,14 @@ function SamplingParamRow({ id, label, value, defaultValue, min, max, step, onCh
         }}
       />
       <label htmlFor={id} className="flex-1 text-sm text-text-secondary">{label}</label>
-      <input
+      <NumberInput
         id={id}
-        type="number"
         min={min}
         max={max}
         step={step}
         value={enabled ? value : ''}
         disabled={!enabled}
-        onChange={e => onChange(parseNumber(e.target.value))}
+        onValueChange={v => onChange(v)}
         className="input-rich w-28"
         placeholder="—"
       />

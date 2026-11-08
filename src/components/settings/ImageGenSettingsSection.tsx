@@ -5,17 +5,16 @@ import { ArtistString, DEFAULT_IMAGE_GEN_SETTINGS, ImageGenSettings, Settings } 
 import { ImageIcon } from '@/components/ui/icons';
 import ConfirmModal from '@/components/ui/ConfirmModal';
 import PromptModal from '@/components/ui/PromptModal';
+import NumberInput from '@/components/ui/NumberInput';
 
 // ========== 生图设置子组件 ==========
 export function ImageGenSettingsSection({
   settings,
   update,
-  parseNumber,
   t,
 }: {
   settings: Settings;
   update: <K extends 'image_gen' | 'artist_strings'>(key: K, value: Settings[K]) => void;
-  parseNumber: (v: string) => number;
   t: (key: string) => string;
 }) {
   const imgGen = settings.image_gen || DEFAULT_IMAGE_GEN_SETTINGS;
@@ -158,21 +157,21 @@ export function ImageGenSettingsSection({
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="settings-image-sd-steps" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDSteps')}</label>
-                    <input id="settings-image-sd-steps" type="number" min="1" max="150" value={imgGen.sd_steps} onChange={e => updateImg('sd_steps', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-sd-steps" min="1" max="150" value={imgGen.sd_steps} onValueChange={v => updateImg('sd_steps', v)} className="input-rich" />
                   </div>
                   <div>
                     <label htmlFor="settings-image-sd-cfg" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDCfg')}</label>
-                    <input id="settings-image-sd-cfg" type="number" min="1" max="30" step="0.5" value={imgGen.sd_cfg_scale} onChange={e => updateImg('sd_cfg_scale', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-sd-cfg" min="1" max="30" step="0.5" value={imgGen.sd_cfg_scale} onValueChange={v => updateImg('sd_cfg_scale', v)} className="input-rich" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="settings-image-sd-width" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDWidth')}</label>
-                    <input id="settings-image-sd-width" type="number" min="256" max="2048" step="64" value={imgGen.sd_width} onChange={e => updateImg('sd_width', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-sd-width" min="256" max="2048" step="64" value={imgGen.sd_width} onValueChange={v => updateImg('sd_width', v)} className="input-rich" />
                   </div>
                   <div>
                     <label htmlFor="settings-image-sd-height" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenSDHeight')}</label>
-                    <input id="settings-image-sd-height" type="number" min="256" max="2048" step="64" value={imgGen.sd_height} onChange={e => updateImg('sd_height', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-sd-height" min="256" max="2048" step="64" value={imgGen.sd_height} onValueChange={v => updateImg('sd_height', v)} className="input-rich" />
                   </div>
                 </div>
                 <div>
@@ -227,25 +226,25 @@ export function ImageGenSettingsSection({
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label htmlFor="settings-image-nai-steps" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAISteps')}</label>
-                    <input id="settings-image-nai-steps" type="number" min="1" max="50" value={imgGen.nai_steps} onChange={e => updateImg('nai_steps', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-nai-steps" min="1" max="50" value={imgGen.nai_steps} onValueChange={v => updateImg('nai_steps', v)} className="input-rich" />
                   </div>
                   <div>
                     <label htmlFor="settings-image-nai-scale" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIScale')}</label>
-                    <input id="settings-image-nai-scale" type="number" min="0" max="25" step="0.1" value={imgGen.nai_scale} onChange={e => updateImg('nai_scale', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-nai-scale" min="0" max="25" step="0.1" value={imgGen.nai_scale} onValueChange={v => updateImg('nai_scale', v)} className="input-rich" />
                   </div>
                   <div>
                     <label htmlFor="settings-image-nai-cfg-rescale" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAICfgRescale')}</label>
-                    <input id="settings-image-nai-cfg-rescale" type="number" min="0" max="1" step="0.01" value={imgGen.nai_cfg_rescale} onChange={e => updateImg('nai_cfg_rescale', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-nai-cfg-rescale" min="0" max="1" step="0.01" value={imgGen.nai_cfg_rescale} onValueChange={v => updateImg('nai_cfg_rescale', v)} className="input-rich" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="settings-image-nai-width" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIWidth')}</label>
-                    <input id="settings-image-nai-width" type="number" min="256" max="2048" step="64" value={imgGen.nai_width} onChange={e => updateImg('nai_width', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-nai-width" min="256" max="2048" step="64" value={imgGen.nai_width} onValueChange={v => updateImg('nai_width', v)} className="input-rich" />
                   </div>
                   <div>
                     <label htmlFor="settings-image-nai-height" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenNAIHeight')}</label>
-                    <input id="settings-image-nai-height" type="number" min="256" max="2048" step="64" value={imgGen.nai_height} onChange={e => updateImg('nai_height', parseNumber(e.target.value))} className="input-rich" />
+                    <NumberInput id="settings-image-nai-height" min="256" max="2048" step="64" value={imgGen.nai_height} onValueChange={v => updateImg('nai_height', v)} className="input-rich" />
                   </div>
                 </div>
                 <div>
@@ -366,13 +365,12 @@ export function ImageGenSettingsSection({
             {/* 出图总时限：适用于所有引擎的提交、等待与下载阶段 */}
             <div className="rounded-2xl border border-border-light bg-surface/70 px-4 py-4">
               <label htmlFor="settings-image-timeout" className="mb-1.5 block text-sm font-medium text-text-secondary">{t('settings.imageGenTimeout')}</label>
-              <input
+              <NumberInput
                 id="settings-image-timeout"
-                type="number"
                 min="1000"
                 step="1000"
                 value={imgGen.generate_timeout_ms}
-                onChange={e => updateImg('generate_timeout_ms', parseNumber(e.target.value))}
+                onValueChange={v => updateImg('generate_timeout_ms', v)}
                 className="input-rich"
                 placeholder="120000"
               />

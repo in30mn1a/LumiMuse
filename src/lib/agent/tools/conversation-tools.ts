@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { buildChainMessageScope, resolveConversationChain } from '@/lib/conversation-chain';
 import { MEMORY_PROCESSED_SQL } from '@/lib/memory-extraction-scope';
-import { searchMessages } from '@/lib/message-search';
+import { escapeLikePattern, searchMessages } from '@/lib/message-search';
 import { defineReadTool } from './types';
 import {
   errorMessage,
@@ -151,22 +151,70 @@ export const readMessagesTool = defineReadTool({
   }),
 });
 
+/** 每个关键词都须以子串形式出现在同一条消息里；排序与分页口径同 searchMessages 的 LIKE 路径。 */
+function searchMessagesAllTerms(
+  db: Database.Database,
+  terms: string[],
+  characterId: string | null,
+  limit: number,
+  offset: number,
+) {
+  const termClause = terms.map(() => `m.content LIKE ? ESCAPE '\\'`).join(' AND ');
+  const charClause = characterId ? 'AND ch.id = ?' : '';
+  const rows = db.prepare(`
+    SELECT
+      m.id AS messageId,
+      m.role AS role,
+      m.created_at AS createdAt,
+      c.id AS conversationId,
+      c.title AS conversationTitle,
+      ch.id AS characterId,
+      ch.name AS characterName
+    FROM messages m
+    JOIN conversations c ON m.conversation_id = c.id
+    JOIN characters ch   ON c.character_id = ch.id
+    WHERE ${termClause} AND m.role IN ('user', 'assistant') ${charClause}
+    ORDER BY m.created_at DESC, m.seq DESC, m.id DESC
+    LIMIT ? OFFSET ?
+  `).all(
+    ...terms.map(term => `%${escapeLikePattern(term)}%`),
+    ...(characterId ? [characterId] : []),
+    limit + 1,
+    offset,
+  ) as Array<{
+    messageId: string;
+    role: string;
+    createdAt: string;
+    conversationId: string;
+    conversationTitle: string;
+    characterId: string;
+    characterName: string;
+  }>;
+  const hasMore = rows.length > limit;
+  // 完整正文由调用方按 ID 补齐，这里 snippet 留空
+  return { results: (hasMore ? rows.slice(0, limit) : rows).map(row => ({ ...row, snippet: '' })), hasMore };
+}
+
 export const searchMessagesTool = defineReadTool({
   name: 'search_messages',
-  description: '全文搜索聊天消息（只含用户和角色的发言），也支持按日期搜索（如 2026-03-30、3月30日，按主人的时区）。返回完整正文，可按角色过滤。',
+  description: '搜索聊天消息（只含用户和角色的发言），按子串匹配原文。多个关键词用空格分隔时，要求同一条消息同时包含全部关键词（不分先后）。也支持按日期搜索（如 2026-03-30、3月30日，按主人的时区）。返回完整正文，可按角色过滤。',
   schema: z.object({
-    query: z.string().trim().min(1).describe('关键词或日期'),
+    query: z.string().trim().min(1).describe('关键词（空格分隔表示同时包含）或日期'),
     character_id: z.string().min(1).optional().describe('只搜该角色的对话'),
     ...pagingShape,
   }),
   execute: (args, ctx) => runReadTool(ctx, () => {
-    const result = searchMessages(ctx.db, {
-      q: args.query,
-      characterId: args.character_id ?? null,
-      limit: args.limit,
-      offset: args.offset,
-      timeZone: ctx.settings.client_timezone || undefined,
-    });
+    // 界面搜索把整串当一个短语；模型习惯用空格拼多个关键词，整串匹配必然落空，所以多词时在这里按 AND 搜
+    const terms = args.query.split(/\s+/).filter(Boolean);
+    const result = terms.length > 1
+      ? searchMessagesAllTerms(ctx.db, terms, args.character_id ?? null, args.limit, args.offset)
+      : searchMessages(ctx.db, {
+          q: args.query,
+          characterId: args.character_id ?? null,
+          limit: args.limit,
+          offset: args.offset,
+          timeZone: ctx.settings.client_timezone || undefined,
+        });
 
     // 搜索库只给 80 字片段（给界面用）；模型要拿原文当依据，补上完整正文
     const ids = result.results.map(item => item.messageId);

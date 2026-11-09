@@ -11,7 +11,7 @@ export interface MessageSearchOptions {
   timeZone?: string;
 }
 
-function escapeLikePattern(value: string): string {
+export function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, char => `\\${char}`);
 }
 

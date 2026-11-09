@@ -758,6 +758,32 @@ test('search_messages returns full content, filters by character and uses the cl
   assert.ok(!utc.results.some(item => item.message_id === 'msg-b1-2'));
 });
 
+test('search_messages treats space-separated keywords as AND, order-independent', async t => {
+  const { ctx } = createFixture(t);
+  // 整串「甜点 周末」不在任何消息里出现；按 AND 只有 msg-a2-1 同时含两个词（msg-a1-5 只有「周末」）
+  const both = await callOk('search_messages', { query: '甜点  周末' }, ctx);
+  assert.deepEqual(both.results.map(item => item.message_id), ['msg-a2-1']);
+  assert.equal(both.results[0].content, '最近我周末常常自己做甜点');
+  assert.equal(both.results[0].character_name, 'Aster');
+
+  const paged = await callOk('search_messages', { query: '周末 我', limit: 1 }, ctx);
+  assert.deepEqual(paged.results.map(item => item.message_id), ['msg-a2-1']);
+  assert.equal(paged.has_more, true);
+  assert.equal(paged.next_offset, 1);
+  const rest = await callOk('search_messages', { query: '周末 我', limit: 1, offset: 1 }, ctx);
+  assert.deepEqual(rest.results.map(item => item.message_id), ['msg-a1-5']);
+  assert.equal(rest.has_more, false);
+
+  const scoped = await callOk('search_messages', { query: '甜点 分店', character_id: 'char-a' }, ctx);
+  assert.equal(scoped.results.length, 0);
+  const otherChar = await callOk('search_messages', { query: '甜点 分店', character_id: 'char-b' }, ctx);
+  assert.deepEqual(otherChar.results.map(item => item.message_id), ['msg-b1-1']);
+
+  // LIKE 通配符按字面匹配
+  const wildcard = await callOk('search_messages', { query: '甜点 %' }, ctx);
+  assert.equal(wildcard.results.length, 0);
+});
+
 test('get_system_status combines memory system status with 24h app event counts', async t => {
   const { ctx } = createFixture(t);
   const status = await callOk('get_system_status', {}, ctx);

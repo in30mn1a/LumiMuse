@@ -371,3 +371,43 @@ test('V5 system prompt routes subject-count tags out of Character slots', () => 
   const inline = buildNaiV5InlinePromptInstruction('1girl, hindenburg (azur lane), pantyhose', undefined);
   assert.match(inline, /不算外貌，放 Prompt 开头、不写进角色栏/);
 });
+
+// POV 失败的根因：用户被开了一个带发色/体型的 Character 栏、句子又写 Character 2 / he，
+// NAI 就把用户当完整人物画成旁观视角的双人图。POV 时用户是镜头，只能以 the viewer 和
+// 画面边缘的身体部位出现。
+test('V5 prompts keep the viewer out of Character slots in POV', () => {
+  const {
+    NAI_V5_PROMPT_GENERATION_SYSTEM,
+    buildNaiV5InlinePromptInstruction,
+    appearanceTagsContextLabel,
+  } = require(path.resolve(__dirname, '../src/lib/image-prompt-instructions.ts'));
+
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /用户不开 Character 栏/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /用户一律叫 the viewer/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /POV（用户是镜头）时都不给用户开栏/);
+  assert.match(appearanceTagsContextLabel('nai-v5', 'user'), /POV 时用户就是镜头，不开栏/);
+
+  const inline = buildNaiV5InlinePromptInstruction('silver hair', 'boy, black hair');
+  assert.match(inline, /用户以第三人称完整出场（POV 不算）时，需包含用户外貌标签：boy, black hair/);
+  assert.match(inline, /用户不开角色栏/);
+  assert.match(inline, /称用户为 the viewer/);
+});
+
+// 多人画面：句子里的 Character N / 角色真名不能可靠绑定角色栏，改用位置与外观锚点；
+// 各人的动作用 source# / target# / mutual# 写进各自角色栏第三行。
+test('V5 prompts bind multi-character actions with interaction prefixes, not Character N subjects', () => {
+  const {
+    NAI_V5_PROMPT_GENERATION_SYSTEM,
+    buildNaiV5InlinePromptInstruction,
+  } = require(path.resolve(__dirname, '../src/lib/image-prompt-instructions.ts'));
+
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /不要用 Character 1 \/ Character 2 当主语/);
+  assert.doesNotMatch(NAI_V5_PROMPT_GENERATION_SYSTEM, /写死动作归属/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /source#hug \/ target#hug/);
+  assert.match(NAI_V5_PROMPT_GENERATION_SYSTEM, /只有 source# \/ target# \/ mutual# 三种前缀/);
+
+  const inline = buildNaiV5InlinePromptInstruction('silver hair', undefined);
+  assert.match(inline, /不要用 Character 1 或角色真名当主语/);
+  assert.doesNotMatch(inline, /正文里用 Character 1 指代/);
+  assert.match(inline, /source#（发起方）\/ target#（承受方，同一个 tag）\/ mutual#（互相）/);
+});

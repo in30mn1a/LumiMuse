@@ -155,7 +155,9 @@ export async function POST(request: NextRequest) {
     // 获取角色信息（含 image_tags）
     const character = db.prepare('SELECT * FROM characters WHERE id = ?').get(conversation.character_id) as {
       name: string;
+      basic_info?: string;
       personality: string;
+      other_info?: string;
       scenario: string;
       image_tags?: string;
       user_image_tags?: string;
@@ -209,8 +211,10 @@ export async function POST(request: NextRequest) {
     if (character) {
       context += `【角色信息】\n`;
       context += `角色名：${character.name}\n`;
-      if (character.personality) context += `性格/外貌描述：${character.personality}\n`;
+      if (character.basic_info) context += `基本信息：${character.basic_info}\n`;
+      if (character.personality) context += `性格：${character.personality}\n`;
       if (character.scenario) context += `世界观/场景设定：${character.scenario}\n`;
+      if (character.other_info) context += `其他补充信息：${character.other_info}\n`;
       if (character.image_tags) {
         const { safeForLlm } = partitionSensitiveImageTags(character.image_tags);
         if (safeForLlm) {

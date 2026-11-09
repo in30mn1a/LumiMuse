@@ -124,6 +124,20 @@ function copySnapshot(snapshot: CachedMessages): CachedMessages {
   };
 }
 
+/**
+ * 重新拉取「已加载范围」的分页参数：有已加载的最早 seq 时按 from_seq 取回整段，
+ * 否则退回按条数取最新一页。服务端单页最多 200 条，按条数刷新会在往上翻过 200 条后
+ * 把更早的已加载消息整体丢掉（视口随之坍缩到底部，历史消息也找不到）。
+ */
+export function loadedRangePageOptions(
+  conversationId: string,
+  pageSize: number,
+  loadedLength: number,
+): { fromSeq: number } | { limit: number } {
+  const oldestSeq = messageCache.get(conversationId)?.oldestSeq;
+  return typeof oldestSeq === 'number' ? { fromSeq: oldestSeq } : { limit: Math.max(pageSize, loadedLength) };
+}
+
 export function readCachedMessages(conversationId: string): CachedMessages | null {
   const cached = messageCache.get(conversationId);
   if (cached) {

@@ -55,6 +55,20 @@ test('scroll controller exposes behavior helpers for target jumps, bottom checks
   }), 240);
 });
 
+test('auto-follow only fires when a new message is appended at the tail', () => {
+  const { hasAppendedTailMessage } = require(path.join(root, 'src/hooks/chat/useChatScrollController.ts'));
+  const base = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+
+  // 新回复落库（temp-user 换成真实 user + assistant）
+  assert.equal(hasAppendedTailMessage([...base, { id: 'temp-user' }], [...base, { id: 'u' }, { id: 'r' }]), true);
+  // 删除历史消息 / 删除末条 / 原地编辑或重新生成 / 头部加载更早消息
+  assert.equal(hasAppendedTailMessage(base, [{ id: 'a' }, { id: 'c' }]), false);
+  assert.equal(hasAppendedTailMessage(base, [{ id: 'a' }, { id: 'b' }]), false);
+  assert.equal(hasAppendedTailMessage(base, base.map(m => ({ ...m }))), false);
+  assert.equal(hasAppendedTailMessage(base, [{ id: 'z' }, ...base]), false);
+  assert.equal(hasAppendedTailMessage(base, []), false);
+});
+
 test('ChatView delegates scroll, memory polling, and image generation responsibilities to focused hooks', () => {
   const source = readProjectFile('src/components/chat/ChatView.tsx');
 

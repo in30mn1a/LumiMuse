@@ -904,6 +904,28 @@ function migrate(db: Database.Database): void {
   });
   migrateCharacterSortOrder();
 
+  // 增量迁移：conversations 表补 sort_order 列（对话列表拖拽排序，同角色内越小越靠前）
+  const migrateConversationSortOrder = db.transaction(() => {
+    const currentConvCols = db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
+    if (!currentConvCols.some(c => c.name === 'sort_order')) {
+      db.exec(`ALTER TABLE conversations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`);
+      // 旧数据按原来的 updated_at DESC 回填，保持当前观感不变
+      db.exec(`
+        UPDATE conversations
+        SET sort_order = (
+          SELECT rn FROM (
+            SELECT id, ROW_NUMBER() OVER (
+              PARTITION BY character_id ORDER BY updated_at DESC, created_at DESC, id DESC
+            ) AS rn FROM conversations
+          ) AS ranked
+          WHERE ranked.id = conversations.id
+        )
+      `);
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_conversations_character_sort ON conversations(character_id, sort_order)`);
+  });
+  migrateConversationSortOrder();
+
   // 增量迁移：conversations 表补 ignore_memory 列（忽略记忆提取）
   const convCols = db.prepare("PRAGMA table_info(conversations)").all() as { name: string }[];
   if (!convCols.some(c => c.name === 'ignore_memory')) {

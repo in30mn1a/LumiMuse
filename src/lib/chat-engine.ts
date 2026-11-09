@@ -7,6 +7,7 @@ import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion, 
 import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
+import { createMemoryTimeCutoffFilter, type MemorySourceMessage } from '@/lib/memory-time-cutoff';
 import { normalizeCharacterMemoryChatInjectionMode } from '@/lib/memory-runtime-policy';
 import { buildCurrentTimeInstruction, buildTimestampAnchoredTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
@@ -755,6 +756,20 @@ export async function runChat(
   // 上一轮记忆注入统计：注入条数 + 实际 token 数（来自 workingMemoryPackage 或 fallback）
   // 存入 assistant 消息 metadata.last_memory_injection，供前端 TokenBreakdownModal 展示
   let lastMemoryInjection: { count: number; tokens: number; mode?: string } | undefined;
+  // 重新生成 / 插入历史回复：只注入那一刻之前就有的记忆，避免角色在过去的场景里「预知未来」。
+  // 正常聊天两者都为空，memoryFilter 为 undefined，检索行为与之前逐字节一致。
+  const historicalMessage = regenerateTargetMessage ?? insertAfterUserMessage;
+  const memoryCutoff = historicalMessage && historyUpperBound
+    ? { cutoff: historicalMessage.created_at, ...historyUpperBound }
+    : undefined;
+  const lookupSourceMessage = memoryCutoff
+    ? db.prepare(`SELECT created_at, CASE WHEN ${scope.sql} THEN seq END AS seq FROM messages WHERE id = ?`)
+    : undefined;
+  const memoryFilter = memoryCutoff && lookupSourceMessage
+    ? createMemoryTimeCutoffFilter(memoryCutoff, messageId => (
+      lookupSourceMessage.get(...scope.params, messageId) as MemorySourceMessage | undefined
+    ))
+    : undefined;
   if (chatSettings.memory_inject) {
     // 重新生成时 userContent 为空，改用最近几条消息内容作为相关性查询
     const queryText = userContent || contextMessages.slice(-4).map(m => m.content).join(' ');
@@ -772,6 +787,7 @@ export async function runChat(
         characterId: conversation.character_id,
         queryText,
         settings: retrievalSettings,
+        memoryFilter,
       });
       if (workingMemoryPackage.mode === 'full' && memoryBudgetCap > 0 && workingMemoryPackage.tokenCount > memoryBudgetCap) {
         structuredLog('warn', 'memory.full_inject_oversize', {
@@ -793,6 +809,7 @@ export async function runChat(
           queryText,
           conversation.character_id,
           chatSettings.memory_max_inject || 30,
+          memoryFilter,
         );
         memoryContents = relevantMemories.map(memory => memory.content);
         // fallback 路径没有精确 tokenCount，用 0 表示未知（前端不展示 token 数，只展示条数）

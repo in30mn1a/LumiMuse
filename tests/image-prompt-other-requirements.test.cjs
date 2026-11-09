@@ -11,7 +11,8 @@ async function capturePromptRequest(style, requirements) {
   db.exec(`
     CREATE TABLE characters (
       id TEXT PRIMARY KEY, name TEXT, personality TEXT, scenario TEXT,
-      image_tags TEXT, user_image_tags TEXT, image_prompt_other_requirements TEXT
+      image_tags TEXT, user_image_tags TEXT, image_prompt_other_requirements TEXT,
+      basic_info TEXT, other_info TEXT
     );
     CREATE TABLE conversations (
       id TEXT PRIMARY KEY, character_id TEXT, parent_id TEXT, parent_seq_end INTEGER
@@ -20,8 +21,9 @@ async function capturePromptRequest(style, requirements) {
       id TEXT PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, seq INTEGER
     );
   `);
-  db.prepare('INSERT INTO characters VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO characters VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     'char-1', 'Mira', 'a calm adult illustrator', 'rainy cafe', 'silver hair, blue eyes', '', requirements ?? '',
+    '二十六岁，及肩短发，常穿灰色针织衫。', '左手腕有一道浅疤。',
   );
   db.prepare('INSERT INTO conversations VALUES (?, ?, NULL, NULL)').run('conv-1', 'char-1');
   db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?)').run('message-1', 'conv-1', 'assistant', '看着窗外的雨。', 1);
@@ -89,6 +91,9 @@ test('standalone generation sends complete character requirements with context a
     const context = messages.find(message => message.role === 'user').content;
     assert.ok(context.includes(requirements), `${style} 未传递完整要求`);
     assert.match(context, /Mira/);
+    // 外貌常写在基本信息 / 其他补充信息里，必须随角色信息一起发给提示词模型
+    assert.match(context, /基本信息：二十六岁，及肩短发，常穿灰色针织衫。/);
+    assert.match(context, /其他补充信息：左手腕有一道浅疤。/);
     assert.match(context, /silver hair, blue eyes/);
     assert.match(context, /看着窗外的雨。/);
     assert.match(context, /镜头从侧面拍摄。/);

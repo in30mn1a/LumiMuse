@@ -46,6 +46,7 @@ interface ConversationWithMessages {
   created_at: string;
   updated_at: string;
   ignore_memory?: unknown;
+  sort_order?: unknown;
   messages?: Record<string, unknown>[];
 }
 
@@ -765,8 +766,8 @@ function importPayload({
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertConversation = db.prepare(`
-    INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   const insertMessage = db.prepare(`
     INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, metadata, seq)
@@ -959,6 +960,8 @@ function importPayload({
         asFlag(conv.ignore_memory),
         asString(conv.created_at) || now,
         asString(conv.updated_at) || now,
+        // 备份里带了拖拽排序就沿用；旧备份没有该字段时全为 0，列表退回按最近更新排序
+        Number.isSafeInteger(conv.sort_order) ? conv.sort_order as number : 0,
       );
       results.conversationsImported++;
 

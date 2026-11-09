@@ -74,6 +74,21 @@ export function isScrollMetricsNearBottom(metrics: ScrollMetrics, threshold = 18
   return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight < threshold;
 }
 
+/**
+ * 末尾是否真的追加了新消息（新的最后一条在旧列表里不存在）。
+ * 删除、编辑、重新生成、切换版本、生图写回、加载更早消息都只是原地修改或头部插入，
+ * 末尾要么不变、要么是旧列表里已有的消息，不应触发「跟随到底部」。
+ */
+export function hasAppendedTailMessage(
+  previous: readonly IdentifiedMessage[],
+  next: readonly IdentifiedMessage[],
+): boolean {
+  const tail = next[next.length - 1];
+  if (!tail) return false;
+  if (previous[previous.length - 1]?.id === tail.id) return false;
+  return !previous.some(message => message.id === tail.id);
+}
+
 export function getTargetMessageIndex<T extends IdentifiedMessage>(
   messages: readonly T[],
   targetMessageId: string | null,
@@ -196,6 +211,7 @@ export function useChatScrollController({
   const scrollToBottomOnLoadRef = useRef(false);
   const skipScrollRef = useRef(false);
   const forceScrollToBottomRef = useRef(false);
+  const previousMessagesRef = useRef(messages);
   const loadOlderMessagesRef = useRef(loadOlderMessages);
 
   useEffect(() => {
@@ -384,6 +400,8 @@ export function useChatScrollController({
   }, [activeConvId, isMessageListNearBottom, scrollContainerRef, streamingConvId, streamingTargetId, streamingText]);
 
   useEffect(() => {
+    const previousMessages = previousMessagesRef.current;
+    previousMessagesRef.current = messages;
     if (skipScrollRef.current) {
       skipScrollRef.current = false;
       return;
@@ -392,7 +410,13 @@ export function useChatScrollController({
     // 而滚到底，把正在重试的目标定位冲掉。定位期间不参与自动滚底。
     if (pendingScrollRef.current) return;
     const forceScrollToBottom = forceScrollToBottomRef.current;
-    if (forceScrollToBottom || (!scrollToBottomOnLoadRef.current && isMessageListNearBottom())) {
+    // 只有末尾追加了新消息才跟随到底部；删除 / 编辑 / 重新生成等原地修改会让内容变矮，
+    // 视口恰好落进「近底部」阈值时，旧逻辑会把用户从正在看的历史位置拽到底。
+    if (forceScrollToBottom || (
+      !scrollToBottomOnLoadRef.current
+      && hasAppendedTailMessage(previousMessages, messages)
+      && isMessageListNearBottom()
+    )) {
       const raf = requestAnimationFrame(() => {
         scrollToBottom(forceScrollToBottom ? 'instant' as ScrollBehavior : 'smooth');
         forceScrollToBottomRef.current = false;

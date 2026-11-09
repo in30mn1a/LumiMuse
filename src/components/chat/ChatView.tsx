@@ -166,6 +166,8 @@ export default function ChatView({
     characterRef,
     refreshConversationState,
     touchConversation,
+    reorderConversations,
+    reorderingConversations,
   } = useConversationLoader({
     character,
     conversationId,
@@ -1149,6 +1151,12 @@ export default function ChatView({
           activeConvId={activeConvId}
           onSelect={selectUserConversation}
           onNewChat={requestNewChat}
+          reorderPending={reorderingConversations}
+          onReorder={(orderedIds, previousIds) => {
+            reorderConversations(orderedIds, previousIds).catch(() => {
+              showToast(t('common.operationFailed'), 'error');
+            });
+          }}
           onClose={() => setConvDrawerOpen(false)}
         />
 

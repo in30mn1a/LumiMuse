@@ -10,6 +10,7 @@ import {
   readChatSseStream,
   scopeMessageToConversationView,
 } from '@/lib/chat-stream-client';
+import { loadedRangePageOptions } from '@/lib/chat-message-cache';
 
 type UpdateMessagesForConversation = (
   conversationIdToUpdate: string,
@@ -204,9 +205,11 @@ export function useChatMessageActions({
     const triggerAutoImage = async () => {
       if (mode === 'new' && activeConvIdRef.current !== streamConversationId) return;
       try {
-        const page = await fetchMessagesPage(streamConversationId, {
-          limit: Math.max(pageSize, messagesRef.current.length),
-        });
+        // 按已加载范围取回：重新生成的可能是 200 条以前的历史消息，按条数取最新一页会找不到它而静默不出图
+        const page = await fetchMessagesPage(
+          streamConversationId,
+          loadedRangePageOptions(streamConversationId, pageSize, messagesRef.current.length),
+        );
         const targetAssistantId = mode === 'regenerate'
           ? regenerateAssistantId
           : mode === 'insert'

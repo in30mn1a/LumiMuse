@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { getDb } from '@/lib/db';
 import { conversationCreateSchema, formatZodFieldErrors } from '@/lib/schemas';
+import { CONVERSATION_LIST_ORDER, topConversationSortOrder } from '@/lib/conversation-order';
 
 const DEFAULT_CONVERSATIONS_LIMIT = 20;
 const MAX_CONVERSATIONS_LIMIT = 100;
@@ -27,7 +28,7 @@ export async function GET(request: NextRequest) {
   if (characterId) {
     const total = db.prepare('SELECT COUNT(*) as count FROM conversations WHERE character_id = ?').get(characterId) as { count: number };
     const conversations = db.prepare(
-      'SELECT * FROM conversations WHERE character_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT ? OFFSET ?'
+      `SELECT * FROM conversations WHERE character_id = ? ORDER BY ${CONVERSATION_LIST_ORDER} LIMIT ? OFFSET ?`
     ).all(characterId, limit, offset);
     return NextResponse.json(conversations, {
       headers: {
@@ -70,9 +71,9 @@ export async function POST(request: NextRequest) {
 
   const db = getDb();
   db.prepare(`
-    INSERT INTO conversations (id, character_id, title, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(id, character_id, title || '新的对话', now, now);
+    INSERT INTO conversations (id, character_id, title, created_at, updated_at, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, character_id, title || '新的对话', now, now, topConversationSortOrder(db, character_id));
 
   const conversation = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
   return NextResponse.json(conversation, { status: 201 });

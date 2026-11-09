@@ -17,10 +17,16 @@ import { getSummaryCoverageIds } from '@/lib/summary-context-tokens';
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
   const all = request.nextUrl.searchParams.get('all') === '1';
-  const wantsPaged = request.nextUrl.searchParams.has('limit') || request.nextUrl.searchParams.has('before_seq');
+  const wantsPaged = request.nextUrl.searchParams.has('limit')
+    || request.nextUrl.searchParams.has('before_seq')
+    || request.nextUrl.searchParams.has('from_seq');
   const limitParam = Number(request.nextUrl.searchParams.get('limit') || '80');
   const beforeSeqParam = request.nextUrl.searchParams.get('before_seq');
   const beforeSeq = beforeSeqParam ? Number(beforeSeqParam) : null;
+  // 刷新已加载范围：返回 seq >= from_seq 的全部消息（前端已持有这段，不受单页 200 条限制），
+  // 否则长对话里往上翻过 200 条后刷新会把上面那段整体丢掉。
+  const fromSeqParam = request.nextUrl.searchParams.get('from_seq');
+  const fromSeq = fromSeqParam !== null && Number.isFinite(Number(fromSeqParam)) ? Number(fromSeqParam) : null;
 
   if (!conversationId) {
     return NextResponse.json({ error: 'Missing conversation_id' }, { status: 400 });
@@ -40,7 +46,11 @@ export async function GET(request: NextRequest) {
 
   const limit = Math.floor(Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 80, 1), 200));
   const pageLimit = limit + 1;
-  const rawMessages = beforeSeq !== null && Number.isFinite(beforeSeq)
+  let rawMessages = fromSeq !== null
+    ? db.prepare(
+        `SELECT * FROM messages WHERE ${scope.sql} AND seq >= ? ORDER BY seq DESC`,
+      ).all(...scope.params, fromSeq) as Message[]
+    : beforeSeq !== null && Number.isFinite(beforeSeq)
     ? db.prepare(
         `SELECT * FROM messages WHERE ${scope.sql} AND seq < ? ORDER BY seq DESC LIMIT ?`,
       ).all(...scope.params, beforeSeq, pageLimit) as Message[]
@@ -48,8 +58,18 @@ export async function GET(request: NextRequest) {
         `SELECT * FROM messages WHERE ${scope.sql} ORDER BY seq DESC LIMIT ?`,
       ).all(...scope.params, pageLimit) as Message[];
 
-  const hasMore = rawMessages.length > limit;
-  const messages = rawMessages.slice(0, limit).reverse();
+  const hasLoadedRange = fromSeq !== null && rawMessages.length > 0;
+  // 已加载范围可能被删空；回退最新一页，避免仍有历史时返回空列表和无法继续分页的 null 游标。
+  if (fromSeq !== null && !hasLoadedRange) {
+    rawMessages = db.prepare(
+      `SELECT * FROM messages WHERE ${scope.sql} ORDER BY seq DESC LIMIT ?`,
+    ).all(...scope.params, pageLimit) as Message[];
+  }
+
+  const hasMore = hasLoadedRange
+    ? Boolean(db.prepare(`SELECT 1 FROM messages WHERE ${scope.sql} AND seq < ? LIMIT 1`).get(...scope.params, fromSeq))
+    : rawMessages.length > limit;
+  const messages = (hasLoadedRange ? rawMessages : rawMessages.slice(0, limit)).reverse();
   let unextractedCount: number | undefined;
   let totalTokens: number | undefined;
 

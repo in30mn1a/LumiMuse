@@ -29,10 +29,11 @@ export function buildClientTimePayload() {
   };
 }
 
-export function messagesUrl(conversationId: string, options?: { limit?: number; beforeSeq?: number | null; all?: boolean }): string {
+export function messagesUrl(conversationId: string, options?: { limit?: number; beforeSeq?: number | null; fromSeq?: number | null; all?: boolean }): string {
   const params = new URLSearchParams({ conversation_id: conversationId });
   if (options?.all) params.set('all', '1');
-  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.fromSeq !== undefined && options.fromSeq !== null) params.set('from_seq', String(options.fromSeq));
+  else if (options?.limit) params.set('limit', String(options.limit));
   if (options?.beforeSeq !== undefined && options.beforeSeq !== null) params.set('before_seq', String(options.beforeSeq));
   return `/api/messages?${params}`;
 }
@@ -55,7 +56,7 @@ export function scopeMessageToConversationView(
 
 export async function fetchMessagesPage(
   conversationId: string,
-  options?: { limit?: number; beforeSeq?: number | null; all?: boolean; signal?: AbortSignal },
+  options?: { limit?: number; beforeSeq?: number | null; fromSeq?: number | null; all?: boolean; signal?: AbortSignal },
 ): Promise<MessagesResponse> {
   const response = await fetch(messagesUrl(conversationId, options), { signal: options?.signal });
   const data = await parseJsonResponse<MessagesResponse | Message[]>(response);

@@ -68,6 +68,8 @@ export interface Conversation {
   ignore_memory: number; // 0=正常, 1=忽略记忆提取
   parent_id?: string | null;
   parent_seq_end?: number | null;
+  /** 同角色内的列表顺序，越小越靠前（拖拽排序） */
+  sort_order?: number;
   created_at: string;
   updated_at: string;
 }

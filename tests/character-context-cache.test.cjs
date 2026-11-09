@@ -44,6 +44,7 @@ const {
   readCharacterContextAsync,
   removeCharacterConversation,
   touchCharacterConversation,
+  reorderCharacterConversations,
   updateCharacterMemories,
   writeCharacterContext,
 } = require(path.resolve(__dirname, '../src/lib/character-context-cache.ts'));
@@ -166,8 +167,12 @@ test('targeted conversation helpers mutate only matching entries', () => {
 
   touchCharacterConversation('char-a', 'c3', '2026-07-19T12:00:00.000Z');
   snapshot = readCharacterContext('char-a');
-  assert.deepEqual(snapshot.conversations.map(c => c.id), ['c3', 'c1', 'c2'], 'touch moves to front');
-  assert.equal(snapshot.conversations[0].updated_at, '2026-07-19T12:00:00.000Z');
+  assert.deepEqual(snapshot.conversations.map(c => c.id), ['c1', 'c2', 'c3'], 'touch keeps the drag order');
+  assert.equal(snapshot.conversations[2].updated_at, '2026-07-19T12:00:00.000Z');
+
+  reorderCharacterConversations('char-a', ['c3', 'c1']);
+  snapshot = readCharacterContext('char-a');
+  assert.deepEqual(snapshot.conversations.map(c => c.id), ['c3', 'c1', 'c2'], 'unlisted conversations keep relative order at the end');
 
   removeCharacterConversation('char-a', 'c1');
   snapshot = readCharacterContext('char-a');

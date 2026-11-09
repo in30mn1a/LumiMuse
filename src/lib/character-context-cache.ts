@@ -199,23 +199,33 @@ export function removeCharacterConversation(characterId: string, conversationId:
   });
 }
 
-/** 聊天完成后 bump updated_at 并置顶；会话不在缓存中则 no-op（后台流对应他角色会话时自然跳过）。 */
+/** 聊天完成后 bump updated_at；就地修改不改变顺序（顺序由主人拖拽决定）。会话不在缓存中则 no-op。 */
 export function touchCharacterConversation(
   characterId: string,
   conversationId: string,
   updatedAt: string,
 ): void {
+  patchCharacterConversation(characterId, conversationId, { updated_at: updatedAt });
+}
+
+/** 按给定 id 顺序重排会话（拖拽排序）；未列出的会话按原相对顺序排在末尾。条目不存在则 no-op。 */
+export function reorderCharacterConversations(characterId: string, orderedIds: readonly string[]): void {
   const previous = contextCache.get(characterId);
-  const target = previous?.conversations.find(item => item.id === conversationId);
-  if (!previous || !target) return;
+  if (!previous) return;
   touch(characterId, {
-    conversations: [
-      { ...copyConversation(target), updated_at: updatedAt },
-      ...copyConversations(previous.conversations.filter(item => item.id !== conversationId)),
-    ],
+    conversations: copyConversations(sortConversationsByIds(previous.conversations, orderedIds)),
     memories: copyMemories(previous.memories),
     savedAt: Date.now(),
   });
+}
+
+/** 纯函数：按 orderedIds 排列会话，未出现在 orderedIds 里的保持原相对顺序接在后面。 */
+export function sortConversationsByIds<T extends { id: string }>(items: readonly T[], orderedIds: readonly string[]): T[] {
+  const rank = new Map(orderedIds.map((id, index) => [id, index]));
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => (rank.get(a.item.id) ?? orderedIds.length + a.index) - (rank.get(b.item.id) ?? orderedIds.length + b.index))
+    .map(entry => entry.item);
 }
 
 /** 记忆列表整体替换（提取完成后的权威刷新）。列表与 characterId 不同源时拒绝；条目不存在则 no-op。 */

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as crypto from 'crypto';
 import { z } from 'zod';
 import { getDb } from '@/lib/db';
+import { topConversationSortOrder } from '@/lib/conversation-order';
 import { Message } from '@/types';
 import { readJsonObject } from '@/lib/request-json';
 import { parseMessageMetadata } from '@/lib/messages';
@@ -66,17 +67,17 @@ export async function POST(
   if (mode === 'linked') {
     const seqEnd = chainMaxSeq(db, scope);
     db.prepare(`
-      INSERT INTO conversations (id, character_id, title, created_at, updated_at, parent_id, parent_seq_end)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(newId, original.character_id, newTitle, now, now, id, seqEnd);
+      INSERT INTO conversations (id, character_id, title, created_at, updated_at, parent_id, parent_seq_end, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(newId, original.character_id, newTitle, now, now, id, seqEnd, topConversationSortOrder(db, original.character_id));
 
     const created = db.prepare('SELECT * FROM conversations WHERE id = ?').get(newId);
     return NextResponse.json(created, { status: 201 });
   }
 
   const insertConversation = db.prepare(`
-    INSERT INTO conversations (id, character_id, title, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO conversations (id, character_id, title, created_at, updated_at, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
 
   // 复制全部消息，保持顺序，重新分配 id 和 seq
@@ -93,7 +94,7 @@ export async function POST(
   `);
 
   const copyAll = db.transaction(() => {
-    insertConversation.run(newId, original.character_id, newTitle, now, now);
+    insertConversation.run(newId, original.character_id, newTitle, now, now, topConversationSortOrder(db, original.character_id));
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];

@@ -27,6 +27,7 @@ type ConversationRow = {
   updated_at: string;
   parent_id?: string | null;
   parent_seq_end?: number | null;
+  sort_order?: number;
 };
 
 /**
@@ -370,6 +371,7 @@ export async function POST(
         parentOriginalId,
         parentSeqEnd: parentOriginalId ? conversation.parent_seq_end as number : null,
         preserveSeq: linkedConversationIds.has(conversation.id),
+        sortOrder: conversation.sort_order ?? 0,
       };
     });
 
@@ -492,8 +494,8 @@ export async function POST(
       );
 
       const insertConversation = db.prepare(`
-        INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, parent_id, parent_seq_end, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const newConversationIdByOriginal = new Map(
         preparedConversations.map(conversation => [conversation.originalId, conversation.newId]),
@@ -510,6 +512,7 @@ export async function POST(
             ? newConversationIdByOriginal.get(conversation.parentOriginalId) ?? null
             : null,
           conversation.parentSeqEnd,
+          conversation.sortOrder,
         );
       }
 

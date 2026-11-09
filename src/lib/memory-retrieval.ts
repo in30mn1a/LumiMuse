@@ -94,7 +94,7 @@ export interface WorkingMemoryPackage {
 }
 
 interface RetrievalDeps {
-  localRetrieve?: (queryText: string, characterId: string, limit: number) => Memory[];
+  localRetrieve?: (queryText: string, characterId: string, limit: number, filter?: (memory: Memory) => boolean) => Memory[];
   loadLegacyMemories?: (characterId: string) => Memory[];
   loadPriorityMemories?: (characterId: string) => Memory[];
   loadEmbeddingRows?: typeof loadReadyMemoryEmbeddings;
@@ -111,6 +111,11 @@ export interface RetrieveWorkingMemoryOptions {
   queryText: string;
   settings: Settings;
   deps?: RetrievalDeps;
+  /**
+   * 候选过滤（重新生成历史消息时剔除「之后才有」的记忆，见 memory-time-cutoff.ts）。
+   * 在各路召回取前 N 之前生效，被剔除的记忆不会占掉相关记忆的名额。正常聊天不传，行为不变。
+   */
+  memoryFilter?: (memory: Memory) => boolean;
 }
 
 const DEFAULT_MEMORY_ENGINE_CONFIG: MemoryEngineConfig = {
@@ -242,8 +247,8 @@ function loadDefaultLegacyMemories(characterId: string): Memory[] {
 function loadDefaultMemoriesByIds(ids: string[]): Memory[] {
   if (ids.length === 0) return [];
   const db = getDb();
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = db.prepare(`SELECT * FROM memories WHERE status = 'active' AND id IN (${placeholders})`).all(...ids) as Memory[];
+  const rows = db.prepare("SELECT * FROM memories WHERE status = 'active' AND id IN (SELECT value FROM json_each(?))")
+    .all(JSON.stringify(ids)) as Memory[];
   const order = new Map(ids.map((id, index) => [id, index]));
   return rows
     .map(normalizeMemoryRecord)
@@ -741,6 +746,7 @@ async function addVectorCandidates(
   deps: RetrievalDeps,
   candidates: Map<string, RetrievedMemory>,
   signal?: AbortSignal,
+  memoryFilter?: (memory: Memory) => boolean,
 ): Promise<void> {
   const embed = deps.embedText || embedText;
   const loadRows = deps.loadEmbeddingRows || loadReadyMemoryEmbeddings;
@@ -776,9 +782,15 @@ async function addVectorCandidates(
       );
     }
   }
-  const rankedRows = rankEmbeddingRows(queryEmbedding, rows, config.vector_top_k);
-  const memories = loadByIds(rankedRows.map(item => item.row.memory_id));
-  const memoryById = new Map(memories.map(memory => [memory.id, memory]));
+  // 有过滤时先全量排序、剔除后再取 top_k，避免被剔除的记忆占掉向量名额
+  const scoredRows = rankEmbeddingRows(queryEmbedding, rows, memoryFilter ? Number.POSITIVE_INFINITY : config.vector_top_k);
+  const memories = loadByIds(scoredRows.map(item => item.row.memory_id));
+  const memoryById = new Map(
+    (memoryFilter ? memories.filter(memoryFilter) : memories).map(memory => [memory.id, memory]),
+  );
+  const rankedRows = memoryFilter
+    ? scoredRows.filter(item => memoryById.has(item.row.memory_id)).slice(0, config.vector_top_k)
+    : scoredRows;
 
   for (const item of rankedRows) {
     const memory = memoryById.get(item.row.memory_id);
@@ -834,7 +846,8 @@ function buildLegacyFullMemoryPackage(
   deps: RetrievalDeps,
 ): WorkingMemoryPackage {
   const tokenCounter = deps.tokenCounter || estimateTokens;
-  const legacyMemories = (deps.loadLegacyMemories || loadDefaultLegacyMemories)(options.characterId);
+  const loadedLegacyMemories = (deps.loadLegacyMemories || loadDefaultLegacyMemories)(options.characterId);
+  const legacyMemories = options.memoryFilter ? loadedLegacyMemories.filter(options.memoryFilter) : loadedLegacyMemories;
   const ranked = legacyMemories.map((memory, index) => ({
     memory,
     relevance: 1,
@@ -885,7 +898,8 @@ async function buildLocalFallbackPackage(
   diagnostics: WorkingMemoryPackage['diagnostics'] = { candidateCount: 0 },
 ): Promise<WorkingMemoryPackage> {
   const localRetrieve = deps.localRetrieve || retrieveRelevantMemories;
-  const priorityMemories = (deps.loadPriorityMemories || loadDefaultPriorityMemories)(options.characterId);
+  const loadedPriorityMemories = (deps.loadPriorityMemories || loadDefaultPriorityMemories)(options.characterId);
+  const priorityMemories = options.memoryFilter ? loadedPriorityMemories.filter(options.memoryFilter) : loadedPriorityMemories;
   const tokenCounter = deps.tokenCounter || estimateTokens;
   const profileText = resolveProfileText(options.characterId, config, deps, tokenCounter);
   const candidates = new Map<string, RetrievedMemory>();
@@ -894,7 +908,7 @@ async function buildLocalFallbackPackage(
     addCandidate(candidates, memory, 0.75, 'priority');
   }
 
-  const localMemories = localRetrieve(options.queryText, options.characterId, localMemoryLimit(options.settings, config));
+  const localMemories = localRetrieve(options.queryText, options.characterId, localMemoryLimit(options.settings, config), options.memoryFilter);
   localMemories.forEach((memory, index) => {
     const relevance = Math.max(0.1, 0.7 - index * 0.01);
     addCandidate(candidates, memory, relevance, 'local');
@@ -934,7 +948,8 @@ async function buildWorkingMemoryPackage(
     limit_inject: options.settings.limit_inject,
   });
   const localRetrieve = deps.localRetrieve || retrieveRelevantMemories;
-  const priorityMemories = (deps.loadPriorityMemories || loadDefaultPriorityMemories)(options.characterId);
+  const loadedPriorityMemories = (deps.loadPriorityMemories || loadDefaultPriorityMemories)(options.characterId);
+  const priorityMemories = options.memoryFilter ? loadedPriorityMemories.filter(options.memoryFilter) : loadedPriorityMemories;
   const tokenCounter = deps.tokenCounter || estimateTokens;
   const profileText = resolveProfileText(options.characterId, config, deps, tokenCounter);
   const candidates = new Map<string, RetrievedMemory>();
@@ -948,7 +963,7 @@ async function buildWorkingMemoryPackage(
 
   if (policy.useEmbedding) {
     try {
-      await addVectorCandidates(options.queryText, options.characterId, config, deps, candidates, signal);
+      await addVectorCandidates(options.queryText, options.characterId, config, deps, candidates, signal, options.memoryFilter);
       mode = policy.chatInjectionMode === 'vector'
         ? 'vector'
         : candidates.size > priorityMemories.length ? 'vector' : 'hybrid';
@@ -962,7 +977,7 @@ async function buildWorkingMemoryPackage(
 
   if (!policy.useEmbedding || policy.useLocalRecall || usedFallback) {
     const localLimit = localMemoryLimit(options.settings, config);
-    const localMemories = localRetrieve(options.queryText, options.characterId, localLimit);
+    const localMemories = localRetrieve(options.queryText, options.characterId, localLimit, options.memoryFilter);
     const baseRelevance = usedFallback ? 0.7 : 0.55;
     localMemories.forEach((memory, index) => {
       const relevance = Math.max(0.1, baseRelevance - index * 0.01);

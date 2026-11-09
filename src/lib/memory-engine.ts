@@ -143,6 +143,7 @@ export function retrieveRelevantMemories(
   queryText: string,
   characterId: string,
   maxMemories: number = 30,
+  filter?: (memory: Memory) => boolean,
 ): Memory[] {
   const db = getDb();
   const allMemories = db.prepare(
@@ -153,7 +154,7 @@ export function retrieveRelevantMemories(
        COALESCE(importance, 0) DESC,
        updated_at DESC`
   ).all(characterId) as Memory[];
-  const normalizedMemories = allMemories.map(normalizeMemory);
+  const normalizedMemories = filter ? allMemories.map(normalizeMemory).filter(filter) : allMemories.map(normalizeMemory);
 
   // Infinity 表示未启用显式条数限制：仍需对全部 active 记忆做相关性评分，
   // 不能因为“全部都装得下”而退化成数据库 importance 顺序。

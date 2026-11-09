@@ -136,7 +136,8 @@ function createImportDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       parent_id TEXT,
-      parent_seq_end INTEGER
+      parent_seq_end INTEGER,
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE messages (

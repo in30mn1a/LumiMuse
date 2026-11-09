@@ -92,7 +92,8 @@ function createConversationDb(options = {}) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       parent_id TEXT,
-      parent_seq_end INTEGER
+      parent_seq_end INTEGER,
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE characters (
       id TEXT PRIMARY KEY,
@@ -129,7 +130,8 @@ function createConversationTieBreakerDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       parent_id TEXT,
-      parent_seq_end INTEGER
+      parent_seq_end INTEGER,
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
   `);
   const insert = db.prepare(`
@@ -154,7 +156,8 @@ function createConversationMessagesDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       parent_id TEXT,
-      parent_seq_end INTEGER
+      parent_seq_end INTEGER,
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -187,7 +190,8 @@ function createSearchDb() {
       character_id TEXT NOT NULL,
       title TEXT NOT NULL,
       parent_id TEXT,
-      parent_seq_end INTEGER
+      parent_seq_end INTEGER,
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -355,6 +359,47 @@ test('/api/conversations GET with character_id paginates same updated_at rows wi
   assert.equal(response.headers.get('X-Page-Offset'), '1');
 });
 
+test('/api/conversations GET with character_id follows drag order before recency', async () => {
+  const db = createConversationDb({ count: 3 });
+  db.prepare("UPDATE conversations SET sort_order = CASE id WHEN 'conv-00' THEN 0 WHEN 'conv-02' THEN 1 ELSE 2 END").run();
+  const route = loadRoute('../src/app/api/conversations/route.ts', db);
+
+  const response = await route.GET(requestFor('http://test.local/api/conversations?character_id=char-a'));
+  const payload = await response.json();
+
+  assert.deepEqual(payload.map(conversation => conversation.id), ['conv-00', 'conv-02', 'conv-01']);
+});
+
+test('/api/conversations POST places the new conversation at the top of the drag order', async () => {
+  const db = createConversationDb({ count: 2 });
+  db.prepare("UPDATE conversations SET sort_order = CASE id WHEN 'conv-00' THEN 3 ELSE 5 END").run();
+  const route = loadRoute('../src/app/api/conversations/route.ts', db);
+
+  const response = await route.POST(jsonRequest({ character_id: 'char-a', title: '新对话' }));
+  const created = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(created.sort_order, 2);
+});
+
+test('/api/conversations/reorder PUT rewrites sort_order and rejects foreign or duplicate ids', async () => {
+  const db = createConversationDb({ count: 3, includeOtherCharacter: true });
+  const route = loadRoute('../src/app/api/conversations/reorder/route.ts', db);
+  const order = () => db.prepare("SELECT id FROM conversations WHERE character_id = 'char-a' ORDER BY sort_order").all().map(row => row.id);
+
+  let response = await route.PUT(jsonRequest({ character_id: 'char-a', ids: ['conv-01', 'conv-02', 'conv-00'] }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(order(), ['conv-01', 'conv-02', 'conv-00']);
+
+  response = await route.PUT(jsonRequest({ character_id: 'char-a', ids: ['conv-00', 'conv-other'] }));
+  assert.equal(response.status, 400);
+  response = await route.PUT(jsonRequest({ character_id: 'char-a', ids: ['conv-00', 'conv-00'] }));
+  assert.equal(response.status, 400);
+  response = await route.PUT(jsonRequest({ ids: ['conv-00'] }));
+  assert.equal(response.status, 400);
+  assert.deepEqual(order(), ['conv-01', 'conv-02', 'conv-00'], 'rejected requests must not touch the order');
+});
+
 test('/api/conversations GET with character_id clamps limit to the maximum page size', async () => {
   const route = loadRoute('../src/app/api/conversations/route.ts', createConversationDb({ count: 125 }));
 
@@ -400,7 +445,8 @@ test('/api/conversations/[id] DELETE reports only files no longer referenced aft
       title TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT '2026-07-11T00:00:00.000Z',
       parent_id TEXT,
-      parent_seq_end INTEGER
+      parent_seq_end INTEGER,
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
@@ -975,6 +1021,121 @@ test('/api/messages older-page GET skips conversation-wide aggregates', async ()
   assert.equal(Object.hasOwn(payload, 'unextractedCount'), false);
   assert.equal(Object.hasOwn(payload, 'totalTokens'), false);
   assert.equal(preparedSql.some(sql => /COUNT\(\*\)|SUM\(token_count\)|isSummary/.test(sql)), false);
+});
+
+test('/api/messages from_seq refresh returns the whole loaded range beyond the 200-row page cap', async () => {
+  const db = createConversationMessagesDb();
+  const insert = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, 'conv-a', 'user', ?, 1, ?, ?, '{}')
+  `);
+  for (let seq = 1; seq <= 260; seq += 1) {
+    insert.run(`msg-${seq}`, `第${seq}条`, new Date(Date.UTC(2026, 6, 11, 0, 0, seq)).toISOString(), seq);
+  }
+  const route = loadRoute('../src/app/api/messages/route.ts', db);
+
+  // 往上翻到 seq 21 后刷新：必须拿回 21..260 共 240 条，而不是被钳成最新 200 条
+  let payload = await (await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-a&from_seq=21',
+  ))).json();
+  assert.equal(payload.messages.length, 240);
+  assert.equal(payload.messages[0].id, 'msg-21');
+  assert.equal(payload.messages.at(-1).id, 'msg-260');
+  assert.equal(payload.oldestSeq, 21);
+  assert.equal(payload.hasMore, true);
+
+  payload = await (await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-a&from_seq=1',
+  ))).json();
+  assert.equal(payload.messages.length, 260);
+  assert.equal(payload.hasMore, false);
+});
+
+test('/api/messages from_seq refresh falls back to a pageable latest page when the loaded range was deleted', async () => {
+  const db = createConversationMessagesDb();
+  const insert = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, 'conv-a', 'user', '', 1, ?, ?, '{}')
+  `);
+  for (let seq = 1; seq <= 240; seq += 1) {
+    insert.run(`msg-${seq}`, new Date(Date.UTC(2026, 6, 11, 0, 0, seq)).toISOString(), seq);
+  }
+  const route = loadRoute('../src/app/api/messages/route.ts', db);
+  const initial = await (await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-a&limit=80',
+  ))).json();
+  db.prepare('DELETE FROM messages WHERE seq >= ?').run(initial.oldestSeq);
+
+  const refreshed = await (await route.GET(requestFor(
+    `http://test.local/api/messages?conversation_id=conv-a&from_seq=${initial.oldestSeq}`,
+  ))).json();
+  assert.equal(refreshed.messages.length, 80);
+  assert.equal(refreshed.messages[0].id, 'msg-81');
+  assert.equal(refreshed.messages.at(-1).id, 'msg-160');
+  assert.equal(refreshed.oldestSeq, 81);
+  assert.equal(refreshed.hasMore, true);
+  assert.equal(refreshed.unextractedCount, 160);
+  assert.equal(refreshed.totalTokens, 160);
+
+  const older = await (await route.GET(requestFor(
+    `http://test.local/api/messages?conversation_id=conv-a&limit=80&before_seq=${refreshed.oldestSeq}`,
+  ))).json();
+  assert.equal(older.messages.length, 80);
+  assert.equal(older.messages[0].id, 'msg-1');
+  assert.equal(older.messages.at(-1).id, 'msg-80');
+  assert.equal(older.hasMore, false);
+  db.close();
+});
+
+test('/api/messages from_seq refresh keeps a truly empty conversation empty', async () => {
+  const db = createConversationMessagesDb();
+  const route = loadRoute('../src/app/api/messages/route.ts', db);
+
+  const payload = await (await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-a&from_seq=1',
+  ))).json();
+  assert.deepEqual(payload.messages, []);
+  assert.equal(payload.hasMore, false);
+  assert.equal(payload.oldestSeq, null);
+  assert.equal(payload.unextractedCount, 0);
+  assert.equal(payload.totalTokens, 0);
+  db.close();
+});
+
+test('/api/messages empty from_seq fallback preserves the linked conversation scope', async () => {
+  const db = createConversationMessagesDb();
+  db.prepare(`
+    INSERT INTO conversations (id, character_id, title, created_at, updated_at, parent_id, parent_seq_end)
+    VALUES ('conv-child', 'char-a', '链式子对话', '2026-07-11T00:01:00.000Z', '2026-07-11T00:01:00.000Z', 'conv-a', 130)
+  `).run();
+  const insert = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, ?, 'user', '', 1, ?, ?, '{}')
+  `);
+  for (let seq = 1; seq <= 160; seq += 1) {
+    insert.run(`parent-${seq}`, 'conv-a', new Date(Date.UTC(2026, 6, 11, 0, 0, seq)).toISOString(), seq);
+  }
+  for (let seq = 131; seq <= 150; seq += 1) {
+    insert.run(`child-${seq}`, 'conv-child', new Date(Date.UTC(2026, 6, 11, 0, 0, seq)).toISOString(), seq);
+  }
+  const route = loadRoute('../src/app/api/messages/route.ts', db);
+  const initial = await (await route.GET(requestFor(
+    'http://test.local/api/messages?conversation_id=conv-child&limit=20',
+  ))).json();
+  assert.equal(initial.oldestSeq, 131);
+  db.prepare("DELETE FROM messages WHERE conversation_id = 'conv-child'").run();
+
+  const payload = await (await route.GET(requestFor(
+    `http://test.local/api/messages?conversation_id=conv-child&from_seq=${initial.oldestSeq}`,
+  ))).json();
+  assert.equal(payload.messages.length, 80);
+  assert.equal(payload.messages[0].id, 'parent-51');
+  assert.equal(payload.messages.at(-1).id, 'parent-130');
+  assert.equal(payload.oldestSeq, 51);
+  assert.equal(payload.hasMore, true);
+  assert.equal(payload.unextractedCount, 130);
+  assert.equal(payload.totalTokens, 130);
+  db.close();
 });
 
 test('/api/messages/search floors fractional limit and offset before SQLite pagination', async () => {

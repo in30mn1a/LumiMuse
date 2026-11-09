@@ -1,5 +1,24 @@
 'use client';
 
+import {
+  DndContext,
+  type DragEndEvent,
+  KeyboardCode,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { Conversation } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatDateTime, formatShortDate } from '@/lib/chat-view-utils';
@@ -9,18 +28,57 @@ import Modal from '@/components/ui/Modal';
 interface ConversationItemProps {
   conversation: Conversation;
   active: boolean;
+  reorderDisabled: boolean;
   onClick: () => void;
 }
 
-function ConversationItem({ conversation, active, onClick }: ConversationItemProps) {
+/** 可拖拽的对话卡片：卡片本体即拖拽手柄（鼠标移动 5px / 触屏长按 220ms 才进入拖拽），轻点仍是切换对话 */
+function ConversationItem({ conversation, active, reorderDisabled, onClick }: ConversationItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: conversation.id, disabled: reorderDisabled });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+    zIndex: isDragging ? 5 : 'auto',
+    position: 'relative',
+    touchAction: 'manipulation',
+  };
+
   return (
-    <button
-      onClick={onClick}
-      className={`w-full rounded-2xl border px-3 py-3 text-left transition-all duration-200 ${
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      role="button"
+      tabIndex={0}
+      onClick={() => {
+        if (isDragging) return;
+        onClick();
+      }}
+      // Enter 保留切换语义；其余按键交给 dnd-kit 的 KeyboardSensor（Space 拿起/放下）
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          if (isDragging) return;
+          e.preventDefault();
+          onClick();
+          return;
+        }
+        listeners?.onKeyDown?.(e);
+      }}
+      className={`w-full select-none rounded-2xl border px-3 py-3 text-left transition-colors duration-200 ${
         active
           ? 'border-accent/25 bg-accent/10'
           : 'border-border-light bg-surface/75 hover:bg-surface'
-      }`}
+      } ${isDragging ? 'cursor-grabbing shadow-lg' : reorderDisabled ? 'cursor-default' : 'cursor-grab'}`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium text-text-primary">{conversation.title}</span>
@@ -30,7 +88,7 @@ function ConversationItem({ conversation, active, onClick }: ConversationItemPro
         <ClockIcon className="h-3.5 w-3.5" />
         {formatDateTime(conversation.updated_at)}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -40,6 +98,9 @@ interface DrawerProps {
   activeConvId: string | null;
   onSelect: (id: string) => void;
   onNewChat?: () => void;
+  /** 拖拽结束：新顺序与拖拽前顺序（失败时用于回滚） */
+  onReorder?: (orderedIds: string[], previousIds: string[]) => void;
+  reorderPending?: boolean;
   onClose: () => void;
 }
 
@@ -47,8 +108,30 @@ interface DrawerProps {
  * 对话切换抽屉（全断点）：
  * <lg 从底部滑出的抽屉；lg+ 居中弹窗（入口是 ChatHeader 的标题与侧栏的「全部 N 个对话」）。
  */
-export function ConversationDrawer({ open, conversations, activeConvId, onSelect, onNewChat, onClose }: DrawerProps) {
+export function ConversationDrawer({ open, conversations, activeConvId, onSelect, onNewChat, onReorder, reorderPending = false, onClose }: DrawerProps) {
   const { t } = useTranslation();
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 6 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+      keyboardCodes: {
+        start: [KeyboardCode.Space],
+        cancel: [KeyboardCode.Esc],
+        end: [KeyboardCode.Space],
+      },
+    }),
+  );
+
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (reorderPending || !over || active.id === over.id || !onReorder) return;
+    const previousIds = conversations.map(c => c.id);
+    const oldIndex = previousIds.indexOf(String(active.id));
+    const newIndex = previousIds.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+    onReorder(arrayMove(previousIds, oldIndex, newIndex), previousIds);
+  };
+
   return (
     <Modal
       open={open}
@@ -89,17 +172,24 @@ export function ConversationDrawer({ open, conversations, activeConvId, onSelect
               {t('chat.newChat')}
             </button>
           )}
-          {conversations.map(c => (
-            <ConversationItem
-              key={c.id}
-              conversation={c}
-              active={activeConvId === c.id}
-              onClick={() => {
-                onSelect(c.id);
-                onClose();
-              }}
-            />
-          ))}
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={conversations.map(c => c.id)} strategy={verticalListSortingStrategy}>
+              <div className="space-y-2">
+                {conversations.map(c => (
+                  <ConversationItem
+                    key={c.id}
+                    conversation={c}
+                    active={activeConvId === c.id}
+                    reorderDisabled={reorderPending || !onReorder}
+                    onClick={() => {
+                      onSelect(c.id);
+                      onClose();
+                    }}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
           {conversations.length === 0 && (
             <div className="rounded-2xl border border-dashed border-border-light px-4 py-8 text-center text-sm text-text-muted">
               {t('chat.noConversationBody')}

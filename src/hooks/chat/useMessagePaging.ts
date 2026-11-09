@@ -3,6 +3,7 @@ import type { Message } from '@/types';
 import { fetchMessagesPage, type MessagesResponse } from '@/lib/chat-stream-client';
 import {
   applyMessagesResponseToState,
+  loadedRangePageOptions,
   readCachedMessages,
   readCachedMessagesAsync,
   uniqueMessagesById,
@@ -213,7 +214,7 @@ export function useMessagePaging({
     const convId = activeConvIdRef.current;
     if (!convId) return;
     // 用 ref 读取最新 messages 长度，避免 callback 引用因 messages 变化而频繁重建
-    const response = await fetchMessagesPage(convId, { limit: Math.max(pageSize, messagesRef.current.length) });
+    const response = await fetchMessagesPage(convId, loadedRangePageOptions(convId, pageSize, messagesRef.current.length));
     setMessagePagingError(null);
     applyMessagesResponse(convId, response);
   }, [activeConvIdRef, applyMessagesResponse, pageSize]);
@@ -223,7 +224,7 @@ export function useMessagePaging({
     const loadedLength = activeConvIdRef.current === conversationIdToRefresh
       ? messagesRef.current.length
       : cached?.messages.length ?? 0;
-    const response = await fetchMessagesPage(conversationIdToRefresh, { limit: Math.max(pageSize, loadedLength) });
+    const response = await fetchMessagesPage(conversationIdToRefresh, loadedRangePageOptions(conversationIdToRefresh, pageSize, loadedLength));
     setMessagePagingError(null);
     applyMessagesResponse(conversationIdToRefresh, response);
   }, [activeConvIdRef, applyMessagesResponse, pageSize]);

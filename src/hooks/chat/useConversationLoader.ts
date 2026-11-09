@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import type { Character, Conversation, Memory } from '@/types';
-import { parseJsonArrayResponse } from '@/lib/http';
+import { expectOkResponse, parseJsonArrayResponse } from '@/lib/http';
 import {
   hasCharacterContext,
   readCharacterContext,
   readCharacterContextAsync,
+  reorderCharacterConversations,
+  sortConversationsByIds,
   touchCharacterConversation,
   writeCharacterContext,
 } from '@/lib/character-context-cache';
@@ -70,11 +72,15 @@ export function useConversationLoader({
   const [activeConvId, setActiveConvId] = useState<string | null>(conversationId);
   const [loadingThread, setLoadingThread] = useState(false);
   const [conversationLoadError, setConversationLoadError] = useState<string | null>(null);
+  const [reorderingConversations, setReorderingConversations] = useState(false);
   /** 当前 React state 已对齐到的角色；用于区分「切入新角色」与「同角色仅 preferred 变化」 */
   const hydratedCharacterIdRef = useRef<string | null>(null);
   const characterRef = useRef<Character | null>(character);
   const loadCharacterStateSeqRef = useRef(0);
   const refreshConversationStateSeqRef = useRef(0);
+  const conversationOrderRevisionRef = useRef(0);
+  const reorderingCharacterIdRef = useRef<string | null>(null);
+  const reorderingSettledRef = useRef<Promise<void> | null>(null);
   const activeConvIdRef = useRef<string | null>(activeConvId);
 
   const selectActiveConvId = useCallback((nextConvId: string | null) => {
@@ -138,6 +144,8 @@ export function useConversationLoader({
     preferredConversationId: string | null,
   ) => {
     const requestSeq = ++loadCharacterStateSeqRef.current;
+    const orderRevision = conversationOrderRevisionRef.current;
+    const startedWhileReordering = reorderingCharacterIdRef.current === characterId;
     const hadCache = hasCharacterContext(characterId);
     // 已有快照或 state 已 hydrate 时不亮整页 loading，避免秒开后被 loading 态盖住
     if (!hadCache && hydratedCharacterIdRef.current !== characterId) {
@@ -152,12 +160,14 @@ export function useConversationLoader({
       ]);
 
       if (loadCharacterStateSeqRef.current !== requestSeq || characterRef.current?.id !== characterId) return;
+      if (startedWhileReordering || conversationOrderRevisionRef.current !== orderRevision) return;
       // 网络期间用户可能已手动切换会话：显式 preferred 优先，其次保留当前选择
       applyCharacterSnapshot(characterId, conversationList, memoryList, preferredConversationId, {
         fallbackActiveId: activeConvIdRef.current,
       });
     } catch (error) {
-      if (loadCharacterStateSeqRef.current === requestSeq && characterRef.current?.id === characterId) {
+      if (loadCharacterStateSeqRef.current === requestSeq && characterRef.current?.id === characterId
+        && !startedWhileReordering && conversationOrderRevisionRef.current === orderRevision) {
         setConversationLoadError(getConversationLoadErrorMessage(error));
       }
     } finally {
@@ -266,36 +276,48 @@ export function useConversationLoader({
     if (!currentCharacter) return;
     const requestSeq = ++refreshConversationStateSeqRef.current;
     const requestedCharacterId = currentCharacter.id;
-    try {
-      const [conversationList, memoryList] = await Promise.all([
-        fetchCharacterConversations(requestedCharacterId),
-        fetch(`/api/memories?character_id=${encodeURIComponent(requestedCharacterId)}`)
-          .then(response => parseJsonArrayResponse<Memory>(response)),
-      ]);
-      if (refreshConversationStateSeqRef.current !== requestSeq || characterRef.current?.id !== requestedCharacterId) return;
-      setConversationLoadError(null);
-      setConversations(conversationList);
-      setMemories(memoryList);
-      writeCharacterContext(requestedCharacterId, {
-        conversations: conversationList,
-        memories: memoryList,
-      });
-      hydratedCharacterIdRef.current = requestedCharacterId;
-
-      if (nextActiveId !== undefined) {
-        selectActiveConvId(nextActiveId && conversationList.some((item: Conversation) => item.id === nextActiveId)
-          ? nextActiveId
-          : conversationList[0]?.id || null);
+    // 显式刷新保留新建/复制后的选择意图；只在确实发生排序写入时等待并重取，旧刷新不抢回优先级。
+    while (refreshConversationStateSeqRef.current === requestSeq && characterRef.current?.id === requestedCharacterId) {
+      if (reorderingCharacterIdRef.current === requestedCharacterId && reorderingSettledRef.current) {
+        await reorderingSettledRef.current;
       }
-    } catch (error) {
-      if (refreshConversationStateSeqRef.current === requestSeq && characterRef.current?.id === requestedCharacterId) {
+      if (refreshConversationStateSeqRef.current !== requestSeq || characterRef.current?.id !== requestedCharacterId) return;
+      if (reorderingCharacterIdRef.current === requestedCharacterId) continue;
+      const orderRevision = conversationOrderRevisionRef.current;
+      try {
+        const [conversationList, memoryList] = await Promise.all([
+          fetchCharacterConversations(requestedCharacterId),
+          fetch(`/api/memories?character_id=${encodeURIComponent(requestedCharacterId)}`)
+            .then(response => parseJsonArrayResponse<Memory>(response)),
+        ]);
+        if (refreshConversationStateSeqRef.current !== requestSeq || characterRef.current?.id !== requestedCharacterId) return;
+        if (conversationOrderRevisionRef.current !== orderRevision) continue;
+        setConversationLoadError(null);
+        setConversations(conversationList);
+        setMemories(memoryList);
+        writeCharacterContext(requestedCharacterId, {
+          conversations: conversationList,
+          memories: memoryList,
+        });
+        hydratedCharacterIdRef.current = requestedCharacterId;
+
+        if (nextActiveId !== undefined) {
+          selectActiveConvId(nextActiveId && conversationList.some((item: Conversation) => item.id === nextActiveId)
+            ? nextActiveId
+            : conversationList[0]?.id || null);
+        }
+        return;
+      } catch (error) {
+        if (refreshConversationStateSeqRef.current !== requestSeq || characterRef.current?.id !== requestedCharacterId) return;
+        if (conversationOrderRevisionRef.current !== orderRevision) continue;
         setConversationLoadError(getConversationLoadErrorMessage(error));
+        return;
       }
     }
   }, [selectActiveConvId]);
 
   /**
-   * 聊天/重生成成功后的轻量更新：只 bump 当前对话的 updated_at 并置顶，
+   * 聊天/重生成成功后的轻量更新：只 bump 当前对话的 updated_at，不改变列表顺序（顺序由主人拖拽决定），
    * 不重拉全部对话列表与 memories（记忆刷新走 pollMemoryTask 完成路径）。
    * 缓存写走 touchCharacterConversation（缓存内部按会话 id 定向修改，天然免疫跨角色错写），
    * 且放在 setState updater 外，保持 updater 纯函数。
@@ -308,22 +330,52 @@ export function useConversationLoader({
     }
     setConversations(prev => {
       const index = prev.findIndex(conversation => conversation.id === conversationIdToTouch);
-      if (index === -1) return prev;
-      const next = { ...prev[index], updated_at: nextUpdatedAt };
-      if (index === 0 && prev[0].updated_at === nextUpdatedAt) return prev;
-      if (index === 0) {
-        const copy = prev.slice();
-        copy[0] = next;
-        return copy;
-      }
-      const rest = prev.slice(0, index).concat(prev.slice(index + 1));
-      return [next, ...rest];
+      if (index === -1 || prev[index].updated_at === nextUpdatedAt) return prev;
+      const copy = prev.slice();
+      copy[index] = { ...prev[index], updated_at: nextUpdatedAt };
+      return copy;
     });
+  }, []);
+
+  /**
+   * 拖拽排序：乐观更新列表与缓存，再持久化；失败回滚到拖拽前的顺序并抛出给调用方提示。
+   */
+  const reorderConversations = useCallback(async (orderedIds: string[], previousIds: string[]) => {
+    const characterId = characterRef.current?.id;
+    if (!characterId || reorderingCharacterIdRef.current !== null) return;
+    // 同步锁住下一次拖拽，并让保存前或保存期间开始的网络快照失效；不改变加载请求的 finally 守卫。
+    reorderingCharacterIdRef.current = characterId;
+    conversationOrderRevisionRef.current += 1;
+    let settleReordering: (() => void) | undefined;
+    reorderingSettledRef.current = new Promise<void>(resolve => { settleReordering = resolve; });
+    setReorderingConversations(true);
+    try {
+      setConversations(prev => sortConversationsByIds(prev, orderedIds));
+      reorderCharacterConversations(characterId, orderedIds);
+      await expectOkResponse(await fetch('/api/conversations/reorder', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ character_id: characterId, ids: orderedIds }),
+      }));
+    } catch (error) {
+      if (characterRef.current?.id === characterId) {
+        setConversations(prev => sortConversationsByIds(prev, previousIds));
+      }
+      reorderCharacterConversations(characterId, previousIds);
+      throw error;
+    } finally {
+      reorderingCharacterIdRef.current = null;
+      reorderingSettledRef.current = null;
+      setReorderingConversations(false);
+      settleReordering?.();
+    }
   }, []);
 
   return {
     conversations,
     setConversations,
+    reorderConversations,
+    reorderingConversations,
     memories,
     setMemories,
     activeConvId,

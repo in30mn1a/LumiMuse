@@ -1,300 +1,117 @@
 <div align="center">
 
-<img src="public/icons/icon-192x192.png" alt="LumiMuse" width="96" height="96" />
+<img src="public/icons/icon-192x192.png" alt="LumiMuse" width="88" height="88" />
 
-# ✨ LumiMuse
+# LumiMuse
 
 **让 TA 慢慢填满你的房间。**
 
-*A quiet, elegant AI companion — built for those who want something that feels real.*
+一个自托管的 AI 角色陪伴应用：角色会记住你们之间的事，<br/>
+还有一位后台管家帮你照看这些记忆。数据只留在你自己的机器上。
 
 <br/>
 
-[![Next.js](https://img.shields.io/badge/Next.js_16-black?style=for-the-badge&logo=next.js)](https://nextjs.org)
-[![React](https://img.shields.io/badge/React_19-61DAFB?style=for-the-badge&logo=react&logoColor=222)](https://react.dev)
-[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![Tailwind](https://img.shields.io/badge/Tailwind_v4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
-[![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org)
-[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-a78bfa?style=for-the-badge)](LICENSE)
+[![CI](https://github.com/in30mn1a/LumiMuse/actions/workflows/ci.yml/badge.svg)](https://github.com/in30mn1a/LumiMuse/actions/workflows/ci.yml)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
+[![React 19](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#docker-部署)
+[![License: MIT](https://img.shields.io/badge/License-MIT-7253d6)](LICENSE)
+
+**中文** · [English](README.en.md)
+
+[快速开始](#快速开始) · [功能](#功能) · [记忆系统](#记忆系统) · [内置 Agent](#内置-agent) · [部署](#docker-部署) · [常见问题](#常见问题)
 
 <br/>
 
-[English](README.en.md) · **中文**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/chat-dark.png" />
+  <img src="assets/screenshots/chat.png" alt="LumiMuse 聊天界面" width="100%" />
+</picture>
 
-<br/>
-
-| 本地运行 | Docker 一键部署 | 数据自持有 |
-|:---:|:---:|:---:|
-| `npm run dev` | `docker compose up` | SQLite + 本地文件 |
+<sub>截图里的角色、对话和记忆都是为演示编写的虚构内容。</sub>
 
 </div>
 
----
+<br/>
 
-## 目录
+## 这是什么
 
-- [项目简介](#项目简介)
-- [为什么要使用 LumiMuse？](#为什么要使用-lumimuse)
-- [项目预览](#项目预览)
-- [功能一览](#功能一览)
-- [功能详情](#功能详情)
-- [技术栈](#技术栈)
-- [快速开始](#快速开始)
-- [首次使用指南](#首次使用指南)
-- [Docker 部署](#docker-部署)
-- [生图配置](#生图配置)
-- [记忆系统](#记忆系统)
-- [数据与隐私](#数据与隐私)
-- [备份与迁移](#备份与迁移)
-- [常见问题](#常见问题)
-- [项目结构](#项目结构)
-- [开发](#开发)
+LumiMuse 适合想和一个角色**长期相处**的人。你写下角色的性格和开场白，接上任意一个兼容 OpenAI 格式的模型，就可以开始聊天。聊得久了，角色会记得你说过的话、你们的约定和一起经历的事。
 
----
+它有三件事做得比较认真：
 
-## 项目简介
+- **记忆**。聊天中自动提取长期记忆，按相关性注入上下文。记忆可以一直增长，不会因为对话变长而被悄悄截掉。
+- **可控**。记忆库、角色卡、历史消息都可以让内置 Agent 帮你检查和整理，但每一处修改都要你点头才会写入，写入后还能撤销。
+- **自持有**。一个 SQLite 文件加三个媒体目录就是全部数据，本机运行或用 Docker 部署到自己的服务器都可以。
 
-LumiMuse 是一个轻量级 AI 角色扮演 / 陪伴系统，带长期记忆、现实时间注入、原生生图、数据导入导出和 Docker 部署支持。
-
-它不是想做成一个什么都塞进去的巨型平台，而是更偏向一个「安静、好看、能长期用」的私人陪伴空间。
-
-你可以创建角色，给 TA 性格、背景、开场白、示例对话和生图标签；也可以让 TA 在聊天中慢慢记住关于你、你们关系和共同经历的细节。数据全部留在本地或你自己的服务器。
-
----
-
-## 为什么要使用 LumiMuse？
-
-### 轻量化 RP，不需要复杂配置也能开始聊
-
-有些 RP 工具很强，但也很重。
-
-预设、世界书、插件、扩展、角色卡、聊天文件、数据库……第一次上手的时候经常像在调一个工程项目。
-
-LumiMuse 的目标不是替代复杂玩法，而是提供一个更轻、更直觉的选择：
-
-1. 创建角色
-2. 填写人设
-3. 配置模型接口
-4. 开始聊天
-5. 让记忆系统慢慢沉淀关系
-
-如果你只是想和一个角色长期相处，而不是每天调半小时配置，LumiMuse 会比较适合。
-
-### 自动记忆：TA 会慢慢记住你们之间的事
-
-LumiMuse 内置长期记忆系统，不只是把聊天记录全塞回上下文。
-
-它会在聊天过程中提取值得长期保留的信息，写入角色的记忆库，例如关系动态、话题历史、偏好习惯、人格特质和重要事件。
-
-下次聊天时，系统会把相关记忆注入上下文，让角色更自然地「想起」过去发生过的事。
-
-### 现实时间注入：角色知道现在是什么时候
-
-LumiMuse 可以把现实时间注入聊天上下文。
-
-角色可以知道现在是白天还是晚上，也能感受到时间经过。比如晚上聊天时自然地说晚安，隔几天回来时意识到你们已经有段时间没见。
-
-对长期陪伴类 RP 来说，时间感很重要。  
-有了时间感，角色才更像是在和你一起生活。
-
-### 原生生图支持，不需要到处切工具
-
-LumiMuse 内置 AI 生图功能，可以直接根据聊天内容或角色设定生成图片。
-
-目前支持：
-
-- Stable Diffusion WebUI
-- NovelAI
-- ComfyUI
-- 自定义图片生成 API
-
-你可以给角色保存外貌、服装、画风等生图标签。聊到某个场景时，可以顺手生成一张图看看。
-
-### 多平台适配：电脑和手机都能用
-
-LumiMuse 做了响应式布局。
-
-桌面端适合长时间聊天、整理角色和记忆；移动端也做了适配，不是单纯把桌面页面硬塞到手机屏幕里。平板横竖屏、iOS 安全区域、字号与字体风格也都有考虑。
-
-### 数据在你自己手里
-
-角色、对话、记忆和生成图片都保存在你的本机或服务器。  
-支持导入导出，方便备份和迁移；也支持 Docker 部署到自己的机器上。
-
----
-
-## 项目预览
+## 界面预览
 
 <table>
   <tr>
-    <td align="center" width="50%">
-      <img src="assets/首页.png" alt="首页" />
-      <br/><sub>首页</sub>
+    <td width="50%" valign="top">
+      <img src="assets/screenshots/agent.png" alt="内置 Agent 的修改提案" />
+      <p align="center"><b>内置 Agent</b><br/><sub>检查记忆库，把修改做成逐条可批准的提案</sub></p>
     </td>
-    <td align="center" width="50%">
-      <img src="assets/对话.png" alt="对话" />
-      <br/><sub>对话</sub>
+    <td width="50%" valign="top">
+      <img src="assets/screenshots/memories.png" alt="记忆管理" />
+      <p align="center"><b>记忆管理</b><br/><sub>按角色查看、搜索、钉选和编辑长期记忆</sub></p>
     </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <img src="assets/编辑角色.png" alt="编辑角色" />
-      <br/><sub>编辑角色</sub>
+    <td width="50%" valign="top">
+      <img src="assets/screenshots/character.png" alt="角色编辑" />
+      <p align="center"><b>角色编辑</b><br/><sub>身份、世界与开场、提示词、模型、生图分页填写</sub></p>
     </td>
-    <td align="center" width="33%">
-      <img src="assets/记忆管理.png" alt="记忆管理" />
-      <br/><sub>记忆管理</sub>
-    </td>
-    <td align="center" width="33%">
-      <img src="assets/设置.png" alt="设置" />
-      <br/><sub>设置</sub>
+    <td width="50%" valign="top">
+      <img src="assets/screenshots/settings.png" alt="设置" />
+      <p align="center"><b>设置</b><br/><sub>接口、生成参数、记忆引擎、外观、生图与维护</sub></p>
     </td>
   </tr>
 </table>
 
----
+<p align="center">
+  <img src="assets/screenshots/mobile-chat.png" alt="手机端聊天" width="260" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/screenshots/mobile-drawer.png" alt="手机端角色抽屉" width="260" />
+  <br/>
+  <sub>手机和平板有单独适配的布局，可以添加到主屏幕当作应用使用</sub>
+</p>
 
-## 功能一览
+## 功能
 
-| | 功能 | 说明 |
-|:---:|:---|:---|
-| 🎭 | **角色系统** | 独立性格、开场白、示例对话、生图标签；每角色独立对话与记忆，支持拖拽排序与 SillyTavern JSON 导入 |
-| 💬 | **聊天体验** | 流式输出、编辑 / 删除 / 多版本重新生成、图片与文本附件、手动总结、现实时间注入 |
-| 🧠 | **长期记忆** | 自动提取、Agent 整理、画像、归档与索引；本地工作记忆 + 向量检索 + 重排 + token 预算装箱 |
-| 🎨 | **AI 生图** | SD WebUI / NovelAI / ComfyUI / 自定义 API，版本历史与图片管理，支持自动生图关键词 |
-| 🔌 | **多供应商** | 多套 API 配置一键切换，聊天输入框可临时切模型 |
-| 🔍 | **搜索导航** | 全局消息搜索、日期搜索、中文包含搜索、结果定位高亮 |
-| 📦 | **导入导出** | 角色 / 记忆 / 对话按需导出，支持轻量备份与完整迁移 |
-| 🧹 | **维护面板** | 孤儿文件检测与清理；删除角色 / 对话时同步清理相关文件 |
-| 📱 | **多端体验** | 响应式布局、iPad 横竖屏适配、iOS 安全区域、字号与字体风格设置 |
-| 🔒 | **访问保护** | 可选访问密码、HMAC 签名 token、常量时间比较、SSRF 防护 |
+| | | |
+|:--|:--|:--|
+| 🎭 | **角色** | 性格、场景、开场白、示例对话、系统提示词和生图标签；可以导入 SillyTavern 角色卡 JSON，也可以让内置 Agent 起草 |
+| 💬 | **聊天** | 流式输出；消息可编辑、删除、重新生成并在多个版本间切换；支持图片和文本附件；长对话可手动总结 |
+| 🧠 | **长期记忆** | 自动提取、分类、去重和取代；可选向量检索与重排；角色画像、归档和修订记录 |
+| 🤖 | **内置 Agent** | 读取角色、对话、记忆和运行日志，排查问题、整理记忆、修改角色卡；所有改动先成为待批准提案 |
+| 🧩 | **提示词预设** | 导入 SillyTavern 预设，按角色设置默认预设，也可以按聊天模型分别绑定 |
+| 🎨 | **AI 生图** | Stable Diffusion WebUI、NovelAI（含 V5）、ComfyUI 和自定义接口；图片保留历史版本，可批量管理和打包下载 |
+| 🔌 | **多接口** | 保存多套接口配置；聊天框里直接切换模型和思考强度，常用模型可以置顶 |
+| 🕰️ | **时间感** | 把现实时间写进上下文，角色知道现在几点，也知道你隔了多久才回来 |
+| 🔍 | **搜索** | 全局搜索消息，支持中文包含匹配和日期搜索，点击结果跳到原消息 |
+| 📦 | **备份** | 按需导出角色、记忆、对话和预设；一个 JSON 文件即可迁移到另一台机器 |
+| 📱 | **多端** | 桌面、平板、手机各有布局；明暗主题；中英文界面；字体和字号可调 |
+| 🔒 | **访问保护** | 可选访问密码、签名会话、登录限流；出站请求有 SSRF（服务端请求伪造）防护 |
 
----
+<details>
+<summary><b>更多聊天细节</b></summary>
 
-## 功能详情
+<br/>
 
-### 🎭 角色系统
+- 对话可以复制，包括「只引用历史、不复制消息」的轻量复制；同一角色下的对话可以拖拽排序
+- 顶栏显示当前上下文的 token 估算，点开能看到系统提示、记忆、历史各占多少
+- 单个对话可以设为「不提取记忆」，试模型、调提示词时不会污染记忆库
+- 思考强度按模型分别记忆，切换模型时自动恢复上次的选择
+- 聊天记录有本地缓存，切换角色和重新打开页面时不用等待重新加载
 
-- 创建、编辑、删除角色
-- 可配置头像、性格、场景、开场白、示例对话与系统提示词
-- 支持生图标签字段，角色画风、外貌与固定元素可随角色保存
-- 每个角色拥有独立对话与记忆，适合维护不同关系线
-- 侧边栏支持拖拽排序
-- 支持导入 SillyTavern 风格角色卡 JSON（仅 JSON，不支持 PNG 内嵌格式）
-
-### 💬 聊天体验
-
-- 流式 / 非流式输出，支持停止生成
-- 消息编辑、删除、重新生成与多版本切换；重新生成会保留旧版本
-- 支持纯文本、图片附件与文本附件
-- 图片附件以多模态内容进入上下文；文本附件拼入上下文
-- 支持复制对话、按对话刷新消息
-- 手动总结上下文，把较长历史压缩为 summary
-- 现实时间注入：角色能感知当前时刻与时间流逝
-- 顶栏展示最近对话，移动端工具栏默认展开，便于快速切换
-
-### 🧠 长期记忆
-
-- 从对话中提取长期记忆，按角色写入记忆库
-- 分类包括关系动态、话题历史、基础信息、偏好习惯、人格特质与重要事件
-- 支持按消息数、时间间隔、关键词三种触发方式，可独立开关
-- 增强记忆引擎：本地工作记忆、memory profile（结构化角色画像）、embedding 向量索引与 reranker 重排
-- 注入按 token 预算装箱（默认 `memory_package_token_budget = 12000`），优先保留高相关、高优先级记忆
-- 记忆管理页支持分页、搜索、分类、排序、编辑、删除与标签管理
-- 单个对话可忽略记忆提取，避免测试对话污染记忆库
-- 内置 Agent 可检查记忆库，提出新增、修正、合并、归档与提取失败修复等建议；每条建议经你批准后才写入，并可撤销
-- AI 归档可将旧记忆压缩为摘要记忆，保留可追溯批次
-- 记忆画像支持初始化、队列处理、手动编辑、版本切换与版本删除
-- 后台任务的接口、模型、思考强度与系统提示词在角色编辑「任务模型」里按角色配置，生图提示词模型可单独指定；总设置只保留后台任务总时限
-- 设置页提供索引状态、重建、补索引、重试失败、停止任务与清空索引
-
-### 🎨 AI 生图
-
-- 支持 Stable Diffusion WebUI、NovelAI、ComfyUI、自定义 API
-- 全局质量标签、负面提示词、尺寸、采样器、步数等常用参数
-- 可根据聊天消息生成图片提示词，也支持自动生图关键词
-- 图片版本历史：重新生成不会直接丢掉旧图
-- 对话内预览、上一张 / 下一张切换、删除当前版本
-- 角色图片管理支持批量删除与版本保留
-- 生成中显示占位图与进度；失败时保留旧图
-
-### 🔌 多供应商配置
-
-- 设置页可保存多套 API 配置（不同服务商、模型、密钥）
-- 聊天输入框可临时切换当前会话模型，方便对比效果
-- 切换供应商不会改动已有消息历史
-
-### 🔍 搜索与导航
-
-- 全局搜索聊天消息，结果分页加载
-- 中文关键词包含搜索，减少分词漏搜
-- 日期搜索，例如 `2026年4月1日`、`2026/4/1`、`2026.4.1`
-- 从搜索结果直接跳转并高亮定位原消息
-
-### 📦 数据导入导出
-
-- 导出角色、记忆、对话记录与消息
-- 按需选择导出内容，支持轻量备份或完整迁移
-- 导入备份文件，适合本地与服务器之间迁移
-- 兼容 SillyTavern 风格角色卡 JSON 常用字段（仅 JSON；character book 等扩展字段不一定完整还原）
-- 数据库使用 SQLite，默认保存在 `data/lumimuse.db`
-
-### 🧹 维护面板
-
-- 设置页可检测孤儿文件（不再被引用的头像、生成图、附件）
-- 检测后可一键清理
-- 删除角色或对话时同步清理对应图片与附件
-
-### 📱 多端体验
-
-- 响应式布局，兼顾桌面、平板与手机
-- iPad / 平板横竖屏布局优化
-- `h-dvh` 适配 iOS Safari 地址栏变化
-- 处理 safe-area，避免输入框被系统手势区遮挡
-- 触屏设备可点击显示 / 隐藏图片与消息操作按钮
-- 设置页支持字体风格（霞鹜文楷 / 系统 / 衬线）与字号（小 / 中 / 大）全局缩放
-- 明暗主题、中英双语界面
-
-### 🔒 访问保护
-
-- 通过 `ACCESS_PASSWORD` 设置访问密码；不设置时透明访问，适合本机使用
-- 公网部署强烈建议设置访问密码
-- 登录后下发 HMAC-SHA256 签名 token；可选 `AUTH_SECRET` 让 token 在多副本部署时通用
-- 密码校验使用常量时间比较
-- 默认不信任 `X-Forwarded-For`；只有可信反向代理会覆盖转发头且应用端口不得绕过代理直连时才设置 `TRUST_PROXY=1`
-- 出站请求（生图、模型列表、总结、对话补全）经过 SSRF 防护
-- 自部署本地 LLM / SD WebUI 时可设置 `ALLOW_LOCAL_NETWORK=1` 显式放开内网地址
-
----
-
-## 技术栈
-
-| 层级 | 技术 |
-|:---:|:---|
-| 应用框架 | Next.js 16（App Router，`output: "standalone"`） |
-| 前端 | React 19 |
-| 语言 | TypeScript（strict） |
-| 样式 | Tailwind CSS v4 |
-| 数据库 | SQLite + better-sqlite3（WAL） |
-| AI 接入 | OpenAI Chat Completions 兼容格式 |
-| 字体 | Quicksand + LXGW WenKai Screen（霞鹜文楷屏幕版） |
-| 容器化 | Docker + Docker Compose |
-
----
+</details>
 
 ## 快速开始
 
-### 环境要求
-
-- Node.js **>= 20.18.1**
-- npm
-- 兼容 OpenAI Chat Completions API 格式的模型服务
-- Docker 部署还需 Docker 与 Docker Compose
-
-CI 会在 Ubuntu（Node **20.18** / **Node 24**）与 Windows（Node **20.18**）上验证；本地建议使用 Node 20.18.1 或更新版本。
-
-### 本地开发
+需要 Node.js **20.18.1 或更新**，以及一个兼容 OpenAI Chat Completions 格式的模型接口。
 
 ```bash
 git clone https://github.com/in30mn1a/LumiMuse.git
@@ -303,390 +120,264 @@ npm install
 npm run dev
 ```
 
-打开 [http://localhost:3000](http://localhost:3000)，进入设置页填写模型接口即可开始。
+打开 <http://localhost:3000>，然后：
 
-数据库会自动创建在 `data/lumimuse.db`。
+1. **设置 → 接口**：填入接口地址、密钥和模型名，可以点「获取模型」拉取列表。
+2. **新建角色**：至少写名字、性格和开场白。
+3. **开始聊天**。记忆会在后台自动提取，稍后可以在「记忆管理」里看到。
 
-### 本地生产启动
+数据库会自动创建在 `data/lumimuse.db`，不需要额外初始化。Windows 上装好依赖后也可以直接双击 `Start.bat`。
 
-```bash
-npm run build
-npm run start:local
+想用 Docker 的话，跳到 [Docker 部署](#docker-部署)。
+
+## 记忆系统
+
+设计原则是**无限存储，有限激活**：记忆库可以一直增长，每一轮聊天只把相关的那部分放进上下文。
+
+```mermaid
+flowchart LR
+    A[对话] --> B[提取<br/>候选记忆]
+    B --> C[判定<br/>新增 / 合并 / 取代]
+    C --> D[(记忆库)]
+    D --> E[召回<br/>优先级 + 向量 + 关键词]
+    E --> F[重排与分层]
+    F --> G[注入上下文]
+    G --> A
 ```
 
-| 命令 | 说明 |
-|:---|:---|
-| `npm run start:local` | 使用 `next start`，适合在源码工作区检查生产构建 |
-| `npm start` / `npm run start:standalone` | 运行 `.next/standalone/server.js`；Docker 镜像会把该目录复制为容器工作目录并执行 `node server.js`。该目录是纯应用包，不含工作区的 `data/` 与用户媒体，直接运行会得到一个空实例 |
+**提取。** 聊天达到触发条件（消息数、时间间隔或关键词）后，后台任务从对话里整理出值得长期保留的内容。提取分两步：先抽出候选条目，再拿每条候选去找语义相近的旧记忆，判断是新增、合并还是取代。这样「迷上了做甜点」能找到并取代「不爱吃甜」，不会让两条矛盾的记忆并存。
 
-### Windows 快速启动
+**注入。** 每个角色可以单独选择注入方式：
 
-项目根目录提供 `Start.bat`。已安装依赖后可双击启动。
+| 模式 | 行为 |
+|:--|:--|
+| `full`（默认） | 注入全部活跃记忆，不设上限 |
+| `local` | 本地关键词召回，按预算装箱 |
+| `vector` | 向量语义召回，需要配置 Embedding 接口 |
+| `hybrid` | 向量与关键词召回取并集，可选重排 |
 
----
+非 `full` 模式下，记忆按「钉选与高重要度 → 承诺 → 偏好 → 关系事件 → 本轮回忆」分层装箱，预算默认 12000 token，上限由你自己决定，应用不做钳制。
 
-## 首次使用指南
+**其余部件：**
 
-### 1️⃣ 配置模型接口
+- **角色画像**：一份结构化摘要，记录关系状态、近期剧情、情绪基调和未完成的事，支持手动编辑和版本回滚。
+- **归档**：把一批旧记忆压缩成摘要记忆，原条目保留可追溯，可以撤销。
+- **按角色配置后台模型**：提取、画像、总结、归档和生图提示词可以用和聊天不同的接口、模型、思考强度和系统提示词。
+- **失败不阻塞**：向量检索、重排或后台任务出错时自动回退，聊天不受影响；失败的任务会留下记录，可以交给 Agent 处理。
 
-进入设置页，填写：
+## 内置 Agent
 
-| 字段 | 说明 |
-|:---|:---|
-| `API Base` | 接口地址，例如 `https://api.openai.com/v1`，或中转 / 本地模型地址 |
-| `API Key` | 模型服务密钥 |
-| `Model` | 模型名称 |
-| `Temperature` | 越高越发散，越低越稳定 |
-| `Max Tokens` | 单次回复最多生成的 token 数 |
-| `Context Window` | 模型大致可接收的上下文 token 上限 |
+Agent 是住在 `/agent` 页面的后台管家。它不扮演任何角色，工作是帮你照看数据。
 
-可尝试拉取模型列表；若服务商不支持，也可手动输入模型名。
+**它能读**：角色卡、对话与消息、记忆及其来源、角色画像、后台任务状态和运行日志。
 
-### 2️⃣ 创建角色
+**它能提议**，但不能直接改：
 
-建议至少填写：
+| 提案类型 | 内容 |
+|:--|:--|
+| 记忆 | 新增、修改、退场、合并、归档，修复提取失败的记录，报告互相矛盾的条目 |
+| 角色卡 | 修改现有角色的文本设定，或起草一张新角色卡 |
+| 历史消息 | 修正某条消息的正文，不增删消息、不动附件 |
 
-- **名称** — 角色显示名
-- **开场白** — 新对话的第一句话
-- **性格 / 场景** — 稳定人设
-- **系统提示词** — 更明确地告诉 AI 如何扮演
-- **生图标签** — 若使用生图，建议写入外貌与画风
+每一项提案都附带理由、把握程度和原对话依据，修改处以差异对比显示。你可以逐项勾选批准、整份拒绝并说明原因。批准后的改动会记入修订历史，可以撤销；如果目标在批准后又被改动过，撤销会被拒绝并告诉你原因。
 
-### 3️⃣ 开始对话
+Agent 有自己的指令文档和长期笔记，可以在页面的设置抽屉里编辑和恢复历史版本。它使用的接口和模型独立配置，也可以沿用主聊天接口。长会话会自动压缩上下文，后台运行的任务可以随时停止。
 
-选择角色后即可创建对话：
+> Agent 与角色聊天完全隔离：它的存在不会改变发给聊天模型的任何内容。
 
-- 发送文字
-- 上传图片（需视觉模型）
-- 上传文本附件作为上下文
-- 对不满意的回复重新生成，并在版本间切换
-- 长对话中手动总结上下文
+## AI 生图
 
-### 4️⃣ 管理记忆
+在 **设置 → 生图与维护** 里开启，支持四种后端：
 
-进入记忆管理页，定期检查并整理：
+| 后端 | 说明 |
+|:--|:--|
+| Stable Diffusion WebUI | 默认 `http://127.0.0.1:7860`，需要 WebUI 开启 API |
+| NovelAI | 需要 API Key；支持 Diffusion V5，此时提示词改用自然语言加角色栏写法 |
+| ComfyUI | 默认 `http://127.0.0.1:8188`，需要提供工作流 JSON |
+| 自定义接口 | 兼容 OpenAI 图片接口格式的服务 |
 
-- 删除错误或不想保留的记忆
-- 编辑描述不准确的记忆
-- 添加标签，方便搜索
-- 按分类或关键词筛选
+角色可以保存自己的外貌和画风标签。聊天模型可以在回复末尾顺带产出生图提示词，点一下就能出图，不需要再单独请求一次。重新生成的图片会保留旧版本，在对话里可以前后翻看。
 
----
+> LumiMuse 跑在 Docker 里、生图服务跑在宿主机时，`127.0.0.1` 指的是容器自己。请改用宿主机的局域网地址，并设置 `ALLOW_LOCAL_NETWORK=1`。
 
 ## Docker 部署
 
-### 1. 准备环境变量
-
 ```bash
 cp .env.local.example .env.local
-```
-
-编辑 `.env.local`：
-
-```env
-# 访问密码（部署到公网时强烈建议设置）
-ACCESS_PASSWORD=your_password_here
-
-# 可选：HMAC token 签名密钥（默认从 ACCESS_PASSWORD 派生）
-# 多副本部署或希望 cookie 跨重启不失效时建议显式设置
-# AUTH_SECRET=use_a_long_random_string_here
-
-# 可选：仅在可信反向代理覆盖 X-Forwarded-For 时启用
-# 应用端口不得绕过可信代理直接暴露到公网
-# TRUST_PROXY=1
-
-# 可选：多级代理时设置可信 hop 数（默认 1）
-# TRUST_PROXY_HOPS=2
-
-# 可选：自部署本地 LLM / SD WebUI 时显式允许内网地址
-# ALLOW_LOCAL_NETWORK=1
-```
-
-> ⚠️ 不设置 `ACCESS_PASSWORD` 时不会要求登录，只建议本机或可信局域网使用。生产 Docker 启动会 fail-fast 拒绝空密码或 `your_password_here` 这类占位值。
-
-`docker-compose.yml` 默认通过 `env_file` 读取 `.env.local`。若使用其他文件：
-
-```bash
-LUMIMUSE_ENV_FILE=.env.production docker compose up -d --build
-```
-
-### 2. 启动服务
-
-```bash
+# 编辑 .env.local，至少设置 ACCESS_PASSWORD
 docker compose up -d --build
 ```
 
-启动后打开 [http://localhost:3000](http://localhost:3000)
+启动后访问 <http://localhost:3000>。生产模式下容器会拒绝空密码和示例占位密码，启动失败时先看 `docker compose logs lumimuse`。
 
-### 3. 持久化数据
+### 环境变量
 
-| 宿主机目录 | 容器目录 | 用途 |
-|:---|:---|:---|
+| 变量 | 说明 |
+|:--|:--|
+| `ACCESS_PASSWORD` | 访问密码。不设置则无需登录，只适合本机使用 |
+| `AUTH_SECRET` | 会话签名密钥。不设置时由密码派生，改密码会让所有会话失效 |
+| `ALLOW_LOCAL_NETWORK` | 设为 `1` 允许访问内网地址，接入本机的模型或生图服务时需要 |
+| `TRUST_PROXY` | 设为 `1` 信任反向代理传来的客户端 IP。只在代理会覆盖 `X-Forwarded-For` 时开启，且应用端口不得绕过代理直连 |
+| `TRUST_PROXY_HOPS` | 多级代理时的可信层数，默认 `1` |
+| `LUMIMUSE_ENV_FILE` | 让 Compose 读取其他环境文件，默认 `.env.local` |
+
+### 数据目录
+
+| 宿主机 | 容器 | 内容 |
+|:--|:--|:--|
 | `./data` | `/app/data` | SQLite 数据库 |
-| `./public/generated` | `/app/public/generated` | 生成图片 |
 | `./public/avatars` | `/app/public/avatars` | 角色头像 |
+| `./public/generated` | `/app/public/generated` | 生成的图片 |
 | `./public/attachments` | `/app/public/attachments` | 对话附件 |
 
-容器以非 root 用户 **UID/GID 1001** 启动。Linux bind mount 时请先执行：
+容器以非 root 用户（UID/GID **1001**）运行。Linux 上首次启动前需要把目录交给它：
 
 ```bash
 sudo chown -R 1001:1001 data public/generated public/avatars public/attachments
 ```
 
-Windows / macOS 的 Docker Desktop 通常无需手动改权限。
-
-### 4. 更新版本
+### 更新与健康检查
 
 ```bash
 git pull
 docker compose up -d --build
 ```
 
-更新前建议先导出备份，或手动备份 `data/` 与 `public/{generated,avatars,attachments}/`。
-
-注意 SQLite 开启了 WAL 模式：应用运行中直接 `cp` 主 `.db` 文件可能得到撕裂副本（缺少 `-wal` 文件中未 checkpoint 的写入，恢复时丢最近数据）。运行中备份请使用 `sqlite3 data/lumimuse.db "VACUUM INTO 'backup.db'"`（SQLite 在线备份），或者先停容器再拷贝整个 `data/` 目录（含 `-wal` / `-shm` 文件）。
-
-**健康检查**
-
-| 端点 | 含义 |
-|:---|:---|
-| `/api/health` | 进程存活 |
-| `/api/health?ready=1` | 存活 + SQLite 与四个持久化目录可写 |
-
-CI 镜像会把完整 commit SHA 写入健康响应的 `build` 字段；本地 Compose 默认 `local`。自建镜像可设置 `LUMIMUSE_BUILD_SHA=$(git rev-parse HEAD)`。
-
-若容器反复不就绪，先看 `docker compose logs lumimuse`，再检查 UID/GID 1001 权限、磁盘空间与挂载目录。
-
----
-
-## 生图配置
-
-进入设置页开启生图功能后，可选择不同引擎。
-
-### Stable Diffusion WebUI
-
-- 默认地址：`http://127.0.0.1:7860`
-- 需要 WebUI 开启 API
-- 可设置模型、采样器、步数、CFG Scale、宽高与负面提示词
-
-> ⚠️ LumiMuse 在 Docker 中、SD WebUI 在宿主机时，`127.0.0.1` 指向容器内部。请改用宿主机局域网 IP。
-
-### NovelAI
-
-- 需要 NovelAI API Key
-- 可配置模型、采样器、噪声调度、步数、scale、尺寸、负面提示词与 artist tags
-- 支持 NovelAI Diffusion V5 Full / Curated；切到 V5 后，聊天内联提示词与 `/api/image-gen/prompt` 会改用自然语言 + 角色栏写法，不再只生成 Danbooru tag 串
-
-### ComfyUI
-
-- 默认地址：`http://127.0.0.1:8188`
-- 需要填写工作流 JSON
-- 请确保提示词与输出节点与项目预期兼容
-
-### 自定义 API
-
-- 适合 OpenAI DALL·E 格式或其他兼容接口
-- 填写接口地址、可选 API Key、模型名与图片尺寸
-
----
-
-## 记忆系统
-
-LumiMuse 的记忆不是简单把所有聊天塞回上下文，而是：
-
-```text
-提取 → 管理 / 整理 / 归档 → 检索 → 装箱注入
-```
-
-1. **提取** — 触发条件满足后，后台任务从对话中总结值得长期保留的内容
-2. **管理** — 记忆进入角色记忆库，可手动编辑、删除、打标签；也可交给 Agent 整理，或 AI 归档
-3. **检索** — 结合优先级、关键词、可选向量检索与重排，选出相关记忆
-4. **注入** — 按 token 预算装箱后放入 system prompt，让角色「想起」这些内容
-
-**可配置项包括：**
-
-- 是否启用记忆注入
-- 按消息数 / 时间 / 关键词触发提取
-- 增强记忆引擎开关与检索相关参数
-- `memory_package_token_budget`：每次聊天注入记忆包的 token 预算（默认 12000）
-- 后台任务总时限（后台模型、接口、思考强度与系统提示词在角色编辑里配置）
-- 单个对话是否忽略提取
-
-若某次对话只是测试模型或调提示词，可设为忽略记忆，避免污染记忆库。
-
-> 设计理念：**无限存储，有限激活**。底层记忆可长期增长；每轮只注入相关、排序后的一组。
-
----
-
-## 数据与隐私
-
-核心数据保存在你自己的本机或服务器：
-
-| 路径 | 内容 |
-|:---|:---|
-| `data/lumimuse.db` | SQLite 数据库 |
-| `public/generated/` | 生成图片 |
-| `public/avatars/` | 角色头像 |
-| `public/attachments/` | 对话附件 |
-
-应用本身不会把角色、对话或记忆上传到 LumiMuse 作者服务器。实际外发请求主要来自你配置的模型接口与生图接口。
-
-公网部署时请务必：
-
-- 设置 `ACCESS_PASSWORD`（不要用空值或示例占位值）
-- 使用 HTTPS，建议放在反向代理后面
-- 只有可信反向代理会覆盖客户端转发头且应用端口不得绕过代理直连时，才设置 `TRUST_PROXY=1`；多级代理用 `TRUST_PROXY_HOPS` 配置可信 hop 数
-- 定期备份 `data/` 与 `public/{generated,avatars,attachments}/`
-- 不要把 `.env.local`、数据库或个人备份提交到公开仓库
-
----
+数据库结构会在启动时自动升级。`/api/health` 返回进程存活状态，`/api/health?ready=1` 额外检查数据库和四个目录是否可写。健康响应里的 `build` 字段是构建时写入的 commit SHA，本地 Compose 默认为 `local`，自建镜像可以传入 `LUMIMUSE_BUILD_SHA=$(git rev-parse HEAD)`。
 
 ## 备份与迁移
 
-**推荐：应用内导出 / 导入**
+**应用内导出**是最省心的方式：在角色编辑页的「更多」菜单里选择要带走的内容（角色、记忆、对话、画像等），得到一个 JSON 文件，在新环境导入即可。角色用到的提示词预设会一并带上。
 
-1. 在旧环境选择需要导出的内容（角色、记忆、对话等）
-2. 下载备份文件
-3. 在新环境导入
-4. 检查角色、对话、记忆是否符合预期
+**直接备份文件**时注意数据库开启了 WAL（预写日志）模式，运行中只复制 `.db` 文件会丢掉最近的写入。请用 SQLite 的在线备份：
 
-v3 备份会携带提示词预设、全部条目、角色默认选择和按模型绑定；单角色备份携带该角色引用的预设，全量备份携带全部预设。导入时为预设创建新 ID，不覆盖目标环境已有预设。请升级目标应用后再导入 v3 备份，旧版本会拒绝不支持的文件版本。
-
-旧版备份仍可导入；若备份只含预设 ID，导入会复用目标环境存在的同 ID 预设。目标环境也缺少该预设时，会明确告警且不恢复无效选择，需要从源环境重新导出完整备份来保留原有角色指令。
-
-**也可以直接备份目录：**
-
-```text
-data/
-public/generated/
-public/avatars/
-public/attachments/
+```bash
+sqlite3 data/lumimuse.db "VACUUM INTO 'backup.db'"
 ```
 
-若应用仍在运行，不要只 `cp` 主数据库文件：SQLite 处于 WAL 模式，最近写入可能还在 `data/lumimuse.db-wal` 里尚未合并进主文件，只拷 `.db` 会丢这部分数据。运行中备份请改用 `sqlite3 data/lumimuse.db "VACUUM INTO 'backup.db'"`（SQLite 在线备份），或先停容器再拷贝整个 `data/` 目录（连同 `-wal` / `-shm` 文件）。
+或者先停掉应用，再复制整个 `data/` 目录和三个媒体目录。
 
-数据库迁移会写入 SQLite `user_version`。降级到旧版前必须先停止应用并完整备份上述目录。不要靠手工降低 `user_version` 回滚；应恢复与旧版匹配的整份数据库和文件备份。
+数据库迁移会写入 SQLite 的 `user_version`。降级到旧版本前请先停止应用并做完整备份，再用与旧版匹配的备份恢复；不要靠手动调低 `user_version` 来回滚。
 
----
+## 数据与隐私
+
+- 角色、对话、记忆和图片都保存在你的机器上，应用不会把它们发往任何作者控制的服务器。
+- 向外发出的请求只有你自己配置的模型接口、Embedding 接口和生图接口。
+- 接口密钥在返回前端时会被掩码替换。
+- 部署到公网时，请设置访问密码、使用 HTTPS，并定期备份。
 
 ## 常见问题
 
 <details>
-<summary><strong>为什么打开后不能聊天？</strong></summary>
+<summary><b>可以接入哪些模型？</b></summary>
 
 <br/>
 
-通常是模型接口没有配置好。请检查设置页中的 `API Base`、`API Key` 和 `Model`，并确认服务支持 OpenAI Chat Completions API 格式。
+任何兼容 OpenAI Chat Completions 格式的服务都可以，包括各家官方接口、中转服务和本地模型网关。不同模型对图片输入、思考强度和上下文长度的支持有差异。
 
 </details>
 
 <details>
-<summary><strong>为什么模型列表拉取失败？</strong></summary>
+<summary><b>模型列表拉取失败怎么办？</b></summary>
 
 <br/>
 
-有些服务商不提供模型列表接口，或路径与 OpenAI 不完全一致。可手动填写模型名称。
+有些服务不提供模型列表接口，直接手动填写模型名即可。如果接口在本机或内网，需要设置 `ALLOW_LOCAL_NETWORK=1`。
 
 </details>
 
 <details>
-<summary><strong>为什么 Docker 里访问不到本机的生图服务？</strong></summary>
+<summary><b>为什么记忆没有立刻出现？</b></summary>
 
 <br/>
 
-容器里的 `127.0.0.1` 指容器自己，不是宿主机。请改用宿主机局域网 IP，或配置 Docker 网络中可访问的地址。需要访问内网服务时，设置 `ALLOW_LOCAL_NETWORK=1`。
+记忆提取是后台任务，满足触发条件后才会运行。聊天页顶栏会显示还有多少条消息等待提取。
 
 </details>
 
 <details>
-<summary><strong>为什么记忆没有立刻出现？</strong></summary>
+<summary><b>记忆越来越多，会不会把上下文撑爆？</b></summary>
 
 <br/>
 
-记忆提取是后台任务，会在触发条件满足后执行。可检查触发设置，或稍后再刷新记忆管理页。
+默认的 `full` 模式会注入全部活跃记忆，这是有意的选择：角色表现优先。记忆很多时，可以给角色换成 `hybrid` 或 `vector` 模式按相关性召回，或者让 Agent 帮你合并、归档旧记忆。
 
 </details>
 
 <details>
-<summary><strong>为什么中文搜索有些结果和英文不一样？</strong></summary>
+<summary><b>可以导入 SillyTavern 的角色卡和预设吗？</b></summary>
 
 <br/>
 
-中文没有天然空格分词，项目对中文关键词做了包含搜索兼容。复杂关键词建议尝试更短的词。
+可以导入 JSON 格式的角色卡和提示词预设。嵌在 PNG 图片里的角色卡暂不支持，世界书等扩展字段不一定完整还原。预设导入后会给出一份兼容说明。
 
 </details>
 
 <details>
-<summary><strong>可以接入哪些模型？</strong></summary>
+<summary><b>直接运行 <code>.next/standalone</code> 为什么是空的？</b></summary>
 
 <br/>
 
-只要服务兼容 OpenAI Chat Completions API 格式，理论上都可以接入，例如 OpenAI、DeepSeek、各类中转服务、本地模型网关等。不同模型对图片、多模态、JSON 模式和上下文长度的支持会有差异。
+`npm start`（即 `npm run start:standalone`）运行的是 `.next/standalone/server.js` 这份独立打包的应用，Docker 镜像里执行的 `node server.js` 就是它。它在自己的目录下读写 `data/` 和媒体文件，不包含工作区里的数据。想在源码目录检查生产构建，用 `npm run start:local`。
 
 </details>
+
+## 开发
+
+```bash
+npm run dev          # 开发服务器（Turbopack）
+npm run lint         # ESLint
+npm test             # 单元测试（Node 内置 test runner，数据库用内存实例）
+npm run regression   # 回归脚本
+npm run build        # 生产构建
+```
+
+提交前请跑完整的验证序列，与 CI 一致：
+
+```bash
+npm run lint && npm test && npm run regression && npm run build
+```
+
+CI 在 Ubuntu（Node 20.18 / Node 24）和 Windows（Node 20.18）上运行，并构建 Docker 镜像做冒烟测试。
+
+`package.json` 目前未配置 PostCSS override，PostCSS 的版本由 Next.js 和锁文件决定。升级 Next 之后可以用 `npm explain postcss` 查看实际依赖树，用 `npm prune --dry-run` 核对依赖清理计划。
 
 <details>
-<summary><strong>字号 / 字体在哪里改？</strong></summary>
+<summary><b>技术栈与目录结构</b></summary>
 
 <br/>
 
-设置页可切换字体风格（霞鹜文楷 / 系统 / 衬线）与字号（小 / 中 / 大）。字号通过根元素 `font-size` 缩放全局 rem 体系。
-
-</details>
-
----
-
-## 项目结构
+| 层 | 技术 |
+|:--|:--|
+| 框架 | Next.js 16（App Router，`output: "standalone"`） |
+| 前端 | React 19 · Tailwind CSS v4 |
+| 语言 | TypeScript（strict） |
+| 数据 | SQLite · better-sqlite3（WAL） |
+| 校验 | Zod |
+| 字体 | Quicksand · 霞鹜文楷屏幕版 |
 
 ```text
 LumiMuse/
 ├─ src/
-│  ├─ app/                 # 页面与 API 路由（App Router）
-│  ├─ components/          # 聊天、侧边栏、搜索、记忆、设置等 UI
-│  ├─ hooks/               # 前端自定义 Hook
-│  ├─ lib/                 # 数据库、AI 请求、记忆、鉴权、国际化等核心逻辑
-│  └─ types/               # TypeScript 类型定义
-├─ public/
-│  ├─ avatars/             # 角色头像
-│  ├─ generated/           # 生成图片
-│  └─ attachments/         # 对话附件
-├─ data/                   # SQLite 数据库目录
-├─ assets/                 # README 预览图
-├─ tests/                  # Node 测试（.cjs）
+│  ├─ app/            页面与 API 路由
+│  ├─ components/     聊天、侧边栏、记忆、Agent、设置等界面
+│  ├─ lib/            数据库、模型请求、记忆引擎、Agent、鉴权
+│  └─ types/          领域类型
+├─ public/            图标、字体与用户媒体目录
+├─ data/              SQLite 数据库（运行时生成）
+├─ tests/             测试
+├─ scripts/           回归与评测脚本
 ├─ Dockerfile
-├─ docker-compose.yml
-├─ Start.bat               # Windows 本地快捷启动
-├─ README.md
-└─ README.en.md
+└─ docker-compose.yml
 ```
 
----
+</details>
 
-## 开发
-
-`Start.bat` 是 Windows 本地开发快捷入口，不是生产服务管理器。
-
-提交或部署前请跑与 CI 一致的验证序列：
-
-```bash
-npm run lint
-npm test
-npm run regression
-npm run build
-```
-
-当前 `package.json` 未配置 PostCSS override；PostCSS 的传递依赖版本由 Next.js 与锁文件决定。升级 Next 后可用 `npm explain postcss` 检查实际依赖树，并用 `npm prune --dry-run` 核对依赖清理计划。
-
----
-
-<div align="center">
-
-<br/>
-
-**LumiMuse** — 让 TA 慢慢填满你的房间。
-
-<br/>
+## 许可
 
 [MIT](LICENSE) © 2026 [in30mn1a](https://github.com/in30mn1a)
 
+<div align="center">
+<br/>
+<sub>LumiMuse — 让 TA 慢慢填满你的房间。</sub>
 </div>

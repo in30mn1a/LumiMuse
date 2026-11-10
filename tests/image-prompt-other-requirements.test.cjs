@@ -6,6 +6,8 @@ const { registerTsLoader } = require('./helpers/register-ts-loader.cjs');
 
 registerTsLoader();
 
+const { IMAGE_PROMPT_POV_POLICY } = require('../src/lib/image-prompt-instructions.ts');
+
 async function capturePromptRequest(style, requirements) {
   const db = new Database(':memory:');
   db.exec(`
@@ -110,6 +112,22 @@ test('standalone generation keeps the existing request identical when character 
     const original = await capturePromptRequest(style);
     for (const empty of ['', ' \n\t ']) {
       assert.deepEqual(await capturePromptRequest(style, empty), original);
+    }
+  }
+});
+
+test('standalone generation permits ordinary user POV and requires user participation for sexual POV', async () => {
+  for (const style of ['danbooru', 'nai-v5']) {
+    const messages = await capturePromptRequest(style);
+    const system = messages.find(message => message.role === 'system').content;
+    assert.equal(system.split(IMAGE_PROMPT_POV_POLICY).length - 1, 1);
+    assert.match(IMAGE_PROMPT_POV_POLICY, /普通互动（对视、递东西、牵手、拥抱、亲吻等）可以使用 POV/);
+    assert.match(IMAGE_PROMPT_POV_POLICY, /只有用户实际参与才允许使用 POV/);
+    assert.match(IMAGE_PROMPT_POV_POLICY, /镜头就是用户的眼睛，只画用户亲眼看见的内容/);
+    assert.match(IMAGE_PROMPT_POV_POLICY, /禁止任何其他角色或叙述者的第一人称视角/);
+    if (style === 'nai-v5') {
+      assert.match(system, /POV，一个角色栏：/);
+      assert.match(system, /the viewer's hand reaches in/);
     }
   }
 });

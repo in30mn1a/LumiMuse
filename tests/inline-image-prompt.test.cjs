@@ -7,8 +7,17 @@ registerTsLoader();
 
 const modulePath = path.resolve(__dirname, '../src/lib/inline-image-prompt.ts');
 const { buildInlinePromptInstruction, extractInlinePrompt, stripInlinePrompt } = require(modulePath);
+const { IMAGE_PROMPT_POV_POLICY } = require('../src/lib/image-prompt-instructions.ts');
 
-test('inline image prompt keeps non-intimate scenes user-free without forcing a solo scene', () => {
+test('all inline image styles use the same POV policy', () => {
+  for (const style of ['danbooru', 'nai-v5']) {
+    const instruction = buildInlinePromptInstruction('silver hair', 'black hair', style);
+    assert.equal(instruction.split(IMAGE_PROMPT_POV_POLICY).length - 1, 1);
+    assert.doesNotMatch(instruction, /可以在亲密互动时适当使用\s*POV/);
+  }
+});
+
+test('inline image prompt makes full user tags conditional on third-person presence', () => {
   const instruction = buildInlinePromptInstruction(
     '1girl, silver hair, blue eyes',
     '1boy, black hair, glasses',
@@ -16,12 +25,22 @@ test('inline image prompt keeps non-intimate scenes user-free without forcing a 
 
   assert.match(instruction, /\[IMG\]/);
   assert.match(instruction, /不算跳出角色/);
-  assert.match(instruction, /不是角色与用户的亲密互动/);
-  assert.match(instruction, /不得包含任何用户外貌标签/);
-  assert.match(instruction, /只包含角色的单人\/多人场景/);
-  assert.doesNotMatch(instruction, /只包含角色的单人场景/);
-  assert.match(instruction, /亲密互动.*用户外貌标签：1boy, black hair, glasses/);
+  assert.match(instruction, /仅当用户以第三人称完整出场时，需包含用户外貌标签：1boy, black hair, glasses/);
+  assert.match(instruction, /POV 时用户是镜头.*只能从用户外貌标签中选取画面内可见部位的特征（如 the viewer's hands）/);
+  assert.match(instruction, /用户未出场时不得包含任何用户外貌标签/);
   assert.match(instruction, /固定外貌标签：1girl, silver hair, blue eyes/);
+});
+
+test('both inline image styles exclude the full user slot in POV', () => {
+  for (const style of ['danbooru', 'nai-v5']) {
+    const instruction = buildInlinePromptInstruction(
+      '1girl, silver hair',
+      '1boy, black hair, glasses',
+      style,
+    );
+    assert.match(instruction, /仅当用户以第三人称完整出场.*用户外貌标签：1boy, black hair, glasses/);
+    assert.match(instruction, /POV 时用户是镜头.*the viewer's hands/);
+  }
 });
 
 test('inline image requirements preserve multiline content and empty values keep the old instruction', () => {

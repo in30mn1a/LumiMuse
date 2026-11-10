@@ -1,5 +1,8 @@
 import type { ImagePromptStyle } from '@/lib/nai-image';
 
+export const IMAGE_PROMPT_POV_POLICY =
+  '默认第三人称视角；普通互动（对视、递东西、牵手、拥抱、亲吻等）可以使用 POV；涉及性行为时，只有用户实际参与才允许使用 POV，用户仅旁观、用户未参与的角色自慰或其他角色之间的性行为一律使用第三人称；任何 POV 都必须是用户本人的第一人称，镜头就是用户的眼睛，只画用户亲眼看见的内容，禁止任何其他角色或叙述者的第一人称视角';
+
 /**
  * 气泡 / 专用生图提示词的 LLM 指令。
  * danbooru：V3/V4/SD/Comfy 用逗号 tag 串。
@@ -22,7 +25,7 @@ export const DANBOORU_PROMPT_GENERATION_SYSTEM = `# 核心功能
 
 ### 构图
 - 画幅区域：full body / upper body / lower body / bust shot
-- 视角：front view / from above / from below / from behind；可以在亲密互动时适当使用 POV 视角（如 pov / first-person view / viewer perspective）
+- 视角：front view / from above / from below / from behind；用户视角可用 pov / first-person view / viewer perspective，使用范围遵守「生成限制」
 - 角度：cinematic angle / dutch angle / dynamic angle
 - 焦点：face focus / ass focus / chest focus
 - 其他：depth of field / bokeh / wide-angle
@@ -80,7 +83,7 @@ export const DANBOORU_PROMPT_GENERATION_SYSTEM = `# 核心功能
 - 用户未出场（仅角色独白/旁白/单人场景）：不包含用户外貌标签
 
 # 生成限制
-- 默认第三人称视角；可以在亲密互动时适当使用 POV 视角
+${IMAGE_PROMPT_POV_POLICY}
 - 禁止矛盾 tag（如 facing viewer + buttocks visible）
 - 每张图为单一静态瞬间，不描述连续动作
 - SFW场景不要出现男性角色 tag，除非用户外貌标签中明确标注了用户为男性（如 1boy），或男女之间的亲密互动如kiss,hugging；对话明确要求 NSFW 互动时允许男性角色 tag
@@ -113,7 +116,7 @@ export const NAI_V5_PROMPT_GENERATION_SYSTEM = `# 核心功能
 - 不要输出 UC 或 NEGATIVE。负面提示词由画图设置单独提供，不要写进这次输出。
 
 # 视角：第三人称与 POV
-- 默认第三人称。角色与用户单独互动、且用户是动作的另一方时（对视、递东西、牵手、拥抱、亲吻、性爱等），优先用 POV：用户就是镜头，画面就是用户眼睛看到的东西。
+${IMAGE_PROMPT_POV_POLICY}
 - POV 硬规则，任何一条破了都会画成旁观者视角的双人图：
   1. Prompt 写 pov。**用户不开 Character 栏**，也不写用户的发型、发色、瞳色、脸——这些在用户自己眼里看不见。给用户开栏，等于让模型把用户当成一个完整人物画出来。
   2. 用户只以画面边缘看得见的身体部位出现，写进 Prompt：露手写 pov hands，其他部位按动作写成 tag（如 pov crotch）和句子；可见部位的肤色、体型、袖口等可以从用户外貌标签里挑出来，写成 the viewer's … 短语。
@@ -223,24 +226,23 @@ function appearanceClause(imageTags?: string, userImageTags?: string): { tagPart
     ? `，且必须含固定外貌标签：${imageTags.trim()}`
     : '';
   const userPart = userImageTags && userImageTags.trim()
-    ? `；仅当本条画面是角色与用户的亲密互动且用户本人出场时，需包含用户外貌标签：${userImageTags.trim()}`
+    ? `；仅当用户以第三人称完整出场时，需包含用户外貌标签：${userImageTags.trim()}`
     : '';
-  const soloPart = '；如果不是角色与用户的亲密互动，不得包含任何用户外貌标签，必须生成只包含角色的单人/多人场景';
+  const soloPart = '；POV 时用户是镜头，不开用户角色栏，不得完整写入用户外貌标签，只能从用户外貌标签中选取画面内可见部位的特征（如 the viewer\'s hands）；用户未出场时不得包含任何用户外貌标签';
   return { tagPart, userPart, soloPart };
 }
 
 export function buildDanbooruInlinePromptInstruction(imageTags?: string, userImageTags?: string): string {
   const { tagPart, userPart, soloPart } = appearanceClause(imageTags, userImageTags);
-  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行追加一段英文 danbooru 文生图标签串，用 [IMG] 和 [/IMG] 包裹，描述本条回复对应的画面。要求：35 - 70 个标签，英文逗号分隔；依次覆盖【画面构成】(分级 sfw/nsfw、人数如 1girl、画幅、视角、镜头)、【外貌】(发型发色瞳色体型${tagPart}${userPart}${soloPart})、【服饰】(逐件列出)、【动作】(贴合本条剧情)、【表情】(视线情绪面部细节)、【场景】(地点环境时间光影)；默认第三人称，可以在亲密互动时适当使用POV视角；如果画面是性行为，必须写出可见性器与接触方式，不要省略；不要输出 UC 或 NEGATIVE。[IMG] 块只出现一次放最后；正文不要提及标签；无论对话长短都不要省略。`;
+  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行追加一段英文 danbooru 文生图标签串，用 [IMG] 和 [/IMG] 包裹，描述本条回复对应的画面。要求：35 - 70 个标签，英文逗号分隔；依次覆盖【画面构成】(分级 sfw/nsfw、人数如 1girl、画幅、视角、镜头)、【外貌】(发型发色瞳色体型${tagPart}${userPart}${soloPart})、【服饰】(逐件列出)、【动作】(贴合本条剧情)、【表情】(视线情绪面部细节)、【场景】(地点环境时间光影)；${IMAGE_PROMPT_POV_POLICY}；如果画面是性行为，必须写出可见性器与接触方式，不要省略；不要输出 UC 或 NEGATIVE。[IMG] 块只出现一次放最后；正文不要提及标签；无论对话长短都不要省略。`;
 }
 
 export function buildNaiV5InlinePromptInstruction(imageTags?: string, userImageTags?: string): string {
   const { tagPart, soloPart } = appearanceClause(imageTags, userImageTags);
-  // POV 时用户是镜头、不开栏；共用的 appearanceClause 只说「用户出场」，这里单独写清 POV 不算出场。
   const userPart = userImageTags && userImageTags.trim()
-    ? `；仅当本条画面是角色与用户的亲密互动、且用户以第三人称完整出场（POV 不算）时，需包含用户外貌标签：${userImageTags.trim()}`
+    ? `；仅当用户以第三人称完整出场（POV 不算）时，需包含用户外貌标签：${userImageTags.trim()}`
     : '';
-  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行用 [IMG] 和 [/IMG] 包裹一段 NovelAI Diffusion V5 提示词，描述本条回复里最有表现力的一个瞬间（连续动作只取一刻，每个人的手脚躯干位置必须能同时成立）。最重要：tag 和自然语言必须混用，禁止纯 tag 串或纯散文。格式：Prompt: 人数tag只写一次（人用 1girl/1boy，兽/非人用 1other），物件/取景/机位/场景/光影用 tag，空间关系/谁对谁做什么/接触与支撑用英文句子，句子不要加引号；句子里用位置或简短外观指认人物（如 the girl on the left），不要用 Character 1 或角色真名当主语，也不要写带冒号的 Character 1:；Character 1: 以 girl/boy 打头（不带数字），第一行外貌、第二行服装${tagPart}；固定外貌标签里的人数和主体计数 tag（1girl/1boy/solo 等）不算外貌，放 Prompt 开头、不写进角色栏；画面里每个出场主体都必须另开 Character N 栏（狗/兽/魔物用 other 打头写清物种体型毛色），不能只写女角色把其他生物塞进 Prompt；用户以第三人称出场时占用再下一个编号写用户外貌${userPart}${soloPart}。只有一个角色栏时，动作表情视线写在 Prompt；有两个及以上角色栏时，各人的姿势、动作、表情、视线写在自己栏的第三行，互动动作加 source#（发起方）/ target#（承受方，同一个 tag）/ mutual#（互相）前缀。POV（用户就是镜头；角色与用户单独互动时优先用）：Prompt 写 pov，用户不开角色栏、不写用户的发色瞳色和脸，只以画面边缘的手或身体部位出现（pov hands 等），句子里称用户为 the viewer，不要写 he / the man；机位跟着用户身体走（用户躺着、角色在上方 → from below），不要用拍得到两人全身的旁观镜头。禁止把发型瞳色服装写进 Prompt；禁止写 masterpiece/very aesthetic/no text/best quality 等质量词；禁止编画师串。如果画面是性行为，必须在 Prompt 的句子里写清可见性器与接触方式，不要省略；不要输出 UC。[IMG] 块只出现一次放最后；正文不要提及提示词；无论对话长短都不要省略。`;
+  return `（系统附加要求，务必执行，不算跳出角色）在以上角色对话正文之后，另起一行用 [IMG] 和 [/IMG] 包裹一段 NovelAI Diffusion V5 提示词，描述本条回复里最有表现力的一个瞬间（连续动作只取一刻，每个人的手脚躯干位置必须能同时成立）。最重要：tag 和自然语言必须混用，禁止纯 tag 串或纯散文。格式：Prompt: 人数tag只写一次（人用 1girl/1boy，兽/非人用 1other），物件/取景/机位/场景/光影用 tag，空间关系/谁对谁做什么/接触与支撑用英文句子，句子不要加引号；句子里用位置或简短外观指认人物（如 the girl on the left），不要用 Character 1 或角色真名当主语，也不要写带冒号的 Character 1:；Character 1: 以 girl/boy 打头（不带数字），第一行外貌、第二行服装${tagPart}；固定外貌标签里的人数和主体计数 tag（1girl/1boy/solo 等）不算外貌，放 Prompt 开头、不写进角色栏；画面里每个出场主体都必须另开 Character N 栏（狗/兽/魔物用 other 打头写清物种体型毛色），不能只写女角色把其他生物塞进 Prompt；用户以第三人称出场时占用再下一个编号写用户外貌${userPart}${soloPart}。只有一个角色栏时，动作表情视线写在 Prompt；有两个及以上角色栏时，各人的姿势、动作、表情、视线写在自己栏的第三行，互动动作加 source#（发起方）/ target#（承受方，同一个 tag）/ mutual#（互相）前缀。${IMAGE_PROMPT_POV_POLICY}。POV 时 Prompt 写 pov，用户不开角色栏、不写用户的发色瞳色和脸，只以画面边缘的手或身体部位出现（pov hands 等），句子里称用户为 the viewer，不要写 he / the man；机位跟着用户身体走（用户躺着、角色在上方 → from below），不要用拍得到两人全身的旁观镜头。禁止把发型瞳色服装写进 Prompt；禁止写 masterpiece/very aesthetic/no text/best quality 等质量词；禁止编画师串。如果画面是性行为，必须在 Prompt 的句子里写清可见性器与接触方式，不要省略；不要输出 UC。[IMG] 块只出现一次放最后；正文不要提及提示词；无论对话长短都不要省略。`;
 }
 
 export function buildInlinePromptInstructionForStyle(

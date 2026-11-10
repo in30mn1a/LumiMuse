@@ -149,8 +149,8 @@ test('V5 inline instruction stays compact and still requires creature Character 
   assert.match(v5, /禁止纯 tag 串或纯散文/);
   assert.doesNotMatch(v5, /35 - 70 个标签/);
   assert.equal(v5.includes(NAI_V5_PROMPT_GENERATION_SYSTEM), false);
-  assert.match(v5, /不是角色与用户的亲密互动/);
-  assert.match(v5, /不得包含任何用户外貌标签/);
+  assert.match(v5, /仅当用户以第三人称完整出场.*需包含用户外貌标签/);
+  assert.match(v5, /POV 时用户是镜头.*the viewer's hands/);
   assert.match(v5, /固定外貌标签：silver hair, blue eyes/);
   assert.match(v5, /性器/);
   assert.match(v5, /不要输出 UC/);

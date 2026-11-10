@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { getErrorMessage, parseJsonResponse } from '@/lib/http';
@@ -10,6 +10,7 @@ interface AgentStatus {
   repairable_candidates: number;
   recent_errors: number;
   recent_error_window_hours: number;
+  dismissal_snapshot: Array<{ kind: CountKey; id: number; version: string }>;
   /** 接口还返回 provider_name / model；模型改在输入框里显示和切换，这里只看是否可用 */
   agent: { configured: boolean };
 }
@@ -24,71 +25,31 @@ const CHIP_OK = `${CHIP} border-border-light text-text-muted`;
 const CHIP_WARN = `${CHIP} border-danger/30 bg-danger/5 text-danger`;
 
 type CountKey = 'extraction' | 'profile' | 'embedding' | 'repairable' | 'errors';
-type Dismissed = Partial<Record<CountKey, number>>;
 
-/** 已读忽略只是本机显示偏好，存浏览器即可；读写失败（隐私模式等）时退化为不忽略 */
-const DISMISSED_STORAGE_KEY = 'lumimuse.agentStatusDismissed';
-
-function readDismissed(): Dismissed {
-  try {
-    const raw = typeof window === 'undefined' ? null : window.localStorage.getItem(DISMISSED_STORAGE_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : null;
-    return parsed && typeof parsed === 'object' ? (parsed as Dismissed) : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeDismissed(value: Dismissed) {
-  try {
-    window.localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify(value));
-  } catch {
-    // 存不进去只影响刷新后是否还记得，不影响本次显示
-  }
-}
-
-function countsOf(status: AgentStatus): Record<CountKey, number> {
-  return {
-    extraction: status.failed_tasks.extraction,
-    profile: status.failed_tasks.profile,
-    embedding: status.failed_tasks.embedding,
-    repairable: status.repairable_candidates,
-    errors: status.recent_errors,
-  };
-}
-
-/**
- * 计数回落时同步压低已忽略的基线：否则从 7 降到 0 再涨到 3 时，
- * 新出现的 3 条会被旧基线 7 吞掉。
- */
-function lowerDismissed(dismissed: Dismissed, counts: Record<CountKey, number>): Dismissed {
-  const next: Dismissed = {};
-  for (const key of Object.keys(counts) as CountKey[]) {
-    const value = Math.min(dismissed[key] ?? 0, counts[key]);
-    if (value > 0) next[key] = value;
-  }
-  return next;
-}
-
-/** 顶部状态条：只读数据库，不调用模型，上游故障时也能显示。 */
+/** 顶部状态条：读取活跃问题并保存忽略状态，不调用模型。 */
 export default function AgentStatusBar({ refreshKey }: Props) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState<Dismissed>(readDismissed);
+  const [dismissing, setDismissing] = useState(false);
+  const [dismissError, setDismissError] = useState<string | null>(null);
+  const requestRef = useRef(0);
+  const dismissingRef = useRef(false);
+  const refreshAfterDismissRef = useRef(false);
 
   const load = useCallback(async () => {
+    if (dismissingRef.current) {
+      refreshAfterDismissRef.current = true;
+      return;
+    }
+    const request = ++requestRef.current;
     try {
       const next = await parseJsonResponse<AgentStatus>(await fetch('/api/agent/status'));
+      if (request !== requestRef.current) return;
       setStatus(next);
       setError(null);
-      setDismissed(previous => {
-        const lowered = lowerDismissed(previous, countsOf(next));
-        if (JSON.stringify(lowered) !== JSON.stringify(previous)) writeDismissed(lowered);
-        return lowered;
-      });
     } catch (err) {
-      setError(getErrorMessage(err));
+      if (request === requestRef.current) setError(getErrorMessage(err));
     }
   }, []);
 
@@ -124,13 +85,33 @@ export default function AgentStatusBar({ refreshKey }: Props) {
     },
   ];
 
-  // 只有超出已忽略基线的部分才标红；数字照常显示
-  const isWarn = (item: { key: CountKey; count: number }) => item.count > (dismissed[item.key] ?? 0);
+  const isWarn = (item: { count: number }) => item.count > 0;
   const hasWarn = counts.some(isWarn);
-  const dismissAll = () => {
-    const next = lowerDismissed(countsOf(status), countsOf(status));
-    setDismissed(next);
-    writeDismissed(next);
+  const dismissAll = async () => {
+    if (dismissingRef.current) return;
+    dismissingRef.current = true;
+    setDismissing(true);
+    setDismissError(null);
+    // 忽略开始前发出的 GET 不能再恢复旧提醒；期间的刷新留到写入后读取。
+    ++requestRef.current;
+    try {
+      const next = await parseJsonResponse<AgentStatus>(await fetch('/api/agent/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dismissal_snapshot: status.dismissal_snapshot }),
+      }));
+      setStatus(next);
+      setError(null);
+    } catch (err) {
+      setDismissError(getErrorMessage(err));
+    } finally {
+      dismissingRef.current = false;
+      setDismissing(false);
+      if (refreshAfterDismissRef.current) {
+        refreshAfterDismissRef.current = false;
+        void load();
+      }
+    }
   };
 
   return (
@@ -146,7 +127,9 @@ export default function AgentStatusBar({ refreshKey }: Props) {
         {hasWarn && (
           <button
             type="button"
-            onClick={dismissAll}
+            onClick={() => void dismissAll()}
+            disabled={dismissing}
+            aria-busy={dismissing}
             title={t('agent.status.dismissHint')}
             className={`${CHIP} border-border-light text-text-secondary transition-colors hover:border-accent/40 hover:text-accent-dark`}
           >
@@ -159,6 +142,11 @@ export default function AgentStatusBar({ refreshKey }: Props) {
           </span>
         )}
       </div>
+      {dismissError && (
+        <p className="mt-1 text-xs text-danger [overflow-wrap:anywhere]" role="alert">
+          {`${t('agent.status.dismissFailed')}: ${dismissError}`}
+        </p>
+      )}
     </div>
   );
 }

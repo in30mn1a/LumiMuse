@@ -9,6 +9,7 @@ export const queryTableTool = defineReadTool({
     + '不确定列名时省略 columns，会返回该表全部允许的列。JSON 类的列按原始文本返回。',
   schema: z.object({
     table: z.enum(QUERYABLE_TABLE_NAMES).describe('表名'),
+    include_inactive: z.boolean().optional().describe('包含主人已忽略的问题；默认排除'),
     columns: z.array(z.string().min(1)).min(1).optional().describe('要返回的列；省略则返回全部允许的列'),
     filters: z.array(z.object({
       column: z.string().min(1),
@@ -22,6 +23,7 @@ export const queryTableTool = defineReadTool({
   }),
   execute: (args, ctx) => runReadTool(ctx, () => runTableQuery(ctx.db, {
     table: args.table,
+    includeInactive: args.include_inactive,
     columns: args.columns,
     filters: args.filters,
     orderBy: args.order_by,

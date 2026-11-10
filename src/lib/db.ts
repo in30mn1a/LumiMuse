@@ -1141,6 +1141,15 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_app_events_ts ON app_events(ts);
 
+    -- Agent 的问题忽略状态独立保存，不修改原任务、候选或日志
+    CREATE TABLE IF NOT EXISTS agent_status_dismissals (
+      kind TEXT NOT NULL,
+      source_id INTEGER NOT NULL,
+      source_version TEXT NOT NULL,
+      dismissed_at TEXT NOT NULL,
+      PRIMARY KEY (kind, source_id)
+    );
+
     -- 内置 Agent：只新增表、不提升 CURRENT_SCHEMA_VERSION，旧镜像不读这些表，仍可回滚启动
     CREATE TABLE IF NOT EXISTS agent_sessions (
       id TEXT PRIMARY KEY,

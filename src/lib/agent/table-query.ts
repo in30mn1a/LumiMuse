@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { activeAgentTableSql } from '@/lib/agent/status-dismissals';
 
 /**
  * Agent 的通用只读查询：不接受 SQL，只接受「表 + 列 + 等值条件 + 排序 + 分页」，
@@ -73,6 +74,7 @@ export type TableFilterValue = string | number | boolean | null;
 
 export interface TableQuerySpec {
   table: string;
+  includeInactive?: boolean;
   /** 省略或为空时返回该表全部允许的列 */
   columns?: string[];
   /** 等值条件，多个条件取 AND；null 表示 IS NULL */
@@ -126,6 +128,8 @@ export function buildTableQuery(
   }
 
   const where: string[] = [];
+  const active = spec.includeInactive ? null : activeAgentTableSql(table);
+  if (active) where.push(active);
   const params: Array<string | number> = [];
   for (const filter of spec.filters || []) {
     if (!allowed.has(filter.column)) return rejectColumn(filter.column);

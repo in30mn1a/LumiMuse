@@ -236,6 +236,36 @@ export function zonedDayRangeToUtc(
   return [start.toISOString(), end.toISOString()];
 }
 
+/**
+ * 把「某时区某一分钟」转成 UTC 时间范围 [该分钟 00.000 秒, 该分钟 59.999 秒]。
+ * 时区处理与 zonedDayRangeToUtc 相同；日期不存在或时分越界时返回 null。
+ */
+export function zonedMinuteRangeToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone?: string,
+): [string, string] | null {
+  if (!isRealCalendarDate(year, month, day)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  if (timeZone) {
+    try {
+      const start = zonedWallClockToUtc(year, month, day, hour, minute, 0, 0, timeZone);
+      const end = zonedWallClockToUtc(year, month, day, hour, minute, 59, 999, timeZone);
+      return [new Date(start).toISOString(), new Date(end).toISOString()];
+    } catch {
+      // 非法时区回退服务器本地时区
+    }
+  }
+
+  const start = new Date(year, month - 1, day, hour, minute, 0, 0);
+  const end = new Date(year, month - 1, day, hour, minute, 59, 999);
+  return [start.toISOString(), end.toISOString()];
+}
+
 /** 目标时区的当前年份，用于补全「3月30日」这种省略年份的输入。 */
 export function currentYearInZone(timeZone?: string): number {
   const now = new Date();

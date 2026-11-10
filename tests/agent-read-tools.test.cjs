@@ -784,6 +784,138 @@ test('search_messages treats space-separated keywords as AND, order-independent'
   assert.equal(wildcard.results.length, 0);
 });
 
+test('search_messages narrows by memory sources, conversation chain and time window', async t => {
+  const { ctx } = createFixture(t);
+  const hitIds = result => result.results.map(item => item.message_id);
+
+  // mem-hiking 的来源是 msg-a1-5 和一条已删除的消息；不给 query 就列出现存来源
+  const sources = await callOk('search_messages', { memory_id: 'mem-hiking' }, ctx);
+  assert.deepEqual(hitIds(sources), ['msg-a1-5']);
+  assert.equal(sources.total, 1);
+  assert.deepEqual(sources.memory_scope, { memory_id: 'mem-hiking', source_total: 2 });
+  // 「甜点」在该角色里有命中，但不在这条记忆的来源里
+  const outside = await callOk('search_messages', { memory_id: 'mem-hiking', query: '甜点' }, ctx);
+  assert.equal(outside.total, 0);
+  const byPrefix = await callOk('search_messages', { memory_id: 'mem-hiki', query: '爬山' }, ctx);
+  assert.deepEqual(hitIds(byPrefix), ['msg-a1-5']);
+  assert.equal(byPrefix.memory_scope.memory_id, 'mem-hiking');
+  const noSources = await callOk('search_messages', { memory_id: 'mem-archived', query: '搬家' }, ctx);
+  assert.equal(noSources.total, 0);
+  assert.match(noSources.note, /没有记录来源/);
+  assert.equal((await call('search_messages', { memory_id: 'mem-none-x' }, ctx)).ok, false);
+
+  // 子对话继承父对话 seq <= 4 的消息，其它对话的「甜」不算
+  const branch = await callOk('search_messages', { conversation_id: 'conv-a1-branch', query: '甜' }, ctx);
+  assert.deepEqual(hitIds(branch), ['msg-a1-4', 'msg-a1-3']);
+
+  // 上海时区的 10 月 3 日：msg-a2-1 在内，UTC 10 月 2 日 08:00 的 msg-b1-1 不在
+  const day = await callOk('search_messages', { query: '甜点', from: '2026-10-03', to: '2026-10-03' }, ctx);
+  assert.deepEqual(hitIds(day), ['msg-a2-1']);
+  // 精确到分钟：上海 10 月 3 日 01:30 = UTC 10 月 2 日 17:30
+  const minute = await callOk('search_messages', { from: '2026-10-03 01:30', to: '2026-10-03 01:30' }, ctx);
+  assert.deepEqual(hitIds(minute), ['msg-b1-2']);
+  // 时间段内按先后排列
+  const ordered = await callOk('search_messages', { character_id: 'char-a', from: '2026-10-01 18:01', to: '2026-10-01' }, ctx);
+  assert.deepEqual(hitIds(ordered), ['msg-a1-3', 'msg-a1-4', 'msg-a1-5', 'msg-a1-6', 'msg-br-1']);
+
+  const badBound = await call('search_messages', { query: '甜点', from: '十月三日' }, ctx);
+  assert.equal(badBound.ok, false);
+  assert.match(badBound.error, /from 无法识别/);
+  const empty = await call('search_messages', { character_id: 'char-a' }, ctx);
+  assert.equal(empty.ok, false);
+});
+
+test('search_messages reports totals, per-term hits on a miss, and snippets for long messages', async t => {
+  const long = `${'铺垫。'.repeat(200)}关键暗号${'收尾。'.repeat(200)}`;
+  const { ctx } = createFixture(t, {
+    seedData: db => {
+      seed(db);
+      addMessage(db, 'msg-long', 'conv-a2', 'assistant', long, 12, '2026-10-04T00:00:00.000Z');
+    },
+  });
+  const all = await callOk('search_messages', { query: '甜点', limit: 1 }, ctx);
+  assert.equal(all.total, 3);
+  assert.equal(all.has_more, true);
+  assert.equal(all.term_hits, undefined);
+
+  // 两个词各自都有命中，只是不在同一条消息里
+  const miss = await callOk('search_messages', { query: '甜点 爬山', character_id: 'char-a' }, ctx);
+  assert.equal(miss.total, 0);
+  assert.deepEqual(miss.term_hits, [{ term: '甜点', hits: 2 }, { term: '爬山', hits: 1 }]);
+  const singleMiss = await callOk('search_messages', { query: '不存在的词' }, ctx);
+  assert.equal(singleMiss.term_hits, undefined);
+
+  const snippet = (await callOk('search_messages', { query: '关键暗号' }, ctx)).results[0];
+  assert.equal(snippet.content_truncated, true);
+  assert.equal(snippet.content_length, long.length);
+  assert.ok(snippet.content.includes('关键暗号'));
+  assert.ok(snippet.content.length < 300);
+  assert.ok(snippet.content.startsWith('…') && snippet.content.endsWith('…'));
+  const full = (await callOk('search_messages', { query: '关键暗号', content: 'full' }, ctx)).results[0];
+  assert.equal(full.content, long);
+  assert.equal(full.content_truncated, false);
+  // 短消息不截
+  const short = (await callOk('search_messages', { query: '爬山' }, ctx)).results[0];
+  assert.equal(short.content, '周末我会去爬山');
+  assert.equal(short.content_truncated, false);
+});
+
+test('read_messages reads around a message and reports its offset in the chain', async t => {
+  const { ctx } = createFixture(t);
+  const around = await callOk('read_messages', { around_message_id: 'msg-a1-3', before: 1, after: 1 }, ctx);
+  assert.deepEqual(ids(around.messages), ['msg-a1-2', 'msg-a1-3', 'msg-a1-4']);
+  assert.deepEqual(around.messages.map(item => item.is_anchor), [false, true, false]);
+  assert.equal(around.conversation.id, 'conv-a1');
+  assert.equal(around.anchor_offset, 2);
+  assert.equal(around.total, 6);
+  // anchor_offset 可以直接接着翻页
+  const paged = await callOk('read_messages', { conversation_id: 'conv-a1', offset: around.anchor_offset, limit: 1 }, ctx);
+  assert.deepEqual(ids(paged.messages), ['msg-a1-3']);
+
+  // 在子对话里看继承来的消息：后文接的是子对话自己的消息，而不是父对话 seq 5
+  const branch = await callOk('read_messages', {
+    conversation_id: 'conv-a1-branch', around_message_id: 'msg-a1-4', before: 0, after: 2,
+  }, ctx);
+  assert.deepEqual(ids(branch.messages), ['msg-a1-4', 'msg-br-1']);
+  assert.equal(branch.anchor_offset, 3);
+
+  const foreign = await call('read_messages', { conversation_id: 'conv-a2', around_message_id: 'msg-a1-3' }, ctx);
+  assert.equal(foreign.ok, false);
+  assert.match(foreign.error, /不在对话/);
+  assert.equal((await call('read_messages', { around_message_id: 'msg-none-x' }, ctx)).ok, false);
+  assert.equal((await call('read_messages', {}, ctx)).ok, false);
+});
+
+test('read tools accept a unique id prefix and unquoted hex ids in arguments', async t => {
+  const { ctx } = createFixture(t, {
+    seedData: db => {
+      seed(db);
+      insertRow(db, 'conversations', { id: 'conv-a1-copy', character_id: 'char-a', title: '副本', created_at: T0, updated_at: T0 });
+    },
+  });
+  const byPrefix = await callOk('get_memories', { memory_ids: ['mem-swee', 'mem-hiki'] }, ctx);
+  assert.deepEqual(ids(byPrefix.memories), ['mem-sweet-dislike', 'mem-hiking']);
+  assert.deepEqual(byPrefix.missing_ids, []);
+  // 太短或不唯一的前缀不猜
+  const vague = await callOk('get_memories', { memory_ids: ['mem-', 'mem-none'] }, ctx);
+  assert.deepEqual(vague.memories, []);
+  assert.deepEqual(vague.missing_ids, ['mem-', 'mem-none']);
+  // conv-a1-branch 与 conv-a1-copy 共用这个前缀
+  assert.equal((await call('read_messages', { conversation_id: 'conv-a1-' }, ctx)).ok, false);
+
+  // 数字开头的短 ID 漏了引号：补上引号后照常解析
+  const repaired = parseToolArguments(tool('search_messages'), '{"character_id": 218f6024, "limit": 5, "query": "悄悄话"}');
+  assert.equal(repaired.ok, true);
+  assert.equal(repaired.args.character_id, '218f6024');
+  assert.equal(repaired.args.limit, 5);
+  const list = parseToolArguments(tool('get_memories'), '{"memory_ids": [385296b2, 3f6f9e19-0a1]}');
+  assert.deepEqual(list.args.memory_ids, ['385296b2', '3f6f9e19-0a1']);
+  // 补不好的仍报原始错误
+  const broken = parseToolArguments(tool('search_messages'), '{"character_id": 218f6024, "query": }');
+  assert.equal(broken.ok, false);
+  assert.match(broken.error, /^参数不是合法的 JSON/);
+});
+
 test('get_system_status combines memory system status with 24h app event counts', async t => {
   const { ctx } = createFixture(t);
   const status = await callOk('get_system_status', {}, ctx);

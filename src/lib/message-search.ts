@@ -73,7 +73,7 @@ function ftsHighlightRanges(
  * 必须按用户时区解析：消息 created_at 存的是 UTC，而用户说的「3月30日」指他本地那一天。
  * 服务器时区（容器默认 UTC）与用户不同时，日边界会整体偏移，搜出来的结果头尾都不对。
  */
-function parseDateRange(input: string, timeZone?: string): [string, string] | null {
+export function parseDateRange(input: string, timeZone?: string): [string, string] | null {
   let year: number | null = null;
   let month: number | null = null;
   let day: number | null = null;

@@ -11,8 +11,8 @@ import { getMemorySourceAttribution } from '@/lib/metadata';
 import { defineReadTool } from './types';
 import {
   conversationMessageScope,
+  loadNeighborMessages,
   MESSAGE_VIEW_COLUMNS_SQL,
-  orderSql,
   toMessageView,
   type MessageView,
 } from './conversation-tools';
@@ -20,6 +20,7 @@ import {
   MEMORY_COLUMNS_SQL,
   pageFromList,
   pagingShape,
+  resolveIdPrefix,
   runReadTool,
   sqlPlaceholders,
   toMemoryView,
@@ -167,6 +168,11 @@ export const searchMemoriesTool = createSearchMemoriesTool();
 
 const memoryIdsSchema = (max: number) => z.array(z.string().min(1)).min(1).max(max);
 
+/** 去重，并把只给了前缀的 ID 还原成完整 ID（见 resolveIdPrefix）。 */
+function resolveMemoryIds(db: Database.Database, ids: readonly string[]): string[] {
+  return uniqueIds(ids.map(id => resolveIdPrefix(db, 'memories', id)));
+}
+
 function loadMemoriesByIds(
   db: Database.Database,
   ids: string[],
@@ -189,7 +195,7 @@ export const getMemoriesTool = defineReadTool({
     character_id: z.string().min(1).optional().describe('限定角色'),
   }),
   execute: (args, ctx) => runReadTool(ctx, () => {
-    const ids = uniqueIds(args.memory_ids);
+    const ids = resolveMemoryIds(ctx.db, args.memory_ids);
     const byId = loadMemoriesByIds(ctx.db, ids, args.character_id);
     return {
       ok: true,
@@ -224,7 +230,7 @@ export const getMemorySourcesTool = defineReadTool({
     character_id: z.string().min(1).optional().describe('限定角色'),
   }),
   execute: (args, ctx) => runReadTool(ctx, () => {
-    const ids = uniqueIds(args.memory_ids);
+    const ids = resolveMemoryIds(ctx.db, args.memory_ids);
     const memories = loadMemoriesByIds(ctx.db, ids, args.character_id);
     const loadMessage = ctx.db.prepare(`SELECT ${MESSAGE_VIEW_COLUMNS_SQL} FROM messages WHERE id = ?`);
     const loadConversation = ctx.db.prepare('SELECT title FROM conversations WHERE id = ?');
@@ -234,20 +240,7 @@ export const getMemorySourcesTool = defineReadTool({
       if (!row) return null;
       const source = toMessageView(row);
       const scope = conversationMessageScope(ctx.db, source.conversation_id);
-      const tupleSql = `(${scope.orderColumns.join(', ')})`;
-      const tupleParams = scope.orderColumns.map(column => row[column] as string | number);
-      const before = ctx.db.prepare(`
-        SELECT ${MESSAGE_VIEW_COLUMNS_SQL} FROM messages
-        WHERE ${scope.sql} AND ${tupleSql} < (${sqlPlaceholders(tupleParams.length)})
-        ORDER BY ${orderSql(scope.orderColumns, 'DESC')}
-        LIMIT ?
-      `).all(...scope.params, ...tupleParams, args.context) as Record<string, unknown>[];
-      const after = ctx.db.prepare(`
-        SELECT ${MESSAGE_VIEW_COLUMNS_SQL} FROM messages
-        WHERE ${scope.sql} AND ${tupleSql} > (${sqlPlaceholders(tupleParams.length)})
-        ORDER BY ${orderSql(scope.orderColumns, 'ASC')}
-        LIMIT ?
-      `).all(...scope.params, ...tupleParams, args.context) as Record<string, unknown>[];
+      const { before, after } = loadNeighborMessages(ctx.db, row, scope, args.context, args.context);
       const conversation = loadConversation.get(source.conversation_id) as { title: string } | undefined;
 
       return {
@@ -255,7 +248,7 @@ export const getMemorySourcesTool = defineReadTool({
         conversation_id: source.conversation_id,
         conversation_title: conversation?.title ?? null,
         messages: [
-          ...before.reverse().map(item => ({ ...toMessageView(item), is_source: false })),
+          ...before.map(item => ({ ...toMessageView(item), is_source: false })),
           { ...source, is_source: true },
           ...after.map(item => ({ ...toMessageView(item), is_source: false })),
         ],

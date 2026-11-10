@@ -34,13 +34,32 @@ function jsonErrorMessage(raw: string, error: unknown): string {
   return `参数不是合法的 JSON：${reason}。出错位置附近：${JSON.stringify(before)} ⟨此处⟩ ${JSON.stringify(after)}`;
 }
 
+/**
+ * 数字开头的短 ID（如 218f6024）常被模型当成数字、漏掉引号，整段参数因此不是合法 JSON
+ * （2026-11-09 实跑 8 次）。只在解析已经失败时尝试：给值位置上含字母的十六进制裸词补引号后重新解析，
+ * 仍失败就返回 undefined，由调用方报告原始错误。
+ */
+function parseWithBareIdsQuoted(raw: string): unknown {
+  const repaired = raw.replace(
+    /([:[,]\s*)(\d[0-9a-f-]*[a-f][0-9a-f-]*)(?=\s*[,}\]])/gi,
+    (_, lead: string, token: string) => `${lead}"${token}"`,
+  );
+  if (repaired === raw) return undefined;
+  try {
+    return JSON.parse(repaired);
+  } catch {
+    return undefined;
+  }
+}
+
 /** 解析并校验模型给的参数字符串；错误信息直接回给模型，方便它修正后重试。 */
 export function parseToolArguments(tool: AgentTool, raw: string): ParsedToolArguments {
   let value: unknown;
   try {
     value = raw.trim() ? JSON.parse(raw) : {};
   } catch (error) {
-    return { ok: false, error: jsonErrorMessage(raw, error) };
+    value = parseWithBareIdsQuoted(raw);
+    if (value === undefined) return { ok: false, error: jsonErrorMessage(raw, error) };
   }
   const parsed = tool.schema.safeParse(value);
   if (!parsed.success) {

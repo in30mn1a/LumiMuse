@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Memory } from '@/types';
 import { normalizeMemoryRow } from '@/lib/memory-normalization';
+import { escapeLikePattern } from '@/lib/message-search';
 import { QUERYABLE_TABLES } from '@/lib/agent/table-query';
 import { redactCredentials } from './credentials';
 import type { AgentToolContext, AgentToolResult } from './types';
@@ -82,6 +83,25 @@ export function parseJsonColumn(value: unknown): unknown {
 
 export function sqlPlaceholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(', ');
+}
+
+const ID_PREFIX_MIN_LENGTH = 8;
+
+/**
+ * 把模型给的 ID 还原成库里的完整 ID：精确命中时原样返回；否则当作前缀，只匹配到一条时返回那条。
+ * 上下文压缩后的摘要常只留下 ID 的前 8 位，没有这一步只能重新搜索才能找回完整 ID。
+ * 匹配不到或不唯一时原样返回，由调用方按「不存在」处理。只用于只读工具。
+ */
+export function resolveIdPrefix(
+  db: AgentToolContext['db'],
+  table: 'memories' | 'messages' | 'conversations',
+  id: string,
+): string {
+  if (id.length < ID_PREFIX_MIN_LENGTH) return id;
+  if (db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)) return id;
+  const matches = db.prepare(`SELECT id FROM ${table} WHERE id LIKE ? ESCAPE '\\' LIMIT 2`)
+    .all(`${escapeLikePattern(id)}%`) as Array<{ id: string }>;
+  return matches.length === 1 ? matches[0].id : id;
 }
 
 /** 输入里重复的 ID 只保留第一次出现的位置。 */

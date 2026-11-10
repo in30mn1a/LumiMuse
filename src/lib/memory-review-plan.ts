@@ -8,7 +8,9 @@ import {
   type MemoryReviewClusterItem,
 } from '@/lib/memory-review-cluster';
 
-export const MEMORY_REVIEW_PLAN_TTL_MS = 45 * 60 * 1000;
+// 计划只存 ID，放久一点几乎不占内存。45 分钟时，Agent 每批都要等主人批准提案，
+// 回来读下一批常已过期（2026-11-09 实跑 8 次重新准备计划）。
+export const MEMORY_REVIEW_PLAN_TTL_MS = 24 * 60 * 60 * 1000;
 export const PLAN_NOT_FOUND_CODE = 'PLAN_NOT_FOUND';
 
 export type MemoryReviewPlan = {

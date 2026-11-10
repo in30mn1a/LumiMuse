@@ -151,8 +151,12 @@ test('registry: invalid JSON says why and where, so a long argument can be fixed
   assert.equal(extraBrace.ok, false);
   assert.match(extraBrace.error, /^参数不是合法的 JSON：.*position 36/);
   assert.ok(extraBrace.error.endsWith(near('acter_id":"char-a","items":[]}', '}')), extraBrace.error);
+  // 漏引号的短 ID 会被补上引号，这里不再是 JSON 错误，剩下的是缺字段的校验错误
   const unquoted = parseToolArguments(proposalTool, '{"character_id": 123f4567, "limit": 3}');
-  assert.ok(unquoted.error.endsWith(near('{"character_id": 123', 'f4567, "limit": 3}')), unquoted.error);
+  assert.match(unquoted.error, /^参数无效：summary/);
+  // 补了引号仍不合法时，报告的是原始参数里的出错位置
+  const stillBroken = parseToolArguments(proposalTool, '{"character_id": 123f4567, "limit": }');
+  assert.ok(stillBroken.error.endsWith(near('{"character_id": 123', 'f4567, "limit": }')), stillBroken.error);
 });
 
 test('registry: character writes require proposals and remember only adds Agent notes', () => {

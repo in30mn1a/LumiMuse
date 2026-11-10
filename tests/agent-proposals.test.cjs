@@ -156,8 +156,8 @@ test('registry: invalid JSON says why and where, so a long argument can be fixed
 });
 
 test('registry: character writes require proposals and remember only adds Agent notes', () => {
-  assert.deepEqual(AGENT_WRITE_TOOLS.map(tool => tool.name), ['create_memory_proposal', 'create_character_proposal', 'create_character', 'remember', 'update_task_plan']);
-  assert.deepEqual(AGENT_TOOLS.filter(tool => tool.kind === 'write').map(tool => tool.name), ['create_memory_proposal', 'create_character_proposal', 'create_character', 'remember', 'update_task_plan']);
+  assert.deepEqual(AGENT_WRITE_TOOLS.map(tool => tool.name), ['create_memory_proposal', 'create_character_proposal', 'create_character', 'create_message_proposal', 'remember', 'update_task_plan']);
+  assert.deepEqual(AGENT_TOOLS.filter(tool => tool.kind === 'write').map(tool => tool.name), ['create_memory_proposal', 'create_character_proposal', 'create_character', 'create_message_proposal', 'remember', 'update_task_plan']);
   assert.equal(new Set(AGENT_TOOLS.map(tool => tool.name)).size, AGENT_TOOLS.length);
   for (const definition of toolDefinitions(AGENT_TOOLS)) {
     assert.equal(definition.function.parameters.type, 'object');

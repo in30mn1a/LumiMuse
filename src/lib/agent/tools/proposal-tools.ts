@@ -6,6 +6,8 @@ import {
   createCharacterProposalSchema,
   createMemoryProposal,
   createMemoryProposalSchema,
+  createMessageProposal,
+  createMessageProposalSchema,
 } from '@/lib/agent/proposals';
 import { defineWriteTool } from './types';
 
@@ -69,6 +71,30 @@ reason 说明修改理由，evidence 提供角色对话消息 ID 或逐字摘录
       result: {
         ok: true, proposal_id: outcome.proposalId, pending_items: outcome.items.length,
         note: '角色卡提案已生成，等待主人批准。本轮到此结束，批准前不要声称已经修改。',
+      },
+      terminate: true,
+    };
+  },
+});
+
+export const createMessageProposalTool = defineWriteTool({
+  name: 'create_message_proposal',
+  description: `生成待主人批准的聊天消息修改提案，用于修改角色对话里已有消息的正文（用户或角色的发言）。提案本身不改消息，主人在卡片上逐项批准后才生效，支持撤销。
+先用 read_messages 或 search_messages 读到消息的完整原文。items 每项修改一条消息：message_id 是目标消息，content 是修改后的完整正文（不是片段或差异），没有改动的部分逐字保留，包括换行、标点和 [IMG] 等标记。一份提案里的消息须属于同一个角色。
+只能改正文，不能新增、删除消息，也不能改附件或切换版本，这些由主人在聊天界面操作。修改消息不会自动更新由它提取出的记忆，需要时另用 create_memory_proposal。
+每项都要有 reason 和依据：主人在本会话里的指示逐字写进 evidence.owner_quote，或在 evidence.message_ids 给出支撑修改的角色对话消息 ID；确实没有原文依据时，note 以「${NO_EVIDENCE_NOTE}」开头并解释。
+消息 ID 可以写至少 8 位的唯一前缀。「修改前」由系统从数据库读取；期间消息已被编辑时该项会过期。任何一项不合法时整份提案不会创建，按返回的原因修正后重试。
+生成成功后本轮立即结束，等待主人批准；不要声称已经修改。`,
+  schema: createMessageProposalSchema,
+  execute(args, ctx) {
+    const outcome = createMessageProposal(ctx.db, args, { sessionId: ctx.sessionId, now: new Date().toISOString() });
+    if (!outcome.ok) return { result: { ok: false, error: `提案未创建：\n${outcome.errors.join('\n')}` } };
+    const warnings = outcome.items.filter(item => item.warning).map(item => `第 ${item.seq} 项：${item.warning}`);
+    return {
+      result: {
+        ok: true, proposal_id: outcome.proposalId, pending_items: outcome.items.length,
+        ...(warnings.length > 0 ? { warnings } : {}),
+        note: '消息修改提案已生成，等待主人批准。本轮到此结束，批准前不要声称已经修改。',
       },
       terminate: true,
     };

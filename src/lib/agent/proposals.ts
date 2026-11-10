@@ -9,12 +9,14 @@ import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { MEMORY_CATEGORIES, MEMORY_KINDS, type MemoryCategory } from '@/types';
-import { MAX_MEMORY_CONTENT, MAX_TAG_LENGTH, MAX_TAGS } from '@/lib/schemas';
+import { MAX_MEMORY_CONTENT, MAX_MESSAGE_CONTENT, MAX_TAG_LENGTH, MAX_TAGS } from '@/lib/schemas';
 import { normalizeTags } from '@/lib/memory-tag-spec';
 import { getMergeSourceIssue, type MemoryMergeSourceIssue } from '@/lib/memory-merge';
 import { memoryBusinessSnapshot, type MemoryBusinessSnapshot } from '@/lib/memory-mutations';
 import { getMemorySourceAttribution } from '@/lib/metadata';
-import { contentFidelityIssues, findSourceNotePhrases } from './content-fidelity';
+import {
+  contentFidelityIssues, findSourceNotePhrases, messageEditFidelityIssues, type ContentFidelityIssues,
+} from './content-fidelity';
 import { NO_EVIDENCE_NOTE, declaresNoEvidence } from './proposal-flags';
 import {
   CHARACTER_CARD_FIELDS,
@@ -137,6 +139,19 @@ export const createCharacterSchema = createCharacterProposalSchema.omit({ charac
 });
 export type CreateCharacterInput = z.infer<typeof createCharacterSchema>;
 
+export const createMessageProposalSchema = z.strictObject({
+  summary: z.string().max(MAX_SUMMARY).describe('一句话概括这份消息修改提案'),
+  items: z.array(z.strictObject({
+    message_id: z.string().min(1).describe('要修改的聊天消息 ID，先用 read_messages 或 search_messages 读到原文'),
+    content: z.string().max(MAX_MESSAGE_CONTENT, `正文不能超过 ${MAX_MESSAGE_CONTENT} 字`)
+      .describe('修改后的完整正文，不是片段；没有改动的部分逐字保留'),
+    reason: z.string().max(MAX_REASON).describe('为什么这样改，写给主人看'),
+    evidence: evidenceSchema.optional(),
+    confidence: z.number().min(0).max(1).describe('对这项建议的把握（0–1）'),
+  })).min(1).max(MAX_PROPOSAL_ITEMS).describe('每项修改一条消息，须属于同一个角色的对话'),
+});
+export type CreateMessageProposalInput = z.infer<typeof createMessageProposalSchema>;
+
 export interface ProposalEvidence {
   message_ids: string[];
   note?: string;
@@ -152,6 +167,14 @@ export interface ProposalMemoryTarget {
 export interface ProposalCharacterTarget {
   id: string;
   snapshot: CharacterCardSnapshot;
+}
+
+/** 聊天消息修改的目标：正文是提案时的原文，批准时据此判断消息是否已被改动。 */
+export interface ProposalMessageTarget {
+  id: string;
+  conversation_id: string;
+  role: string;
+  content: string;
 }
 
 /** 待修复记录的原提取任务。任务重试成功后不会关闭旧记录，所以要连同任务状态一起看。 */
@@ -183,6 +206,7 @@ export type ProposalBefore =
   | { candidate: ProposalCandidateTarget }
   | { character: ProposalCharacterTarget }
   | { character_creation: { id: string } }
+  | { message: ProposalMessageTarget }
   | null;
 
 export interface CreatedProposalItem {
@@ -297,8 +321,7 @@ function targetContent(target: ProposalMemoryTarget): string {
 }
 
 /** 改写类操作的保真提示：卡片用同一组检查标出并默认不勾选，这里把同样的内容告诉模型。 */
-function fidelityWarning(op: string, content: string, sources: readonly string[]): string | null {
-  const { missingQuotes, unfamiliarChars, shrink } = contentFidelityIssues(op, content, sources);
+function fidelityWarning({ missingQuotes, unfamiliarChars, shrink }: ContentFidelityIssues): string | null {
   const parts: string[] = [];
   if (shrink) parts.push(`正文比原文短了 ${shrink.percent}%（${shrink.before} → ${shrink.after} 字），请核对是否删掉了内容`);
   if (missingQuotes.length > 0) parts.push(`正文没有逐字保留来源里的原话：「${missingQuotes.join('」「')}」`);
@@ -564,7 +587,7 @@ function prepareItem(
       }
       if (changes.content) {
         checkSourceNotes(changes.content, [targetContent(target)], '');
-        warning = fidelityWarning(item.op, changes.content, [targetContent(target)]);
+        warning = fidelityWarning(contentFidelityIssues(item.op, changes.content, [targetContent(target)]));
       }
       after = changes;
       break;
@@ -607,7 +630,7 @@ function prepareItem(
       if (item.op !== 'report_conflict' && fields.content) {
         const sources = targets.map(targetContent);
         checkSourceNotes(fields.content, sources, '');
-        warning = fidelityWarning(item.op, fields.content, sources);
+        warning = fidelityWarning(contentFidelityIssues(item.op, fields.content, sources));
       }
       before = { memories: targets };
       memoryTargets = item.op === 'report_conflict' ? [] : ids;
@@ -835,6 +858,77 @@ export function createCharacter(
     before: { character_creation: { id: randomUUID().slice(0, 12) } }, after: completeCharacterCard(input.fields),
     state: 'pending', memoryTargets: [], candidateTarget: null, warning: null,
   }], context);
+}
+
+/**
+ * 创建聊天消息正文的修改建议，每项一条消息，沿用提案批准流程，创建时不写 messages。
+ * 只改用户和角色发言的正文；附件、版本切换和删除仍在聊天界面操作。
+ */
+export function createMessageProposal(
+  db: Database.Database,
+  input: CreateMessageProposalInput,
+  context: { sessionId: string | null; now: string },
+): CreateProposalOutcome {
+  const errors: string[] = [];
+  const summary = input.summary.trim();
+  if (!summary) errors.push('缺少提案概述（summary）');
+
+  const messageExact = (ids: readonly string[]) => new Set(ids.length === 0 ? [] : (db.prepare(`
+    SELECT id FROM messages WHERE id IN (${placeholders(ids.length)})
+  `).all(...ids) as { id: string }[]).map(row => row.id));
+  const messagePrefix = (pattern: string, limit: number) => (db.prepare(`
+    SELECT id FROM messages WHERE id GLOB ? ORDER BY id LIMIT ?
+  `).all(pattern, limit) as { id: string }[]).map(row => row.id);
+
+  let characterId: string | null = null;
+  const claims = new Map<string, number>();
+  const prepared: PreparedItem[] = [];
+  input.items.forEach((item, index) => {
+    const seq = index + 1;
+    const itemErrors: string[] = [];
+    const reason = item.reason.trim();
+    if (!reason) itemErrors.push('缺少理由');
+    const messageId = resolveIdPrefixes([item.message_id], messageExact, messagePrefix, '消息 ID', itemErrors)[0];
+    const row = itemErrors.length > 0 ? undefined : db.prepare(`
+      SELECT m.id, m.conversation_id, m.role, m.content, c.character_id
+      FROM messages m JOIN conversations c ON c.id = m.conversation_id
+      WHERE m.id = ?
+    `).get(messageId) as (ProposalMessageTarget & { character_id: string }) | undefined;
+    if (itemErrors.length === 0 && !row) itemErrors.push(`消息 ${messageId} 不存在`);
+    if (row) {
+      if (row.role !== 'user' && row.role !== 'assistant') {
+        itemErrors.push(`消息 ${row.id} 的角色是 ${row.role}，只能修改用户和角色的发言`);
+      }
+      if (characterId === null) characterId = row.character_id;
+      else if (row.character_id !== characterId) itemErrors.push(`消息 ${row.id} 属于另一个角色的对话，一份提案只能修改同一个角色的消息`);
+      const claimedBy = claims.get(row.id);
+      if (claimedBy !== undefined) itemErrors.push(`消息 ${row.id} 已在第 ${claimedBy} 项中修改`);
+      else claims.set(row.id, seq);
+      if (!item.content.trim()) itemErrors.push('正文不能为空；删除消息请主人在聊天界面操作');
+      else if (item.content === row.content) itemErrors.push(`对消息 ${row.id} 没有实际改动`);
+      // 复用角色内消息唯一前缀补全和当前 Agent 会话的主人原话核验。
+      const resolved = resolveItemIds(db, row.character_id, {
+        op: 'update', reason, confidence: item.confidence, evidence: item.evidence,
+      }, itemErrors);
+      // 被改的消息自己说明不了为什么要改它
+      if (resolved.evidence?.message_ids?.includes(row.id)) {
+        itemErrors.push('依据不能是被修改的消息本身：给出别的消息，或把主人的原话写进 owner_quote');
+      }
+      const evidence = checkEvidence(db, row.character_id, resolved.evidence, true, context.sessionId, itemErrors);
+      if (itemErrors.length === 0) {
+        prepared.push({
+          op: 'update', reason, evidence, confidence: item.confidence,
+          before: { message: { id: row.id, conversation_id: row.conversation_id, role: row.role, content: row.content } },
+          after: { content: item.content },
+          state: 'pending', memoryTargets: [], candidateTarget: null,
+          warning: fidelityWarning(messageEditFidelityIssues(item.content, row.content)),
+        });
+      }
+    }
+    for (const message of itemErrors) errors.push(`第 ${seq} 项：${message}`);
+  });
+  if (errors.length > 0) return { ok: false, errors };
+  return savePreparedProposal(db, characterId, summary, prepared, context);
 }
 
 export interface ProposalRow {

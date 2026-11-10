@@ -1,7 +1,7 @@
 /**
  * 提案项的醒目标注。服务端校验和卡片共用，本文件不引入任何服务端模块，客户端可以直接导入。
  */
-import { contentFidelityIssues, type ContentFidelityIssues, type ContentShrink } from './content-fidelity';
+import { contentFidelityIssues, messageEditFidelityIssues, type ContentFidelityIssues, type ContentShrink } from './content-fidelity';
 import type { ProposalItemView } from './proposals';
 
 /** 没有原文依据时 evidence.note 以这句开头，后面可以写原因；卡片会醒目标出。 */
@@ -48,6 +48,7 @@ function rewriteIssues(item: Pick<ProposalItemView, 'op' | 'before'> & Partial<P
   if (!REWRITE_OPS.has(item.op) || typeof after?.content !== 'string' || !after.content) {
     return { missingQuotes: [], unfamiliarChars: [], shrink: null };
   }
+  if (item.before && 'message' in item.before) return messageEditFidelityIssues(after.content, item.before.message.content);
   const sources = item.before && 'memories' in item.before
     ? item.before.memories.map(target => (typeof target.snapshot.content === 'string' ? target.snapshot.content : ''))
     : [];

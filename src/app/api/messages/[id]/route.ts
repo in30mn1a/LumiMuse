@@ -10,6 +10,7 @@ import {
 import { messageUpdateSchema, formatZodFieldErrors } from '@/lib/schemas';
 import type { MessageAttachment, MessageMetadata } from '@/types';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
+import { applyMessageEdit } from '@/lib/message-mutations';
 
 type MessageRecord = Record<string, unknown>;
 
@@ -143,43 +144,7 @@ export async function PUT(
           .run(target.content, tokenResult.tokenCount, JSON.stringify(meta), id);
       }
     } else if (body.content !== undefined || body.attachments !== undefined) {
-      // 同步更新 metadata.versions 里当前激活版本的内容，防止切换版本时覆盖编辑
-      let meta: Record<string, unknown> = {};
-      meta = parseMessageMetadata(existing.metadata);
-      const versions = meta.versions as Array<{ content: string; token_count: number }> | undefined;
-      const nextContent = body.content ?? String(existing.content ?? '');
-
-      // 如果传了 attachments，更新 metadata 里的附件
-      if (body.attachments !== undefined) {
-        if (body.attachments && (body.attachments as unknown[]).length > 0) {
-          meta.attachments = body.attachments;
-        } else {
-          delete meta.attachments;
-        }
-      }
-      const tokenResult = createMessageTokenCount(
-        nextContent,
-        messageRole(existing.role),
-        messageAttachments(meta),
-      );
-      const tokenCount = tokenResult.tokenCount;
-      meta = metadataWithTokenCountProvenance(meta, tokenResult.provenance);
-
-      if (versions && versions.length > 0) {
-        const activeIdx = typeof meta.activeVersion === 'number' ? meta.activeVersion : 0;
-        if (activeIdx >= 0 && activeIdx < versions.length) {
-          versions[activeIdx] = { content: nextContent, token_count: tokenCount };
-          meta.versions = versions;
-        }
-        db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
-          .run(nextContent, tokenCount, JSON.stringify(meta), id);
-      } else {
-        db.prepare('UPDATE messages SET content = ?, token_count = ?, metadata = ? WHERE id = ?')
-          .run(nextContent, tokenCount, JSON.stringify(meta), id);
-      }
-
-      // 注：不再自动 invalidate 消息编辑触发的记忆。编辑原因多样（改错别字/调语气/补内容），
-      // 自动 supersede 会误伤有效记忆；用户可在记忆管理页手动标记失效。
+      applyMessageEdit(db, existing, { content: body.content, attachments: body.attachments });
     }
 
     const shouldMergeIncomingMetadata = body.metadata !== undefined && body.activeVersion === undefined;

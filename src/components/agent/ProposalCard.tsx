@@ -7,6 +7,7 @@ import { getErrorMessage, HttpResponseError, parseJsonResponse } from '@/lib/htt
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { refreshCharacterList } from '@/lib/character-list-cache';
+import { clearCachedMessages } from '@/lib/chat-message-cache';
 import ProposalCardItem from './ProposalCardItem';
 
 type DecideMode = 'apply' | 'continue' | 'reject';
@@ -31,6 +32,11 @@ function refreshChangedCharacters(previous: ProposalView, next: ProposalView): v
   });
   // 决定已成功，列表刷新失败不应把它显示为批准或撤销失败。
   if (changed) void refreshCharacterList().catch(() => {});
+  // 消息正文变了：子对话会继承父对话的消息，无法只清一个对话，整个客户端消息缓存作废后重新读取。
+  const messageChanged = next.items.some(item => item.before && 'message' in item.before
+    && previous.items.find(before => before.id === item.id)?.state !== item.state
+    && (item.state === 'applied' || item.state === 'undone'));
+  if (messageChanged) clearCachedMessages();
 }
 
 async function postDecision(proposalId: number, body: unknown): Promise<ProposalView> {

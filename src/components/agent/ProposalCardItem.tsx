@@ -271,6 +271,14 @@ function ItemChange({ item }: { item: ProposalItemView }) {
       if (item.before && 'character' in item.before) {
         return <CharacterUpdateDiff before={item.before.character.snapshot} changes={(item.after ?? {}) as ProposalCharacterFields} id={item.before.character.id} />;
       }
+      if (item.before && 'message' in item.before) {
+        const { role, content } = item.before.message;
+        return (
+          <Labeled label={role === 'user' ? t('agent.proposal.roleUser') : t('agent.proposal.roleAssistant')}>
+            <ContentDiff before={content} after={String(after.content ?? '')} />
+          </Labeled>
+        );
+      }
       return <UpdateDiff before={before[0] ?? {}} changes={after} />;
     case 'retire':
       return (
@@ -395,7 +403,8 @@ export default function ProposalCardItem({ item, flags, messages, selection, und
   const checkboxId = `proposal-item-${item.id}`;
   const opLabel = t(item.before && 'character_creation' in item.before
     ? 'agent.proposal.op.characterCreate'
-    : item.before && 'character' in item.before ? 'agent.proposal.op.characterUpdate' : `agent.proposal.op.${item.op}`);
+    : item.before && 'character' in item.before ? 'agent.proposal.op.characterUpdate'
+    : item.before && 'message' in item.before ? 'agent.proposal.op.messageUpdate' : `agent.proposal.op.${item.op}`);
   return (
     <li className="min-w-0 space-y-2 rounded-xl border border-border-light bg-surface-raised px-3 py-2.5" data-proposal-item={item.id}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

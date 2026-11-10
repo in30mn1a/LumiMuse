@@ -57,7 +57,7 @@ function rememberedNote(name: string, result: string | null): AgentMemoryNoteDat
 }
 
 /** 提案工具成功时返回 proposal_id；卡片紧跟在这次工具调用后面。 */
-const PROPOSAL_TOOL_NAMES = new Set(['create_memory_proposal', 'create_character_proposal', 'create_character']);
+const PROPOSAL_TOOL_NAMES = new Set(['create_memory_proposal', 'create_character_proposal', 'create_character', 'create_message_proposal']);
 
 function createdProposalId(name: string, result: string | null): number | null {
   if (!PROPOSAL_TOOL_NAMES.has(name) || result === null) return null;

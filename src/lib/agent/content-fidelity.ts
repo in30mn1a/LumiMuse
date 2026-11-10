@@ -115,3 +115,8 @@ export function contentFidelityIssues(op: string, content: string, sources: read
     shrink: LENGTH_CHECKED_OPS.has(op) ? contentShrink(content, sources) : null,
   };
 }
+
+/** 聊天消息正文的修改：引号里是台词而不是要保留的引文，改台词很常见，不查原话。 */
+export function messageEditFidelityIssues(content: string, original: string): ContentFidelityIssues {
+  return { ...contentFidelityIssues('update', content, [original]), missingQuotes: [] };
+}

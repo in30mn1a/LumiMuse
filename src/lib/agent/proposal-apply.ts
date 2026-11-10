@@ -19,6 +19,7 @@ import {
   memoryBusinessSnapshot,
   type MemoryBusinessSnapshot,
 } from '@/lib/memory-mutations';
+import { applyMessageEdit } from '@/lib/message-mutations';
 import { publicErrorMessage } from '@/lib/public-error';
 import type { MemoryUpdate } from '@/lib/schemas';
 import type { MemoryStatus } from '@/types';
@@ -74,6 +75,8 @@ export interface ProposalApplyResult {
   character?: ProposalCharacterTarget;
   /** 新建角色整行快照，撤销不能删除后来编辑或使用过的角色。 */
   created_character?: CreatedCharacterSnapshot;
+  /** 消息修改应用后的正文，撤销时据此判断之后是否又被编辑。 */
+  message?: { id: string; content: string };
 }
 
 type DecisionFailure = { ok: false; status: 400 | 404 | 409; error: string };
@@ -194,6 +197,19 @@ function newMemoryDuplicateIssue(
   return duplicate ? `已有内容相同的 active 记忆 ${duplicate.id}，本项已过期，没有修改` : null;
 }
 
+/** 消息整行，限定在该角色的对话里。 */
+function loadCharacterMessage(
+  db: Database.Database,
+  characterId: string,
+  messageId: string,
+): (Record<string, unknown> & { content: string }) | undefined {
+  return db.prepare(`
+    SELECT m.* FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    WHERE m.id = ? AND c.character_id = ?
+  `).get(messageId, characterId) as (Record<string, unknown> & { content: string }) | undefined;
+}
+
 function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): ItemOutcome {
   const characterId = proposal.character_id;
   const before = JSON.parse(item.before_json) as ProposalBefore;
@@ -228,6 +244,21 @@ function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalI
         memory_ids: [], created_memory_id: null, batch_id: null, after: [],
         character: { id: characterId, snapshot: loadCharacterCard(db, characterId)! },
       },
+    };
+  }
+  if (before && 'message' in before) {
+    if (item.op !== 'update') throw new Error(`${item.op} 不能用于消息修改`);
+    const target = before.message;
+    const current = loadCharacterMessage(db, characterId, target.id);
+    if (!current || current.content !== target.content) {
+      return { state: 'stale', detail: `消息 ${target.id} 在提案生成后已被改动或删除，没有修改` };
+    }
+    const { content } = JSON.parse(item.after_json) as { content: string };
+    // 不清理正文里不再引用的本地图片：撤销要能原样恢复，孤儿文件留给维护页检测
+    applyMessageEdit(db, current, { content });
+    return {
+      state: 'applied', indexIds: [],
+      result: { memory_ids: [], created_memory_id: null, batch_id: null, after: [], message: { id: target.id, content } },
     };
   }
   const after = JSON.parse(item.after_json) as ProposalMemoryFields;
@@ -572,6 +603,15 @@ function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalIt
     const changedKeys = Object.keys(JSON.parse(item.after_json) as ProposalCharacterFields);
     const restore = Object.fromEntries(changedKeys.map(key => [key, before.character.snapshot[key as keyof ProposalCharacterFields]]));
     applyCharacterCardUpdate(db, characterId, restore, now);
+    return [];
+  }
+  if (before && 'message' in before) {
+    const applied = result.message;
+    const current = loadCharacterMessage(db, characterId, before.message.id);
+    if (!applied || applied.id !== before.message.id || !current || current.content !== applied.content) {
+      throw new ProposalUndoConflict(`消息 ${before.message.id} 在批准后又被改动或删除，不能撤销`);
+    }
+    applyMessageEdit(db, current, { content: before.message.content });
     return [];
   }
   const targets = before && 'memories' in before ? before.memories : [];

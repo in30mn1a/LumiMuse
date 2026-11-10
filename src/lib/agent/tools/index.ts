@@ -13,7 +13,9 @@ import {
   getMemorySourcesTool,
   searchMemoriesTool,
 } from './memory-tools';
-import { createCharacterProposalTool, createCharacterTool, createMemoryProposalTool } from './proposal-tools';
+import {
+  createCharacterProposalTool, createCharacterTool, createMemoryProposalTool, createMessageProposalTool,
+} from './proposal-tools';
 import { queryTableTool } from './query-table-tool';
 import { rememberTool } from './document-tools';
 import { loadSkillTool, prepareMemoryReviewTool, readReviewBatchTool } from './review-tools';
@@ -42,8 +44,8 @@ export const AGENT_READ_TOOLS: AgentReadTool[] = [
   readReviewBatchTool,
 ];
 
-/** 角色卡与记忆经提案、由主人批准后修改；其余工具只写 Agent 笔记与计划。 */
-export const AGENT_WRITE_TOOLS: AgentWriteTool[] = [createMemoryProposalTool, createCharacterProposalTool, createCharacterTool, rememberTool, updateTaskPlanTool];
+/** 角色卡、记忆与聊天消息经提案、由主人批准后修改；其余工具只写 Agent 笔记与计划。 */
+export const AGENT_WRITE_TOOLS: AgentWriteTool[] = [createMemoryProposalTool, createCharacterProposalTool, createCharacterTool, createMessageProposalTool, rememberTool, updateTaskPlanTool];
 
 /** 交给 Agent 循环的完整工具表。 */
 export const AGENT_TOOLS: AgentTool[] = [...AGENT_READ_TOOLS, ...AGENT_WRITE_TOOLS];

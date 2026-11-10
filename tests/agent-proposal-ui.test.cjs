@@ -488,6 +488,29 @@ test('角色卡工具结果紧跟工具调用显示提案，待批状态由决�
   assert.equal(hasUndecidedProposal([...messages, { id: 3, role: 'event', event: { kind: 'proposal_decision', proposal_id: 42, items: [] } }]), false);
 });
 
+test('消息修改卡片显示发言方和正文差异，批准后作废客户端消息缓存', async () => {
+  const { readCachedMessages, writeCachedMessages } = require('../src/lib/chat-message-cache.ts');
+  const edit = item(95, 'update', {
+    before: { message: { id: 'msg-1', conversation_id: 'conv-1', role: 'assistant', content: '今天去了海边散步。' } },
+    after: { content: '今天去了湖边散步。' },
+    evidence: { message_ids: [], owner_quote: '把海边改成湖边' },
+  });
+  const pending = proposalView({ items: [edit], summary: '修正地点' });
+  writeCachedMessages('conv-child', { messages: [], hasMore: false, oldestSeq: null });
+  installFetch(() => json({ ...pending, status: 'decided', items: [{ ...edit, state: 'applied' }] }));
+  const view = render(React.createElement(ProposalCard, { proposalId: 7, initialView: pending }));
+  const checkbox = view.getByRole('checkbox', { name: '修改聊天消息' });
+  assert.equal(checkbox.checked, true, '有主人原话且没有保真问题的消息修改默认勾选');
+  const diff = view.getByText('角色').parentElement.lastElementChild;
+  assert.equal(diff.querySelector('del').textContent, '海');
+  assert.equal(diff.querySelector('ins').textContent, '湖');
+  assert.equal(diff.textContent, '今天去了海湖边散步。');
+  assert.ok(readCachedMessages('conv-child'), '待批准时不动缓存');
+  fireEvent.click(view.getByRole('button', { name: '批准所选（1）' }));
+  await waitFor(() => assert.equal(readCachedMessages('conv-child'), null));
+  assert.ok(view.getByText('已生效'));
+});
+
 test('从零创建角色卡完整展示所有文本，批准及撤销同步角色列表', async () => {
   const fields = {
     name: '暮星', basic_info: '观星者', personality: '温柔好奇', scenario: '夜晚的观测台',

@@ -129,16 +129,23 @@ test('a chat request streams tool progress, text and done in order, then history
   assert.equal(raw.includes(UPSTREAM_KEY), false);
 });
 
-test('a second request on a running session gets 409, and disconnecting aborts the turn', async t => {
+test('a second request on a running session gets 409, and a disconnected turn still runs to completion', async t => {
   const { db, upstream } = setup(t);
   const session = await createSession();
   let markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
-  upstream.handlers.push(hangingCompletion(() => markStarted()));
+  let release;
+  const released = new Promise(resolve => { release = resolve; });
+  let upstreamAborted = false;
+  upstream.handlers.push(async init => {
+    init.signal.addEventListener('abort', () => { upstreamAborted = true; }, { once: true });
+    markStarted();
+    await released;
+    return Response.json({ choices: [{ message: { content: '想好了' }, finish_reason: 'stop' }] });
+  });
 
   const client = new AbortController();
   const firstResponse = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '慢慢想' }, { signal: client.signal }));
-  const firstEvents = readSse(firstResponse);
   await started;
 
   const busy = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '再问一次' }));
@@ -155,11 +162,24 @@ test('a second request on a running session gets 409, and disconnecting aborts t
   const otherEvents = await readSse(await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: other.id, content: '在吗' })));
   assert.equal(otherEvents.at(-1).data.status, 'done');
 
+  // 掉线：请求信号中止，响应流也被取消。这一轮不受影响，上游请求没有被取消。
   client.abort();
-  const events = await firstEvents;
-  assert.deepEqual(events.at(-1), { event: 'done', data: { status: 'aborted', rounds: 1 } });
+  await firstResponse.body.cancel();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(upstreamAborted, false);
+  const stillRunning = await (await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${session.id}`, 'GET'), routeContext({ id: session.id }))).json();
+  assert.equal(stillRunning.running, true);
+
+  release();
+  let finishedView;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    finishedView = await (await sessionRoute.GET(jsonRequest(`/api/agent/sessions/${session.id}`, 'GET'), routeContext({ id: session.id }))).json();
+    if (!finishedView.running) break;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(finishedView.running, false);
   const rows = db.prepare('SELECT role, content FROM agent_messages WHERE session_id = ? ORDER BY id').all(session.id);
-  assert.deepEqual(rows.map(row => [row.role, row.content]), [['user', '慢慢想'], ['event', '{"kind":"interrupted"}']]);
+  assert.deepEqual(rows.map(row => [row.role, row.content]), [['user', '慢慢想'], ['assistant', '想好了']]);
 
   upstream.handlers.push(completion({ content: '接着来' }));
   const retry = await chatRoute.POST(jsonRequest('/api/agent/chat', 'POST', { session_id: session.id, content: '继续' }));

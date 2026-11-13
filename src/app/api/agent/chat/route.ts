@@ -12,7 +12,8 @@ import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
 /**
  * 运行一轮 Agent 对话，以 SSE 推送进度。事件：
  * text、tool_start、tool_end、note、usage、context、compaction、error，最后总是 done（带本轮结束状态）。
- * 连接断开即中止本轮；已完成的回合已经入库。
+ * 连接断开不中止本轮：手机切后台、线路抖动都会掉线，而一次建卡要静默生成几十秒。
+ * 这一轮在服务端跑完并入库，页面靠会话详情的 running 轮询接回结果；只有 stop 接口能中止它。
  */
 export async function POST(request: NextRequest) {
   const body = await readJsonObject(request);
@@ -34,8 +35,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '这个会话正在运行，请等它结束或先停止', code: 'agent_busy' }, { status: 409 });
   }
 
-  const abortRun = () => run.abort();
-  request.signal.addEventListener('abort', abortRun, { once: true });
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -77,7 +76,6 @@ export async function POST(request: NextRequest) {
         send('error', { error: publicErrorMessage(error, 'Agent 运行失败') });
         send('done', { status: 'error', rounds: 0 });
       } finally {
-        request.signal.removeEventListener('abort', abortRun);
         finishAgentRun(sessionId, run);
         closed = true;
         try {
@@ -86,9 +84,6 @@ export async function POST(request: NextRequest) {
           // 客户端已断开
         }
       }
-    },
-    cancel() {
-      run.abort();
     },
   });
 

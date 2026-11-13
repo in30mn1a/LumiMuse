@@ -162,7 +162,10 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     return () => window.clearTimeout(timer);
   }, [serverRunning, sessionId, currentDetail, load]);
 
-  /** 未接受的请求返回 error/busy；已接受后的流失败返回 interrupted，不恢复已发送的草稿。 */
+  /**
+   * 未接受的请求返回 error/busy。已接受后流断开不算失败：这一轮在服务端继续跑，
+   * 随后读到的历史带 running，由轮询等它结束。
+   */
   const send = useCallback(async (targetId: string, content: string): Promise<AgentSendFailure | null> => {
     if (controllerRef.current) return { kind: 'busy' };
     const controller = new AbortController();
@@ -197,17 +200,13 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
         failure = { kind: 'interrupted', message: '' };
         return failure;
       }
-      let finished = false;
       await readAgentStream(response.body, event => {
-        if (event.type === 'done') finished = true;
         setLive(prev => (prev ? applyAgentStreamEvent(prev, event) : prev));
       });
-      if (!finished && !controller.signal.aborted) failure = { kind: 'interrupted', message: '' };
     } catch (error) {
-      // 主动停止不算错误；服务端会把已完成的部分和中断记录写进历史
-      if (!controller.signal.aborted) {
+      if (!accepted && !controller.signal.aborted) {
         const message = getErrorMessage(error);
-        failure = { kind: accepted ? 'interrupted' : 'error', message };
+        failure = { kind: 'error', message };
         setLive(prev => (prev ? { ...prev, error: message } : prev));
       }
     } finally {
@@ -251,16 +250,13 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
   }, [load]);
 
   /**
-   * 本页持有当前会话的流就直接中止；否则（切走后回来、刷新页面后）请服务端停止，
-   * 再由 running 轮询等它收尾，中断记录会随历史一起出现。
+   * 停止总是请服务端中止：断开连接不会让这一轮停下。本页持有当前会话的流时同时放掉它，
+   * 由发送收尾时的读取和 running 轮询等服务端写完中断记录。
    */
   const stop = useCallback(() => {
     const id = currentIdRef.current;
-    if (controllerRef.current && streamSessionRef.current === id) {
-      controllerRef.current.abort();
-      return;
-    }
     if (!id) return;
+    const holdsStream = controllerRef.current !== null && streamSessionRef.current === id;
     // 写请求必须带 JSON Content-Type：设了访问密码时 proxy 的 CSRF 校验会以 415 拒绝其它类型
     void fetch(`/api/agent/sessions/${encodeURIComponent(id)}/stop`, {
       method: 'POST',
@@ -268,8 +264,9 @@ export function useAgentChat(sessionId: string | null, options: { onTurnFinished
     })
       .catch(() => undefined)
       .finally(() => {
-        if (currentIdRef.current === id) void load(id);
+        if (!holdsStream && currentIdRef.current === id) void load(id);
       });
+    if (holdsStream) controllerRef.current?.abort();
   }, [load]);
 
   const visibleLive = live && live.sessionId === sessionId ? live : null;

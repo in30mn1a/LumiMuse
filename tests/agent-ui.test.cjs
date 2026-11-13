@@ -463,8 +463,9 @@ test('a busy session keeps the draft and says why', async () => {
 test('stop aborts the request, then history reloads with the interruption', async () => {
   let chatSignal = null;
   let stopped = false;
-  installFetch(call => {
+  const calls = installFetch(call => {
     if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}/stop` && call.method === 'POST') return json({ stopped: true });
     if (call.url === `/api/agent/sessions/${SESSION.id}`) {
       const messages = stopped
         ? [{ id: 9, role: 'user', content: '慢慢查', tool_calls: null, tool_call_id: null, tool_name: null, tool_ok: null, event: null, created_at: '' },
@@ -492,6 +493,10 @@ test('stop aborts the request, then history reloads with the interruption', asyn
   stopped = true;
   fireEvent.click(view.getByRole('button', { name: 'agent.stop' }));
   assert.equal(chatSignal.aborted, true, 'stop aborts the fetch');
+  assert.ok(
+    calls.some(call => call.url === `/api/agent/sessions/${SESSION.id}/stop` && call.method === 'POST'),
+    'dropping the stream no longer stops the run, so stop must ask the server',
+  );
   await view.findByText('agent.event.roundLimit');
   assert.equal(view.queryByText('unreachable'), null);
   assert.equal(view.queryByRole('alert', { name: /AbortError/ }), null, 'a deliberate stop is not shown as an error');
@@ -913,12 +918,20 @@ test('a rejected chat request preserves the unsent draft and shows the network e
   assert.equal(input.value, '这条消息还没有发出去');
 });
 
-test('an accepted stream failure shows an error without restoring or resending the saved message', async () => {
+test('an accepted stream failure keeps waiting for the server run without an error or a resend', async () => {
   let accepted = false;
+  let polls = 0;
   const savedMessage = { ...HISTORY[0], content: '已经保存的请求' };
+  const reply = { ...HISTORY[0], id: HISTORY[0].id + 1, role: 'assistant', content: '断线后跑完的回复' };
   const calls = installFetch(call => {
     if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
-    if (call.url === `/api/agent/sessions/${SESSION.id}`) return json({ session: SESSION, messages: accepted ? [savedMessage] : [], running: false });
+    if (call.url === `/api/agent/sessions/${SESSION.id}`) {
+      if (!accepted) return json({ session: SESSION, messages: [], running: false });
+      polls += 1;
+      return polls === 1
+        ? json({ session: SESSION, messages: [savedMessage], running: true })
+        : json({ session: SESSION, messages: [savedMessage, reply], running: false });
+    }
     if (call.url === '/api/agent/status') return json(STATUS);
     if (call.url === '/api/agent/chat') {
       accepted = true;
@@ -934,13 +947,16 @@ test('an accepted stream failure shows an error without restoring or resending t
   fireEvent.change(input, { target: { value: savedMessage.content } });
   fireEvent.click(view.getByRole('button', { name: 'agent.send' }));
 
-  await waitFor(() => assert.deepEqual(toasts, [{ message: 'agent.streamInterrupted: stream disconnected', type: 'error' }]));
+  await view.findByText('agent.runningOnServer');
+  await view.findByText(reply.content, undefined, { timeout: 5000 });
+  assert.equal(view.queryByText('agent.runningOnServer'), null);
+  assert.deepEqual(toasts, []);
   assert.equal(input.value, '', 'an accepted message is not offered for accidental duplicate submission');
   assert.equal(view.getAllByText(savedMessage.content).length, 1);
   assert.equal(calls.filter(call => call.url === '/api/agent/chat').length, 1);
 });
 
-test('a stream that closes without done is reported as interrupted', async () => {
+test('a stream that closes without done is not reported as an error', async () => {
   let accepted = false;
   installFetch(call => {
     if (call.url.startsWith('/api/agent/sessions?')) return json({ sessions: [SESSION], has_more: false });
@@ -955,7 +971,8 @@ test('a stream that closes without done is reported as interrupted', async () =>
   const view = renderPage(`session=${SESSION.id}`);
   await view.findByText('agent.emptyTitle');
   fireEvent.click(view.getByRole('button', { name: 'agent.quick.recentErrors' }));
-  await waitFor(() => assert.ok(toasts.some(toast => toast.message.startsWith('agent.streamInterrupted'))));
+  await view.findByRole('button', { name: 'agent.send' });
+  assert.deepEqual(toasts, []);
   assert.equal(view.getByRole('textbox', { name: 'agent.inputLabel' }).value, '');
 });
 

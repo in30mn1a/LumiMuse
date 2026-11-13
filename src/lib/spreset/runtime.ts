@@ -5,7 +5,7 @@
  *
  *   assemblePresetPrompt()            → messages（含预置正文与 <run_tool_replacement> 等标记）
  *   ├─ ChatSquash                     → 把对话压成一条，套角色前缀 / 分隔符，跑后置脚本
- *   ├─ buildRequestBase()             → 原始请求体（模型 / 采样 / stream）
+ *   ├─ buildChatRequestBody()         → 原始请求体（模型 / 采样 / stream）
  *   ├─ tools                          → 由 ToolBindings 生成 OpenAI tools 定义
  *   ├─ FinalRequestProcessing         → 脚本拿到整个请求体，可换 messages / 加 context 工具 / 定 tool_choice
  *   ├─ 调模型（可多轮）

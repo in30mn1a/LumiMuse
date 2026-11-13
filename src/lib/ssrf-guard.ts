@@ -158,19 +158,37 @@ function parseIPv6Words(ip: string): number[] | null {
   return [...left, ...Array(missing).fill(0), ...right];
 }
 
-function extractIPv4MappedIPv6(ip: string): string | null {
+/**
+ * 取出 IPv6 地址里内嵌的 IPv4：这些前缀经由映射/翻译/隧道最终连到那个 IPv4，
+ * 必须按内嵌地址判定，否则 64:ff9b::7f00:1 之类可以绕过内网拦截。
+ * 按内嵌地址判定而不是整段拒绝：NAT64/DNS64 网络里公网主机的解析结果就在 64:ff9b::/96。
+ */
+function extractEmbeddedIPv4(ip: string): string | null {
   const words = parseIPv6Words(ip);
   if (!words || words.length !== 8) return null;
-  if (!words.slice(0, 5).every(word => word === 0) || words[5] !== 0xffff) return null;
 
-  const high = words[6];
-  const low = words[7];
-  return [
+  const toIPv4 = (high: number, low: number) => [
     (high >>> 8) & 0xff,
     high & 0xff,
     (low >>> 8) & 0xff,
     low & 0xff,
   ].join('.');
+  const zero = (from: number, to: number) => words.slice(from, to).every(word => word === 0);
+
+  // ::ffff:0:0/96 — IPv4-mapped
+  if (zero(0, 5) && words[5] === 0xffff) return toIPv4(words[6], words[7]);
+  // ::/96 — 已弃用的 IPv4-compatible；:: 与 ::1 是独立的特殊地址，留给地址段表判定
+  if (zero(0, 6) && (words[6] !== 0 || words[7] > 1)) return toIPv4(words[6], words[7]);
+  // 64:ff9b::/96 与 64:ff9b:1::/48 — NAT64
+  if (words[0] === 0x64 && words[1] === 0xff9b && (zero(2, 6) || words[2] === 1)) {
+    return toIPv4(words[6], words[7]);
+  }
+  // 2002::/16 — 6to4
+  if (words[0] === 0x2002) return toIPv4(words[1], words[2]);
+  // 2001::/32 — Teredo，客户端 IPv4 按位取反存放在末 32 位
+  if (words[0] === 0x2001 && words[1] === 0) return toIPv4(words[6] ^ 0xffff, words[7] ^ 0xffff);
+
+  return null;
 }
 
 function isInIpv6Range(ip: string, range: Ipv6Range): boolean {
@@ -196,8 +214,8 @@ function classifyIpv4(ip: string, allowLocal: boolean): string | null {
 }
 
 function classifyIpv6(ip: string, allowLocal: boolean): string | null {
-  const mappedIPv4 = extractIPv4MappedIPv6(ip);
-  if (mappedIPv4) return classifyIpv4(mappedIPv4, allowLocal);
+  const embeddedIPv4 = extractEmbeddedIPv4(ip);
+  if (embeddedIPv4) return classifyIpv4(embeddedIPv4, allowLocal);
   if (BLOCKED_IPV6_ALWAYS.some(range => isInIpv6Range(ip, range))) {
     return '目标地址属于禁用的 IPv6 特殊用途地址段';
   }
@@ -388,6 +406,9 @@ export async function safeFetch(
     if (!location) {
       return response;
     }
+
+    // 重定向响应体不会再被读取，不取消会一直占着连接
+    await response.body?.cancel().catch(() => {});
 
     if (redirectCount === maxRedirects) {
       throw new Error('重定向次数过多');

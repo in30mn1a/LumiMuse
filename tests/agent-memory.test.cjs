@@ -94,6 +94,26 @@ test('the document API undoes notes and persists the event, and refuses stale or
   assert.equal((await put('memory', { undo_version_id: versionId })).status, 409);
 });
 
+test('the document API refuses to undo a note into a session that is still running', async t => {
+  const { startAgentRun, finishAgentRun } = require('../src/lib/agent/runs.ts');
+  const { db, sessionId } = setup(t);
+  const versionId = appendAgentMemory(db, '运行中写下的笔记。', NOW);
+  const put = body => route.PUT(new NextRequest('http://fixture.test/api/agent/documents/memory', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }), { params: Promise.resolve({ key: 'memory' }) });
+  const run = startAgentRun(sessionId);
+  t.after(() => finishAgentRun(sessionId, run));
+
+  const busy = await put({ undo_version_id: versionId, session_id: sessionId });
+  assert.equal(busy.status, 409);
+  assert.equal((await busy.json()).code, 'agent_busy');
+  assert.equal(readAgentDocument(db, 'memory').content, '运行中写下的笔记。');
+  assert.equal(listAgentMessages(db, sessionId).some(row => row.role === 'event'), false);
+
+  finishAgentRun(sessionId, run);
+  assert.equal((await put({ undo_version_id: versionId, session_id: sessionId })).status, 200);
+});
+
 test('a stale memory editor cannot overwrite a note appended during an Agent turn', async t => {
   const { db } = setup(t);
   saveAgentDocument(db, 'memory', '编辑器读取的旧内容。', 'user', NOW);

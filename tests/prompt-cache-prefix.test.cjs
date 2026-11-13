@@ -317,6 +317,38 @@ test('inline_prompt_position=system 时完整指令进 system，user 不再被�
   assert.match(lastUserContent(prompt), /陪我聊聊天/, '用户原话保持干净');
 });
 
+test('进 system 的生图指令只计一次预算，不多挤掉历史', async () => {
+  const { estimateTokens } = require('../src/lib/token-counter.ts');
+  const character = baseCharacter({ image_tags: 'shinosawa hiro, silver hair' });
+  const imageGen = { enabled: true, inline_prompt: true, inline_prompt_position: 'system' };
+  const messages = [
+    message({ id: 'u1', content: `旧消息 ${'内容 '.repeat(50)}`, token_count: null }),
+    message({ id: 'a1', role: 'assistant', content: `旧回答 ${'内容 '.repeat(50)}`, token_count: null }),
+    message({ id: 'u2', content: '最新提问', token_count: null }),
+  ];
+
+  const roomy = await assemblePrompt(character, messages, baseSettings({ image_gen: imageGen }), '');
+  const withoutInstruction = await assemblePrompt(character, messages, baseSettings(), '');
+  const systemTokens = estimateTokens(roomy[0].content);
+  const instructionTokens = systemTokens - estimateTokens(withoutInstruction[0].content);
+  const historyTokens = messages.reduce((sum, item) => sum + estimateTokens(item.content), 0);
+  assert.ok(instructionTokens > 100, '样本必须让重复计入的差额大于余量，否则测不出来');
+
+  // 窗口恰好容纳 system + 全部历史，余量只有指令的一半：重复计入就会丢掉最旧的一条
+  const tight = await assemblePrompt(
+    character,
+    messages,
+    baseSettings({
+      image_gen: imageGen,
+      max_tokens: 100,
+      context_window: 100 + systemTokens + historyTokens + Math.floor(instructionTokens / 2),
+    }),
+    '',
+  );
+
+  assert.deepEqual(tight, roomy);
+});
+
 test('传统组装在两种风格和位置传递生图其他要求，空值不改变请求或原始消息', async () => {
   const requirements = '  保留窗边的构图。\n使用柔和侧光。  ';
   for (const style of ['danbooru', 'nai-v5']) {

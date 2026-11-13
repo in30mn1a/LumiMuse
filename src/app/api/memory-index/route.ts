@@ -19,6 +19,7 @@ import {
 } from '@/lib/memory-index-trigger';
 import { readJsonObject } from '@/lib/request-json';
 import { loadSettings } from '@/lib/settings';
+import { publicErrorMessage } from '@/lib/public-error';
 import type { MemoryEmbeddingTarget, MemoryIndexStatus } from '@/lib/memory-embeddings';
 
 const memoryIndexActionSchema = z.enum([
@@ -137,7 +138,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: 'Failed to read memory index status', detail: getErrorMessage(error) },
+      { error: 'Failed to read memory index status', detail: publicErrorMessage(error, 'internal error') },
       { status: 500 },
     );
   }
@@ -277,7 +278,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { ok: false, queued: 0, error: 'Failed to queue memory index rebuild', detail: getErrorMessage(error) },
+      { ok: false, queued: 0, error: 'Failed to queue memory index rebuild', detail: publicErrorMessage(error, 'internal error') },
       { status: 500 },
     );
   }

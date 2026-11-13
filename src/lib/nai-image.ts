@@ -1,8 +1,5 @@
 import { ImageGenSettings } from '@/types';
 
-export const NAI_V5_FULL_MODEL = 'nai-diffusion-5-full';
-export const NAI_V5_CURATED_MODEL = 'nai-diffusion-5-curated';
-
 export type ImagePromptStyle = 'danbooru' | 'nai-v5';
 
 export type NaiCharacterCaption = {

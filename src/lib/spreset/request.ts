@@ -9,10 +9,8 @@
  */
 
 import type { ChatMessage, ChatMessageContent } from '@/lib/api-client';
-import { buildChatRequestBody } from '@/lib/api-client';
 import { evaluateFunction, SandboxOptions } from '@/lib/spreset/sandbox';
 import type { SpresetChatSquash } from '@/lib/spreset/config';
-import type { Settings } from '@/types';
 
 /** 把 ChatMessage.content（字符串或多段）拍平成纯文本。 */
 export function messageText(content: ChatMessageContent | unknown): string {
@@ -156,9 +154,4 @@ export function runFinalRequestProcessor(
   } finally {
     fn.dispose();
   }
-}
-
-/** 组装初始请求体（与 api-client 的流式路径同一口径）。 */
-export function buildRequestBase(settings: Settings, stream: boolean): Record<string, unknown> {
-  return buildChatRequestBody(settings, stream);
 }

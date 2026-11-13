@@ -223,7 +223,7 @@ export async function POST(request: NextRequest) {
 
       // ── 每个对话随机采样 10 条用户消息 + 对应角色回复 ──
       const conversations = db.prepare(
-        'SELECT id FROM conversations WHERE character_id = ? ORDER BY updated_at DESC'
+        'SELECT id FROM conversations WHERE character_id = ? AND COALESCE(ignore_memory, 0) = 0 ORDER BY updated_at DESC'
       ).all(characterId) as Array<{ id: string }>;
 
       if (conversations.length > 0) {

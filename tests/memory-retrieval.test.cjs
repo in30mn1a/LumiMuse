@@ -2230,6 +2230,44 @@ test('索引状态暴露最近的 embedding 失败原因', () => {
   assert.equal(status.latest_error, 'embedding API error 404: 404 page not found');
 });
 
+test('归档后的记忆留下的失败任务不计入索引失败数，也不会被重试', () => {
+  const db = createMemoryDb();
+  db.exec(`
+    INSERT INTO memories (
+      id, character_id, category, content, confidence, tags, source_msg_ids,
+      memory_kind, importance, emotional_weight, status, pinned, last_used_at,
+      usage_count, metadata, created_at, updated_at
+    )
+    VALUES
+      ('mem-live', 'char-a', '话题历史', '仍然有效的记忆。', 0.9, '[]', '[]',
+        'general', 0.5, 0, 'active', 0, NULL, 0, '{}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+      ('mem-gone', 'char-a', '话题历史', '已经归档的记忆。', 0.9, '[]', '[]',
+        'general', 0.5, 0, 'archived', 0, NULL, 0, '{}',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+
+    INSERT INTO memory_embedding_tasks (
+      memory_id, character_id, reason, status, retry_count, error_message, created_at, updated_at
+    )
+    VALUES
+      ('mem-live', 'char-a', 'rebuild', 'failed', 1, 'live failure',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z'),
+      ('mem-gone', 'char-a', 'rebuild', 'failed', 1, 'archived failure',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:02.000Z');
+  `);
+
+  const status = getMemoryIndexStatus('char-a', db);
+  assert.equal(status.failed, 1);
+  assert.equal(status.latest_error, 'live failure');
+
+  assert.equal(retryFailedMemoryEmbeddings('char-a', db), 1);
+  const statuses = db.prepare('SELECT memory_id, status FROM memory_embedding_tasks ORDER BY memory_id').all();
+  assert.deepEqual(statuses, [
+    { memory_id: 'mem-gone', status: 'failed' },
+    { memory_id: 'mem-live', status: 'pending' },
+  ]);
+});
+
 test('getMemoryIndexStatus filters ready and unresolved failed by current embedding target', () => {
   const db = createMemoryDb();
   ensureMemoryEmbeddingTables(db);

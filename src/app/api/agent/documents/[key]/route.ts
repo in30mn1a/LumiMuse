@@ -12,6 +12,7 @@ import {
   undoAgentMemory,
 } from '@/lib/agent/documents';
 import { appendAgentMessage, getAgentSession } from '@/lib/agent/store';
+import { isAgentRunActive } from '@/lib/agent/runs';
 
 const VERSION_PAGE_SIZE = 20;
 // 学习笔记持续追加，完整保存不能沿用人格配置字段的长度校验。
@@ -57,6 +58,10 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
   if ('undo_version_id' in parsed.data) {
     if (key !== 'memory') return NextResponse.json({ error: 'Only Agent memory can be undone' }, { status: 400 });
     const { undo_version_id: versionId, session_id: sessionId } = parsed.data;
+    // 运行中的一轮会按自己的顺序写入会话消息，此时插入撤销事件会打乱对话记录
+    if (sessionId && isAgentRunActive(sessionId)) {
+      return NextResponse.json({ error: '这个会话正在运行，请先停止', code: 'agent_busy' }, { status: 409 });
+    }
     const result = db.transaction(() => {
       const undone = undoAgentMemory(db, versionId, now);
       if (undone.ok && sessionId && getAgentSession(db, sessionId)) {

@@ -88,23 +88,6 @@ export function substitutePresetMacros(content: string, ctx: MacroContext): stri
   return content.replace(MACRO_NAME_RE, (_, name: string) => name.toLowerCase() === 'char' ? ctx.charName : ctx.userName);
 }
 
-/**
- * 按原模板顺序执行常用宏；宏返回的用户正文不会再次作为模板解释。
- */
-export function renderContentWithStMacros(
-  content: string,
-  state: StMacroState,
-  ctx: MacroContext,
-  lastUserMessage: string,
-): string {
-  return renderStMacros(content, state, {
-    ...ctx.values,
-    user: ctx.userName,
-    char: ctx.charName,
-    lastUserMessage,
-  }).content;
-}
-
 function formatBehaviorAndTimeSystemContent(
   timeContext?: ChatTimeContext,
   includeInlinePromptReminder = false,
@@ -473,7 +456,10 @@ export async function assemblePresetPrompt(
     );
   }
   if (memoryMessages.length > 0) baseTokens += estimateTokens(normalizedMemoryText);
-  if (inlinePromptInstruction) baseTokens += estimateTokens(inlinePromptInstruction);
+  // 进 system 的生图指令已含在 behaviorAndTimeContent 里，只有挂最后一条 user 时才需另计。
+  if (inlinePromptInstruction && !inlinePromptInSystem) {
+    baseTokens += estimateTokens(inlinePromptInstruction);
+  }
 
   const { history } = await buildHistoryMessages(messages, settings, timeContext, baseTokens);
 

@@ -132,6 +132,9 @@ ${convText}`;
     // 客户端断开连接时同步取消上游请求，避免 reader 泄漏
     const taskTarget = { character: normalizeCharacterTaskModels(character), kind: 'background' as const };
     const bgConfig = resolveBackgroundConfig(settings, taskTarget);
+    if (!bgConfig.api_base || !bgConfig.model) {
+      return NextResponse.json({ error: '请先配置 LLM API' }, { status: 400 });
+    }
     const backgroundExtraBody = buildBackgroundChatExtraBody(bgConfig.model, taskTarget);
     const summaryMessages = applyBackgroundSystemPrompt(
       [{ role: 'user', content: summaryPrompt }],
@@ -159,7 +162,7 @@ ${convText}`;
 
         if (!response.ok) {
           const text = await response.text();
-          throw new Error(`LLM API error ${response.status}: ${sanitizeUpstreamError(text)}`);
+          throw new Error(`LLM API error ${response.status}: ${sanitizeUpstreamError(text, bgConfig.api_key)}`);
         }
 
         if (!response.body) {
@@ -171,7 +174,7 @@ ${convText}`;
         let content = '';
         try {
           await parseSseStream(reader, ({ text, raw }) => {
-            const error = upstreamStreamError(raw);
+            const error = upstreamStreamError(raw, bgConfig.api_key);
             if (error) throw error;
             if (text) content += text;
           }, { signal });

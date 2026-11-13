@@ -126,7 +126,7 @@ test('successful deletion and maintenance operations isolate cache invalidation 
   const imageDelete = sliceBetween(imageHook, 'const handleDeleteImage = useCallback', '  const handleEditImagePrompt');
   assert.match(
     imageDelete,
-    /try \{\s*await forgetImageBlobs\(updated\.deletedUrls \?\? \[\]\);\s*\} catch \(error\) \{\s*console\.warn\([^;]+;\s*\}\s*markSkipNextScroll\(\);/,
+    /try \{\s*await forgetImageBlobs\(updated\.deletedUrls \?\? \[\]\);\s*\} catch \(error\) \{\s*console\.warn\([^;]+;\s*\}\s*applyToState\(\);/,
   );
 
   const maintenanceCleanup = sliceBetween(settingsPage, 'const handleCleanup = async', '  const fileOrphanCount');

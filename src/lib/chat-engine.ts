@@ -550,7 +550,8 @@ export async function assemblePrompt(
   if (tailBlock) {
     baseTokens += estimateTokens(tailBlock);
   }
-  if (inlinePromptInstruction) {
+  // 进 system 的生图指令已含在 systemTokens 里，只有挂最后一条 user 时才需另计。
+  if (inlinePromptInstruction && !inlinePromptInSystem) {
     baseTokens += estimateTokens(inlinePromptInstruction);
   }
 
@@ -679,6 +680,11 @@ export async function runChat(
     ? db.prepare(`SELECT created_at, seq FROM messages WHERE id = ? AND ${scope.sql} AND role = ?`)
         .get(options.insertAssistantAfterUserId, ...scope.params, 'user') as { created_at: string; seq: number } | undefined
     : undefined;
+  // 同上：锚点失效时落库必然失败，不能先白跑一次无上界历史的 LLM 请求。
+  if (options?.insertAssistantAfterUserId && !insertAfterUserMessage) {
+    callbacks.onError(new Error('Insert anchor user message not found'));
+    return;
+  }
 
   const historyUpperBound = regenerateTargetMessage
     ? { seq: regenerateTargetMessage.seq, inclusive: false as const }
@@ -938,7 +944,7 @@ export async function runChat(
       meta.token_count_provenance = tokenResult.provenance;
 
       // 用事务包裹两条 UPDATE，保持与新建分支对称、避免半成功状态
-      // 注：重新生成 assistant 消息时不调用 invalidateMemoriesForSourceMessage。
+      // 注：重新生成 assistant 消息时不让由它支撑的记忆失效。
       // 记忆内容来自「用户事实 + assistant 回复」，重新生成只改变回复内容，
       // 用户事实仍然有效；之前在此处让记忆 superseded 是错误设计，会让正常记忆被误标。
       db.transaction(() => {

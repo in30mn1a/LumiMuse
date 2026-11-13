@@ -34,13 +34,13 @@ export function sanitizeUpstreamError(text: string, knownSecret?: string): strin
 }
 
 /** HTTP 200 流仍可能携带上游错误；聊天与总结共享相同脱敏边界。 */
-export function upstreamStreamError(raw: unknown): Error | undefined {
+export function upstreamStreamError(raw: unknown, knownSecret?: string): Error | undefined {
   if (!raw || typeof raw !== 'object' || !('error' in raw) || raw.error == null) return undefined;
   const error = raw.error;
   const detail = typeof error === 'object' && error && 'message' in error
     ? String(error.message)
     : typeof error === 'string' ? error : JSON.stringify(error);
-  return new Error(`API error: ${sanitizeUpstreamError(detail)}`);
+  return new Error(`API error: ${sanitizeUpstreamError(detail, knownSecret)}`);
 }
 
 export type ChatMessageContent =
@@ -205,7 +205,7 @@ export async function chatCompletionStream(
 
   if (!response.ok) {
     const text = await response.text().catch((error: unknown) => { throw withLlmRequestModel(error, body.model); });
-    callbacks.onError(withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text)}`), body.model));
+    callbacks.onError(withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text, settings.api_key)}`), body.model));
     return;
   }
 
@@ -223,7 +223,7 @@ export async function chatCompletionStream(
 
   try {
     await parseSseStream(reader, ({ text, raw }) => {
-      const upstreamError = upstreamStreamError(raw);
+      const upstreamError = upstreamStreamError(raw, settings.api_key);
       if (upstreamError) throw upstreamError;
       if (text) {
         fullText += text;
@@ -343,7 +343,7 @@ export async function completeRequest(
 
   if (!response.ok) {
     const text = await response.text().catch((error: unknown) => { throw withLlmRequestModel(error, body.model); });
-    throw withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text)}`), body.model);
+    throw withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text, settings.api_key)}`), body.model);
   }
 
   const streaming = body.stream === true;
@@ -389,7 +389,7 @@ export async function completeRequest(
 
   try {
     await parseSseStream(reader, ({ text: deltaText, raw }) => {
-      const upstreamError = upstreamStreamError(raw);
+      const upstreamError = upstreamStreamError(raw, settings.api_key);
       if (upstreamError) throw upstreamError;
 
       if (deltaText) {
@@ -428,10 +428,9 @@ export async function completeRequest(
   } catch (error) {
     throw withLlmRequestModel(error, body.model);
   } finally {
-    // abort 时保留已收到的部分，交由调用方决定是否落库。
-    if (options.signal?.aborted) {
-      try { await reader.cancel(); } catch { /* ignore */ }
-    }
+    // 无条件释放：流内报错或回调抛错时上游连接也不能悬着；正常读完时 cancel 是空操作。
+    // abort 时已收到的部分仍保留，交由调用方决定是否落库。
+    try { await reader.cancel(); } catch { /* ignore */ }
   }
 
   if (capturedUsage && options.onUsage) options.onUsage(capturedUsage);
@@ -493,7 +492,7 @@ export async function chatCompletion(
 
   if (!response.ok) {
     const text = await response.text().catch((error: unknown) => { throw withLlmRequestModel(error, body.model); });
-    throw withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text)}`), body.model);
+    throw withLlmRequestModel(new UpstreamApiError(response.status, `API error ${response.status}: ${sanitizeUpstreamError(text, settings.api_key)}`), body.model);
   }
 
   try {

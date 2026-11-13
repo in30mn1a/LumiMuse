@@ -1084,6 +1084,7 @@ test('chat image deletion waits for invalidating server-confirmed URLs before lo
   global.fetch = async () => jsonResponse({
     id: 'msg-a',
     conversation_id: 'conv-a',
+    metadata: { generatedImages: [] },
     deletedUrls: ['/api/files/generated/deleted.png'],
   });
 
@@ -1132,6 +1133,55 @@ test('chat image deletion waits for invalidating server-confirmed URLs before lo
   }
 });
 
+test('chat image edits send only the image keys and merge the server result into the latest state', async () => {
+  const image = { id: 'img-a', url: '/api/files/generated/a.png', prompt: 'old prompt' };
+  const messagesRef = { current: [{
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    role: 'assistant',
+    content: 'image reply',
+    token_count: 0,
+    created_at: '2026-06-07T00:00:00.000Z',
+    metadata: { generatedImages: [image], last_usage: 'stale' },
+  }] };
+  // 请求期间别处写入的状态：服务端多了一张图，本地 metadata 的其它键也变了
+  const serverImages = [{ ...image, prompt: 'new prompt' }, { id: 'img-b', url: '/api/files/generated/b.png', prompt: 'other' }];
+  const latestLocal = [{ ...messagesRef.current[0], metadata: { generatedImages: [image], last_usage: 'fresh' } }];
+  const requestBodies = [];
+  const localWrites = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (_url, init) => {
+    requestBodies.push(JSON.parse(init.body));
+    return jsonResponse({ id: 'msg-a', conversation_id: 'conv-a', metadata: { generatedImages: serverImages, last_usage: 'server' } });
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => requireFreshWithMocks('../src/hooks/chat/useChatImageGeneration.ts', { react: reactMock }).useChatImageGeneration,
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef: { current: 'conv-a' },
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        messagesRef,
+        updateMessagesForConversation: (_conversationId, updater) => { localWrites.push(updater(latestLocal)); },
+        markSkipNextScroll: () => {},
+        showToast: message => { throw new Error(`unexpected toast: ${message}`); },
+        t: key => key,
+      }),
+    );
+
+    runtime.render();
+    await runtime.current.handleEditImagePrompt('msg-a', 'img-a', 'new prompt');
+
+    assert.deepEqual(Object.keys(requestBodies[0].metadata), ['generatedImages']);
+    assert.equal(requestBodies[0].metadata.generatedImages[0].prompt, 'new prompt');
+    assert.equal(localWrites.length, 1);
+    assert.deepEqual(localWrites[0][0].metadata, { generatedImages: serverImages, last_usage: 'fresh' });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('chat image deletion still applies the server-confirmed mutation when cache invalidation rejects', async () => {
   const messagesRef = { current: [{
     id: 'msg-a',
@@ -1156,6 +1206,7 @@ test('chat image deletion still applies the server-confirmed mutation when cache
   global.fetch = async () => jsonResponse({
     id: 'msg-a',
     conversation_id: 'conv-a',
+    metadata: { generatedImages: [] },
     deletedUrls: ['/api/files/generated/deleted.png'],
   });
   console.warn = (...args) => warnings.push(args);

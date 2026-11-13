@@ -98,16 +98,3 @@ export function loadTools(
 
   return tools;
 }
-
-/** 上游给的工具参数可能是半截 JSON；解析失败时交给调用方决定怎么兜底。 */
-export function parseToolArguments(raw: string): Record<string, unknown> {
-  if (!raw || !raw.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : { value: parsed };
-  } catch {
-    return {};
-  }
-}

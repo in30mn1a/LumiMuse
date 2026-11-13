@@ -6,7 +6,7 @@ import { normalizeCharacterTaskModels, resolveCharacterTaskSystemPrompt } from '
 import { buildBackgroundChatExtraBody, loadSettings, mergeSettingsForBackgroundLlm, resolveBackgroundConfig } from '@/lib/settings';
 import { chatCompletion } from '@/lib/api-client';
 import { formatZodFieldErrors, imagePromptBodySchema } from '@/lib/schemas';
-import { runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
+import { BackgroundLlmTimeoutError, runWithBackgroundLlmDeadline } from '@/lib/background-llm-deadline';
 import { structuredLog } from '@/lib/structured-log';
 import { publicErrorMessage } from '@/lib/public-error';
 import {
@@ -258,6 +258,8 @@ export async function POST(request: NextRequest) {
     const result = await runWithBackgroundLlmDeadline(
       loadedSettings.memory_background_timeout_ms,
       signal => chatCompletion(settings, promptMessages, signal, backgroundExtraBody),
+      // 客户端断开（切会话/取消出图）时同步取消上游请求
+      request.signal,
     );
 
     const parsedOutput = parseGeneratedImagePrompt(result, promptStyle, {
@@ -270,6 +272,15 @@ export async function POST(request: NextRequest) {
       negative_prompt: '',
     });
   } catch (err) {
+    if (err instanceof BackgroundLlmTimeoutError) {
+      return NextResponse.json(
+        { error: '生成 prompt 超过服务器处理时限', code: 'UPSTREAM_TIMEOUT' },
+        { status: 504 },
+      );
+    }
+    if (request.signal?.aborted) {
+      return NextResponse.json({ error: '请求已取消' }, { status: 499 });
+    }
     structuredLog('error', 'image.prompt.failed', {
       requestId: request.headers?.get('x-request-id') ?? undefined,
       operation: 'generate_prompt',

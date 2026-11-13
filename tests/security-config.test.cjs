@@ -270,6 +270,31 @@ test('safeFetch treats protocol and port changes as cross-origin redirects', asy
   }
 });
 
+test('safeFetch cancels the unread body of a redirect response before following it', async () => {
+  delete process.env.ALLOW_LOCAL_NETWORK;
+  let cancelled = 0;
+  let calls = 0;
+  const { safeFetch } = requireFreshWithMocks('../src/lib/ssrf-guard.ts', {
+    undici: {
+      Agent: class Agent {},
+      buildConnector: () => () => {
+        throw new Error('mock connector should not be used by mocked fetch');
+      },
+      fetch: async () => {
+        calls += 1;
+        if (calls > 1) return new Response('ok');
+        const body = new ReadableStream({ cancel() { cancelled += 1; } });
+        return new Response(body, { status: 302, headers: { location: 'https://8.8.8.8/finish' } });
+      },
+    },
+  });
+
+  const response = await safeFetch('https://8.8.8.8/start');
+  assert.equal(await response.text(), 'ok');
+  assert.equal(cancelled, 1);
+  deleteIfCached('src/lib/ssrf-guard.ts');
+});
+
 test('SSRF guard classifies local and special IPv4, IPv6, and mapped ranges consistently', async () => {
   const localUrls = [
     'http://127.0.0.1/service',
@@ -287,6 +312,12 @@ test('SSRF guard classifies local and special IPv4, IPv6, and mapped ranges cons
     'http://[2001:2::1]/service',
     'http://[::ffff:100.64.0.1]/service',
     'http://[::ffff:198.18.0.1]/service',
+    // 内嵌 IPv4 的过渡/隧道前缀按内嵌地址判定
+    'http://[::10.0.0.1]/service',
+    'http://[64:ff9b::7f00:1]/service',
+    'http://[64:ff9b:1::a00:1]/service',
+    'http://[2002:c0a8:1::1]/service',
+    'http://[2001:0:1234:5678::80ff:fffe]/service',
   ];
   const alwaysBlockedUrls = [
     'http://0.0.0.1/service',
@@ -306,6 +337,8 @@ test('SSRF guard classifies local and special IPv4, IPv6, and mapped ranges cons
     'http://[fe80::1]/service',
     'http://[ff02::1]/service',
     'http://[::ffff:192.0.2.1]/service',
+    'http://[64:ff9b::a9fe:a9fe]/service',
+    'http://[2002:a9fe:a9fe::1]/service',
   ];
 
   for (const allowLocal of [false, true]) {
@@ -341,6 +374,9 @@ test('SSRF guard does not reject public addresses adjacent to special ranges', a
     'http://198.20.0.1/service',
     'http://223.255.255.254/service',
     'http://[2606:4700:4700::1111]/service',
+    // NAT64/DNS64 网络里公网主机就解析到这里，不能整段拒绝
+    'http://[64:ff9b::808:808]/service',
+    'http://[2002:808:808::1]/service',
   ];
 
   for (const rawUrl of publicUrls) {

@@ -279,26 +279,6 @@ export function filterUnreferencedLocalAssetUrls(db: Database, candidates: Itera
   return [...remaining.values()];
 }
 
-export function collectAllLocalAssetUrls(db: Database): Set<string> {
-  const urls = new Set<string>();
-  const characters = db.prepare('SELECT avatar_url FROM characters').all() as Array<{ avatar_url: string | null }>;
-  for (const character of characters) {
-    if (character.avatar_url && resolveLocalAssetUrl(character.avatar_url)) urls.add(character.avatar_url);
-  }
-
-  const messages = db.prepare('SELECT metadata, content FROM messages').all() as (MessageRow & { content: string | null })[];
-  for (const message of messages) {
-    for (const url of collectLocalAssetUrlsFromMetadata(message.metadata)) {
-      urls.add(url);
-    }
-    for (const url of collectLocalAssetUrlsFromContent(message.content)) {
-      urls.add(url);
-    }
-  }
-
-  return urls;
-}
-
 /**
  * 删除本地资源，并仅返回已确认不再存在的 URL。
  *

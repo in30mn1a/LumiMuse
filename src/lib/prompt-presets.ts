@@ -352,10 +352,6 @@ export function replaceCharacterModelPresetBindings(
   })();
 }
 
-export function deleteCharacterModelPresetBindings(characterId: string): void {
-  getDb().prepare('DELETE FROM character_model_preset_bindings WHERE character_id = ?').run(characterId);
-}
-
 export function attachCharacterPresetBindings<T extends { id: string }>(
   character: T,
 ): T & { model_preset_bindings: CharacterModelPresetBinding[] } {

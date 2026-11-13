@@ -85,6 +85,7 @@ function vectorSettings(overrides = {}) {
     memory_engine: {
       enabled: true,
       embedding_enabled: true,
+      embedding_api_base: 'https://embed.example/v1',
       embedding_model: 'test-embed',
       embedding_dimension: 2,
       memory_package_token_budget: 12000,
@@ -259,6 +260,52 @@ test('embedding disabled skips vector recall and uses keyword recall', async () 
   assert.equal(embedCalled, false);
   assert.equal(result.mode, 'local');
   assert.equal(result.memories[0].id, 'mem-sweet');
+});
+
+// 设置页只写 index_enabled，不写旧字段 embedding_enabled；聊天全量注入的角色也要语义召回。
+test('index_enabled alone turns on vector recall and scans every ready embedding', async () => {
+  const { buildLifecycleReference } = loadReferenceModule();
+  let scanLimit = null;
+
+  const result = await buildLifecycleReference(
+    'char-a',
+    CANDIDATES,
+    vectorSettings({ index_enabled: true, embedding_enabled: false, chat_injection_mode: 'full' }),
+    {
+      loadPriorityMemories: () => [],
+      loadMemoryProfile: () => null,
+      embedTexts: async () => [Float32Array.from([1, 0])],
+      loadEmbeddingRows: (_characterId, options) => {
+        scanLimit = options.limit;
+        return [{ memory_id: 'mem-sweet', embedding_blob: embeddingToBlob([1, 0]) }];
+      },
+      loadMemoriesByIds: (ids) => ids.map((id) => memory({ id })),
+    },
+  );
+
+  assert.equal(result.mode, 'vector');
+  assert.equal(result.memories[0].id, 'mem-sweet');
+  assert.equal(scanLimit, Number.POSITIVE_INFINITY);
+});
+
+test('index switched off skips vector recall even when the legacy flag is on', async () => {
+  const { buildLifecycleReference } = loadReferenceModule();
+  let embedCalled = false;
+
+  const result = await buildLifecycleReference(
+    'char-a',
+    CANDIDATES,
+    vectorSettings({ index_enabled: false, embedding_enabled: true }),
+    {
+      loadPriorityMemories: () => [],
+      loadMemoryProfile: () => null,
+      embedTexts: async () => { embedCalled = true; return []; },
+      localRetrieve: () => [memory({ id: 'mem-sweet' })],
+    },
+  );
+
+  assert.equal(embedCalled, false);
+  assert.equal(result.mode, 'local');
 });
 
 // ── M1 回归防护 ────────────────────────────────────────────────

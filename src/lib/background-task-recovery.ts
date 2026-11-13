@@ -7,11 +7,6 @@ import type Database from 'better-sqlite3';
  */
 export const DEFAULT_BACKGROUND_TASK_LEASE_SECONDS = 300;
 
-export function backgroundTaskStaleCutoffIso(leaseSeconds: number = DEFAULT_BACKGROUND_TASK_LEASE_SECONDS): string {
-  const sec = Math.max(1, Math.floor(leaseSeconds));
-  return new Date(Date.now() - sec * 1000).toISOString();
-}
-
 /** 租约到期后多等一小会儿再回收，吸收 SQLite datetime 的秒级精度 */
 const LEASE_EXPIRY_WAKE_GRACE_MS = 1000;
 

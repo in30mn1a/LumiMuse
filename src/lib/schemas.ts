@@ -12,7 +12,6 @@
  */
 import { z } from 'zod';
 import {
-  MEMORY_CATEGORIES,
   MEMORY_CHAT_INJECTION_MODES,
   MEMORY_KINDS,
   MEMORY_STATUSES,
@@ -559,9 +558,6 @@ export const memoryUpdateSchema = z.object({
   ...memoryWritableFields,
 });
 export type MemoryUpdate = z.infer<typeof memoryUpdateSchema>;
-
-// 让 TS 知道 MEMORY_CATEGORIES 在某些地方仍然有用（避免被打成 dead-import）
-export const ALLOWED_MEMORY_CATEGORIES = MEMORY_CATEGORIES;
 
 // --------- /api/providers POST/PUT ---------
 const providerCommonFields = {

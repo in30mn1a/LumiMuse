@@ -107,7 +107,7 @@ test('inlineImagePrompt is one-shot: cleared after successful image gen and when
   // 气泡内删光最后一张图时也清（同样必须显式空值：generatedImages: [] + inlineImagePrompt: ''）
   assert.match(
     hookSource,
-    /meta\.generatedImages = nextImages;\s*if \(nextImages\.length === 0\) \{\s*meta\.inlineImagePrompt = '';/,
+    /nextImages\.length === 0\s*\? \{ generatedImages: nextImages, inlineImagePrompt: '' \}/,
   );
   // 图片管理批量删除走服务端 removeGeneratedImageReferences（整体重写 metadata，delete 生效），同样在图删光时清
   const assetsSource = fs.readFileSync(

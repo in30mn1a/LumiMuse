@@ -72,7 +72,10 @@ export async function GET(request: NextRequest) {
     sql += " AND status NOT IN ('archived', 'summarized', 'superseded')";
   }
 
-  const total = db.prepare(`SELECT COUNT(*) as count FROM (${sql})`).get(...params) as { count: number };
+  // 总数只有分页响应用得到
+  const total = shouldPaginate
+    ? db.prepare(`SELECT COUNT(*) as count FROM (${sql})`).get(...params) as { count: number }
+    : null;
 
   sql += sort === 'oldest' ? ' ORDER BY created_at ASC, rowid ASC' : ' ORDER BY created_at DESC, rowid DESC';
   if (shouldPaginate) {
@@ -83,7 +86,7 @@ export async function GET(request: NextRequest) {
   const memories = db.prepare(sql).all(...params) as Memory[];
   const normalized = memories.map(normalizeMemoryRow);
 
-  if (shouldPaginate) {
+  if (total) {
     return NextResponse.json({
       memories: normalized,
       total: total.count,

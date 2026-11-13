@@ -587,7 +587,7 @@ const REGENERATE_BASE_ROWS = [
   { id: 'b-assistant', conversationId: 'conv-b', role: 'assistant', content: 'answer in b', seq: 2 },
 ];
 
-async function runRegenerateProbe(targetId, { rows = REGENERATE_BASE_ROWS, setupDatabase, duringGeneration } = {}) {
+async function runRegenerateProbe(targetId, { rows = REGENERATE_BASE_ROWS, setupDatabase, duringGeneration, chatOptions } = {}) {
   const probe = createDbProbe();
   probe.database.prepare(`
     INSERT INTO conversations (id, character_id, updated_at)
@@ -630,7 +630,7 @@ async function runRegenerateProbe(targetId, { rows = REGENERATE_BASE_ROWS, setup
       onChunk() {},
       onDone(text) { result.done.push(text); },
       onError(error) { result.errors.push(error.message); },
-    }, { regenerateAssistantId: targetId, skipUserInsert: true });
+    }, chatOptions ?? { regenerateAssistantId: targetId, skipUserInsert: true });
   } finally {
     Module._load = originalLoad;
   }
@@ -659,6 +659,24 @@ for (const [label, targetId] of [
     t.after(() => probe.database.close());
 
     assert.deepEqual(probe.errors, ['Regenerate target message not found']);
+    assert.deepEqual(probe.done, []);
+    assert.equal(probe.llmCalls, 0);
+    assert.deepEqual(snapshotTables(probe.database), probe.before);
+  });
+}
+
+for (const [label, anchorId] of [
+  ['an assistant message', 'a-assistant'],
+  ['a user message of another conversation', 'b-user'],
+  ['a message id that does not exist', 'missing'],
+]) {
+  test(`runChat rejects inserting a reply after ${label} before calling the LLM`, async (t) => {
+    const probe = await runRegenerateProbe(null, {
+      chatOptions: { insertAssistantAfterUserId: anchorId, skipUserInsert: true },
+    });
+    t.after(() => probe.database.close());
+
+    assert.deepEqual(probe.errors, ['Insert anchor user message not found']);
     assert.deepEqual(probe.done, []);
     assert.equal(probe.llmCalls, 0);
     assert.deepEqual(snapshotTables(probe.database), probe.before);

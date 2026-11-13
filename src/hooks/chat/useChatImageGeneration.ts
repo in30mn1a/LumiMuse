@@ -404,12 +404,31 @@ export function useChatImageGeneration({
     }
   }, [activeConvIdRef, characterRef, showToast, t]);
 
+  // 只提交本次改动的键（PUT 对 metadata 是浅合并），本地再把服务端落库后的值并入最新 state：
+  // 整份快照回写会把请求期间别处写入的 metadata 盖回旧值。
+  const saveImageMetadata = useCallback(async (targetMsg: Message, patch: Pick<Message['metadata'], 'generatedImages' | 'inlineImagePrompt'>) => {
+    const updated = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${targetMsg.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ metadata: patch }),
+    }));
+    const applyToState = () => {
+      markSkipNextScroll();
+      updateMessagesForConversation(targetMsg.conversation_id, messages => messages.map(m => {
+        if (m.id !== targetMsg.id) return m;
+        const metadata = { ...m.metadata, generatedImages: updated.metadata.generatedImages };
+        if ('inlineImagePrompt' in patch) metadata.inlineImagePrompt = updated.metadata.inlineImagePrompt;
+        return { ...m, metadata };
+      }));
+    };
+    return { updated, applyToState };
+  }, [markSkipNextScroll, updateMessagesForConversation]);
+
   const handleDeleteImage = useCallback(async (messageId: string, imgId: string, versionId?: string) => {
     try {
       const targetMsg = messagesRef.current.find(m => m.id === messageId);
       if (!targetMsg) return;
-      const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-      const existingImages = sanitizeGeneratedImages(meta.generatedImages);
+      const existingImages = sanitizeGeneratedImages(targetMsg.metadata?.generatedImages);
 
       const nextImages = existingImages.flatMap(img => {
         if (img.id !== imgId) return [img];
@@ -439,41 +458,35 @@ export function useChatImageGeneration({
 
       // 消息上已无任何生成图时，一并清掉随对话缓存的提示词，避免删光后点生图仍复用旧词。
       // PUT /api/messages 对 metadata 是浅合并：缺失的 key 保留库中旧值，必须发显式空值而非 delete
-      meta.generatedImages = nextImages;
-      if (nextImages.length === 0) {
-        meta.inlineImagePrompt = '';
-      }
-
-      const updated = await parseJsonResponse<Message & { deletedUrls?: string[] }>(await fetch(`/api/messages/${messageId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata: meta }),
-      }));
+      const { updated, applyToState } = await saveImageMetadata(
+        targetMsg,
+        nextImages.length === 0
+          ? { generatedImages: nextImages, inlineImagePrompt: '' }
+          : { generatedImages: nextImages },
+      );
       try {
         await forgetImageBlobs(updated.deletedUrls ?? []);
       } catch (error) {
         console.warn('[image-cache] 图片删除已成功，但本地图片缓存失效失败：', error);
       }
 
-      markSkipNextScroll();
-      updateMessagesForConversation(targetMsg.conversation_id, messages => (
-        messages.map(m => m.id === messageId ? { ...m, metadata: meta } : m)
-      ));
+      applyToState();
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('message.deleteFailed'), 'error');
     }
-  }, [markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
+  }, [messagesRef, saveImageMetadata, showToast, t]);
 
   const handleEditImagePrompt = useCallback(async (messageId: string, imgId: string, newPrompt: string) => {
     try {
       const targetMsg = messagesRef.current.find(m => m.id === messageId);
       if (!targetMsg) return;
-      const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-      const existingImages = sanitizeGeneratedImages(meta.generatedImages);
-      meta.generatedImages = existingImages.map(img => {
+      const existingImages = sanitizeGeneratedImages(targetMsg.metadata?.generatedImages);
+      const generatedImages = existingImages.map(img => {
         if (img.id !== imgId) return img;
 
-        const versions = img.versions && img.versions.length > 0 ? [...img.versions] : [{ id: img.id, url: img.url, prompt: img.prompt }];
+        const versions = img.versions && img.versions.length > 0 ? [...img.versions] : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
+        // 还没有出过图（失败/占位）的条目没有版本可改，只更新提示词
+        if (versions.length === 0) return { ...img, prompt: newPrompt };
         const activeVersion = typeof img.activeVersion === 'number' && img.activeVersion >= 0 && img.activeVersion < versions.length
           ? img.activeVersion
           : Math.max(versions.findIndex(version => version.url === img.url && version.prompt === img.prompt), 0);
@@ -487,27 +500,18 @@ export function useChatImageGeneration({
         };
       });
 
-      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata: meta }),
-      }));
-      markSkipNextScroll();
-      updateMessagesForConversation(targetMsg.conversation_id, messages => (
-        messages.map(m => m.id === messageId ? { ...m, metadata: meta } : m)
-      ));
+      (await saveImageMetadata(targetMsg, { generatedImages })).applyToState();
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
-  }, [markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
+  }, [messagesRef, saveImageMetadata, showToast, t]);
 
   const handleSetPrimaryImage = useCallback(async (messageId: string, imgId: string, versionId: string) => {
     try {
       const targetMsg = messagesRef.current.find(m => m.id === messageId);
       if (!targetMsg) return;
-      const meta = { ...(targetMsg.metadata as Record<string, unknown> || {}) };
-      const existingImages = sanitizeGeneratedImages(meta.generatedImages);
-      meta.generatedImages = existingImages.map(img => {
+      const existingImages = sanitizeGeneratedImages(targetMsg.metadata?.generatedImages);
+      const generatedImages = existingImages.map(img => {
         if (img.id !== imgId) return img;
 
         const versions = img.versions && img.versions.length > 0 ? img.versions : img.url ? [{ id: img.id, url: img.url, prompt: img.prompt }] : [];
@@ -524,20 +528,11 @@ export function useChatImageGeneration({
         };
       });
 
-      await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata: meta }),
-      }));
-
-      markSkipNextScroll();
-      updateMessagesForConversation(targetMsg.conversation_id, messages => (
-        messages.map(m => m.id === messageId ? { ...m, metadata: meta } : m)
-      ));
+      (await saveImageMetadata(targetMsg, { generatedImages })).applyToState();
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('common.operationFailed'), 'error');
     }
-  }, [markSkipNextScroll, messagesRef, showToast, t, updateMessagesForConversation]);
+  }, [messagesRef, saveImageMetadata, showToast, t]);
 
   return {
     handleGenerateImage,

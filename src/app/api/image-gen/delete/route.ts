@@ -6,6 +6,7 @@ import {
   resolveLocalAssetUrl,
 } from '@/lib/character-file-utils';
 import { readJsonObject } from '@/lib/request-json';
+import { publicErrorMessage } from '@/lib/public-error';
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,6 +40,6 @@ export async function POST(request: NextRequest) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return NextResponse.json({ ok: true, deletedUrls: [] });
     }
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json({ error: publicErrorMessage(err, '删除失败') }, { status: 500 });
   }
 }

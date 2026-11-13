@@ -153,6 +153,8 @@ export default function CharacterEditor({ params }: Props) {
   const characterRef = useRef<Character | null>(null);
   const savedCharacterRef = useRef<Character | null>(null);
   const draftRevisionRef = useRef(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [tagResetRevision, setTagResetRevision] = useState(0);
   const [tagDrafts, setTagDrafts] = useState({ image_tags: '', user_image_tags: '' });
   const { t } = useTranslation();
@@ -199,6 +201,7 @@ export default function CharacterEditor({ params }: Props) {
         }
       } catch (error) {
         if (!cancelled) {
+          setLoadError(getErrorMessage(error));
           showToast(`${t('common.loadFailed')}: ${getErrorMessage(error)}`, 'error');
         }
       }
@@ -206,7 +209,7 @@ export default function CharacterEditor({ params }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [id, showToast, t]);
+  }, [id, loadAttempt, showToast, t]);
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -429,17 +432,22 @@ export default function CharacterEditor({ params }: Props) {
   };
 
   const handleAvatarUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const input = event.target;
+    const file = input.files?.[0];
+    // 清空 value：否则上传失败后重选同一个文件不会触发 change
+    input.value = '';
     if (!file || !character) return;
     const draftRevision = draftRevisionRef.current;
     const formData = new FormData();
     formData.append('avatar', file);
-    const response = await fetch('/api/upload', { method: 'POST', body: formData });
-    if (response.ok) {
-      const { url } = await response.json();
+    try {
+      const { url } = await parseJsonResponse<{ url: string }>(
+        await fetch('/api/upload', { method: 'POST', body: formData }),
+      );
       if (draftRevisionRef.current !== draftRevision) return;
-      setDirty(true);
-      setCharacter({ ...character, avatar_url: url });
+      update('avatar_url', url);
+    } catch (error) {
+      showToast(`${t('common.operationFailed')}: ${getErrorMessage(error)}`, 'error');
     }
   };
 
@@ -485,7 +493,10 @@ export default function CharacterEditor({ params }: Props) {
       const applyCharacterDraft = options.includeCharacter && data.characterDraft && draftRevisionRef.current === draftRevision;
       if (applyCharacterDraft) {
         setDirty(true);
-        setCharacter({ ...character, ...data.characterDraft });
+        // 以最新表单为底：请求期间的编辑不能被发起导入时的旧快照盖掉
+        const next = { ...(characterRef.current ?? character), ...data.characterDraft };
+        characterRef.current = next;
+        setCharacter(next);
       }
       setPresetRefreshKey(value => value + 1);
 
@@ -519,6 +530,23 @@ export default function CharacterEditor({ params }: Props) {
   };
 
   if (!character) {
+    if (loadError) {
+      return (
+        <div className="px-6 py-10 text-text-muted" role="alert">
+          <p>{t('common.loadFailed')}: {loadError}</p>
+          <button
+            type="button"
+            className="soft-button soft-button-secondary mt-4 px-3 py-1.5 text-sm"
+            onClick={() => {
+              setLoadError(null);
+              setLoadAttempt(value => value + 1);
+            }}
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      );
+    }
     return <div className="px-6 py-10 text-text-muted">{t('editor.loading')}</div>;
   }
 

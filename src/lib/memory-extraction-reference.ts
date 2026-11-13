@@ -165,6 +165,8 @@ export async function recallMemoriesByVector(
       provider: 'openai-compatible',
       model: config.embedding_model,
       dimension: config.embedding_dimension,
+      // 扫描全部 ready 向量：默认扫描上限会让超出部分的旧记忆永远不参与冲突判定
+      limit: Number.POSITIVE_INFINITY,
     });
     if (rows.length === 0) return { memories: [] };
 
@@ -274,7 +276,14 @@ export async function buildLifecycleReference(
   let embeddingFailed: string | undefined;
 
   if (candidates.length > 0) {
-    if (config.embedding_enabled && config.embedding_model) {
+    // 开关与索引队列一致（真正产出 ready 向量的那条链路），不看旧字段 embedding_enabled：
+    // 设置页只写 index_enabled，也不看 chat_injection_mode——全量注入的角色同样需要语义召回来判冲突。
+    if (
+      config.index_enabled
+      && config.allow_external_memory_payloads
+      && config.embedding_api_base.trim()
+      && config.embedding_model.trim()
+    ) {
       const vector = await recallMemoriesByVector(characterId, candidates.map(anchorTextFor), config, deps);
       embeddingFailed = vector.failure;
       if (vector.memories.length > 0) {

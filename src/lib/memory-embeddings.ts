@@ -87,6 +87,8 @@ const RECOVERABLE_EMBEDDING_RETRY_DELAY_MS = 30_000;
 // 非聊天调用方未指定 limit 时保留历史默认值；聊天工作包会显式传 Infinity，
 // 让全部 ready active 向量参与相关性排名，避免在 token 预算前静默截断候选。
 const VECTOR_RETRIEVAL_SCAN_LIMIT = 5_000;
+// 只有 active 记忆才会被索引（completeTask 对其余状态直接收尾），归档/取代后的旧失败任务不算待处理的失败。
+const FAILED_TASK_MEMORY_ACTIVE_SQL = "EXISTS (SELECT 1 FROM memories m WHERE m.id = t.memory_id AND m.status = 'active')";
 const HOST_IS_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 function getEmbeddingErrorMessage(error: unknown): string {
@@ -700,6 +702,7 @@ export function retryFailedMemoryEmbeddings(
         SELECT 1 FROM memories m
         WHERE m.id = t.memory_id
           AND m.character_id = t.character_id
+          AND m.status = 'active'
       )
       AND NOT EXISTS (
         SELECT 1 FROM memory_embedding_tasks active
@@ -795,6 +798,7 @@ export function getMemoryIndexStatus(
     SELECT COUNT(DISTINCT t.memory_id) as n
     FROM memory_embedding_tasks t
     WHERE t.status = 'failed' ${taskCharacterFilter}
+      AND ${FAILED_TASK_MEMORY_ACTIVE_SQL}
       AND NOT EXISTS (
         SELECT 1 FROM memory_embedding_tasks active
         WHERE active.memory_id = t.memory_id
@@ -813,6 +817,7 @@ export function getMemoryIndexStatus(
     WHERE t.status = 'failed' ${taskCharacterFilter}
       AND t.error_message IS NOT NULL
       AND t.error_message != ''
+      AND ${FAILED_TASK_MEMORY_ACTIVE_SQL}
       AND NOT EXISTS (
         SELECT 1 FROM memory_embedding_tasks active
         WHERE active.memory_id = t.memory_id

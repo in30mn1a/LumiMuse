@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
     client_now_iso,
     client_timezone,
     client_utc_offset_minutes,
+    web_search,
   } = parsed.data;
 
   if (!regenerate_assistant_id && !content && (!attachments || attachments.length === 0)) {
@@ -133,6 +134,9 @@ export async function POST(request: NextRequest) {
         await runChat(conversation_id, content, settings, {
           onChunk: (text) => send('chunk', JSON.stringify({ text })),
           onUsage: (usage) => send('usage', JSON.stringify(usage)),
+          onSearch: (event) => send('search', JSON.stringify(event.status === 'failed'
+            ? { status: 'failed', message: publicErrorMessage(event.error, UNKNOWN_ERROR_LABEL) }
+            : event)),
           onDone: async (fullText, tokenCount) => {
             send('done', JSON.stringify({ token_count: tokenCount }));
 
@@ -210,7 +214,8 @@ export async function POST(request: NextRequest) {
             send('error', JSON.stringify({ message: publicErrorMessage(error, UNKNOWN_ERROR_LABEL) }));
             safeClose();
           },
-        }, { ...options, timeContext });
+        // 联网要先在设置里开启；客户端残留的开关状态不能绕过它。
+        }, { ...options, timeContext, ...(web_search && settings.web_search.enabled ? { webSearch: true } : {}) });
 
         setTimeout(() => safeClose(), STREAM_CLOSE_DELAY_MS);
       } catch (err) {

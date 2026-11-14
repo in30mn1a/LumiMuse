@@ -27,6 +27,18 @@ interface Props {
   onTogglePinnedModel?: (model: string) => void;
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
+  /** 联网开关：开启后本轮回复前先搜索。未传 onWebSearchChange 时不显示。 */
+  webSearchEnabled?: boolean;
+  onWebSearchChange?: (enabled: boolean) => void;
+}
+
+function GlobeIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18" />
+    </svg>
+  );
 }
 
 function PaperclipIcon({ className }: { className?: string }) {
@@ -53,7 +65,7 @@ function genAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList, pinnedModels = [], onTogglePinnedModel, reasoningEffort = 'default', onReasoningEffortChange }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, isGenerating, currentModel, onModelChange, modelList: externalModelList, pinnedModels = [], onTogglePinnedModel, reasoningEffort = 'default', onReasoningEffortChange, webSearchEnabled = false, onWebSearchChange }: Props) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<LocalAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
@@ -197,7 +209,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           <p className="mb-2 text-xs text-red-500">{attachError}</p>
         )}
 
-        <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[2.75rem_minmax(0,1fr)_auto] md:gap-y-1">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[auto_minmax(0,1fr)_auto] md:gap-y-1">
           <div className="col-start-2 row-start-1 min-w-0 md:col-span-3 md:col-start-1 md:px-2 md:pt-1">
             <textarea
               ref={textareaRef}
@@ -213,16 +225,35 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           </div>
 
           {/* 手机首行保留输入和发送，模型工具在下一行；桌面维持独立工具行。 */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={disabled}
-            className="col-start-1 row-start-1 flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40 md:row-start-2 md:rounded-xl"
-            title={t('input.attachFileTitle')}
-            aria-label={t('input.attachFileLabel')}
-          >
-            <PaperclipIcon className="h-4 w-4" />
-          </button>
+          {/* 第一列：附件按钮；启用联网时两枚按钮各收窄一档，并排放在同一格里。 */}
+          <div className="col-start-1 row-start-1 flex items-center md:row-start-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled}
+              className={`flex min-h-11 ${onWebSearchChange ? 'min-w-9' : 'min-w-11'} shrink-0 items-center justify-center rounded-full p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40 md:rounded-xl`}
+              title={t('input.attachFileTitle')}
+              aria-label={t('input.attachFileLabel')}
+            >
+              <PaperclipIcon className="h-4 w-4" />
+            </button>
+            {onWebSearchChange && (
+              <button
+                type="button"
+                onClick={() => onWebSearchChange(!webSearchEnabled)}
+                aria-pressed={webSearchEnabled}
+                title={t('input.webSearchTitle')}
+                aria-label={t('input.webSearch')}
+                className={`flex min-h-11 min-w-9 shrink-0 items-center justify-center rounded-full p-2 transition-colors md:rounded-xl ${
+                  webSearchEnabled
+                    ? 'bg-accent/12 text-accent-dark'
+                    : 'text-text-muted hover:bg-accent/8 hover:text-accent-dark'
+                }`}
+              >
+                <GlobeIcon className="h-4 w-4" />
+              </button>
+            )}
+          </div>
           <input
             ref={fileInputRef}
             type="file"

@@ -30,6 +30,7 @@ import { MemoryEngineSection } from '@/components/settings/memory/MemoryEngineSe
 import { MemoryProfilePanel } from '@/components/settings/memory/MemoryProfilePanel';
 import { MemoryArchivePanel } from '@/components/settings/memory/MemoryArchivePanel';
 import { ImageGenSettingsSection } from '@/components/settings/ImageGenSettingsSection';
+import { WebSearchSettingsSection } from '@/components/settings/WebSearchSettingsSection';
 import { DisplaySettingsSection } from '@/components/settings/DisplaySettingsSection';
 import { ApiSettingsSection } from '@/components/settings/ApiSettingsSection';
 import { ProviderSettingsSection } from '@/components/settings/ProviderSettingsSection';
@@ -585,6 +586,7 @@ export default function SettingsPage() {
               onFetchModels={() => void fetchModels()}
               t={t}
             />
+            <WebSearchSettingsSection settings={settings} update={update} t={t} />
             </div>
 
             <div hidden={activeTab !== 'generation'} className="space-y-4">

@@ -255,8 +255,8 @@ test('/api/providers can retry masked synchronization from server settings after
       assert.equal(provider[key], persisted[key], key);
       assert.equal(getSetting(db, key), persisted[key], `global ${key} stays authoritative`);
     }
-    assert.equal(provider.json_mode, 1);
-    assert.equal(getSetting(db, 'json_mode'), true);
+    // 全局 JSON 模式已移除：同步时库里残留的开启值不再带进供应商
+    assert.equal(provider.json_mode, 0);
     assert.equal(JSON.stringify(await response.json()).includes(persisted.api_key), false);
     const publicList = await route.GET(jsonRequest({}));
     assert.equal((await publicList.json()).providers[0].api_key, API_KEY_MASK);

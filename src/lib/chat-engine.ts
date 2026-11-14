@@ -2,7 +2,8 @@ import * as crypto from 'crypto';
 import { readFile, stat } from 'fs/promises';
 import path from 'path';
 import { getDb } from '@/lib/db';
-import { Character, Message, Settings, MessageAttachment } from '@/types';
+import { Character, Message, Settings, MessageAttachment, WebSearchSource } from '@/types';
+import { renderWebSearchBlock, usableWebSearch } from '@/lib/search/web-search-context';
 import { ChatMessage, ChatMessageContent, chatCompletionStream, chatCompletion, LlmUsage } from '@/lib/api-client';
 import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
@@ -37,6 +38,7 @@ import {
   resolveConversationChain,
 } from '@/lib/conversation-chain';
 import { structuredLog } from '@/lib/structured-log';
+import { publicErrorMessage } from '@/lib/public-error';
 import {
   prepareImageTagsForLlm,
   restoreSensitiveImageTagsToPrompt,
@@ -370,8 +372,11 @@ export async function buildHistoryMessages(
     // 预算时计入，避免长会话因为时间戳累积偏差导致预算超支。
     const TIMESTAMP_TOKEN_OVERHEAD = 14;
     const baseTokens = resolveMessageTokenCount(message).tokenCount;
+    // 联网资料存在 metadata 里，不在 token_count 内，这里补计，否则历史会按偏小的基数多留消息。
+    const webSearchBlock = message.role === 'user' ? renderWebSearchBlock(meta) : '';
     const messageTokens = baseTokens
-      + (settings.show_timestamps && message.created_at ? TIMESTAMP_TOKEN_OVERHEAD : 0);
+      + (settings.show_timestamps && message.created_at ? TIMESTAMP_TOKEN_OVERHEAD : 0)
+      + (webSearchBlock ? estimateTokens(webSearchBlock) : 0);
     // 至少保证最新一条有效消息(通常是当前用户输入)进入上下文,即使系统提示+记忆包已逼近预算——
     // 否则它会被整条丢弃,模型收不到用户当下的输入,违反「当前消息优先」。后续较旧消息仍按预算截断。
     if (history.length > 0 && usedTokens + messageTokens > availableBudget) break;
@@ -392,11 +397,15 @@ export async function buildHistoryMessages(
       textContent = `[${timestamp}] ${message.content}`;
     }
 
+    // 联网资料必须排在正文和文本附件之后：预设的 {{lastUserMessage}} 宏按「正文+附件」
+    // 这段连续文本从历史里摘掉原消息，中间插进别的内容会匹配不上，用户输入就会出现两遍。
+    const webSearchSuffix = webSearchBlock ? `\n\n${webSearchBlock}` : '';
+
     // 附件处理：只有用户消息才可能有附件
     const attachments = meta.attachments;
     if (message.role === 'user' && attachments && attachments.length > 0) {
       let hasImage = false;
-      let combinedText = buildMessageTokenCountContent(textContent, message.role, attachments);
+      let combinedText = buildMessageTokenCountContent(textContent, message.role, attachments) + webSearchSuffix;
 
       for (const att of attachments) {
         if (att.type === 'image') {
@@ -432,7 +441,7 @@ export async function buildHistoryMessages(
         content = combinedText;
       }
     } else {
-      content = textContent;
+      content = textContent + webSearchSuffix;
     }
 
     // 最终安全检查：确保 content 不为空
@@ -579,7 +588,14 @@ export interface ChatEngineCallbacks {
    * 上游未返回 usage 时不调用，调用方应保留估算逻辑作为 fallback。
    */
   onUsage?: (usage: LlmUsage) => void;
+  /** 联网搜索进度：开始、完成（带来源）、失败（聊天照常继续）。未开启联网时不调用。 */
+  onSearch?: (event: WebSearchProgress) => void;
 }
+
+export type WebSearchProgress =
+  | { status: 'searching' }
+  | { status: 'done'; sources: WebSearchSource[] }
+  | { status: 'failed'; error: unknown };
 
 export async function runChat(
   conversationId: string,
@@ -593,6 +609,8 @@ export async function runChat(
     attachments?: AttachmentItem[];
     signal?: AbortSignal;
     timeContext?: ChatTimeContext;
+    /** 手动联网开关：回复前先搜索，资料存到触发本轮回复的那条用户消息上。 */
+    webSearch?: boolean;
   },
 ): Promise<void> {
   const db = getDb();
@@ -747,7 +765,7 @@ export async function runChat(
   });
   // 只改内存里送去组装 prompt 的副本，必须在上面的 token 修复写库之后，base64 不得进 DB。
   const inlineAttachments = inlinePromptAttachments;
-  const contextMessages = inlineAttachments
+  let contextMessages = inlineAttachments
     ? storedContextMessages.map(message => message.id === inlineAttachments.messageId
         ? { ...message, metadata: { ...message.metadata, attachments: inlineAttachments.attachments } }
         : message)
@@ -757,6 +775,47 @@ export async function runChat(
     options?.timeContext,
     regenerateTargetMessage?.created_at ?? insertAfterUserMessage?.created_at,
   );
+
+  // 触发本轮回复的用户消息：新消息、或重新生成/插入回复所对应的那条。联网资料挂在它上面。
+  const replyTargetUserId = contextMessages.findLast(message => message.role === 'user')?.id;
+  if (options?.webSearch && replyTargetUserId) {
+    callbacks.onSearch?.({ status: 'searching' });
+    try {
+      // 惰性导入：未开启联网的聊天不加载搜索模块。
+      const { runWebSearchForChat } = await import('@/lib/search/web-search-loop');
+      const webSearch = await runWebSearchForChat({
+        settings,
+        characterId: conversation.character_id,
+        characterName: character.name,
+        messages: contextMessages,
+        timeContext: effectiveTimeContext,
+        signal: options.signal,
+      });
+      // 搜索要等很久，期间这条消息可能被改过；重读一次再写，且不能把内存里的 base64 附件写回库。
+      const row = db.prepare('SELECT metadata FROM messages WHERE id = ?').get(replyTargetUserId) as { metadata: string } | undefined;
+      if (row) {
+        db.prepare('UPDATE messages SET metadata = ? WHERE id = ?')
+          .run(JSON.stringify({ ...parseMessageMetadata(row.metadata), web_search: webSearch }), replyTargetUserId);
+      }
+      contextMessages = contextMessages.map(message => message.id === replyTargetUserId
+        ? { ...message, metadata: { ...message.metadata, web_search: webSearch } }
+        : message);
+      callbacks.onSearch?.({ status: 'done', sources: webSearch.sources });
+    } catch (error) {
+      // 主人停止生成：和停在正文之前一样，直接结束本轮。
+      if (options.signal?.aborted) return;
+      // 搜索失败不阻塞聊天：本轮不带新资料照常回复（重新生成时沿用已保存的旧资料）。
+      structuredLog('warn', 'chat.web_search_failed', {
+        conversationId,
+        characterId: conversation.character_id,
+        // 结构化日志会抹掉错误详情；这里记下与前端提示相同的已脱敏文案，排查时才知道是哪一环失败。
+        reason: publicErrorMessage(error, 'unknown'),
+      }, error);
+      callbacks.onSearch?.({ status: 'failed', error });
+    }
+  }
+  const webSearchSources = usableWebSearch(contextMessages
+    .find(message => message.id === replyTargetUserId)?.metadata.web_search)?.sources;
 
   let memoryContents: string[] | string = [];
   // 上一轮记忆注入统计：注入条数 + 实际 token 数（来自 workingMemoryPackage 或 fallback）
@@ -941,6 +1000,11 @@ export async function runChat(
       if (lastMemoryInjection) {
         meta.last_memory_injection = lastMemoryInjection;
       }
+      if (webSearchSources?.length) {
+        meta.web_search_sources = webSearchSources;
+      } else {
+        delete meta.web_search_sources;
+      }
       meta.token_count_provenance = tokenResult.provenance;
 
       // 用事务包裹两条 UPDATE，保持与新建分支对称、避免半成功状态
@@ -974,6 +1038,9 @@ export async function runChat(
       // 保存本轮记忆注入统计（条数 + token 数 + 模式），供前端展示
       if (lastMemoryInjection) {
         meta.last_memory_injection = lastMemoryInjection;
+      }
+      if (webSearchSources?.length) {
+        meta.web_search_sources = webSearchSources;
       }
       // insert-after-user：shift + INSERT 必须同一事务；锚点失效时抛错拒绝静默尾插
       // （流式/非流式路径会把异常传到 route 的 onError 或 catch，向前端发 error 事件）

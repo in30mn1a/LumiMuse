@@ -19,6 +19,8 @@ export type ChatSseHandlers = {
    * 上游未返回 usage 时不调用。
    */
   onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
+  /** 联网搜索进度；失败时聊天仍会继续回复。 */
+  onSearch?: (event: { status: 'searching' | 'done' | 'failed'; message?: string }) => void;
 };
 
 export function buildClientTimePayload() {
@@ -106,6 +108,13 @@ export function handleChatSseEvent(eventType: string, eventData: string, handler
     handlers.onChunk(parsed.text);
   } else if (eventType === 'memory' && parsed.status === 'extracting') {
     handlers.onMemoryExtracting();
+  } else if (eventType === 'search') {
+    if (parsed.status === 'searching' || parsed.status === 'done' || parsed.status === 'failed') {
+      handlers.onSearch?.({
+        status: parsed.status,
+        ...(typeof parsed.message === 'string' ? { message: parsed.message } : {}),
+      });
+    }
   } else if (eventType === 'usage' && handlers.onUsage) {
     const promptTokens = Number(parsed.prompt_tokens);
     const completionTokens = Number(parsed.completion_tokens);

@@ -21,6 +21,8 @@ interface VersionInfo {
 interface Props {
   isStreaming?: boolean;
   isLoading?: boolean;
+  /** 等待阶段在三点旁显示的说明（如「正在联网搜索」） */
+  loadingLabel?: string;
   showTimestamps?: boolean;
   message: Message;
   characterName: string;
@@ -250,12 +252,40 @@ function SummaryCard({
   );
 }
 
+/** 联网回复的来源（气泡正下方，默认折叠）。链接来自外部搜索结果，只渲染 http/https。 */
+function WebSearchSources({ sources }: { sources: Message['metadata']['web_search_sources'] }) {
+  const { t } = useTranslation();
+  const links = Array.isArray(sources)
+    ? sources.filter(source => typeof source?.url === 'string' && /^https?:\/\//i.test(source.url))
+    : [];
+  if (links.length === 0) return null;
+  return (
+    <details className="mt-1.5 max-w-full text-xs text-text-muted md:ml-13">
+      <summary className="inline-flex min-h-8 cursor-pointer select-none items-center gap-1.5 rounded-lg px-2 hover:bg-accent/8 hover:text-accent-dark">
+        <span>{t('message.webSearched')}</span>
+        <span aria-hidden="true">·</span>
+        <span>{formatTemplate(t('message.webSearchSources'), { count: String(links.length) })}</span>
+      </summary>
+      <ol className="mt-1 list-decimal space-y-1 pl-7 pr-2">
+        {links.map((source, index) => (
+          <li key={`${index}-${source.url}`} className="break-words [overflow-wrap:anywhere]">
+            <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-accent-dark hover:underline">
+              {source.title || source.url}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 function MessageBubbleInner({
   message,
   characterName,
   avatarUrl,
   isStreaming,
   isLoading,
+  loadingLabel,
   showTimestamps,
   versionInfo,
   highlightRanges,
@@ -547,6 +577,7 @@ function MessageBubbleInner({
             <span className="typing-dot" style={{ animationDelay: '0ms' }} />
             <span className="typing-dot" style={{ animationDelay: '160ms' }} />
             <span className="typing-dot" style={{ animationDelay: '320ms' }} />
+            {loadingLabel && <span className="ml-1.5 text-xs text-text-muted" role="status">{loadingLabel}</span>}
           </div>
         ) : (
           <>
@@ -613,6 +644,7 @@ function MessageBubbleInner({
 
       </div>
       </div>
+      {!isUser && !isStreaming && <WebSearchSources sources={message.metadata?.web_search_sources} />}
       {/* ── 生成的图片（气泡正下方，缩进对齐气泡） ── */}
       {!isUser && (() => {
         const meta = (message.metadata || {}) as Record<string, unknown>;

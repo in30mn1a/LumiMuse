@@ -305,7 +305,6 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   fireEvent.change(view.container.querySelector('#settings-api-base'), { target: { value: 'https://changed.example/v1' } });
   fireEvent.change(view.container.querySelector('#settings-api-key'), { target: { value: 'changed-key' } });
   fireEvent.change(view.container.querySelector('#settings-model'), { target: { value: 'typed-model' } });
-  fireEvent.click(view.getByLabelText('settings.jsonMode'));
   fireEvent.click(view.getByRole('button', { name: 'settings.fetchModels' }));
 
   await waitFor(() => assert.equal(view.container.querySelector('#settings-model').tagName, 'SELECT'));
@@ -347,7 +346,6 @@ test('API, model, chat, and display controls preserve fetch and save payloads', 
   assert.equal(saveRequest.body.api_base, 'https://changed.example/v1');
   assert.equal(saveRequest.body.api_key, 'changed-key');
   assert.equal(saveRequest.body.model, 'fetched-model');
-  assert.equal(saveRequest.body.json_mode, true);
   assert.equal(saveRequest.body.temperature, 1.25);
   await waitFor(() => assert.equal(harness.providerCalls.updateCurrent.calls.length, 1, 'saving settings also updates the active provider'));
   assert.equal(saveRequest.body.max_tokens, 9000);

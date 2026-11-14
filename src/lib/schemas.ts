@@ -168,6 +168,12 @@ export const settingsUpdateSchema = z.looseObject({
   image_gen: imageGenSettingsSchema.optional(),
   memory_engine: memoryEngineSettingsSchema.optional(),
   artist_strings: z.array(artistStringSettingsSchema).optional(),
+  web_search: z.object({
+    enabled: z.boolean().optional(),
+    api_key: settingApiKeySchema.optional(),
+    summary_target_chars: settingPositiveIntegerSchema.optional(),
+    max_rounds: settingPositiveIntegerSchema.optional(),
+  }).optional(),
 });
 export type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
 
@@ -324,6 +330,8 @@ export const chatBodySchema = z.object({
   client_now_iso: z.string().max(64).optional(),
   client_timezone: z.string().max(128).optional(),
   client_utc_offset_minutes: z.number().int().min(-1440).max(1440).optional(),
+  // 手动联网开关：本轮回复前先搜索。缺省即不搜索。
+  web_search: z.boolean().optional(),
 });
 export type ChatBody = z.infer<typeof chatBodySchema>;
 

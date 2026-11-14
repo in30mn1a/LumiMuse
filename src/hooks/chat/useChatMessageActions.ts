@@ -11,6 +11,7 @@ import {
   scopeMessageToConversationView,
 } from '@/lib/chat-stream-client';
 import { loadedRangePageOptions } from '@/lib/chat-message-cache';
+import { isWebSearchEnabled } from './useWebSearchToggle';
 
 type UpdateMessagesForConversation = (
   conversationIdToUpdate: string,
@@ -73,6 +74,8 @@ type UseChatMessageActionsOptions = {
   finishStream: (convId: string, options?: { clearRegenerationState?: boolean }) => void;
   scheduleStreamingText: (convId: string, text: string) => void;
   setStreamingUsage: (usage: { convId: string; usage: StreamingUsage } | null) => void;
+  /** 正在联网搜索的对话；搜索结束或流收尾时置空。 */
+  setWebSearchingConvId: (convId: string | null) => void;
   pollMemoryTask: (convId: string) => void | Promise<void>;
   refreshMessagesForConversation: (conversationId: string) => Promise<void>;
   refreshMessageCountsForConversation: (conversationId: string) => Promise<void>;
@@ -98,6 +101,7 @@ export function useChatMessageActions({
   finishStream,
   scheduleStreamingText,
   setStreamingUsage,
+  setWebSearchingConvId,
   pollMemoryTask,
   refreshMessagesForConversation,
   refreshMessageCountsForConversation,
@@ -196,6 +200,7 @@ export function useChatMessageActions({
     const settleStream = () => {
       if (streamSettled) return;
       streamSettled = true;
+      setWebSearchingConvId(null);
       finishStream(streamConversationId, { clearRegenerationState: mode !== 'new' });
     };
 
@@ -238,6 +243,8 @@ export function useChatMessageActions({
           ...(regenerateAssistantId ? { regenerate_assistant_id: regenerateAssistantId } : {}),
           ...(insertAfterUserMessageId ? { insert_assistant_after_user_id: insertAfterUserMessageId } : {}),
           ...(mode !== 'new' ? { skip_user_insert: true } : {}),
+          // 发送和重新生成都按当前开关决定是否联网
+          ...(isWebSearchEnabled() ? { web_search: true } : {}),
         }),
         signal: controller.signal,
       });
@@ -268,6 +275,12 @@ export function useChatMessageActions({
         },
         onMemoryExtracting: () => {
           void pollMemoryTask(streamConversationId);
+        },
+        onSearch: event => {
+          setWebSearchingConvId(event.status === 'searching' ? streamConversationId : null);
+          if (event.status === 'failed') {
+            showToast(event.message ? `${t('chat.webSearchFailed')}: ${event.message}` : t('chat.webSearchFailed'), 'error');
+          }
         },
         getErrorMessage: () => t('chat.errorGeneral'),
       });
@@ -316,6 +329,7 @@ export function useChatMessageActions({
     refreshMessagesForConversation,
     scheduleStreamingText,
     setStreamingUsage,
+    setWebSearchingConvId,
     showToast,
     t,
     touchConversation,

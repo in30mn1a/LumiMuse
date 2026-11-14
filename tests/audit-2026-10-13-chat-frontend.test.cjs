@@ -139,6 +139,7 @@ function messageActionOptions(overrides = {}) {
     finishStream: noop,
     scheduleStreamingText: noop,
     setStreamingUsage: noop,
+    setWebSearchingConvId: noop,
     pollMemoryTask: noop,
     refreshMessagesForConversation: async () => {},
     refreshMessageCountsForConversation: async () => {},

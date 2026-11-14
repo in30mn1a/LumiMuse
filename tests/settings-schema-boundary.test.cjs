@@ -172,6 +172,8 @@ test('loadSettings normalizes legacy numeric booleans into a saveable settings p
   const parsed = settingsUpdateSchema.safeParse(settings);
 
   assert.equal(settings.json_mode, false);
+  // 全局 JSON 模式已移除：库里残留的开启值也不生效
+  assert.equal(loadSettingsFromRows([{ key: 'json_mode', value: 'true' }]).json_mode, false);
   assert.equal(
     parsed.success,
     true,

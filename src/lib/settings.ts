@@ -8,7 +8,15 @@ import { RETIRED_BACKGROUND_SETTING_KEYS } from '@/lib/character-task-settings-m
 import { normalizeMemoryEngineSettings } from '@/lib/memory-runtime-policy';
 import { resolveReasoningEffortForModel, sanitizeReasoningEffortByModel } from '@/lib/reasoning-effort';
 import { sanitizePinnedModels } from '@/lib/pinned-models';
-import { DEFAULT_SETTINGS, ImageGenSettings, MemoryEngineSettings, ReasoningEffort, Settings } from '@/types';
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_WEB_SEARCH_SETTINGS,
+  ImageGenSettings,
+  MemoryEngineSettings,
+  ReasoningEffort,
+  Settings,
+  WebSearchSettings,
+} from '@/types';
 
 const BOOLEAN_SETTING_KEYS: (keyof Settings)[] = [
   'json_mode',
@@ -97,6 +105,25 @@ export function recordClientTimezone(timeZone: unknown, current: string): void {
   }
 }
 
+/** 库里的值可能是旧版本/损坏导入留下的：数值非正整数时回默认，避免后台循环拿到 0 轮或 NaN。 */
+function normalizeWebSearchSettings(raw: unknown): WebSearchSettings {
+  const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const positiveInt = (value: unknown, fallback: number) => (
+    typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback
+  );
+  return {
+    enabled: normalizeLegacyBoolean(record.enabled) ?? DEFAULT_WEB_SEARCH_SETTINGS.enabled,
+    api_key: typeof record.api_key === 'string' ? record.api_key : '',
+    summary_target_chars: positiveInt(record.summary_target_chars, DEFAULT_WEB_SEARCH_SETTINGS.summary_target_chars),
+    max_rounds: positiveInt(record.max_rounds, DEFAULT_WEB_SEARCH_SETTINGS.max_rounds),
+  };
+}
+
+/** 设置页的密钥优先；留空时用环境变量，方便部署时不把密钥写进数据库。 */
+export function resolveWebSearchApiKey(settings: Settings): string {
+  return settings.web_search?.api_key?.trim() || process.env.DEEPSEEK_API_KEY?.trim() || '';
+}
+
 export function loadSettings(): Settings {
   const db = getDb();
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
@@ -130,6 +157,10 @@ export function loadSettings(): Settings {
     );
   }
 
+  // 全局 JSON 模式已从设置页移除：打开它会让非流式角色回复被要求输出 JSON。
+  // 库里或供应商上残留的旧值一律不生效；需要 JSON 的后台任务（画像、归档）自己在调用时打开。
+  merged.json_mode = false;
+  merged.web_search = normalizeWebSearchSettings(map.web_search);
   merged.reasoning_effort_by_model = sanitizeReasoningEffortByModel(map.reasoning_effort_by_model);
   merged.pinned_models = sanitizePinnedModels(map.pinned_models);
   for (const key of RETIRED_BACKGROUND_SETTING_KEYS) {

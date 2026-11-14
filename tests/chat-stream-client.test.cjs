@@ -201,6 +201,29 @@ test('handleChatSseEvent dispatches chunks, memory status, and server errors', (
   );
 });
 
+test('handleChatSseEvent reports web search progress and ignores unknown statuses', () => {
+  const seen = [];
+  const handlers = {
+    onChunk() {},
+    onMemoryExtracting() {},
+    getErrorMessage: () => 'fallback',
+    onSearch: event => seen.push(event),
+  };
+
+  handleChatSseEvent('search', '{"status":"searching"}', handlers);
+  handleChatSseEvent('search', '{"status":"done","sources":[{"title":"t","url":"https://a.example/"}]}', handlers);
+  handleChatSseEvent('search', '{"status":"failed","message":"no key"}', handlers);
+  handleChatSseEvent('search', '{"status":"other"}', handlers);
+  // 没注册 onSearch 的调用方不受影响
+  handleChatSseEvent('search', '{"status":"searching"}', { ...handlers, onSearch: undefined });
+
+  assert.deepEqual(seen, [
+    { status: 'searching' },
+    { status: 'done' },
+    { status: 'failed', message: 'no key' },
+  ]);
+});
+
 test('readChatSseStream parses split SSE chunks in order', async () => {
   const chunks = [];
   let memoryExtracting = 0;

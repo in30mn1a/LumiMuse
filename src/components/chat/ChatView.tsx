@@ -27,6 +27,7 @@ import { useChatScrollController, type UseChatScrollControllerResult } from '@/h
 import { useMemoryTaskPolling } from '@/hooks/chat/useMemoryTaskPolling';
 import { useChatImageGeneration } from '@/hooks/chat/useChatImageGeneration';
 import { useChatMessageActions } from '@/hooks/chat/useChatMessageActions';
+import { useWebSearchToggle } from '@/hooks/chat/useWebSearchToggle';
 import { parseConversation, useNewChat } from '@/hooks/chat/useNewChat';
 import { canBeginChatSend } from '@/hooks/chat/chat-send-guard';
 import { formatTemplate } from '@/lib/i18n';
@@ -152,6 +153,10 @@ export default function ChatView({
   // 与 visibleMessages 里落库的 last_usage 互补：SSE 上报在 refreshMessages 完成前就能显示，
   // 切对话后 convId 不匹配自动失效，fallback 到从消息派生的 persistedUsage。
   const [streamingUsage, setStreamingUsage] = useState<{ convId: string; usage: RealUsage } | null>(null);
+  // 设置里启用了联网搜索，输入框才显示「联网」按钮
+  const [webSearchAvailable, setWebSearchAvailable] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useWebSearchToggle();
+  const [webSearchingConvId, setWebSearchingConvId] = useState<string | null>(null);
   const {
     conversations,
     setConversations,
@@ -349,6 +354,7 @@ export default function ChatView({
     finishStream,
     scheduleStreamingText,
     setStreamingUsage,
+    setWebSearchingConvId,
     pollMemoryTask,
     refreshMessagesForConversation,
     refreshMessageCountsForConversation,
@@ -588,6 +594,7 @@ export default function ChatView({
         }
         setMemoryPackageBudget(s.memory_engine?.memory_package_token_budget ?? 12000);
         setMemoryInjectEnabled(s.memory_inject ?? true);
+        setWebSearchAvailable(s.web_search?.enabled === true);
         setLimitInject(s.limit_inject ?? false);
       })
       .catch(err => {
@@ -954,6 +961,7 @@ export default function ChatView({
         showTimestamps={false}
         isStreaming
         isLoading={isActiveStream ? !streamingText : true}
+        loadingLabel={webSearchingConvId !== null && webSearchingConvId === activeConvId ? t('chat.webSearching') : undefined}
       />
     </div>
   );
@@ -1045,6 +1053,8 @@ export default function ChatView({
             onStop={handleStop}
             disabled={isStreamingHere}
             isGenerating={isStreamingHere}
+            webSearchEnabled={webSearchEnabled}
+            onWebSearchChange={webSearchAvailable ? setWebSearchEnabled : undefined}
             currentModel={currentModel}
             onModelChange={(model: string) => {
               if (model === currentModel) return;

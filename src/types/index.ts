@@ -135,8 +135,42 @@ export interface MessageMetadata {
   generatedImages?: GeneratedImage[];
   /** 内联生图提示词：AI 回复中 [IMG]...[/IMG] 提取出的提示词，出图时直接复用 */
   inlineImagePrompt?: string;
+  /** 用户消息：为这条消息联网查到的资料。渲染历史时追加在正文之后，随消息留存。 */
+  web_search?: WebSearchData;
+  /** 助手消息：本轮回复依据的联网来源，仅供界面展示。 */
+  web_search_sources?: WebSearchSource[];
   [key: string]: unknown;
 }
+
+export interface WebSearchSource {
+  title: string;
+  url: string;
+}
+
+export interface WebSearchData {
+  summary: string;
+  sources: WebSearchSource[];
+  queries: string[];
+  searched_at: string;
+}
+
+export interface WebSearchSettings {
+  /** 功能总开关：关闭时聊天输入框不显示「联网」按钮，服务端也忽略联网请求。 */
+  enabled: boolean;
+  /** DeepSeek 搜索密钥；留空时回退环境变量 DEEPSEEK_API_KEY。 */
+  api_key: string;
+  /** 资料摘要的目标长度（字）。只写进后台提示词，不做硬截断。 */
+  summary_target_chars: number;
+  /** 后台模型最多调用几轮搜索/读取工具；到达后基于已有资料收尾。 */
+  max_rounds: number;
+}
+
+export const DEFAULT_WEB_SEARCH_SETTINGS: WebSearchSettings = {
+  enabled: false,
+  api_key: '',
+  summary_target_chars: 1500,
+  max_rounds: 6,
+};
 
 export interface Message {
   [key: string]: unknown;
@@ -532,6 +566,8 @@ export interface Settings {
   memory_engine: MemoryEngineSettings;
   // 画师串管理
   artist_strings: ArtistString[];
+  // 对话联网搜索（聊天输入框手动开启）
+  web_search: WebSearchSettings;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -577,6 +613,7 @@ export const DEFAULT_SETTINGS: Settings = {
   image_gen: { ...DEFAULT_IMAGE_GEN_SETTINGS },
   memory_engine: { ...DEFAULT_MEMORY_ENGINE_SETTINGS },
   artist_strings: [],
+  web_search: { ...DEFAULT_WEB_SEARCH_SETTINGS },
 };
 export interface ChatRequest {
   conversation_id: string;

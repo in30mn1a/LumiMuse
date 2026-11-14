@@ -85,6 +85,7 @@ function createOptions(overrides = {}) {
     finishStream: () => {},
     scheduleStreamingText: () => {},
     setStreamingUsage: () => {},
+    setWebSearchingConvId: () => {},
     pollMemoryTask: () => Promise.resolve(),
     refreshMessagesForConversation: () => Promise.resolve(),
     refreshMessageCountsForConversation: () => Promise.resolve(),

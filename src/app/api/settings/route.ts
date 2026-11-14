@@ -30,6 +30,10 @@ function maskSettings(settings: Settings): Settings {
       embedding_api_key: settings.memory_engine.embedding_api_key ? API_KEY_MASK : '',
       reranker_api_key: settings.memory_engine.reranker_api_key ? API_KEY_MASK : '',
     } : settings.memory_engine,
+    web_search: settings.web_search ? {
+      ...settings.web_search,
+      api_key: settings.web_search.api_key ? API_KEY_MASK : '',
+    } : settings.web_search,
   };
 }
 
@@ -127,6 +131,14 @@ export async function PUT(request: NextRequest) {
     if (updates.memory_engine.embedding_dimension !== undefined) {
       const dimension = Math.floor(Number(updates.memory_engine.embedding_dimension));
       updates.memory_engine.embedding_dimension = Number.isFinite(dimension) ? Math.max(0, dimension) : 0;
+    }
+  }
+
+  if (updates.web_search) {
+    const currentWebSearch = currentSettings.web_search;
+    updates.web_search = { ...currentWebSearch, ...updates.web_search };
+    if (updates.web_search.api_key === API_KEY_MASK) {
+      updates.web_search.api_key = currentWebSearch.api_key;
     }
   }
 

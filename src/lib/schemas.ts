@@ -15,6 +15,7 @@ import {
   MEMORY_CHAT_INJECTION_MODES,
   MEMORY_KINDS,
   MEMORY_STATUSES,
+  WEB_SEARCH_PROVIDER_IDS,
 } from '@/types';
 
 // --------- 通用尺寸常量 ---------
@@ -170,7 +171,14 @@ export const settingsUpdateSchema = z.looseObject({
   artist_strings: z.array(artistStringSettingsSchema).optional(),
   web_search: z.object({
     enabled: z.boolean().optional(),
+    provider: z.enum(WEB_SEARCH_PROVIDER_IDS).optional(),
+    /** 旧版前端只有 DeepSeek 一个密钥字段；路由把它当作 api_keys.deepseek。 */
     api_key: settingApiKeySchema.optional(),
+    api_keys: z.object({
+      deepseek: settingApiKeySchema.optional(),
+      tavily: settingApiKeySchema.optional(),
+      exa: settingApiKeySchema.optional(),
+    }).optional(),
     summary_target_chars: settingPositiveIntegerSchema.optional(),
     max_rounds: settingPositiveIntegerSchema.optional(),
   }).optional(),

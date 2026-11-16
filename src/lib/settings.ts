@@ -15,6 +15,8 @@ import {
   MemoryEngineSettings,
   ReasoningEffort,
   Settings,
+  WEB_SEARCH_PROVIDER_ENV_KEYS,
+  WEB_SEARCH_PROVIDER_IDS,
   WebSearchSettings,
 } from '@/types';
 
@@ -111,17 +113,31 @@ function normalizeWebSearchSettings(raw: unknown): WebSearchSettings {
   const positiveInt = (value: unknown, fallback: number) => (
     typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback
   );
+  const storedKeys = record.api_keys && typeof record.api_keys === 'object'
+    ? record.api_keys as Record<string, unknown>
+    : {};
+  const api_keys = { ...DEFAULT_WEB_SEARCH_SETTINGS.api_keys };
+  for (const id of WEB_SEARCH_PROVIDER_IDS) {
+    if (typeof storedKeys[id] === 'string') api_keys[id] = storedKeys[id];
+  }
+  // 只有 DeepSeek 一个来源时，密钥存在顶层 api_key；下次保存设置后库里就是新结构。
+  if (!('deepseek' in storedKeys) && typeof record.api_key === 'string') api_keys.deepseek = record.api_key;
+  const provider = WEB_SEARCH_PROVIDER_IDS.find(id => id === record.provider) ?? DEFAULT_WEB_SEARCH_SETTINGS.provider;
   return {
     enabled: normalizeLegacyBoolean(record.enabled) ?? DEFAULT_WEB_SEARCH_SETTINGS.enabled,
-    api_key: typeof record.api_key === 'string' ? record.api_key : '',
+    provider,
+    api_keys,
     summary_target_chars: positiveInt(record.summary_target_chars, DEFAULT_WEB_SEARCH_SETTINGS.summary_target_chars),
     max_rounds: positiveInt(record.max_rounds, DEFAULT_WEB_SEARCH_SETTINGS.max_rounds),
   };
 }
 
-/** 设置页的密钥优先；留空时用环境变量，方便部署时不把密钥写进数据库。 */
+/** 当前来源的密钥：设置页优先；留空时用环境变量，方便部署时不把密钥写进数据库。 */
 export function resolveWebSearchApiKey(settings: Settings): string {
-  return settings.web_search?.api_key?.trim() || process.env.DEEPSEEK_API_KEY?.trim() || '';
+  const provider = settings.web_search.provider;
+  return settings.web_search.api_keys[provider]?.trim()
+    || process.env[WEB_SEARCH_PROVIDER_ENV_KEYS[provider]]?.trim()
+    || '';
 }
 
 export function loadSettings(): Settings {

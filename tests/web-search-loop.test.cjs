@@ -30,6 +30,7 @@ Module._load = function loadWithMock(request, parent, isMain) {
 test.after(() => { Module._load = originalLoad; });
 
 const { runWebSearchLoop } = require('../src/lib/search/web-search-loop.ts');
+const { createWebSearchBackend } = require('../src/lib/search/web-search-backend.ts');
 const { DEFAULT_SETTINGS } = require('../src/types/index.ts');
 
 const SEARCH_KEY = 'sk-search-secret';
@@ -73,7 +74,7 @@ function install({ llm, search, fetch }) {
 
 const run = (overrides = {}) => runWebSearchLoop({
   llm: LLM,
-  searchApiKey: SEARCH_KEY,
+  backend: createWebSearchBackend('deepseek', SEARCH_KEY),
   conversationText: '用户: 我叫阿遥，那部新电影好看吗？',
   nowText: '2026-11-15 Sun 06:50',
   summaryTargetChars: 1500,
@@ -237,7 +238,7 @@ test('a failed tool call goes back to the model instead of aborting the search',
   const data = await run();
 
   const firstToolResult = llmCalls()[1].body.messages.find(message => message.role === 'tool').content;
-  assert.match(firstToolResult, /^错误：Search API error 429/);
+  assert.match(firstToolResult, /^错误：DeepSeek API error 429/);
   assert.doesNotMatch(firstToolResult, new RegExp(SEARCH_KEY));
   assert.equal(data.summary, '摘要');
 });
@@ -250,7 +251,7 @@ test('fails when nothing was found, reporting the search error without the key',
   });
 
   await assert.rejects(run(), error => {
-    assert.match(error.message, /Search API error 401/);
+    assert.match(error.message, /DeepSeek API error 401/);
     assert.doesNotMatch(error.message, new RegExp(SEARCH_KEY));
     return true;
   });

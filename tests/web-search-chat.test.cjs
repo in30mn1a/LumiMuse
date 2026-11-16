@@ -23,6 +23,9 @@ let upstream = [];
 let searchApiStatus = 200;
 
 function respond(call) {
+  if (call.url === 'https://api.tavily.com/search') {
+    return new Response(JSON.stringify({ results: [{ title: SOURCES[0].title, url: SOURCES[0].url, content: '首周末三亿' }] }), { status: 200 });
+  }
   if (call.url.startsWith('https://api.deepseek.com/')) {
     return new Response(JSON.stringify(searchApiStatus === 200
       ? { results: [{ title: SOURCES[0].title, url: SOURCES[0].url, site_name: 'News', date: '', summary: '首周末三亿' }] }
@@ -70,9 +73,17 @@ function setup(t, { searchKey = 'sk-test', settings = {} } = {}) {
   __setDbForTests(db);
   t.after(() => db.close());
 
+  // 本机 shell 里可能设着真实的搜索密钥，测试期间全部移走，结束后还原。
+  const envKeys = ['DEEPSEEK_API_KEY', 'TAVILY_API_KEY', 'EXA_API_KEY'];
+  const savedEnv = Object.fromEntries(envKeys.map(name => [name, process.env[name]]));
+  for (const name of envKeys) delete process.env[name];
+  t.after(() => {
+    for (const name of envKeys) {
+      if (savedEnv[name] === undefined) delete process.env[name];
+      else process.env[name] = savedEnv[name];
+    }
+  });
   if (searchKey) process.env.DEEPSEEK_API_KEY = searchKey;
-  else delete process.env.DEEPSEEK_API_KEY;
-  t.after(() => { delete process.env.DEEPSEEK_API_KEY; });
 
   const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
   const values = { api_base: 'http://upstream.test/v1', api_key: 'k', model: 'm', streaming: false, memory_inject: false, web_search: { enabled: true }, ...settings };
@@ -209,7 +220,7 @@ test('a failed search does not block the reply', async t => {
 
   assert.equal(searchEvents[0].status, 'searching');
   assert.equal(searchEvents[1].status, 'failed');
-  assert.match(searchEvents[1].message, /Search API error 401/);
+  assert.match(searchEvents[1].message, /DeepSeek API error 401/);
   assert.ok(events.some(item => item.event === 'done'));
   assert.ok(!events.some(item => item.event === 'error'));
   assert.doesNotMatch(chatRequests()[0].messages.at(-1).content, /web_search_results/);
@@ -238,19 +249,65 @@ test('the request flag is ignored while web search is turned off in settings', a
   assert.equal(messageRow(db, 'user').metadata.web_search, undefined);
 });
 
-test('the key saved in settings wins over the environment variable', async t => {
-  setup(t, { searchKey: 'sk-env', settings: { web_search: { enabled: true, api_key: 'sk-settings' } } });
+/** 记录发往搜索服务（非聊天上游）的请求地址与鉴权头。 */
+function recordSearchCalls(t) {
   const seen = [];
   const original = ssrfGuardMock.safeFetch;
   ssrfGuardMock.safeFetch = async (url, init = {}) => {
-    if (String(url).startsWith('https://api.deepseek.com/')) seen.push(init.headers.Authorization);
+    if (!String(url).startsWith('http://upstream.test/')) seen.push([String(url), init.headers.Authorization]);
     return original(url, init);
   };
   t.after(() => { ssrfGuardMock.safeFetch = original; });
+  return seen;
+}
+
+test('the key saved in settings wins over the environment variable', async t => {
+  setup(t, { searchKey: 'sk-env', settings: { web_search: { enabled: true, api_keys: { deepseek: 'sk-settings' } } } });
+  const seen = recordSearchCalls(t);
 
   await chat({ content: '《潮汐》好看吗？', web_search: true });
 
-  assert.deepEqual(seen, ['Bearer sk-settings']);
+  assert.deepEqual(seen, [['https://api.deepseek.com/v1/tools/search', 'Bearer sk-settings']]);
+});
+
+test('a key saved before providers existed is used as the DeepSeek key', async t => {
+  setup(t, { searchKey: 'sk-env', settings: { web_search: { enabled: true, api_key: 'sk-legacy' } } });
+  const seen = recordSearchCalls(t);
+
+  await chat({ content: '《潮汐》好看吗？', web_search: true });
+
+  assert.deepEqual(seen, [['https://api.deepseek.com/v1/tools/search', 'Bearer sk-legacy']]);
+});
+
+test('the selected provider is searched with its own key and the reply is unchanged', async t => {
+  const db = setup(t, {
+    searchKey: 'sk-deepseek-env',
+    settings: { web_search: { enabled: true, provider: 'tavily', api_keys: { deepseek: 'sk-deepseek', tavily: 'tvly-key' } } },
+  });
+  const seen = recordSearchCalls(t);
+
+  const { searchEvents } = await chat({ content: '《潮汐》好看吗？', web_search: true });
+
+  assert.deepEqual(seen, [['https://api.tavily.com/search', 'Bearer tvly-key']]);
+  assert.deepEqual(searchEvents, [{ status: 'searching' }, { status: 'done', sources: SOURCES }]);
+  assert.equal(messageRow(db, 'user').metadata.web_search.summary, SUMMARY);
+  assert.ok(chatRequests()[0].messages.at(-1).content.includes(SUMMARY));
+});
+
+test('a provider without a key falls back to its own environment variable only', async t => {
+  setup(t, { searchKey: 'sk-deepseek-env', settings: { web_search: { enabled: true, provider: 'tavily' } } });
+  const seen = recordSearchCalls(t);
+
+  const { searchEvents } = await chat({ content: '《潮汐》好看吗？', web_search: true });
+
+  // DeepSeek 的密钥不会被发往 Tavily
+  assert.deepEqual(seen, []);
+  assert.equal(searchEvents.at(-1).status, 'failed');
+
+  process.env.TAVILY_API_KEY = 'tvly-env';
+  t.after(() => { delete process.env.TAVILY_API_KEY; });
+  await chat({ content: '再查一次', web_search: true });
+  assert.deepEqual(seen, [['https://api.tavily.com/search', 'Bearer tvly-env']]);
 });
 
 test('search results count toward the history budget', async t => {
@@ -272,22 +329,53 @@ test('search results count toward the history budget', async t => {
   assert.ok(withSearch.usedTokens > plain.usedTokens + 200);
 });
 
-test('settings route masks the search key and keeps it when the mask is written back', async t => {
+test('settings route masks every provider key and keeps them when masks are written back', async t => {
   const db = setup(t, { settings: { web_search: { enabled: true, api_key: 'sk-real', summary_target_chars: 1500, max_rounds: 6 } } });
   const { NextRequest } = require('next/server');
   const { GET, PUT } = require('../src/app/api/settings/route.ts');
   const { API_KEY_MASK } = require('../src/lib/constants.ts');
   const stored = () => JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'web_search'").get().value);
+  const put = async webSearch => (await PUT(new NextRequest('http://localhost/api/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ web_search: webSearch }),
+  }))).json();
 
   const shown = await (await GET(new NextRequest('http://localhost/api/settings'))).json();
-  assert.equal(shown.web_search.api_key, API_KEY_MASK);
+  assert.deepEqual(shown.web_search.api_keys, { deepseek: API_KEY_MASK, tavily: '', exa: '' });
+  assert.equal(shown.web_search.provider, 'deepseek');
+  assert.equal('api_key' in shown.web_search, false);
 
-  const saved = await (await PUT(new NextRequest('http://localhost/api/settings', {
+  // 旧结构在第一次保存时迁移成按来源存的密钥
+  const saved = await put({ api_keys: { deepseek: API_KEY_MASK }, summary_target_chars: 3000, max_rounds: 4 });
+  assert.deepEqual(saved.web_search.api_keys, { deepseek: API_KEY_MASK, tavily: '', exa: '' });
+  assert.deepEqual(stored(), {
+    enabled: true, provider: 'deepseek', api_keys: { deepseek: 'sk-real', tavily: '', exa: '' },
+    summary_target_chars: 3000, max_rounds: 4,
+  });
+
+  // 切换来源并填新来源的密钥：其他来源的密钥（掩码回写或未提交）都保留
+  await put({ provider: 'exa', api_keys: { deepseek: API_KEY_MASK, exa: 'exa-key' } });
+  assert.equal(stored().provider, 'exa');
+  assert.deepEqual(stored().api_keys, { deepseek: 'sk-real', tavily: '', exa: 'exa-key' });
+  await put({ api_keys: { tavily: 'tvly-key' } });
+  assert.deepEqual(stored().api_keys, { deepseek: 'sk-real', tavily: 'tvly-key', exa: 'exa-key' });
+
+  // 清空某个来源的密钥是真的清空
+  await put({ api_keys: { deepseek: '' } });
+  assert.deepEqual(stored().api_keys, { deepseek: '', tavily: 'tvly-key', exa: 'exa-key' });
+
+  // 还没刷新的旧页面只提交 api_key：当作 DeepSeek 密钥写入，掩码照旧表示保留
+  await put({ api_key: 'sk-from-old-page' });
+  assert.deepEqual(stored().api_keys, { deepseek: 'sk-from-old-page', tavily: 'tvly-key', exa: 'exa-key' });
+  assert.equal('api_key' in stored(), false);
+  await put({ api_key: API_KEY_MASK });
+  assert.equal(stored().api_keys.deepseek, 'sk-from-old-page');
+
+  const unknownProvider = await PUT(new NextRequest('http://localhost/api/settings', {
     method: 'PUT',
-    body: JSON.stringify({ web_search: { api_key: API_KEY_MASK, summary_target_chars: 3000, max_rounds: 4 } }),
-  }))).json();
-  assert.equal(saved.web_search.api_key, API_KEY_MASK);
-  assert.deepEqual(stored(), { enabled: true, api_key: 'sk-real', summary_target_chars: 3000, max_rounds: 4 });
+    body: JSON.stringify({ web_search: { provider: 'bing' } }),
+  }));
+  assert.equal(unknownProvider.status, 400);
 
   const rejected = await PUT(new NextRequest('http://localhost/api/settings', {
     method: 'PUT',

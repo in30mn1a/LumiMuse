@@ -7,7 +7,7 @@ import {
 import { triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 import { loadSettings } from '@/lib/settings';
 import { resolveMemoryRuntimePolicy } from '@/lib/memory-runtime-policy';
-import { DEFAULT_SETTINGS, Settings, type MemoryEngineSettings } from '@/types';
+import { DEFAULT_SETTINGS, Settings, type MemoryEngineSettings, type WebSearchProviderId, type WebSearchSettings } from '@/types';
 import { API_KEY_MASK } from '@/lib/constants';
 import { formatZodFieldErrors, settingsUpdateSchema } from '@/lib/schemas';
 import { requireAuth } from '@/lib/route-auth';
@@ -32,7 +32,9 @@ function maskSettings(settings: Settings): Settings {
     } : settings.memory_engine,
     web_search: settings.web_search ? {
       ...settings.web_search,
-      api_key: settings.web_search.api_key ? API_KEY_MASK : '',
+      api_keys: Object.fromEntries(
+        Object.entries(settings.web_search.api_keys).map(([id, key]) => [id, key ? API_KEY_MASK : '']),
+      ) as WebSearchSettings['api_keys'],
     } : settings.web_search,
   };
 }
@@ -136,10 +138,16 @@ export async function PUT(request: NextRequest) {
 
   if (updates.web_search) {
     const currentWebSearch = currentSettings.web_search;
-    updates.web_search = { ...currentWebSearch, ...updates.web_search };
-    if (updates.web_search.api_key === API_KEY_MASK) {
-      updates.web_search.api_key = currentWebSearch.api_key;
+    // 密钥按来源逐个合并：只回写了部分来源时其余保留，回写掩码时保留库中原值。
+    // 部署后还没刷新的旧页面只会提交 api_key，当作 DeepSeek 的密钥，不能显示保存成功却没生效。
+    const { api_key: legacyKey, ...incomingWebSearch } = updates.web_search as Partial<WebSearchSettings> & { api_key?: string };
+    const incomingKeys = { ...incomingWebSearch.api_keys };
+    if (incomingKeys.deepseek === undefined && legacyKey !== undefined) incomingKeys.deepseek = legacyKey;
+    const api_keys = { ...currentWebSearch.api_keys };
+    for (const [id, key] of Object.entries(incomingKeys) as [WebSearchProviderId, string | undefined][]) {
+      if (typeof key === 'string' && key !== API_KEY_MASK) api_keys[id] = key;
     }
+    updates.web_search = { ...currentWebSearch, ...incomingWebSearch, api_keys };
   }
 
   // ── 跨 provider 密钥保护 ─────────────────────────────────────

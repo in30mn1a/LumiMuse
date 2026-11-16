@@ -15,7 +15,12 @@ import {
   resolveWebSearchApiKey,
 } from '@/lib/settings';
 import type { Message, Settings, WebSearchData, WebSearchSource } from '@/types';
-import { fetchWebPage, searchWeb, type WebPage, type WebSearchResult } from './deepseek-search';
+import {
+  createWebSearchBackend,
+  type WebPage,
+  type WebSearchBackend,
+  type WebSearchResult,
+} from './web-search-backend';
 import { LEAKED_TOOL_CALL_RE } from './web-search-context';
 
 // 先搜后答的「搜」：后台模型带 search_web / fetch_url 两个工具自己决定查什么、读哪页，
@@ -113,7 +118,8 @@ export interface WebSearchLoopInput {
   llm: Settings;
   extraBody?: Record<string, unknown>;
   systemPrompt?: string;
-  searchApiKey: string;
+  /** 所选搜索来源；循环只经它搜索和读正文。 */
+  backend: WebSearchBackend;
   conversationText: string;
   nowText: string;
   summaryTargetChars: number;
@@ -133,7 +139,7 @@ function parseArgs(call: ChatToolCall): Record<string, unknown> {
 const SOURCES_LINE_RE = /^[ \t]*SOURCES[ \t]*[:：](.*)$/gim;
 
 export async function runWebSearchLoop(input: WebSearchLoopInput): Promise<WebSearchData> {
-  const { llm, searchApiKey, signal } = input;
+  const { llm, backend, signal } = input;
   const results: WebSearchResult[] = [];
   const idByUrl = new Map<string, number>();
   const pages = new Map<number, WebPage>();
@@ -160,7 +166,7 @@ export async function runWebSearchLoop(input: WebSearchLoopInput): Promise<WebSe
         const query = typeof args.query === 'string' ? args.query.trim() : '';
         if (!query) return '错误：缺少 query。';
         queries.push(query);
-        const found = await searchWeb(searchApiKey, query, RESULTS_PER_SEARCH, signal);
+        const found = await backend.search(query, RESULTS_PER_SEARCH, signal);
         if (found.length === 0) return '没有找到结果，换个关键词试试。';
         return found.map(result => {
           let id = idByUrl.get(result.url);
@@ -179,7 +185,7 @@ export async function runWebSearchLoop(input: WebSearchLoopInput): Promise<WebSe
         if (!Number.isInteger(id) || !result) return '错误：id 不是已有的搜索结果编号。';
         let page = pages.get(id);
         if (!page) {
-          page = await fetchWebPage(searchApiKey, result.url, signal);
+          page = await backend.fetchPage(result.url, signal);
           pages.set(id, page);
         }
         const start = Number.isInteger(args.start_index) && (args.start_index as number) > 0 ? args.start_index as number : 0;
@@ -331,7 +337,7 @@ export async function runWebSearchForChat(input: {
       llm,
       extraBody: buildBackgroundChatExtraBody(llm.model, taskTarget),
       systemPrompt: resolveCharacterTaskSystemPrompt(taskTarget, llm.model),
-      searchApiKey,
+      backend: createWebSearchBackend(settings.web_search.provider, searchApiKey),
       conversationText,
       nowText: formatChatTimestamp(new Date().toISOString(), input.timeContext),
       summaryTargetChars: settings.web_search.summary_target_chars,

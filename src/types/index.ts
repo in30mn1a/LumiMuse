@@ -154,11 +154,23 @@ export interface WebSearchData {
   searched_at: string;
 }
 
+export const WEB_SEARCH_PROVIDER_IDS = ['deepseek', 'tavily', 'exa'] as const;
+export type WebSearchProviderId = typeof WEB_SEARCH_PROVIDER_IDS[number];
+
+/** 各来源密钥留空时回退的环境变量。 */
+export const WEB_SEARCH_PROVIDER_ENV_KEYS: Record<WebSearchProviderId, string> = {
+  deepseek: 'DEEPSEEK_API_KEY',
+  tavily: 'TAVILY_API_KEY',
+  exa: 'EXA_API_KEY',
+};
+
 export interface WebSearchSettings {
   /** 功能总开关：关闭时聊天输入框不显示「联网」按钮，服务端也忽略联网请求。 */
   enabled: boolean;
-  /** DeepSeek 搜索密钥；留空时回退环境变量 DEEPSEEK_API_KEY。 */
-  api_key: string;
+  /** 当前使用的搜索来源。 */
+  provider: WebSearchProviderId;
+  /** 各来源的密钥（切换来源不丢其他来源的密钥）；留空时回退对应环境变量。 */
+  api_keys: Record<WebSearchProviderId, string>;
   /** 资料摘要的目标长度（字）。只写进后台提示词，不做硬截断。 */
   summary_target_chars: number;
   /** 后台模型最多调用几轮搜索/读取工具；到达后基于已有资料收尾。 */
@@ -167,7 +179,8 @@ export interface WebSearchSettings {
 
 export const DEFAULT_WEB_SEARCH_SETTINGS: WebSearchSettings = {
   enabled: false,
-  api_key: '',
+  provider: 'deepseek',
+  api_keys: { deepseek: '', tavily: '', exa: '' },
   summary_target_chars: 1500,
   max_rounds: 6,
 };

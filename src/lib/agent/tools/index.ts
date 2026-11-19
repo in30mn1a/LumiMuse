@@ -20,6 +20,8 @@ import { queryTableTool } from './query-table-tool';
 import { rememberTool } from './document-tools';
 import { loadSkillTool, prepareMemoryReviewTool, readReviewBatchTool } from './review-tools';
 import { updateTaskPlanTool } from './task-plan-tool';
+import { WEB_TOOLS, webToolsAvailable } from './web-tools';
+import type { Settings } from '@/types';
 
 export { createSearchMemoriesTool, type SearchMemoriesDeps } from './memory-tools';
 
@@ -47,5 +49,12 @@ export const AGENT_READ_TOOLS: AgentReadTool[] = [
 /** 角色卡、记忆与聊天消息经提案、由主人批准后修改；其余工具只写 Agent 笔记与计划。 */
 export const AGENT_WRITE_TOOLS: AgentWriteTool[] = [createMemoryProposalTool, createCharacterProposalTool, createCharacterTool, createMessageProposalTool, rememberTool, updateTaskPlanTool];
 
-/** 交给 Agent 循环的完整工具表。 */
+/** 交给 Agent 循环的完整工具表（不含按设置启用的联网工具，见 agentToolsFor）。 */
 export const AGENT_TOOLS: AgentTool[] = [...AGENT_READ_TOOLS, ...AGENT_WRITE_TOOLS];
+
+const AGENT_TOOLS_WITH_WEB: AgentTool[] = [...AGENT_READ_TOOLS, ...WEB_TOOLS, ...AGENT_WRITE_TOOLS];
+
+/** 按当前设置决定工具表：联网搜索启用且有密钥时多出 search_web / fetch_url，否则与 AGENT_TOOLS 相同。 */
+export function agentToolsFor(settings: Settings): AgentTool[] {
+  return webToolsAvailable(settings) ? AGENT_TOOLS_WITH_WEB : AGENT_TOOLS;
+}

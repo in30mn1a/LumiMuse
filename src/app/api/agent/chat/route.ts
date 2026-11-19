@@ -6,7 +6,8 @@ import { readJsonObject } from '@/lib/request-json';
 import { runAgentTurn } from '@/lib/agent/loop';
 import { finishAgentRun, startAgentRun } from '@/lib/agent/runs';
 import { getAgentSession } from '@/lib/agent/store';
-import { AGENT_TOOLS } from '@/lib/agent/tools';
+import { agentToolsFor } from '@/lib/agent/tools';
+import { loadSettings } from '@/lib/settings';
 import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
 
 /**
@@ -48,11 +49,13 @@ export async function POST(request: NextRequest) {
         }
       };
       try {
+        const settings = loadSettings();
         const result = await runAgentTurn({
           db,
           sessionId,
           userContent: content,
-          tools: AGENT_TOOLS,
+          tools: agentToolsFor(settings),
+          settings,
           skills: AGENT_SKILLS,
           signal: run.signal,
           events: {

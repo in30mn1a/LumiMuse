@@ -1,3 +1,4 @@
+import { WEB_SEARCH_PROVIDER_ENV_KEYS } from '@/types';
 import type { AgentToolContext, AgentToolResult } from './types';
 
 /**
@@ -9,20 +10,32 @@ import type { AgentToolContext, AgentToolResult } from './types';
  */
 export const REDACTED_PLACEHOLDER = '[REDACTED]';
 
-/** 设置里以这些后缀结尾的字段视为凭据（api_key、nai_api_key、embedding_api_key 等）。 */
-const CREDENTIAL_FIELD = /(?:api_key|secret|password)$/i;
+/**
+ * 设置里以这些后缀结尾的字段视为凭据（api_key、nai_api_key、embedding_api_key 等）。
+ * 复数的 api_keys 是按名字存的一组凭据（如 web_search.api_keys.tavily），其下的值全部算凭据。
+ */
+const CREDENTIAL_FIELD = /(?:api_keys?|secret|password)$/i;
 
-function collectFromValue(value: unknown, fieldName: string, add: (candidate: unknown) => void): void {
+/** 联网搜索各来源在设置里留空时回退的环境变量。 */
+const CREDENTIAL_ENV_KEYS = Object.values(WEB_SEARCH_PROVIDER_ENV_KEYS);
+
+function collectFromValue(
+  value: unknown,
+  fieldName: string,
+  add: (candidate: unknown) => void,
+  inCredential = false,
+): void {
+  const isCredential = inCredential || CREDENTIAL_FIELD.test(fieldName);
   if (typeof value === 'string') {
-    if (CREDENTIAL_FIELD.test(fieldName)) add(value);
+    if (isCredential) add(value);
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectFromValue(item, fieldName, add);
+    for (const item of value) collectFromValue(item, fieldName, add, isCredential);
     return;
   }
   if (value && typeof value === 'object') {
-    for (const [key, nested] of Object.entries(value)) collectFromValue(nested, key, add);
+    for (const [key, nested] of Object.entries(value)) collectFromValue(nested, key, add, isCredential);
   }
 }
 
@@ -52,6 +65,7 @@ export function collectCredentialValues(ctx: AgentToolContext): string[] {
   collectFromValue(ctx.settings, '', add);
   add(process.env.ACCESS_PASSWORD);
   add(process.env.AUTH_SECRET);
+  for (const name of CREDENTIAL_ENV_KEYS) add(process.env[name]);
 
   return [...found].sort((a, b) => b.length - a.length);
 }

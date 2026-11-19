@@ -6,7 +6,7 @@ import type { Settings } from '@/types';
 import { compactAgentSession } from '@/lib/agent/loop';
 import { finishAgentRun, startAgentRun } from '@/lib/agent/runs';
 import { getAgentSession } from '@/lib/agent/store';
-import { AGENT_TOOLS } from '@/lib/agent/tools';
+import { agentToolsFor } from '@/lib/agent/tools';
 import { redactCredentials } from '@/lib/agent/tools/credentials';
 import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
 
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     const result = await compactAgentSession({
       db,
       sessionId: id,
-      tools: AGENT_TOOLS,
+      tools: agentToolsFor(settings),
       skills: AGENT_SKILLS,
       settings,
       signal: run.signal,

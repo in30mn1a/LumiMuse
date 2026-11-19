@@ -34,6 +34,8 @@ const SECRETS = {
   custom: `${SENTINEL}-custom`,
   access: `${SENTINEL}-access-password`,
   auth: `${SENTINEL}-auth-secret`,
+  searchTavily: `${SENTINEL}-search-tavily`,
+  searchExaEnv: `${SENTINEL}-search-exa-env`,
 };
 
 const T0 = '2026-10-01T00:00:00.000Z';
@@ -72,9 +74,10 @@ function fakeEmbedder(vector) {
 }
 
 function plantEnv(t) {
-  const saved = { ACCESS_PASSWORD: process.env.ACCESS_PASSWORD, AUTH_SECRET: process.env.AUTH_SECRET };
+  const saved = { ACCESS_PASSWORD: process.env.ACCESS_PASSWORD, AUTH_SECRET: process.env.AUTH_SECRET, EXA_API_KEY: process.env.EXA_API_KEY };
   process.env.ACCESS_PASSWORD = SECRETS.access;
   process.env.AUTH_SECRET = SECRETS.auth;
+  process.env.EXA_API_KEY = SECRETS.searchExaEnv;
   t.after(() => {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
@@ -161,6 +164,8 @@ function seed(db) {
     reranker_api_key: SECRETS.reranker,
   });
   writeSetting(db, 'image_gen', { nai_api_key: SECRETS.nai, custom_api_key: SECRETS.custom });
+  // 联网搜索密钥按来源存在 api_keys 下，键名是来源名而不是 *_api_key
+  writeSetting(db, 'web_search', { enabled: true, provider: 'tavily', api_keys: { deepseek: '', tavily: SECRETS.searchTavily, exa: '' } });
 
   insertRow(db, 'characters', {
     id: 'char-a',
@@ -1156,8 +1161,12 @@ test('credentials pasted into chat or memory content are redacted before reachin
       seed(db);
       db.prepare("UPDATE memories SET content = ? WHERE id = 'mem-name'").run(`用户把密钥 ${SECRETS.provider} 发给了我`);
       db.prepare("UPDATE messages SET content = ? WHERE id = 'msg-a1-1'").run(`你好，我的口令是 ${SECRETS.access}`);
+      db.prepare("UPDATE messages SET content = ? WHERE id = 'msg-a1-2'").run(`搜索密钥 ${SECRETS.searchTavily} 和 ${SECRETS.searchExaEnv}`);
     },
   });
+
+  const searchKeys = await callOk('read_messages', { conversation_id: 'conv-a1', limit: 2 }, ctx);
+  assert.equal(searchKeys.messages[1].content, `搜索密钥 ${REDACTED_PLACEHOLDER} 和 ${REDACTED_PLACEHOLDER}`);
 
   const memories = await callOk('get_memories', { memory_ids: ['mem-name'] }, ctx);
   assert.equal(memories.memories[0].content, `用户把密钥 ${REDACTED_PLACEHOLDER} 发给了我`);

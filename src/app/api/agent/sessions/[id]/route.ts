@@ -6,7 +6,8 @@ import { getAgentContextStatus } from '@/lib/agent/loop';
 import { toAgentMessageView } from '@/lib/agent/messages';
 import { isAgentRunActive } from '@/lib/agent/runs';
 import { deleteAgentSession, getAgentSession, listAgentMessages, renameAgentSession } from '@/lib/agent/store';
-import { AGENT_TOOLS } from '@/lib/agent/tools';
+import { agentToolsFor } from '@/lib/agent/tools';
+import { loadSettings } from '@/lib/settings';
 import { AGENT_SKILLS } from '@/lib/agent/skills/memory-review';
 import { readLatestAgentTaskPlan } from '@/lib/agent/task-plan';
 
@@ -23,7 +24,8 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
   let context = null;
   try {
-    context = getAgentContextStatus(db, id, { tools: AGENT_TOOLS, skills: AGENT_SKILLS });
+    const settings = loadSettings();
+    context = getAgentContextStatus(db, id, { tools: agentToolsFor(settings), skills: AGENT_SKILLS, settings });
   } catch {
     // 占用只是附加信息
   }

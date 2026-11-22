@@ -85,6 +85,11 @@ export async function GET(request: NextRequest) {
 
   const memories = db.prepare(sql).all(...params) as Memory[];
   const normalized = memories.map(normalizeMemoryRow);
+  // 聊天页只用条数、分类和正文；source_msg_ids 占整个响应一半以上（每条记忆的来源消息 id 列表），
+  // 它用 omit_sources=1 省掉。记忆页、编辑与 Agent 不带这个参数，照常拿到完整字段。
+  if (request.nextUrl.searchParams.get('omit_sources') === '1') {
+    for (const memory of normalized) delete (memory as Partial<Memory>).source_msg_ids;
+  }
 
   if (total) {
     return NextResponse.json({

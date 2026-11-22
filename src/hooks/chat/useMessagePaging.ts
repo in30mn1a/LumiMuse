@@ -163,7 +163,8 @@ export function useMessagePaging({
         });
       }
     }
-    fetchMessagesPage(loadingConvId, { limit: pageSize, all: needsTarget, signal: ctl.signal })
+    // 搜索跳转只取「目标 ~ 最新」这段（服务端保证目标在内），不再拉整段对话
+    fetchMessagesPage(loadingConvId, { limit: pageSize, aroundMessageId: activeTargetMessageId, signal: ctl.signal })
       .then(response => {
         networkApplied = true;
         setMessagePagingError(null);
@@ -189,12 +190,13 @@ export function useMessagePaging({
     return () => ctl.abort();
   }, [activeConvId, activeTargetMessageId, activeTargetRequestId, applyMessagesResponse, pageSize, reportMessagePagingError]);
 
-  // 页面重新可见时刷新未提取数量（处理后台提取完成但前端不知道的情况）
+  // 页面重新可见时刷新未提取数量（处理后台提取完成但前端不知道的情况）。
+  // 只用整对话计数：服务端首页请求不论 limit 都会算，limit: 1 免得每次切回前台拉整页消息
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === 'visible' && activeConvId) {
         const cid = activeConvId;
-        fetchMessagesPage(cid, { limit: Math.max(pageSize, messages.length) })
+        fetchMessagesPage(cid, { limit: 1 })
           .then(({ unextractedCount: uc, totalTokens: tt }) => {
             if (activeConvIdRef.current !== cid) return;
             setMessagePagingError(null);
@@ -208,7 +210,7 @@ export function useMessagePaging({
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [activeConvId, activeConvIdRef, messages.length, pageSize, reportMessagePagingError, updateServerCounts]);
+  }, [activeConvId, activeConvIdRef, reportMessagePagingError, updateServerCounts]);
 
   const refreshMessages = useCallback(async () => {
     const convId = activeConvIdRef.current;
@@ -227,10 +229,11 @@ export function useMessagePaging({
     const response = await fetchMessagesPage(conversationIdToRefresh, loadedRangePageOptions(conversationIdToRefresh, pageSize, loadedLength));
     setMessagePagingError(null);
     applyMessagesResponse(conversationIdToRefresh, response);
+    return response;
   }, [activeConvIdRef, applyMessagesResponse, pageSize]);
 
   const refreshMessageCountsForConversation = useCallback(async (conversationIdToRefresh: string) => {
-    const { unextractedCount, totalTokens } = await fetchMessagesPage(conversationIdToRefresh, { limit: pageSize });
+    const { unextractedCount, totalTokens } = await fetchMessagesPage(conversationIdToRefresh, { limit: 1 });
     const metadata: Partial<Omit<MessagesResponse, 'messages'>> = {};
     if (unextractedCount !== undefined) metadata.unextractedCount = unextractedCount;
     if (totalTokens !== undefined) metadata.totalTokens = totalTokens;
@@ -239,7 +242,7 @@ export function useMessagePaging({
       updateServerCounts(conversationIdToRefresh, unextractedCount, totalTokens);
     }
     setMessagePagingError(null);
-  }, [activeConvIdRef, pageSize, updateMessagesForConversation, updateServerCounts]);
+  }, [activeConvIdRef, updateMessagesForConversation, updateServerCounts]);
 
   const loadOlderMessages = useCallback(async () => {
     if (!activeConvId || !hasOlderMessages || oldestLoadedSeq === null || loadingOlderMessages) return;

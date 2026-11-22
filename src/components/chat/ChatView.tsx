@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Character, Memory, Message, ReasoningEffort, Settings } from '@/types';
+import { Character, Message, ReasoningEffort, Settings } from '@/types';
 import {
   planModelReasoningSwitch,
   rememberReasoningEffortForModel,
@@ -36,8 +36,9 @@ import { countSummaryContextTokens } from '@/lib/summary-context-tokens';
 import type { TextHighlightRange } from '@/lib/text-highlight';
 import { getVersionInfo } from '@/lib/chat-view-utils';
 import { stripInlinePrompt } from '@/lib/inline-image-prompt';
-import { expectOkResponse, getErrorMessage, HttpResponseError, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
-import { fetchMessagesPage } from '@/lib/chat-stream-client';
+import { expectOkResponse, getErrorMessage, HttpResponseError, parseJsonResponse } from '@/lib/http';
+import { fetchCharacterMemoryList } from '@/lib/memory-list-client';
+import { fetchExtractionStatus } from '@/lib/chat-stream-client';
 import {
   clearCachedMessages,
   readCachedMessages,
@@ -316,9 +317,7 @@ export default function ChatView({
     setMemories,
     showToast,
     t,
-    getLoadedMessageCount: () => messagesRef.current.length,
     updateServerCounts,
-    pageSize: PAGE_SIZE,
   });
 
   const {
@@ -363,7 +362,6 @@ export default function ChatView({
     markSkipNextScroll,
     showToast,
     t,
-    pageSize: PAGE_SIZE,
     maybeAutoGenerateImageFromMessages,
   });
 
@@ -803,9 +801,7 @@ export default function ChatView({
     if (!charId) return;
     void (async () => {
       try {
-        const list = await parseJsonArrayResponse<Memory>(
-          await fetch(`/api/memories?character_id=${encodeURIComponent(charId)}`),
-        );
+        const list = await fetchCharacterMemoryList(charId);
         if (characterRef.current?.id !== charId) return;
         setMemories(list);
         updateCharacterMemories(charId, list);
@@ -1148,10 +1144,7 @@ export default function ChatView({
           }
         }}
         onManualExtract={handleManualExtract}
-        loadAllMessages={async (cid) => {
-          const { messages: msgs } = await fetchMessagesPage(cid, { all: true });
-          return msgs;
-        }}
+        loadExtractionStatus={fetchExtractionStatus}
         ResetExtractionModalComponent={ResetExtractionModal}
       >
         {/* 对话切换抽屉（全断点：<lg 底部抽屉，lg+ 居中弹窗） */}

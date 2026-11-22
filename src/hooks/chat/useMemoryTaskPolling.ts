@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
-import type { Character, Memory } from '@/types';
+import type { Character, MemoryListItem } from '@/types';
 import { formatTemplate } from '@/lib/i18n';
 import { fetchMessagesPage } from '@/lib/chat-stream-client';
-import { getErrorMessage, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
+import { getErrorMessage, parseJsonResponse } from '@/lib/http';
 import { updateCharacterMemories } from '@/lib/character-context-cache';
+import { fetchCharacterMemoryList } from '@/lib/memory-list-client';
 
 type MemoryExtractStatus = 'idle' | 'extracting' | 'done' | 'failed';
 
@@ -18,12 +19,10 @@ type MemoryTaskStatusResponse = {
 type UseMemoryTaskPollingOptions = {
   activeConvIdRef: MutableRefObject<string | null>;
   characterRef: MutableRefObject<Character | null>;
-  setMemories: Dispatch<SetStateAction<Memory[]>>;
+  setMemories: Dispatch<SetStateAction<MemoryListItem[]>>;
   showToast: (message: string, type?: 'info' | 'error') => void;
   t: (key: string) => string;
-  getLoadedMessageCount: () => number;
   updateServerCounts: (conversationId: string, unextractedCount?: number, totalTokens?: number) => void;
-  pageSize: number;
 };
 
 const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
@@ -34,9 +33,7 @@ export function useMemoryTaskPolling({
   setMemories,
   showToast,
   t,
-  getLoadedMessageCount,
   updateServerCounts,
-  pageSize,
 }: UseMemoryTaskPollingOptions) {
   const [memoryExtractStatus, setMemoryExtractStatus] = useState<MemoryExtractStatus>('idle');
   const seenMemoryTaskRef = useRef<Record<string, string>>({});
@@ -51,14 +48,15 @@ export function useMemoryTaskPolling({
     if (extractStatusTimerRef.current) clearTimeout(extractStatusTimerRef.current);
   }, []);
 
+  // 只要整对话的两个计数：服务端首页请求不论 limit 多少都算它们，limit: 1 免得为两个数字拉整页消息
   const refreshCounts = useCallback((convId: string) => {
-    fetchMessagesPage(convId, { limit: Math.max(pageSize, getLoadedMessageCount()) })
+    fetchMessagesPage(convId, { limit: 1 })
       .then(({ unextractedCount: uc, totalTokens: tt }) => {
         if (activeConvIdRef.current !== convId) return;
         updateServerCounts(convId, uc, tt);
       })
       .catch(() => {});
-  }, [activeConvIdRef, getLoadedMessageCount, pageSize, updateServerCounts]);
+  }, [activeConvIdRef, updateServerCounts]);
 
   const scheduleStatusReset = useCallback(() => {
     if (extractStatusTimerRef.current) clearTimeout(extractStatusTimerRef.current);
@@ -133,9 +131,7 @@ export function useMemoryTaskPolling({
               const charId = characterRef.current?.id;
               if (charId) {
                 try {
-                  const list = await parseJsonArrayResponse<Memory>(
-                    await fetch(`/api/memories?character_id=${encodeURIComponent(charId)}`, { signal: controller.signal }),
-                  );
+                  const list = await fetchCharacterMemoryList(charId, { signal: controller.signal });
                   if (activeConvIdRef.current === convId && characterRef.current?.id === charId) {
                     setMemories(list);
                     updateCharacterMemories(charId, list);

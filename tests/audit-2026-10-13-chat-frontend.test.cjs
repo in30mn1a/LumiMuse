@@ -141,14 +141,13 @@ function messageActionOptions(overrides = {}) {
     setStreamingUsage: noop,
     setWebSearchingConvId: noop,
     pollMemoryTask: noop,
-    refreshMessagesForConversation: async () => {},
+    refreshMessagesForConversation: async () => ({ messages: [], hasMore: false, oldestSeq: null }),
     refreshMessageCountsForConversation: async () => {},
     touchConversation: noop,
     updateMessagesForConversation: noop,
     markSkipNextScroll: noop,
     showToast: noop,
     t: key => key,
-    pageSize: 60,
     maybeAutoGenerateImageFromMessages: noop,
     ...overrides,
   };
@@ -375,18 +374,28 @@ function resetModalProps(overrides = {}) {
 
 function deferredLoader() {
   const attempts = [];
-  const loadAllMessages = conversationId => {
+  const loadExtractionStatus = (conversationId, options) => {
     const attempt = deferred();
-    attempts.push({ conversationId, ...attempt });
+    attempts.push({ conversationId, signal: options?.signal, ...attempt });
     return attempt.promise;
   };
-  return { attempts, loadAllMessages };
+  return { attempts, loadExtractionStatus };
+}
+
+function extractionItem(overrides = {}) {
+  return {
+    id: 'u1',
+    preview: 'hello',
+    created_at: '2026-10-13T00:00:00.000Z',
+    extracted: false,
+    ...overrides,
+  };
 }
 
 test('F16: ResetExtractionModal shows a retryable error when loading messages fails', async () => {
   const ResetExtractionModal = loadModule('src/components/chat/ResetExtractionModal.tsx').default;
-  const { attempts, loadAllMessages } = deferredLoader();
-  const view = render(React.createElement(ResetExtractionModal, resetModalProps({ loadAllMessages })));
+  const { attempts, loadExtractionStatus } = deferredLoader();
+  const view = render(React.createElement(ResetExtractionModal, resetModalProps({ loadExtractionStatus })));
   assert.ok(view.getByText('common.loading'));
 
   await act(async () => { attempts[0].reject(new Error('503')); });
@@ -401,7 +410,7 @@ test('F16: ResetExtractionModal shows a retryable error when loading messages fa
   assert.ok(view.getByText('common.loading'));
 
   await act(async () => {
-    attempts[1].resolve([chatMessage({ content: 'remember the lighthouse' })]);
+    attempts[1].resolve([extractionItem({ preview: 'remember the lighthouse' })]);
   });
   assert.ok(view.getByText('remember the lighthouse'));
   assert.ok(view.queryByRole('alert') === null);
@@ -412,15 +421,66 @@ test('F16: a superseded load that fails late does not flip the newer attempt int
   const ResetExtractionModal = loadModule('src/components/chat/ResetExtractionModal.tsx').default;
   const first = deferredLoader();
   const second = deferredLoader();
-  const view = render(React.createElement(ResetExtractionModal, resetModalProps({ loadAllMessages: first.loadAllMessages })));
-  // 父组件重渲染换了 loadAllMessages 引用：effect 重跑，上一轮加载被取消
-  view.rerender(React.createElement(ResetExtractionModal, resetModalProps({ loadAllMessages: second.loadAllMessages })));
+  const view = render(React.createElement(ResetExtractionModal, resetModalProps({ loadExtractionStatus: first.loadExtractionStatus })));
+  // 换了 loadExtractionStatus 引用：effect 重跑，上一轮加载被取消
+  view.rerender(React.createElement(ResetExtractionModal, resetModalProps({ loadExtractionStatus: second.loadExtractionStatus })));
   assert.equal(second.attempts.length, 1);
+  assert.ok(first.attempts[0].signal.aborted === true, 'the superseded request must be aborted, not just ignored');
 
   await act(async () => { first.attempts[0].reject(new Error('late 503')); });
   assert.ok(view.queryByRole('alert') === null, 'a cancelled load must not report failure');
   assert.ok(view.getByText('common.loading'));
 
-  await act(async () => { second.attempts[0].resolve([chatMessage({ content: 'fresh message' })]); });
+  await act(async () => { second.attempts[0].resolve([extractionItem({ preview: 'fresh message' })]); });
   assert.ok(view.getByText('fresh message'));
+});
+
+test('ChatView hands ResetExtractionModal a stable, lightweight loader', () => {
+  // 曾传每次渲染新建的箭头函数（且拉 /api/messages?all=1 整段对话），父组件一重渲染加载就作废重来，
+  // 长对话要等几十秒。模块级函数引用恒定。
+  const chatView = fs.readFileSync(path.join(root, 'src/components/chat/ChatView.tsx'), 'utf8');
+  assert.match(chatView, /loadExtractionStatus=\{fetchExtractionStatus\}/);
+  assert.match(chatView, /import \{[^}]*\bfetchExtractionStatus\b[^}]*\} from '@\/lib\/chat-stream-client'/);
+});
+
+test('ResetExtractionModal keeps one in-flight load across unrelated parent re-renders', async () => {
+  const ResetExtractionModal = loadModule('src/components/chat/ResetExtractionModal.tsx').default;
+  const { attempts, loadExtractionStatus } = deferredLoader();
+  const view = render(React.createElement(ResetExtractionModal, resetModalProps({ loadExtractionStatus })));
+  // 父组件因提取状态变化等原因重渲染（新的回调引用），但加载函数引用不变
+  view.rerender(React.createElement(ResetExtractionModal, resetModalProps({
+    loadExtractionStatus,
+    memoryExtractStatus: 'extracting',
+    onClose: () => {},
+  })));
+  assert.equal(attempts.length, 1, 're-rendering with the same loader must not restart the load');
+  assert.ok(attempts[0].signal.aborted === false);
+
+  await act(async () => {
+    attempts[0].resolve([
+      extractionItem({ id: 'u1', preview: 'older pending', extracted: false }),
+      extractionItem({ id: 'u2', preview: 'newer done', extracted: true }),
+    ]);
+  });
+  const rows = view.getAllByRole('button').filter(button => /older pending|newer done/.test(button.textContent));
+  assert.deepEqual(rows.map(row => row.textContent.includes('newer done')), [true, false], 'newest message is listed first');
+  assert.match(rows[0].textContent, /✓/);
+  assert.match(rows[1].textContent, /○/);
+});
+
+test('ResetExtractionModal reloads in place when the server pending count changes', async () => {
+  const ResetExtractionModal = loadModule('src/components/chat/ResetExtractionModal.tsx').default;
+  const { attempts, loadExtractionStatus } = deferredLoader();
+  const view = render(React.createElement(ResetExtractionModal, resetModalProps({ loadExtractionStatus, serverUnextractedCount: 1 })));
+  await act(async () => { attempts[0].resolve([extractionItem({ preview: 'waiting', extracted: false })]); });
+  assert.match(view.getByText('waiting').closest('button').textContent, /○/);
+
+  // 弹窗开着时后台提取完成，顶栏计数 1 → 0
+  view.rerender(React.createElement(ResetExtractionModal, resetModalProps({ loadExtractionStatus, serverUnextractedCount: 0 })));
+  assert.equal(attempts.length, 2);
+  assert.ok(view.getByText('waiting'), 'the previous list stays visible while reloading');
+  assert.ok(view.queryByText('common.loading') === null);
+
+  await act(async () => { attempts[1].resolve([extractionItem({ preview: 'waiting', extracted: true })]); });
+  assert.match(view.getByText('waiting').closest('button').textContent, /✓/);
 });

@@ -332,6 +332,27 @@ test('/api/memories GET 编号搜索按字面匹配 SQL 通配符', async () => 
   }
 });
 
+test('/api/memories GET omit_sources=1 省掉 source_msg_ids，默认仍返回完整字段', async () => {
+  const db = createMemoryDb();
+  insertMemory(db, { id: 'with-sources', content: '有来源的记忆', source_msg_ids: ['m1', 'm2'] });
+  const route = requireFreshWithMocks('../src/app/api/memories/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+  });
+
+  const full = await (await route.GET(requestFor('http://test.local/api/memories?character_id=char-a'))).json();
+  assert.deepEqual(full[0].source_msg_ids, ['m1', 'm2']);
+
+  const slim = await (await route.GET(requestFor('http://test.local/api/memories?character_id=char-a&omit_sources=1'))).json();
+  assert.equal(slim.length, 1);
+  assert.equal(slim[0].content, '有来源的记忆');
+  // 字段必须真的不存在，而不是 []：若有人把列表项整条写回，空数组会清掉真实来源
+  assert.equal(Object.hasOwn(slim[0], 'source_msg_ids'), false);
+
+  const slimPage = await (await route.GET(requestFor('http://test.local/api/memories?character_id=char-a&omit_sources=1&limit=20'))).json();
+  assert.equal(Object.hasOwn(slimPage.memories[0], 'source_msg_ids'), false);
+});
+
 test('/api/memories GET 默认排除 superseded，与后端仅注入 active 对齐', async () => {
   const db = createMemoryDb();
 

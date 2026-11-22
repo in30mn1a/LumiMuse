@@ -957,3 +957,73 @@ test('/api/conversations/[id]/reset-extraction scopes all and explicit IDs to th
   );
   db.close();
 });
+
+test('/api/conversations/[id]/reset-extraction GET lists only the linked view\'s user messages with previews and status', async () => {
+  const db = new Database(':memory:');
+  const longContent = '这是一条很长的用户消息'.repeat(10); // 110 个字符
+  db.exec(`
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT,
+      parent_seq_end INTEGER
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      seq INTEGER NOT NULL
+    );
+    INSERT INTO conversations (id, parent_id, parent_seq_end) VALUES
+      ('conv-parent', NULL, NULL),
+      ('conv-child', 'conv-parent', 3),
+      ('conv-outside', NULL, NULL);
+  `);
+  const insert = db.prepare(
+    'INSERT INTO messages (id, conversation_id, role, content, metadata, created_at, seq) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  insert.run('parent-noop', 'conv-parent', 'user', longContent, '{"memory_noop_extracted_at":"2026-08-23T00:00:00.000Z"}', '2026-08-23T00:00:00.000Z', 1);
+  insert.run('parent-answer', 'conv-parent', 'assistant', 'assistant reply', '{}', '2026-08-23T00:00:01.000Z', 3);
+  insert.run('parent-after-snapshot', 'conv-parent', 'user', 'not in the child view', '{}', '2026-08-23T00:00:02.000Z', 4);
+  insert.run('child-inserted', 'conv-child', 'user', 'inserted later', '{"memory_extracted":true}', '2026-08-23T00:00:10.000Z', 2);
+  insert.run('child-local', 'conv-child', 'user', 'pending', 'not json', '2026-08-23T00:00:03.000Z', 4);
+  insert.run('outside-user', 'conv-outside', 'user', 'other conversation', '{}', '2026-08-23T00:00:04.000Z', 1);
+
+  const route = requireFreshWithMocks('../src/app/api/conversations/[id]/reset-extraction/route.ts', {
+    'next/server': jsonResponseMock(),
+    '@/lib/db': { getDb: () => db },
+  });
+  const list = async () => (await route.GET(
+    jsonRequest(null),
+    { params: Promise.resolve({ id: 'conv-child' }) },
+  )).json();
+
+  assert.deepEqual(await list(), [
+    // 已判定无可提取（noop）与顶栏计数一样算已处理；正文只取前 60 个字符
+    { id: 'parent-noop', preview: longContent.slice(0, 60), created_at: '2026-08-23T00:00:00.000Z', extracted: true },
+    // 链式视图按 seq 排序：晚生成但 seq=2 的插入消息排在中间
+    { id: 'child-inserted', preview: 'inserted later', created_at: '2026-08-23T00:00:10.000Z', extracted: true },
+    { id: 'child-local', preview: 'pending', created_at: '2026-08-23T00:00:03.000Z', extracted: false },
+  ]);
+
+  // mark 只计入真正从未处理变为已处理的消息：只有 noop 标记的旧数据本就不在「待提取」里，
+  // 计入 resetCount 会让前端把顶栏计数多扣
+  const markResponse = await route.POST(
+    jsonRequest({ action: 'mark', messageIds: ['parent-noop', 'child-local'] }),
+    { params: Promise.resolve({ id: 'conv-child' }) },
+  );
+  assert.deepEqual(await markResponse.json(), { resetCount: 1, action: 'mark' });
+  assert.equal(
+    db.prepare('SELECT metadata FROM messages WHERE id = ?').get('parent-noop').metadata,
+    '{"memory_noop_extracted_at":"2026-08-23T00:00:00.000Z"}',
+  );
+  assert.deepEqual((await list()).map(item => item.extracted), [true, true, true]);
+
+  // 与 POST 的判定一致：全部重置后列表里不再有已提取项
+  const resetResponse = await route.POST(jsonRequest({}), { params: Promise.resolve({ id: 'conv-child' }) });
+  assert.deepEqual(await resetResponse.json(), { resetCount: 3, action: 'reset' });
+  assert.deepEqual((await list()).map(item => item.extracted), [false, false, false]);
+  db.close();
+});

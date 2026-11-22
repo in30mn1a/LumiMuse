@@ -6,11 +6,10 @@ import { parseJsonResponse } from '@/lib/http';
 import { forgetImageBlobs } from '@/lib/image-blob-cache';
 import {
   buildClientTimePayload,
-  fetchMessagesPage,
   readChatSseStream,
   scopeMessageToConversationView,
+  type MessagesResponse,
 } from '@/lib/chat-stream-client';
-import { loadedRangePageOptions } from '@/lib/chat-message-cache';
 import { isWebSearchEnabled } from './useWebSearchToggle';
 
 type UpdateMessagesForConversation = (
@@ -77,7 +76,8 @@ type UseChatMessageActionsOptions = {
   /** 正在联网搜索的对话；搜索结束或流收尾时置空。 */
   setWebSearchingConvId: (convId: string | null) => void;
   pollMemoryTask: (convId: string) => void | Promise<void>;
-  refreshMessagesForConversation: (conversationId: string) => Promise<void>;
+  /** 按已加载范围重拉并写入；返回同一份响应，供收尾的自动出图复用 */
+  refreshMessagesForConversation: (conversationId: string) => Promise<MessagesResponse>;
   refreshMessageCountsForConversation: (conversationId: string) => Promise<void>;
   /** 聊天/重生成成功后局部更新对话摘要，避免全量重拉对话与记忆 */
   touchConversation: (conversationId: string) => void;
@@ -85,7 +85,6 @@ type UseChatMessageActionsOptions = {
   markSkipNextScroll: () => void;
   showToast: (message: string, type?: ToastType) => void;
   t: (key: string) => string;
-  pageSize: number;
   maybeAutoGenerateImageFromMessages: (
     cid: string,
     freshMessages: Message[],
@@ -110,7 +109,6 @@ export function useChatMessageActions({
   markSkipNextScroll,
   showToast,
   t,
-  pageSize,
   maybeAutoGenerateImageFromMessages,
 }: UseChatMessageActionsOptions) {
   const handleEditMessage = useCallback(async (
@@ -205,29 +203,21 @@ export function useChatMessageActions({
     };
 
     // 三种 mode 均按显式目标 id 触发自动出图；定位失败则不触发（不再靠 effect 兜底）。
-    // 属收尾装饰步骤：拉页失败只提示加载失败，不得误报为发送失败；
     // new 模式沿用旧行为，仅在用户仍停留在该对话时出图。
-    const triggerAutoImage = async () => {
+    // page 复用收尾刷新的同一份响应：它按已加载范围取回（重新生成的可能是 200 条以前的历史消息，
+    // 按条数取最新一页会找不到它而静默不出图）。曾在这里用同样参数再拉一遍，长对话每条回复多传一整段。
+    const triggerAutoImage = (page: MessagesResponse) => {
       if (mode === 'new' && activeConvIdRef.current !== streamConversationId) return;
-      try {
-        // 按已加载范围取回：重新生成的可能是 200 条以前的历史消息，按条数取最新一页会找不到它而静默不出图
-        const page = await fetchMessagesPage(
-          streamConversationId,
-          loadedRangePageOptions(streamConversationId, pageSize, messagesRef.current.length),
-        );
-        const targetAssistantId = mode === 'regenerate'
-          ? regenerateAssistantId
-          : mode === 'insert'
-            ? findAssistantInsertedAfterUser(page.messages, insertAfterUserMessageId!)
-            : findLastAssistantId(page.messages);
-        if (targetAssistantId) {
-          void maybeAutoGenerateImageFromMessages(streamConversationId, page.messages, {
-            assistantMessageId: targetAssistantId,
-            retry: mode === 'regenerate',
-          });
-        }
-      } catch {
-        showToast(t('chat.messageLoadFailed'), 'error');
+      const targetAssistantId = mode === 'regenerate'
+        ? regenerateAssistantId
+        : mode === 'insert'
+          ? findAssistantInsertedAfterUser(page.messages, insertAfterUserMessageId!)
+          : findLastAssistantId(page.messages);
+      if (targetAssistantId) {
+        void maybeAutoGenerateImageFromMessages(streamConversationId, page.messages, {
+          assistantMessageId: targetAssistantId,
+          retry: mode === 'regenerate',
+        });
       }
     };
 
@@ -286,22 +276,22 @@ export function useChatMessageActions({
       });
 
       if (mode === 'regenerate') markSkipNextScroll();
-      await refreshMessagesForConversation(streamConversationId);
+      const refreshed = await refreshMessagesForConversation(streamConversationId);
 
-      // 真实消息已入列，立即收掉流式气泡；否则下方 triggerAutoImage 的网络往返期间
+      // 真实消息已入列，立即收掉流式气泡；否则下方自动出图的网络往返期间
       // 真实气泡与流式气泡会内容重复地并存（慢网下肉眼可见）。
       settleStream();
 
       // 仅局部 bump 当前对话摘要；记忆列表由 pollMemoryTask 在提取完成后刷新
       touchConversation(streamConversationId);
 
-      await triggerAutoImage();
+      triggerAutoImage(refreshed);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         // 中止的部分回复已落库，仍尝试自动出图（尾部 [IMG] 块可能已流完）
-        await refreshMessagesForConversation(streamConversationId);
+        const refreshed = await refreshMessagesForConversation(streamConversationId);
         settleStream();
-        await triggerAutoImage();
+        triggerAutoImage(refreshed);
       } else {
         if (error instanceof TypeError) {
           showToast(t('chat.errorNetwork'), 'error');
@@ -333,9 +323,7 @@ export function useChatMessageActions({
     showToast,
     t,
     touchConversation,
-    pageSize,
     maybeAutoGenerateImageFromMessages,
-    messagesRef,
   ]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {

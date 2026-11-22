@@ -472,6 +472,44 @@ test('/api/memory-tasks GET follows the newest task intersecting the linked view
   assert.equal(donePayload.updatedAt, '2026-08-23T00:00:06.000Z');
 });
 
+test('/api/memory-tasks GET resolves task message IDs by primary key instead of rescanning the view per task', async () => {
+  // 回归：曾对每个任务展开整个视图的消息、逐条扫任务 id 列表（任务数 × 视图消息数），
+  // done 任务长期保留，长对话一次轮询要几秒并卡住同步 SQLite。
+  const db = createMemoryTasksDb();
+  addTaskPollingScopeTables(db);
+  db.exec('CREATE INDEX idx_messages_conversation ON messages(conversation_id)');
+  db.prepare("INSERT INTO conversations (id, parent_id, parent_seq_end) VALUES ('conv-plan', NULL, NULL)").run();
+  db.prepare("INSERT INTO messages (id, conversation_id, seq) VALUES ('plan-user', 'conv-plan', 1)").run();
+  db.prepare(`
+    INSERT INTO memory_tasks (character_id, conversation_id, message_ids, status, merge_count, created_at, updated_at)
+    VALUES ('char-a', 'conv-other', '["plan-user"]', 'done', 3, '2026-08-23T00:00:00.000Z', '2026-08-23T00:00:01.000Z')
+  `).run();
+
+  let pollSql = null;
+  const recordingDb = new Proxy(db, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return sql => {
+          if (/FROM memory_tasks AS task/.test(sql)) pollSql = sql;
+          return target.prepare(sql);
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const route = loadRoute(recordingDb);
+  const payload = await (await route.GET(request('http://test.local/api/memory-tasks?conversation_id=conv-plan'))).json();
+  assert.equal(payload.status, 'done', 'a task stored under another conversation still matches through its message IDs');
+  assert.equal(payload.mergeCount, 3);
+
+  assert.ok(pollSql, 'the polling query must be captured');
+  const plan = db.prepare(`EXPLAIN QUERY PLAN ${pollSql}`).all('conv-plan', 'conv-plan').map(step => step.detail).join('\n');
+  assert.match(plan, /SEARCH visible_message USING (?:INDEX sqlite_autoindex_messages_1|PRIMARY KEY) \(id=\?\)/, plan);
+  assert.doesNotMatch(plan, /idx_messages_conversation/, plan);
+});
+
 test('/api/memory-tasks POST rejects malformed JSON instead of treating it as an empty body', async () => {
   const route = loadRoute(createMemoryTasksDb());
 

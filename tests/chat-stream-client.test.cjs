@@ -78,11 +78,11 @@ function waitForStreamRead() {
 test('messagesUrl builds optional query parameters without empty values', () => {
   assert.equal(messagesUrl('conv a'), '/api/messages?conversation_id=conv+a');
   assert.equal(
-    messagesUrl('conv-a', { limit: 60, beforeSeq: 12, all: true }),
-    '/api/messages?conversation_id=conv-a&all=1&limit=60&before_seq=12',
+    messagesUrl('conv-a', { limit: 60, beforeSeq: 12, aroundMessageId: 'msg 1' }),
+    '/api/messages?conversation_id=conv-a&limit=60&before_seq=12&around_message_id=msg+1',
   );
   assert.equal(
-    messagesUrl('conv-a', { limit: 0, beforeSeq: null, all: false }),
+    messagesUrl('conv-a', { limit: 0, beforeSeq: null, aroundMessageId: null }),
     '/api/messages?conversation_id=conv-a',
   );
 });

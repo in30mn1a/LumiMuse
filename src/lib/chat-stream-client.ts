@@ -1,5 +1,5 @@
-import type { Message } from '@/types';
-import { parseJsonResponse } from './http';
+import type { ExtractionStatusItem, Message } from '@/types';
+import { parseJsonArrayResponse, parseJsonResponse } from './http';
 
 export type MessagesResponse = {
   messages: Message[];
@@ -31,12 +31,12 @@ export function buildClientTimePayload() {
   };
 }
 
-export function messagesUrl(conversationId: string, options?: { limit?: number; beforeSeq?: number | null; fromSeq?: number | null; all?: boolean }): string {
+export function messagesUrl(conversationId: string, options?: { limit?: number; beforeSeq?: number | null; fromSeq?: number | null; aroundMessageId?: string | null }): string {
   const params = new URLSearchParams({ conversation_id: conversationId });
-  if (options?.all) params.set('all', '1');
   if (options?.fromSeq !== undefined && options.fromSeq !== null) params.set('from_seq', String(options.fromSeq));
   else if (options?.limit) params.set('limit', String(options.limit));
   if (options?.beforeSeq !== undefined && options.beforeSeq !== null) params.set('before_seq', String(options.beforeSeq));
+  if (options?.aroundMessageId) params.set('around_message_id', options.aroundMessageId);
   return `/api/messages?${params}`;
 }
 
@@ -58,7 +58,7 @@ export function scopeMessageToConversationView(
 
 export async function fetchMessagesPage(
   conversationId: string,
-  options?: { limit?: number; beforeSeq?: number | null; fromSeq?: number | null; all?: boolean; signal?: AbortSignal },
+  options?: { limit?: number; beforeSeq?: number | null; fromSeq?: number | null; aroundMessageId?: string | null; signal?: AbortSignal },
 ): Promise<MessagesResponse> {
   const response = await fetch(messagesUrl(conversationId, options), { signal: options?.signal });
   const data = await parseJsonResponse<MessagesResponse | Message[]>(response);
@@ -77,6 +77,21 @@ export async function fetchMessagesPage(
     ...data,
     messages: scopeToConversationView(data.messages),
   };
+}
+
+/**
+ * 「切换提取状态」弹窗的列表：只取用户消息的提取状态与正文开头，不拉整段对话。
+ * 模块级函数、引用恒定，作为 prop 传给弹窗时不会因父组件重渲染让加载 effect 反复重跑。
+ */
+export async function fetchExtractionStatus(
+  conversationId: string,
+  options?: { signal?: AbortSignal },
+): Promise<ExtractionStatusItem[]> {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/reset-extraction`,
+    { signal: options?.signal },
+  );
+  return parseJsonArrayResponse<ExtractionStatusItem>(response);
 }
 
 export function parseChatSsePart(part: string): { eventType: string; eventData: string } {

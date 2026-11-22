@@ -198,6 +198,16 @@ export interface Message {
   metadata: MessageMetadata;
 }
 
+/** 「切换提取状态」弹窗的列表项，来自 GET /api/conversations/[id]/reset-extraction（只含用户消息）。 */
+export interface ExtractionStatusItem {
+  id: string;
+  /** 正文前 60 个字符 */
+  preview: string;
+  created_at: string;
+  /** 与顶栏「N 待提取」计数同一判定（MEMORY_PROCESSED_SQL）：已提取或已判定无可提取 */
+  extracted: boolean;
+}
+
 export const MEMORY_KINDS = [
   'general',
   'user_fact',
@@ -218,7 +228,11 @@ export const MEMORY_STATUSES = [
 ] as const;
 export type MemoryStatus = typeof MEMORY_STATUSES[number];
 
-export interface Memory {
+/**
+ * 聊天页的角色记忆列表项（GET /api/memories?omit_sources=1）：不含 source_msg_ids。
+ * 单独成型而不是 Omit<Memory, ...>：Memory 带索引签名，Omit 会把具名字段一并丢掉。
+ */
+export interface MemoryListItem {
   [key: string]: unknown;
   id: string;
   character_id: string;
@@ -226,7 +240,6 @@ export interface Memory {
   content: string;
   confidence: number;
   tags: string[];
-  source_msg_ids: string[];
   memory_kind: MemoryKind;
   importance: number;
   emotional_weight: number;
@@ -237,6 +250,10 @@ export interface Memory {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+export interface Memory extends MemoryListItem {
+  source_msg_ids: string[];
 }
 
 export type MemoryCategory =

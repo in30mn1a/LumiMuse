@@ -2,7 +2,7 @@
 
 import type { ComponentProps, ComponentType, ReactNode } from 'react';
 import dynamic from 'next/dynamic';
-import type { Character, Conversation, Message } from '@/types';
+import type { Character, Conversation } from '@/types';
 import RenameConvModal from './RenameConvModal';
 import DeleteConvModal from './DeleteConvModal';
 import DuplicateConvModal, { type DuplicateMode } from './DuplicateConvModal';
@@ -35,7 +35,7 @@ export interface ChatModalsProps {
   onSubmitResetExtraction: (messageIds: string[] | undefined, action: 'reset' | 'mark') => Promise<void>;
   onToggleIgnore: () => Promise<void>;
   onManualExtract: () => Promise<void>;
-  loadAllMessages: (conversationId: string) => Promise<Message[]>;
+  loadExtractionStatus: ResetExtractionModalProps['loadExtractionStatus'];
   ResetExtractionModalComponent?: ComponentType<ResetExtractionModalProps>;
   imageManagerOpen?: boolean;
   character?: Character | null;
@@ -70,7 +70,7 @@ export function ChatModals({
   onSubmitResetExtraction,
   onToggleIgnore,
   onManualExtract,
-  loadAllMessages,
+  loadExtractionStatus,
   ResetExtractionModalComponent = DefaultResetExtractionModal,
   imageManagerOpen,
   character,
@@ -122,7 +122,7 @@ export function ChatModals({
           onSubmit={onSubmitResetExtraction}
           onToggleIgnore={onToggleIgnore}
           onManualExtract={onManualExtract}
-          loadAllMessages={loadAllMessages}
+          loadExtractionStatus={loadExtractionStatus}
         />
       )}
 

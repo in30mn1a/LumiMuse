@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
-import type { Character, Conversation, Memory } from '@/types';
+import type { Character, Conversation, MemoryListItem } from '@/types';
 import { expectOkResponse, parseJsonArrayResponse } from '@/lib/http';
 import {
   hasCharacterContext,
@@ -10,6 +10,7 @@ import {
   touchCharacterConversation,
   writeCharacterContext,
 } from '@/lib/character-context-cache';
+import { fetchCharacterMemoryList } from '@/lib/memory-list-client';
 
 function getConversationLoadErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -68,7 +69,7 @@ export function useConversationLoader({
   clearStreamingTextRef,
 }: UseConversationLoaderOptions) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [memories, setMemories] = useState<Memory[]>([]);
+  const [memories, setMemories] = useState<MemoryListItem[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(conversationId);
   const [loadingThread, setLoadingThread] = useState(false);
   const [conversationLoadError, setConversationLoadError] = useState<string | null>(null);
@@ -104,7 +105,7 @@ export function useConversationLoader({
   const applyCharacterSnapshot = useCallback((
     characterId: string,
     conversationList: Conversation[],
-    memoryList: Memory[],
+    memoryList: MemoryListItem[],
     preferredConversationId: string | null,
     options?: { persist?: boolean; fallbackActiveId?: string | null; trustPreferred?: boolean },
   ) => {
@@ -155,8 +156,7 @@ export function useConversationLoader({
     try {
       const [conversationList, memoryList] = await Promise.all([
         fetchCharacterConversations(characterId),
-        fetch(`/api/memories?character_id=${encodeURIComponent(characterId)}`)
-          .then(response => parseJsonArrayResponse<Memory>(response)),
+        fetchCharacterMemoryList(characterId),
       ]);
 
       if (loadCharacterStateSeqRef.current !== requestSeq || characterRef.current?.id !== characterId) return;
@@ -287,8 +287,7 @@ export function useConversationLoader({
       try {
         const [conversationList, memoryList] = await Promise.all([
           fetchCharacterConversations(requestedCharacterId),
-          fetch(`/api/memories?character_id=${encodeURIComponent(requestedCharacterId)}`)
-            .then(response => parseJsonArrayResponse<Memory>(response)),
+          fetchCharacterMemoryList(requestedCharacterId),
         ]);
         if (refreshConversationStateSeqRef.current !== requestSeq || characterRef.current?.id !== requestedCharacterId) return;
         if (conversationOrderRevisionRef.current !== orderRevision) continue;

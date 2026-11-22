@@ -17,9 +17,12 @@ import { getSummaryCoverageIds } from '@/lib/summary-context-tokens';
 export async function GET(request: NextRequest) {
   const conversationId = request.nextUrl.searchParams.get('conversation_id')?.trim();
   const all = request.nextUrl.searchParams.get('all') === '1';
+  // 搜索跳转的目标消息：返回一段包含它、延伸到最新的已加载范围（见下方 rangeFromSeq）
+  const aroundMessageId = request.nextUrl.searchParams.get('around_message_id')?.trim() || null;
   const wantsPaged = request.nextUrl.searchParams.has('limit')
     || request.nextUrl.searchParams.has('before_seq')
-    || request.nextUrl.searchParams.has('from_seq');
+    || request.nextUrl.searchParams.has('from_seq')
+    || aroundMessageId !== null;
   const limitParam = Number(request.nextUrl.searchParams.get('limit') || '80');
   const beforeSeqParam = request.nextUrl.searchParams.get('before_seq');
   const beforeSeq = beforeSeqParam ? Number(beforeSeqParam) : null;
@@ -46,10 +49,26 @@ export async function GET(request: NextRequest) {
 
   const limit = Math.floor(Math.min(Math.max(Number.isFinite(limitParam) ? limitParam : 80, 1), 200));
   const pageLimit = limit + 1;
-  let rawMessages = fromSeq !== null
+
+  // 搜索跳转：从「目标消息」与「最新一页的起点」中较早的一条取到最新，目标必在其中、且至少一整页，
+  // 之后照常按 before_seq 往上翻。曾直接拉 all=1（两千多条的对话约 7MB），
+  // 而且已加载范围从此变成整段，之后每条回复的收尾刷新也都是整段。
+  // 目标不在视图内、或整段不足一页（最新一页已含全部）时退回最新一页。
+  let rangeFromSeq = fromSeq;
+  if (rangeFromSeq === null && beforeSeq === null && aroundMessageId !== null) {
+    const target = db.prepare(
+      `SELECT seq FROM messages WHERE ${scope.sql} AND id = ?`,
+    ).get(...scope.params, aroundMessageId) as { seq: number } | undefined;
+    const latestPageStart = target && db.prepare(
+      `SELECT seq FROM messages WHERE ${scope.sql} ORDER BY seq DESC LIMIT 1 OFFSET ?`,
+    ).get(...scope.params, limit - 1) as { seq: number } | undefined;
+    if (target && latestPageStart) rangeFromSeq = Math.min(target.seq, latestPageStart.seq);
+  }
+
+  let rawMessages = rangeFromSeq !== null
     ? db.prepare(
         `SELECT * FROM messages WHERE ${scope.sql} AND seq >= ? ORDER BY seq DESC`,
-      ).all(...scope.params, fromSeq) as Message[]
+      ).all(...scope.params, rangeFromSeq) as Message[]
     : beforeSeq !== null && Number.isFinite(beforeSeq)
     ? db.prepare(
         `SELECT * FROM messages WHERE ${scope.sql} AND seq < ? ORDER BY seq DESC LIMIT ?`,
@@ -58,16 +77,16 @@ export async function GET(request: NextRequest) {
         `SELECT * FROM messages WHERE ${scope.sql} ORDER BY seq DESC LIMIT ?`,
       ).all(...scope.params, pageLimit) as Message[];
 
-  const hasLoadedRange = fromSeq !== null && rawMessages.length > 0;
+  const hasLoadedRange = rangeFromSeq !== null && rawMessages.length > 0;
   // 已加载范围可能被删空；回退最新一页，避免仍有历史时返回空列表和无法继续分页的 null 游标。
-  if (fromSeq !== null && !hasLoadedRange) {
+  if (rangeFromSeq !== null && !hasLoadedRange) {
     rawMessages = db.prepare(
       `SELECT * FROM messages WHERE ${scope.sql} ORDER BY seq DESC LIMIT ?`,
     ).all(...scope.params, pageLimit) as Message[];
   }
 
   const hasMore = hasLoadedRange
-    ? Boolean(db.prepare(`SELECT 1 FROM messages WHERE ${scope.sql} AND seq < ? LIMIT 1`).get(...scope.params, fromSeq))
+    ? Boolean(db.prepare(`SELECT 1 FROM messages WHERE ${scope.sql} AND seq < ? LIMIT 1`).get(...scope.params, rangeFromSeq))
     : rawMessages.length > limit;
   const messages = (hasLoadedRange ? rawMessages : rawMessages.slice(0, limit)).reverse();
   let unextractedCount: number | undefined;

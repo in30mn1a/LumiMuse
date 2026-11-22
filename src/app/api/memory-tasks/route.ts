@@ -49,12 +49,12 @@ export async function GET(request: NextRequest) {
   const hasErrorMessage = columns.some(column => column.name === 'error_message');
   const hasStartedAt = columns.some(column => column.name === 'started_at');
   const scope = resolveMessageScope(db, conversationId);
+  // 「任务涉及的消息里有没有落在当前视图内的」：以任务自己的 message_ids 为外层、按 messages 主键逐条查，
+  // 再校验可见范围（CROSS JOIN 固定连接顺序）。曾写成先展开整个视图的消息、每条再扫一遍任务 id 列表，
+  // 代价是 任务数 × 视图消息数 × 每任务 id 数；done 任务长期保留，长对话里一次轮询要几秒，
+  // 同步 SQLite 会把整个服务卡住（前端提取期间每 1.5s 轮询一次）。
+  // scope.sql 的列名不带表前缀：子查询里只有 messages 有 conversation_id / seq，json_each 没有同名列。
   const row = db.prepare(`
-    WITH visible_message_ids AS (
-      SELECT id
-      FROM messages
-      WHERE ${scope.sql}
-    )
     SELECT
       task.status,
       task.merge_count,
@@ -69,16 +69,17 @@ export async function GET(request: NextRequest) {
         FROM json_each(
           CASE WHEN json_valid(task.message_ids) THEN task.message_ids ELSE '[]' END
         ) AS task_message
-        INNER JOIN visible_message_ids AS visible_message
-          ON visible_message.id = task_message.value
+        CROSS JOIN messages AS visible_message
         WHERE task_message.type = 'text'
+          AND visible_message.id = task_message.value
+          AND ${scope.sql}
       )
     ORDER BY
       CASE WHEN task.status IN ('pending', 'processing') THEN 0 ELSE 1 END,
       task.updated_at DESC,
       task.id DESC
     LIMIT 1
-  `).get(...scope.params, conversationId) as {
+  `).get(conversationId, ...scope.params) as {
     status: string;
     merge_count: number;
     retry_count: number;

@@ -452,9 +452,7 @@ test('memory task polling keeps old memories and reports a failed refresh', asyn
         },
         showToast: (message, type) => toasts.push({ message, type }),
         t: key => key,
-        getLoadedMessageCount: () => 0,
         updateServerCounts: () => {},
-        pageSize: 20,
       }),
     );
 
@@ -505,9 +503,7 @@ test('memory task polling owns abort controllers per conversation and cleans the
         setMemories: () => {},
         showToast: () => {},
         t: key => key,
-        getLoadedMessageCount: () => 0,
         updateServerCounts: () => {},
-        pageSize: 20,
       }),
     );
 
@@ -561,9 +557,7 @@ test('memory task polling consumes non-abort failures and exposes an error toast
         setMemories: () => {},
         showToast: (message, type) => toasts.push({ message, type }),
         t: key => key,
-        getLoadedMessageCount: () => 0,
         updateServerCounts: () => {},
-        pageSize: 20,
       }),
     );
 

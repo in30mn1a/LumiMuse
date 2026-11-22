@@ -611,6 +611,44 @@ test('linked full-message endpoints use seq order for late inserted replies', as
   ]);
 });
 
+test('/api/messages around_message_id returns the target through the latest message without loading the whole conversation', async () => {
+  const db = createConversationMessagesDb();
+  const insert = db.prepare(`
+    INSERT INTO messages (id, conversation_id, role, content, token_count, created_at, seq, metadata)
+    VALUES (?, 'conv-a', ?, ?, 1, ?, ?, '{}')
+  `);
+  for (let seq = 1; seq <= 10; seq += 1) {
+    insert.run(`m${seq}`, seq % 2 ? 'user' : 'assistant', `message ${seq}`, `2026-07-11T00:00:${String(seq).padStart(2, '0')}.000Z`, seq);
+  }
+  const route = loadRoute('../src/app/api/messages/route.ts', db);
+  const page = async query => (await route.GET(requestFor(
+    `http://test.local/api/messages?conversation_id=conv-a&${query}`,
+  ))).json();
+  const ids = payload => payload.messages.map(message => message.id);
+
+  // 目标早于最新一页：从目标取到最新，还能继续往上翻
+  const old = await page('limit=3&around_message_id=m2');
+  assert.deepEqual(ids(old), ['m2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10']);
+  assert.equal(old.hasMore, true);
+  assert.equal(old.oldestSeq, 2);
+  assert.equal(old.unextractedCount, 5, 'the first-page counters are still included');
+
+  // 目标就在最新一页：只取一整页，不因定位多拉
+  const recent = await page('limit=3&around_message_id=m9');
+  assert.deepEqual(ids(recent), ['m8', 'm9', 'm10']);
+  assert.equal(recent.hasMore, true);
+
+  // 目标不在视图内：退回最新一页
+  const missing = await page('limit=3&around_message_id=nope');
+  assert.deepEqual(ids(missing), ['m8', 'm9', 'm10']);
+  assert.equal(missing.hasMore, true);
+
+  // 整段不足一页：最新一页即全部
+  const small = await page('limit=20&around_message_id=m2');
+  assert.equal(small.messages.length, 10);
+  assert.equal(small.hasMore, false);
+});
+
 test('/api/messages/[id] PUT refreshes token provenance after content and attachment edits', async () => {
   const db = createConversationMessagesDb();
   db.prepare(`

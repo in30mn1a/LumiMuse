@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { Message, Conversation } from '@/types';
+import type { Conversation, ExtractionStatusItem } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { formatDateTime } from '@/lib/chat-view-utils';
@@ -23,8 +23,11 @@ interface Props {
   onToggleIgnore: () => Promise<void>;
   /** 手动触发记忆提取 */
   onManualExtract: () => Promise<void>;
-  /** 异步加载该对话全部消息（来自父组件，复用同一 fetcher） */
-  loadAllMessages: (conversationId: string) => Promise<Message[]>;
+  /**
+   * 加载该对话用户消息的提取状态列表。引用必须稳定（如模块级 fetchExtractionStatus）：
+   * 它是加载 effect 的依赖，每次渲染新建的箭头函数会让加载在父组件每次重渲染时作废重来。
+   */
+  loadExtractionStatus: (conversationId: string, options?: { signal?: AbortSignal }) => Promise<ExtractionStatusItem[]>;
 }
 
 /**
@@ -51,27 +54,29 @@ function ResetExtractionModalInner({
   onSubmit,
   onToggleIgnore,
   onManualExtract,
-  loadAllMessages,
+  loadExtractionStatus,
 }: Props) {
   const { t } = useTranslation();
   // null = 加载中，[] = 加载完成但无消息
-  const [allMessages, setAllMessages] = useState<Message[] | null>(null);
+  const [items, setItems] = useState<ExtractionStatusItem[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   // 点「重试」时递增，仅用于让下面的加载 effect 重跑
   const [retryRevision, setRetryRevision] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
+  // serverUnextractedCount 变化（弹窗开着时后台提取完成等）时重拉，让列表与顶栏计数一致；
+  // 重拉期间旧列表保持可见，不闪回「加载中」。
   useEffect(() => {
     if (!conversationId) return;
-    let cancelled = false;
-    loadAllMessages(conversationId)
-      .then(msgs => { if (!cancelled) setAllMessages(msgs); })
-      .catch(() => { if (!cancelled) setLoadFailed(true); });
-    return () => { cancelled = true; };
-  }, [conversationId, loadAllMessages, retryRevision]);
+    const controller = new AbortController();
+    loadExtractionStatus(conversationId, { signal: controller.signal })
+      .then(next => { if (!controller.signal.aborted) setItems(next); })
+      .catch(() => { if (!controller.signal.aborted) setLoadFailed(true); });
+    return () => controller.abort();
+  }, [conversationId, loadExtractionStatus, retryRevision, serverUnextractedCount]);
 
-  const userMsgs = (allMessages || []).filter(m => m.role === 'user').reverse();
+  const userMsgs = items ? [...items].reverse() : [];
   const visible = userMsgs.slice(0, visibleCount);
   const hasMore = userMsgs.length > visibleCount;
 
@@ -103,7 +108,7 @@ function ResetExtractionModalInner({
       </div>
 
       {/* 消息列表 */}
-      {allMessages === null && loadFailed ? (
+      {items === null && loadFailed ? (
         <div role="alert" className="mt-2 flex flex-col items-center justify-center gap-2 py-8 text-sm text-danger">
           <p>{t('common.loadFailed')}</p>
           <button
@@ -114,15 +119,14 @@ function ResetExtractionModalInner({
             {t('common.retry')}
           </button>
         </div>
-      ) : allMessages === null ? (
+      ) : items === null ? (
         <div className="mt-2 flex items-center justify-center py-8 text-sm text-text-muted">
           {t('common.loading')}
         </div>
       ) : (
         <div className="mt-2 max-h-64 overflow-y-auto rounded-xl border border-border-light">
           {visible.map(m => {
-            const meta = (m.metadata as Record<string, unknown>) || {};
-            const extracted = Boolean(meta.memory_extracted);
+            const extracted = m.extracted;
             const selected = selectedIds.has(m.id);
             return (
               <button
@@ -149,7 +153,7 @@ function ResetExtractionModalInner({
                   )}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-text-primary">{m.content.slice(0, 60)}</span>
+                  <span className="block truncate text-text-primary">{m.preview}</span>
                   <span className="text-xs text-text-muted">{formatDateTime(m.created_at)}</span>
                 </span>
                 <span className={`mt-0.5 shrink-0 text-xs ${extracted ? 'text-green-500' : 'text-amber-500'}`}>

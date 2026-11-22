@@ -87,14 +87,13 @@ function createOptions(overrides = {}) {
     setStreamingUsage: () => {},
     setWebSearchingConvId: () => {},
     pollMemoryTask: () => Promise.resolve(),
-    refreshMessagesForConversation: () => Promise.resolve(),
+    refreshMessagesForConversation: () => Promise.resolve({ messages: [], hasMore: false, oldestSeq: null }),
     refreshMessageCountsForConversation: () => Promise.resolve(),
     touchConversation: () => {},
     updateMessagesForConversation: () => {},
     markSkipNextScroll: () => {},
     showToast: () => {},
     t: key => key,
-    pageSize: 60,
     maybeAutoGenerateImageFromMessages: () => {},
     ...overrides,
   };
@@ -252,7 +251,10 @@ test('regenerate refreshes the stream owner even when the active conversation ch
 
   const { result } = renderHook(() => useChatMessageActions({
     ...options,
-    refreshMessagesForConversation: async convId => { refreshed.push(convId); },
+    refreshMessagesForConversation: async convId => {
+      refreshed.push(convId);
+      return { messages: [], hasMore: false, oldestSeq: null };
+    },
   }));
   await act(async () => {
     await result.current.handleRegenerate('assistant-target');
@@ -637,7 +639,7 @@ test('version switch keeps a search-loaded message outside the latest 200-messag
   assert.deepEqual(countRefreshes, ['conv-a']);
 });
 
-test('stream finish runs before the auto-image page fetch and only once per stream', async () => {
+test('stream finish runs before auto-image, which reuses the refreshed page instead of refetching it', async () => {
   const useChatMessageActions = loadHook();
   const events = [];
   const encoder = new TextEncoder();
@@ -650,22 +652,34 @@ test('stream finish runs before the auto-image page fetch and only once per stre
         },
       }), { status: 200 });
     }
-    events.push('auto-image-page-fetch');
-    return new Response(JSON.stringify({ messages: [], hasMore: false, oldestSeq: null }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    events.push(`unexpected-fetch ${url}`);
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  const refreshedPage = {
+    messages: [{ id: 'assistant-target', role: 'assistant', content: 'regenerated', metadata: {} }],
+    hasMore: false,
+    oldestSeq: 1,
   };
 
+  const autoImageCalls = [];
   const { result } = renderHook(() => useChatMessageActions(createOptions({
-    refreshMessagesForConversation: async () => { events.push('refresh'); },
+    refreshMessagesForConversation: async () => { events.push('refresh'); return refreshedPage; },
     finishStream: () => { events.push('finish'); },
+    maybeAutoGenerateImageFromMessages: (cid, messages, options) => {
+      events.push('auto-image');
+      autoImageCalls.push({ cid, messages, options });
+    },
   })));
   await act(async () => {
     await result.current.handleRegenerate('assistant-target');
   });
 
   // finish 必须早于装饰性收尾（否则真实气泡与流式气泡并存），
-  // 且只能执行一次（该窗口内同一对话可能已开新流，二次 finish 会清掉新流的状态）。
-  assert.deepEqual(events, ['refresh', 'finish', 'auto-image-page-fetch']);
+  // 且只能执行一次（该窗口内同一对话可能已开新流，二次 finish 会清掉新流的状态）；
+  // 收尾不得再为出图重拉一遍已加载范围。
+  assert.deepEqual(events, ['refresh', 'finish', 'auto-image']);
+  assert.equal(autoImageCalls.length, 1);
+  assert.equal(autoImageCalls[0].cid, 'conv-a');
+  assert.ok(autoImageCalls[0].messages === refreshedPage.messages, 'auto-image must reuse the page the refresh already fetched');
+  assert.deepEqual(autoImageCalls[0].options, { assistantMessageId: 'assistant-target', retry: true });
 });

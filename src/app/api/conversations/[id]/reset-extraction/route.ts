@@ -7,11 +7,45 @@ import {
   buildChainMessageScope,
   resolveConversationChain,
 } from '@/lib/conversation-chain';
+import { MEMORY_PROCESSED_SQL } from '@/lib/memory-extraction-scope';
+import { isMessageMemoryExtracted } from '@/lib/messages';
+import type { ExtractionStatusItem, MessageMetadata } from '@/types';
 
 const resetExtractionBodySchema = z.object({
   messageIds: z.array(z.string()).optional(),
   action: z.enum(['reset', 'mark']).optional(),
 });
+
+/** 弹窗每行只显示正文开头（单行 truncate），与旧版前端 content.slice(0, 60) 保持一致 */
+const PREVIEW_CHARS = 60;
+
+/**
+ * GET /api/conversations/[id]/reset-extraction
+ * 「切换提取状态」弹窗的列表数据：用户消息的 id、正文开头、时间和提取状态，按对话时间升序。
+ *
+ * 弹窗曾拉 /api/messages?all=1（全部角色的消息 + 完整正文与 metadata），
+ * 两千多条的长对话响应约 7MB，慢网络下要几十秒；而弹窗只用到这几个字段（约 0.3MB）。
+ * 提取状态复用 MEMORY_PROCESSED_SQL，和顶栏「N 待提取」计数、POST 的 reset 判定一致。
+ */
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id: conversationId } = await params;
+  const db = getDb();
+  const chain = resolveConversationChain(db, conversationId);
+  const scope = buildChainMessageScope(chain);
+  const rows = db.prepare(
+    `SELECT id, substr(content, 1, ${PREVIEW_CHARS}) AS preview, created_at,
+       (${MEMORY_PROCESSED_SQL}) AS extracted
+     FROM messages
+     WHERE ${scope.sql} AND role = 'user'
+     ORDER BY ${ascendingMessageOrderSqlForChain(chain)}`
+  ).all(...scope.params) as Array<Omit<ExtractionStatusItem, 'extracted'> & { extracted: number }>;
+
+  const items: ExtractionStatusItem[] = rows.map(row => ({ ...row, extracted: row.extracted === 1 }));
+  return NextResponse.json(items);
+}
 
 /**
  * POST /api/conversations/[id]/reset-extraction
@@ -69,8 +103,9 @@ export async function POST(
         try { meta = JSON.parse(msg.metadata || '{}'); } catch { meta = {}; }
 
         if (action === 'mark') {
-          // 标记为已提取
-          if (!meta.memory_extracted) {
+          // 标记为已提取；已处理的（含只有 noop 标记的旧数据）不计入 resetCount，
+          // 否则前端按 resetCount 扣减「N 待提取」会多扣
+          if (!isMessageMemoryExtracted(meta as MessageMetadata)) {
             meta.memory_extracted = true;
             updateStmt.run(JSON.stringify(meta), msg.id);
             updated++;

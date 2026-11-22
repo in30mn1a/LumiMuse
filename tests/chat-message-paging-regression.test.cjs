@@ -179,7 +179,7 @@ test('message paging initial load is not restarted by parent callback identity c
   };
 
   const fetchMessagesPage = (conversationId, options) => {
-    requests.push({ conversationId, limit: options.limit, all: options.all ?? false });
+    requests.push({ conversationId, limit: options.limit, around: options.aroundMessageId ?? null });
     if (requests.length > 1) {
       return Promise.reject(new DOMException('Aborted', 'AbortError'));
     }
@@ -253,7 +253,7 @@ test('message paging restarts the same target for each distinct jump request', a
     metadata: {},
   };
   const fetchMessagesPage = (conversationId, options) => {
-    requests.push({ conversationId, all: options.all ?? false });
+    requests.push({ conversationId, around: options.aroundMessageId ?? null });
     return Promise.resolve({
       messages: [targetMessage],
       hasMore: false,
@@ -292,7 +292,7 @@ test('message paging restarts the same target for each distinct jump request', a
     runtime.render();
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(requests, [{ conversationId: 'conv-a', all: true }]);
+    assert.deepEqual(requests, [{ conversationId: 'conv-a', around: 'target' }]);
     assert.deepEqual(loadedTargets, ['target']);
 
     targetRequestId = 2;
@@ -300,8 +300,8 @@ test('message paging restarts the same target for each distinct jump request', a
     await Promise.resolve();
     await Promise.resolve();
     assert.deepEqual(requests, [
-      { conversationId: 'conv-a', all: true },
-      { conversationId: 'conv-a', all: true },
+      { conversationId: 'conv-a', around: 'target' },
+      { conversationId: 'conv-a', around: 'target' },
     ]);
     assert.deepEqual(loadedTargets, ['target', 'target']);
   } finally {
@@ -323,7 +323,7 @@ test('message paging applies a target only to its owning conversation', async ()
   const requests = [];
   let initialLoads = 0;
   const fetchMessagesPage = (conversationId, options) => {
-    requests.push({ conversationId, all: options.all ?? false });
+    requests.push({ conversationId, around: options.aroundMessageId ?? null });
     return Promise.resolve({
       messages: [],
       hasMore: false,
@@ -362,7 +362,7 @@ test('message paging applies a target only to its owning conversation', async ()
     runtime.render();
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(requests, [{ conversationId: 'conv-b', all: false }]);
+    assert.deepEqual(requests, [{ conversationId: 'conv-b', around: null }]);
     assert.equal(initialLoads, 1);
   } finally {
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -449,8 +449,8 @@ test('count-only refresh preserves a search-loaded 205-message window', async ()
     assert.equal(cached.messages.length, 205);
     assert.equal(cached.totalTokens, 999);
     assert.equal(cached.unextractedCount, 7);
-    assert.equal(requests[0].all, true);
-    assert.equal(requests[1].limit, 60);
+    assert.equal(requests[0].aroundMessageId, 'search-target');
+    assert.equal(requests[1].limit, 1, 'a counts-only refresh must not download a page of messages');
   } finally {
     await new Promise(resolve => setTimeout(resolve, 0));
     runtime?.cleanup();

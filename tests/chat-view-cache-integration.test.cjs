@@ -240,7 +240,7 @@ test('ChatView rechecks the active conversation before applying memory task coun
   assert.notEqual(pollStart, -1, 'missing pollMemoryTask');
 
   const refreshBlock = source.slice(refreshStart, pollStart);
-  assert.match(refreshBlock, /fetchMessagesPage\(convId, \{ limit: Math\.max\(pageSize, getLoadedMessageCount\(\)\) \}\)/);
+  assert.match(refreshBlock, /fetchMessagesPage\(convId, \{ limit: 1 \}\)/);
   assert.match(refreshBlock, /if \(activeConvIdRef\.current !== convId\) return;/);
 
   const pollBlock = source.slice(pollStart);

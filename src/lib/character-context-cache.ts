@@ -3,7 +3,7 @@
 // 持久化失败静默降级为纯内存（复用 chat-cache-store 的失败即关闭语义）。
 // 不碰 LLM 注入语义；容量上限仅约束客户端存储，不是聊天链路 cap。
 
-import type { Conversation, Memory } from '@/types';
+import type { Conversation, MemoryListItem } from '@/types';
 import {
   createChatCachePersistence,
   createIndexedDbBackend,
@@ -12,7 +12,7 @@ import {
 
 export type CharacterContextSnapshot = {
   conversations: Conversation[];
-  memories: Memory[];
+  memories: MemoryListItem[];
   savedAt: number;
 };
 
@@ -78,7 +78,7 @@ function copyConversations(conversations: Conversation[]): Conversation[] {
   return conversations.map(copyConversation);
 }
 
-function copyMemory(memory: Memory): Memory {
+function copyMemory(memory: MemoryListItem): MemoryListItem {
   return {
     ...memory,
     tags: Array.isArray(memory.tags) ? [...memory.tags] : memory.tags,
@@ -86,7 +86,7 @@ function copyMemory(memory: Memory): Memory {
   };
 }
 
-function copyMemories(memories: Memory[]): Memory[] {
+function copyMemories(memories: MemoryListItem[]): MemoryListItem[] {
   return memories.map(copyMemory);
 }
 
@@ -229,7 +229,7 @@ export function sortConversationsByIds<T extends { id: string }>(items: readonly
 }
 
 /** 记忆列表整体替换（提取完成后的权威刷新）。列表与 characterId 不同源时拒绝；条目不存在则 no-op。 */
-export function updateCharacterMemories(characterId: string, memories: Memory[]): void {
+export function updateCharacterMemories(characterId: string, memories: MemoryListItem[]): void {
   if (memories.some(memory => memory.character_id !== characterId)) return;
   const previous = contextCache.get(characterId);
   if (!previous) return;

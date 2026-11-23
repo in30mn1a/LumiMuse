@@ -87,7 +87,7 @@ test('regenerate retry keeps old images but still allows a new auto image run', 
 test('image placeholder update can inject snapshot when message list lags', () => {
   assert.match(
     hookSource,
-    /if \(!found && messageSnapshot\?\.id === messageId\) \{\s*return \[\.\.\.next, \{ \.\.\.messageSnapshot, metadata: nextMeta \}\];/,
+    /if \(!found && messageSnapshot\?\.id === messageId\) \{\s*return \[\.\.\.next, \{ \.\.\.messageSnapshot, metadata: workingMeta \}\];/,
   );
 });
 
@@ -101,8 +101,8 @@ test('inlineImagePrompt is one-shot: cleared after successful image gen and when
   assert.match(hookSource, /clearInlinePrompt/);
   assert.match(hookSource, /clearInlinePrompt: true/);
   // PUT /api/messages 对 metadata 是浅合并，delete 不落库：必须写显式空值
-  assert.match(hookSource, /nextMeta\.inlineImagePrompt = ''/);
-  assert.doesNotMatch(hookSource, /delete nextMeta\.inlineImagePrompt/);
+  assert.match(hookSource, /patch\.inlineImagePrompt = ''/);
+  assert.doesNotMatch(hookSource, /delete (patch|workingMeta)\.inlineImagePrompt/);
   assert.doesNotMatch(hookSource, /delete meta\.generatedImages/);
   // 气泡内删光最后一张图时也清（同样必须显式空值：generatedImages: [] + inlineImagePrompt: ''）
   assert.match(

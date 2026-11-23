@@ -144,20 +144,38 @@ export function useChatImageGeneration({
       options?: { allowCompletedRequest?: boolean; clearInlinePrompt?: boolean },
     ) => {
       if (!canWriteImageRequest(options?.allowCompletedRequest)) return workingMeta;
-      const currentImages = sanitizeGeneratedImages(workingMeta.generatedImages);
-      const nextMeta: Record<string, unknown> = { ...workingMeta, generatedImages: updater(currentImages) };
+      // PUT 对 metadata 是浅合并：整份开始时的快照回写，会把生图期间别处写入的 metadata
+      // （重新生成的 versions、删掉的其它图片等）盖回旧值，被删的图还会因文件已清理变成破图。
+      // 所以只提交图片相关的键，并以最新本地状态为底，只替换本任务改动过的图片。
+      const workingImages = sanitizeGeneratedImages(workingMeta.generatedImages);
+      const workingById = new Map(workingImages.map(image => [image.id, JSON.stringify(image)]));
+      const changedImages = updater(workingImages).filter(image => workingById.get(image.id) !== JSON.stringify(image));
+      const changedById = new Map(changedImages.map(image => [image.id, image]));
+      const overlayChangedImages = (baseImages: ImageEntry[]) => {
+        const baseIds = new Set(baseImages.map(image => image.id));
+        return [
+          ...baseImages.map(image => changedById.get(image.id) ?? image),
+          ...changedImages.filter(image => !baseIds.has(image.id)),
+        ];
+      };
+      const latestMessage = messagesRef.current.find(m => m.id === messageId);
+      const patch: Pick<Message['metadata'], 'generatedImages' | 'inlineImagePrompt'> = {
+        generatedImages: overlayChangedImages(
+          latestMessage ? sanitizeGeneratedImages(latestMessage.metadata?.generatedImages) : workingImages,
+        ),
+      };
       // 随对话生成的提示词只免费复用一次：成功出图后清掉，避免删图再点仍用旧词。
       // 注意 PUT /api/messages 对 metadata 是浅合并，delete 掉的 key 不会落库，必须写显式空值
       if (options?.clearInlinePrompt) {
-        nextMeta.inlineImagePrompt = '';
+        patch.inlineImagePrompt = '';
       }
 
       await expectOkResponse(await fetch(`/api/messages/${messageId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata: nextMeta }),
+        body: JSON.stringify({ metadata: patch }),
       }));
-      workingMeta = nextMeta;
+      workingMeta = { ...workingMeta, ...patch };
       if (!canWriteImageRequest(options?.allowCompletedRequest)) return workingMeta;
       markSkipNextScroll();
       updateMessagesForConversation(targetConversationId, messages => {
@@ -165,15 +183,23 @@ export function useChatImageGeneration({
         const next = messages.map(m => {
           if (m.id !== messageId) return m;
           found = true;
-          return { ...m, metadata: nextMeta };
+          // 以 PUT 返回时的最新本地图片为底叠加本任务的改动，PUT 往返期间别处删掉的图不会在本地复活
+          return {
+            ...m,
+            metadata: {
+              ...m.metadata,
+              ...patch,
+              generatedImages: overlayChangedImages(sanitizeGeneratedImages(m.metadata?.generatedImages)),
+            },
+          };
         });
         // messagesRef 尚未同步新消息时，用快照补一条，否则 pending 气泡永远不出现
         if (!found && messageSnapshot?.id === messageId) {
-          return [...next, { ...messageSnapshot, metadata: nextMeta }];
+          return [...next, { ...messageSnapshot, metadata: workingMeta }];
         }
         return next;
       });
-      return nextMeta;
+      return workingMeta;
     };
 
     const persistTerminalImage = async (restoreFailed = false) => {

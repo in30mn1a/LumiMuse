@@ -1176,6 +1176,107 @@ test('chat image edits send only the image keys and merge the server result into
   }
 });
 
+test('chat image generation writes only its own image keys over the latest state instead of the start snapshot', async () => {
+  const keptImage = { id: 'img-kept', url: '/api/files/generated/kept.png', prompt: 'kept' };
+  const deletedImage = { id: 'img-deleted', url: '/api/files/generated/deleted.png', prompt: 'deleted' };
+  const lateDeletedImage = { id: 'img-late-deleted', url: '/api/files/generated/late.png', prompt: 'late' };
+  const startMessage = {
+    id: 'msg-a',
+    conversation_id: 'conv-a',
+    role: 'assistant',
+    content: 'reply v1',
+    token_count: 0,
+    created_at: '2026-06-07T00:00:00.000Z',
+    metadata: { generatedImages: [keptImage, deletedImage, lateDeletedImage], versions: [{ content: 'reply v1' }], activeVersion: 0 },
+  };
+  const messagesRef = { current: [startMessage] };
+  const messageBodies = [];
+  const imageRequest = createDeferred();
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init = {}) => {
+    const parsedUrl = new URL(String(url), 'http://localhost');
+    if (parsedUrl.pathname === '/api/messages/msg-a') {
+      messageBodies.push(JSON.parse(String(init.body)));
+      if (messageBodies.length === 2) {
+        // 终态写入的 PUT 往返期间，主人又删了一张图（本地已应用删除）
+        messagesRef.current = messagesRef.current.map(message => ({
+          ...message,
+          metadata: {
+            ...message.metadata,
+            generatedImages: message.metadata.generatedImages.filter(image => image.id !== lateDeletedImage.id),
+          },
+        }));
+      }
+      return jsonResponse({ ok: true });
+    }
+    if (parsedUrl.pathname === '/api/image-gen') return imageRequest.promise;
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => requireFreshWithMocks('../src/hooks/chat/useChatImageGeneration.ts', { react: reactMock }).useChatImageGeneration,
+      () => ({
+        activeConvId: 'conv-a',
+        activeConvIdRef: { current: 'conv-a' },
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        messagesRef,
+        updateMessagesForConversation: (_conversationId, updater) => {
+          messagesRef.current = updater(messagesRef.current);
+        },
+        markSkipNextScroll: () => {},
+        showToast: () => {},
+        t: key => key,
+      }),
+    );
+
+    runtime.render();
+    const pending = runtime.current.handleGenerateImage('msg-a', 'new prompt');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(messageBodies.length, 1, 'placeholder write happens before the image request');
+
+    // 出图期间：主人删掉了另一张图，并重新生成了这条回复（versions/activeVersion 已在服务端与本地更新）
+    messagesRef.current = messagesRef.current.map(message => ({
+      ...message,
+      content: 'reply v2',
+      metadata: {
+        ...message.metadata,
+        generatedImages: message.metadata.generatedImages.filter(image => image.id !== deletedImage.id),
+        versions: [{ content: 'reply v1' }, { content: 'reply v2' }],
+        activeVersion: 1,
+      },
+    }));
+
+    imageRequest.resolve(jsonResponse({ url: '/api/files/generated/new.png' }));
+    assert.equal(await pending, true);
+
+    for (const body of messageBodies) {
+      assert.ok(
+        Object.keys(body.metadata).every(key => key === 'generatedImages' || key === 'inlineImagePrompt'),
+        `image writes must not send unrelated metadata keys: ${Object.keys(body.metadata).join(', ')}`,
+      );
+    }
+    assert.equal(messageBodies.length, 2);
+    const finalImages = messageBodies.at(-1).metadata.generatedImages;
+    assert.equal(finalImages.filter(image => ![keptImage.id, deletedImage.id, lateDeletedImage.id].includes(image.id)).length, 1);
+    assert.ok(!finalImages.some(image => image.id === deletedImage.id), 'an image deleted during generation must not be written back');
+    assert.ok(finalImages.some(image => image.id === keptImage.id));
+    assert.ok(finalImages.some(image => image.url === '/api/files/generated/new.png' && image.status === 'ready'));
+
+    const localMeta = messagesRef.current[0].metadata;
+    assert.equal(localMeta.activeVersion, 1, 'local metadata written elsewhere during generation must survive');
+    assert.equal(localMeta.versions.length, 2);
+    assert.ok(!localMeta.generatedImages.some(image => image.id === deletedImage.id));
+    assert.ok(
+      !localMeta.generatedImages.some(image => image.id === lateDeletedImage.id),
+      'an image deleted during the final write round trip must not reappear locally',
+    );
+    assert.ok(localMeta.generatedImages.some(image => image.url === '/api/files/generated/new.png' && image.status === 'ready'));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('chat image deletion still applies the server-confirmed mutation when cache invalidation rejects', async () => {
   const messagesRef = { current: [{
     id: 'msg-a',

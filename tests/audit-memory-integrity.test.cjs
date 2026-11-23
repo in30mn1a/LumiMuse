@@ -7,6 +7,7 @@ const dbModule = require('../src/lib/db.ts');
 const { DEFAULT_SETTINGS } = require('../src/types/index.ts');
 const settingsModule = require('../src/lib/settings.ts');
 const realApiClient = require('../src/lib/api-client.ts');
+const { normalizeMemoryRow } = require('../src/lib/memory-normalization.ts');
 const originalLoad = Module._load;
 
 function deferred() {
@@ -281,7 +282,8 @@ test('embedding text changed during single and batch generation is queued again 
       await h.embeddings.processMemoryEmbeddingTasks(config, { db: h.db, embed: async text => {
         assert.match(text, /NEW_TEXT/); return [0, 1];
       } });
-      const memory = h.db.prepare("SELECT * FROM memories WHERE id='mem'").get();
+      // embedding 文本基于归一化后的记忆（tags 解析、分类归一），期望值按同一口径计算
+      const memory = normalizeMemoryRow(h.db.prepare("SELECT * FROM memories WHERE id='mem'").get());
       const embedding = h.db.prepare("SELECT * FROM memory_embeddings WHERE memory_id='mem'").get();
       assert.equal(embedding.embedding_text_hash, h.embeddings.hashEmbeddingText(h.embeddings.buildMemoryEmbeddingText(memory)));
     });

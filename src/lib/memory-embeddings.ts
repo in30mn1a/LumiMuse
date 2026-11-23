@@ -5,6 +5,7 @@ import { createDbTaskQueue } from '@/lib/db-task-queue';
 import { getDb } from '@/lib/db';
 import { sanitizeUpstreamError } from '@/lib/api-client';
 import { safeFetch } from '@/lib/ssrf-guard';
+import { normalizeMemoryRow } from '@/lib/memory-normalization';
 import { Memory } from '@/types';
 import {
   ensureMemoryEmbeddingForeignKeys,
@@ -889,6 +890,13 @@ export async function processMemoryEmbeddingTasks(
     }],
   });
 
+  // 原始行的 tags 是 JSON 字符串，必须归一化后再构建 embedding 文本，否则标签永远进不了向量。
+  const loadTaskMemory = (task: MemoryEmbeddingTask): Memory | undefined => {
+    const row = db.prepare('SELECT * FROM memories WHERE id = ? AND character_id = ?')
+      .get(task.memory_id, task.character_id) as Memory | undefined;
+    return row ? normalizeMemoryRow(row) : undefined;
+  };
+
   const finishMissingMemoryTask = (task: MemoryEmbeddingTask) => {
     if (embeddingTaskQueue.complete(db, task)) processed += 1;
   };
@@ -911,8 +919,7 @@ export async function processMemoryEmbeddingTasks(
   const completeTask = (task: MemoryEmbeddingTask, text: string, embedding: ArrayLike<number>) => {
     const completed = db.transaction(() => {
       if (!embeddingTaskQueue.confirmClaim(db, task)) return false;
-      const latestMemory = db.prepare('SELECT * FROM memories WHERE id = ? AND character_id = ?')
-        .get(task.memory_id, task.character_id) as Memory | undefined;
+      const latestMemory = loadTaskMemory(task);
       if (!latestMemory || latestMemory.status !== 'active') return embeddingTaskQueue.complete(db, task);
       if (buildMemoryEmbeddingText(latestMemory) !== text) {
         embeddingTaskQueue.requeue(db, task, { errorMessage: 'memory changed during embedding generation' });
@@ -937,8 +944,7 @@ export async function processMemoryEmbeddingTasks(
   if (embedBatch) {
     const batchItems: Array<{ task: MemoryEmbeddingTask; text: string }> = [];
     for (const task of tasks) {
-      const memory = db.prepare('SELECT * FROM memories WHERE id = ? AND character_id = ?')
-        .get(task.memory_id, task.character_id) as Memory | undefined;
+      const memory = loadTaskMemory(task);
       if (!memory) {
         finishMissingMemoryTask(task);
         continue;
@@ -968,8 +974,7 @@ export async function processMemoryEmbeddingTasks(
 
   for (const task of tasks) {
     try {
-      const memory = db.prepare('SELECT * FROM memories WHERE id = ? AND character_id = ?')
-        .get(task.memory_id, task.character_id) as Memory | undefined;
+      const memory = loadTaskMemory(task);
       if (!memory) {
         finishMissingMemoryTask(task);
         continue;

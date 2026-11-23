@@ -2906,6 +2906,43 @@ test('processMemoryEmbeddingTasks 后台任务优先批量生成 embedding', asy
   assert.deepEqual(readyRows.map(row => row.memory_id), ['batch-mem-1', 'batch-mem-2', 'batch-mem-3']);
 });
 
+// 库里 tags 是 JSON 字符串；embedding 文本必须基于归一化后的记忆，否则标签永远进不了向量。
+test('processMemoryEmbeddingTasks 的 embedding 文本包含库中存储的标签（批量与逐条两条路径）', async t => {
+  for (const mode of ['batch', 'single']) {
+    await t.test(mode, async () => {
+      const db = createMemoryDb();
+      db.exec(`
+        INSERT INTO memories (
+          id, character_id, category, content, confidence, tags, source_msg_ids,
+          memory_kind, importance, emotional_weight, status, pinned, last_used_at, usage_count, metadata,
+          created_at, updated_at
+        )
+        VALUES (
+          'tagged-mem', 'char-a', '偏好习惯', '用户喜欢下雨天窝在家里看书。', 0.9, '["雨天","阅读"]', '[]',
+          'user_preference', 0.8, 0, 'active', 0, NULL, 0, '{}',
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+        );
+        INSERT INTO memory_embedding_tasks (memory_id, character_id, reason, status, retry_count, created_at, updated_at)
+        VALUES ('tagged-mem', 'char-a', 'created', 'pending', 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      `);
+
+      const texts = [];
+      const result = await processMemoryEmbeddingTasks(
+        { provider: 'test-provider', model: 'tag-model', dimension: 2 },
+        mode === 'batch'
+          ? { db, embedBatch: async batch => { texts.push(...batch); return batch.map(() => [1, 0]); } }
+          : { db, embed: async text => { texts.push(text); return [1, 0]; } },
+      );
+
+      assert.equal(result.processed, 1);
+      assert.equal(result.failed, 0);
+      assert.deepEqual(texts, ['分类：偏好习惯\n内容：用户喜欢下雨天窝在家里看书。\n标签：雨天、阅读']);
+      const row = db.prepare("SELECT status FROM memory_embeddings WHERE memory_id = 'tagged-mem'").get();
+      assert.equal(row.status, 'ready', '写入前的复核用同一口径构建文本，不能因此反复 requeue');
+    });
+  }
+});
+
 test('processMemoryEmbeddingTasks 在 stop_current 删除已 claim 任务后不回写 embedding', async () => {
   const db = createMemoryDb();
   ensureMemoryEmbeddingTables(db);

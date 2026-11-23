@@ -74,14 +74,14 @@ export async function parseSseStream(
 
   const processLine = (line: string): void => {
     const trimmed = line.trim();
-    if (!trimmed) return;
-    if (trimmed === 'data: [DONE]') {
+    // SSE 规范里 `data:` 后的空格可选，部分网关输出 `data:{...}`
+    if (!trimmed.startsWith('data:')) return;
+    const data = trimmed.slice(5).trimStart();
+    if (data === '[DONE]') {
       options.onDone?.();
       return;
     }
-    if (!trimmed.startsWith('data: ')) return;
     let json: unknown;
-    const data = trimmed.slice(6);
     try {
       json = JSON.parse(data);
     } catch (error) {

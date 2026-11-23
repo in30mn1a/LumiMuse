@@ -216,6 +216,23 @@ test('parseSseStream can observe DONE without changing the delta sequence or EOF
   assert.deepEqual(deltas, ['before', 'after']);
 });
 
+// SSE 规范里冒号后的空格可选；部分网关输出 `data:{...}`，不能因此丢掉全部正文。
+test('parseSseStream accepts data lines without a space after the colon', async () => {
+  const deltas = [];
+  const markers = [];
+  await parseSseStream(
+    readerFromTextChunks([
+      'data:{"choices":[{"delta":{"content":"tight"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"spaced"}}]}\n\n',
+      'data:[DONE]\n\n',
+    ]),
+    chunk => deltas.push(chunk.text),
+    { onDone: () => markers.push('done') },
+  );
+  assert.deepEqual(deltas, ['tight', 'spaced']);
+  assert.deepEqual(markers, ['done']);
+});
+
 test('parseSseStream does not report a completion marker for plain EOF', async () => {
   let done = false;
   await parseSseStream(readerFromTextChunks(['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n']), () => {}, {

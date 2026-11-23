@@ -78,8 +78,9 @@ export default function AgentComposer({ busy, canStop, onSend, onStop, model, co
             </button>
           </div>
         )}
-        <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[minmax(0,1fr)_auto] md:gap-y-1">
-          <div className="col-start-1 row-start-1 min-w-0 md:col-span-2 md:px-2 md:pt-1">
+        {/* 外框与工具行规则同聊天页输入框：圆角与内边距、按钮半径同心，工具行控件同高居中；输入文字与选择器文字左对齐 */}
+        <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-[1.75rem] border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[minmax(0,1fr)_auto] md:items-center md:gap-y-1 md:p-2">
+          <div className="col-start-1 row-start-1 min-w-0 px-1.5 md:col-span-2 md:px-2 md:pt-1">
             <textarea
               ref={textareaRef}
               value={value}
@@ -95,7 +96,7 @@ export default function AgentComposer({ busy, canStop, onSend, onStop, model, co
           </div>
 
           {/* 手机首行是输入和发送，模型工具在下一行；桌面工具行与发送按钮同一行。min-h 为选择器预留高度，读到设置后不跳动 */}
-          <div className="col-span-2 col-start-1 row-start-2 flex min-h-6 min-w-0 items-center gap-1 px-1 md:col-span-1 md:px-0">
+          <div className="col-span-2 col-start-1 row-start-2 flex min-h-9 min-w-0 items-center gap-1 md:col-span-1 md:min-h-10">
             {model.ready && (
               <>
                 {/* 换接口后重新挂载，下拉里的模型列表随之重新读取 */}
@@ -118,7 +119,7 @@ export default function AgentComposer({ busy, canStop, onSend, onStop, model, co
               type="button"
               onClick={onStop}
               aria-label={t('agent.stop')}
-              className="soft-button soft-button-secondary col-start-2 row-start-1 h-11 w-11 shrink-0 rounded-full border-accent/20 p-0 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:row-start-2 md:h-auto md:w-auto md:min-w-[6.6rem] md:rounded-xl md:px-4 md:py-2.5"
+              className="soft-button soft-button-secondary col-start-2 row-start-1 h-11 w-11 shrink-0 rounded-full border-accent/20 p-0 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:row-start-2 md:h-10 md:min-h-10 md:w-auto md:min-w-[6.6rem] md:px-4 md:text-sm"
             >
               <StopIcon className="h-4 w-4" />
               <span className="hidden md:inline">{t('agent.stop')}</span>
@@ -129,7 +130,7 @@ export default function AgentComposer({ busy, canStop, onSend, onStop, model, co
               onClick={() => void submit()}
               disabled={busy || !value.trim()}
               aria-label={t('agent.send')}
-              className="soft-button soft-button-primary col-start-2 row-start-1 h-11 w-11 shrink-0 rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-50 md:row-start-2 md:h-auto md:w-auto md:min-w-[6.6rem] md:rounded-xl md:px-4 md:py-2.5"
+              className="soft-button soft-button-primary col-start-2 row-start-1 h-11 w-11 shrink-0 rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-50 md:row-start-2 md:h-10 md:min-h-10 md:w-auto md:min-w-[6.6rem] md:px-4 md:text-sm"
             >
               <SendIcon className="h-5 w-5 md:h-4 md:w-4" />
               <span className="hidden md:inline">{t('agent.send')}</span>

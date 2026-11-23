@@ -10,12 +10,15 @@ import type { ReasoningEffort } from '@/types';
 
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-/** 模型 / 思考强度触发按钮：轻量文字按钮，不抢输入区的视觉重量 */
-const PICKER_TRIGGER = 'flex max-w-full cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark';
+/**
+ * 模型 / 思考强度触发按钮：与输入框里的图标按钮同高（手机 36px、桌面 40px），共用一条中线；
+ * 全圆角与输入框外框同心。英文（模型名、强度值）用 Quicksand，中文跟随正文字体设置。
+ */
+const PICKER_TRIGGER = 'flex h-9 max-w-full cursor-pointer items-center gap-1.5 rounded-full px-2.5 font-[family-name:Quicksand,var(--font-sans)] text-[0.8125rem] font-medium text-text-secondary transition-colors hover:bg-accent/8 hover:text-accent-dark md:h-10 md:px-3';
 
 function ChevronDownIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
       <path d="M6 9l6 6 6-6" />
     </svg>
   );
@@ -171,7 +174,7 @@ export function ModelPicker({
         aria-expanded={modelPickerOpen}
       >
         <span className="min-w-0 max-w-[12rem] truncate">{currentModel || t('settings.modelPlaceholder')}</span>
-        <ChevronDownIcon className="h-3 w-3 shrink-0" />
+        <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
       </button>
 
       {modelPickerOpen && (
@@ -250,6 +253,7 @@ export function ReasoningEffortPicker({ reasoningEffort = 'default', onReasoning
   const effortTriggerRef = useRef<HTMLButtonElement>(null);
   const effortOptionRefs = useRef<Array<HTMLDivElement | null>>([]);
   const { t } = useTranslation();
+  const effortLabel = reasoningEffort === 'default' ? t('input.reasoningEffortDefault') : reasoningEffort;
 
   useEffect(() => {
     if (!effortPickerOpen) return;
@@ -303,13 +307,13 @@ export function ReasoningEffortPicker({ reasoningEffort = 'default', onReasoning
         onClick={() => setEffortPickerOpen(open => !open)}
         className={PICKER_TRIGGER}
         title={t('input.reasoningEffortHint')}
+        // 按钮上只显示强度值；读屏仍朗读完整的「思考强度: 值」
+        aria-label={`${t('input.reasoningEffort')}: ${effortLabel}`}
         aria-haspopup="listbox"
         aria-expanded={effortPickerOpen}
       >
-        <span className="truncate">
-          {t('input.reasoningEffort')}: {reasoningEffort === 'default' ? t('input.reasoningEffortDefault') : reasoningEffort}
-        </span>
-        <ChevronDownIcon className="h-3 w-3 shrink-0" />
+        <span className="truncate">{effortLabel}</span>
+        <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
       </button>
 
       {effortPickerOpen && (

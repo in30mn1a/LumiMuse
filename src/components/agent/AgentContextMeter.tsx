@@ -68,7 +68,7 @@ export default function AgentContextMeter({ context, onCompact, compactDisabled 
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         aria-label={formatTemplate(t('agent.context.label'), { percent })}
-        className={`flex min-h-6 cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-xs tabular-nums transition-colors hover:bg-accent/8 hover:text-accent-dark ${
+        className={`flex h-9 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[0.8125rem] tabular-nums transition-colors hover:bg-accent/8 hover:text-accent-dark md:h-10 md:px-3 ${
           near ? 'text-accent-dark' : 'text-text-muted'
         }`}
       >

@@ -209,7 +209,8 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
           <p className="mb-2 text-xs text-red-500">{attachError}</p>
         )}
 
-        <div className="grid grid-cols-[auto_minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-3xl border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[auto_minmax(0,1fr)_auto] md:gap-y-1">
+        {/* 外框圆角 = 内边距 + 按钮半径（手机 0.375 + 1.375、桌面 0.5 + 1.25 = 1.75rem），转角同心；桌面工具行控件同高并居中对齐 */}
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_2.75rem] items-end gap-x-1 gap-y-0 rounded-[1.75rem] border border-border-light bg-surface p-1.5 shadow-[var(--shadow-soft)] focus-within:border-accent/40 md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center md:gap-y-1 md:p-2">
           <div className="col-start-2 row-start-1 min-w-0 md:col-span-3 md:col-start-1 md:px-2 md:pt-1">
             <textarea
               ref={textareaRef}
@@ -231,11 +232,11 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled}
-              className={`flex min-h-11 ${onWebSearchChange ? 'min-w-9' : 'min-w-11'} shrink-0 items-center justify-center rounded-full p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40 md:rounded-xl`}
+              className={`flex min-h-11 ${onWebSearchChange ? 'min-w-9' : 'min-w-11'} shrink-0 items-center justify-center rounded-full p-2 text-text-muted transition-colors hover:bg-accent/8 hover:text-accent-dark disabled:cursor-not-allowed disabled:opacity-40 md:min-h-10 md:min-w-10`}
               title={t('input.attachFileTitle')}
               aria-label={t('input.attachFileLabel')}
             >
-              <PaperclipIcon className="h-4 w-4" />
+              <PaperclipIcon className="h-4.5 w-4.5" />
             </button>
             {onWebSearchChange && (
               <button
@@ -244,13 +245,13 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
                 aria-pressed={webSearchEnabled}
                 title={t('input.webSearchTitle')}
                 aria-label={t('input.webSearch')}
-                className={`flex min-h-11 min-w-9 shrink-0 items-center justify-center rounded-full p-2 transition-colors md:rounded-xl ${
+                className={`flex min-h-11 min-w-9 shrink-0 items-center justify-center rounded-full p-2 transition-colors md:min-h-10 md:min-w-10 ${
                   webSearchEnabled
                     ? 'bg-accent/12 text-accent-dark'
                     : 'text-text-muted hover:bg-accent/8 hover:text-accent-dark'
                 }`}
               >
-                <GlobeIcon className="h-4 w-4" />
+                <GlobeIcon className="h-4.5 w-4.5" />
               </button>
             )}
           </div>
@@ -263,7 +264,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
             className="hidden"
           />
 
-          <div className="col-span-3 col-start-1 row-start-2 flex min-w-0 items-center gap-1 px-1 md:col-span-1 md:col-start-2 md:px-0">
+          <div className="col-span-3 col-start-1 row-start-2 flex min-w-0 items-center gap-1 md:col-span-1 md:col-start-2">
             <ModelPicker
               currentModel={currentModel}
               onModelChange={onModelChange}
@@ -281,7 +282,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
               <button
                 onClick={onStop}
                 aria-label={t('input.stop')}
-                className="soft-button soft-button-secondary col-start-3 row-start-1 h-11 w-11 shrink-0 rounded-full border-accent/20 p-0 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:row-start-2 md:h-auto md:w-auto md:min-w-[6.6rem] md:rounded-xl md:px-4 md:py-2.5"
+                className="soft-button soft-button-secondary col-start-3 row-start-1 h-11 w-11 shrink-0 rounded-full border-accent/20 p-0 text-accent-dark hover:border-accent/40 hover:bg-accent/8 md:row-start-2 md:h-10 md:min-h-10 md:w-auto md:min-w-[6.6rem] md:px-4 md:text-sm"
               >
                 <StopIcon className="h-4 w-4" />
                 <span className="hidden md:inline">{t('input.stop')}</span>
@@ -292,7 +293,7 @@ export default function ChatInput({ onSend, onStop, disabled, isGenerating, curr
               onClick={handleSubmit}
               aria-label={t('input.send')}
               disabled={!canSend}
-              className="soft-button soft-button-primary col-start-3 row-start-1 h-11 w-11 shrink-0 rounded-full p-0 md:row-start-2 md:h-auto md:w-auto md:min-w-[6.6rem] md:rounded-xl md:px-4 md:py-2.5"
+              className="soft-button soft-button-primary col-start-3 row-start-1 h-11 w-11 shrink-0 rounded-full p-0 md:row-start-2 md:h-10 md:min-h-10 md:w-auto md:min-w-[6.6rem] md:px-4 md:text-sm"
             >
               <SendIcon className="h-5 w-5 md:h-4 md:w-4" />
               <span className="hidden md:inline">{t('input.send')}</span>

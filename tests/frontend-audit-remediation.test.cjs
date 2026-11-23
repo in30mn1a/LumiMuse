@@ -478,3 +478,62 @@ test('a memory add started before a keyword filter change cannot refresh the old
   assert.deepEqual(queries, ['', 'needle']);
   assert.equal(view.getByText('filtered').getAttribute('data-editing'), 'false');
 });
+
+test('ChatView refreshes the summarized conversation, not the one the owner switched to while waiting', async () => {
+  const summary = deferred();
+  const messageFetches = [];
+  const { DEFAULT_SETTINGS } = require('../src/types/index.ts');
+  const chat = (id, title) => ({ ...conversation, id, character_id: 'summary-role', title });
+  const message = (id, conversationId, role, seq) => ({
+    id, conversation_id: conversationId, role, content: id, token_count: 1, created_at: '', metadata: {}, seq,
+  });
+  global.fetch = async (url, init) => {
+    const target = String(url);
+    if (target.startsWith('/api/conversations?')) return json([chat('conv-a', 'A'), chat('conv-b', 'B')]);
+    if (target.startsWith('/api/memories?')) return json([]);
+    if (target === '/api/settings') return json(DEFAULT_SETTINGS);
+    if (target === '/api/summarize' && init?.method === 'POST') return summary.promise;
+    if (target.startsWith('/api/messages?')) {
+      const conversationId = new URL(target, 'http://localhost').searchParams.get('conversation_id');
+      messageFetches.push(conversationId);
+      const messages = conversationId === 'conv-a'
+        ? [message('a-user', 'conv-a', 'user', 1), message('a-reply', 'conv-a', 'assistant', 2)]
+        : [];
+      return json({ messages, totalTokens: 0, unextractedCount: 0, hasMore: false });
+    }
+    return json({});
+  };
+  const empty = () => null;
+  // showToast 必须是稳定引用：ChatView 的设置加载 effect 依赖它，每次渲染换新函数会无限重拉设置
+  const showToast = () => {};
+  Module._load = function(request, parent, ...args) {
+    if (request === 'next/dynamic') return { __esModule: true, default: () => empty };
+    if (request === '@/lib/i18n-context') return { useTranslation: () => ({ t }) };
+    if (request === '@/components/ui/Toast') return { useToast: () => ({ showToast, ToastContainer: empty }) };
+    if (parent?.filename.endsWith('ChatView.tsx')) {
+      if (request === './ChatHeader') return { __esModule: true, default: props => React.createElement('button', { onClick: props.onSummarize }, 'summarize') };
+      if (request.startsWith('./')) return { __esModule: true, default: empty };
+    }
+    return loadOriginal.call(this, request, parent, ...args);
+  };
+  let ChatView;
+  // 前面的用例已用另一组子组件 mock 加载过 ChatView，这里要重新求值
+  delete require.cache[require.resolve('../src/components/chat/ChatView.tsx')];
+  try { ChatView = require('../src/components/chat/ChatView.tsx').default; } finally { Module._load = loadOriginal; }
+  const character = { id: 'summary-role', name: 'S' };
+  const view = render(React.createElement(ChatView, { character, conversationId: 'conv-a' }));
+  await waitFor(() => assert.ok(messageFetches.includes('conv-a')));
+  await act(async () => {});
+
+  fireEvent.click(view.getByText('summarize'));
+  // 等待总结期间切到 B（与搜索跳转同一入口）
+  view.rerender(React.createElement(ChatView, { character, conversationId: 'conv-b' }));
+  await waitFor(() => assert.ok(messageFetches.includes('conv-b')));
+  const fetchedBeforeSummary = messageFetches.length;
+  await act(async () => {
+    summary.resolve(json({ ok: true, message: message('a-summary', 'conv-a', 'system', 3), summarizedCount: 2 }));
+  });
+
+  await waitFor(() => assert.ok(messageFetches.slice(fetchedBeforeSummary).includes('conv-a'),
+    `the finished summary must refresh conv-a; fetched after it: ${messageFetches.slice(fetchedBeforeSummary)}`));
+});

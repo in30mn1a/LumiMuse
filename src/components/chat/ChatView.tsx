@@ -692,12 +692,14 @@ export default function ChatView({
       return;
     }
 
+    // 总结要等模型跑完，期间主人可能切到别的对话；刷新和滚动都以发起时的对话为准
+    const conversationId = activeConvId;
     setSummarizing(true);
     try {
       const res = await fetch('/api/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversation_id: activeConvId }),
+        body: JSON.stringify({ conversation_id: conversationId }),
       });
 
       if (!res.ok) {
@@ -707,9 +709,11 @@ export default function ChatView({
 
       const data = await res.json() as { ok: boolean; message: Message; summarizedCount: number };
       // 刷新消息列表，让总结消息出现在正确位置
-      await refreshMessages();
-      // 确保滚动到底部看到新的 summary 消息
-      requestAnimationFrame(() => scrollToBottom('smooth'));
+      await refreshMessagesForConversation(conversationId);
+      // 仍停留在该对话时才滚到底部看新的 summary 消息
+      if (activeConvIdRef.current === conversationId) {
+        requestAnimationFrame(() => scrollToBottom('smooth'));
+      }
       showToast(t('chat.summarizeSuccess'), 'info');
     } catch (err) {
       showToast(err instanceof Error ? err.message : t('chat.summarizeError'));

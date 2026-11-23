@@ -252,6 +252,24 @@ test('proxy allows protected API requests with a valid auth token', async () => 
   assert.equal(response.headers.get('x-middleware-next'), '1');
 });
 
+// 旧静态路径兼容重写必须在认证之后：否则未登录访客可经 /avatars/xxx 读到 public 下的私有文件。
+test('proxy rewrites legacy asset paths only after authentication', async () => {
+  setAuthEnv();
+  resetAuthModules();
+  const { issueAuthToken, AUTH_COOKIE_NAME } = require('../src/lib/auth-token.ts');
+  const token = await issueAuthToken();
+  const { proxy } = loadProxy();
+
+  for (const pathname of ['/avatars/a.png', '/generated/b.png', '/attachments/c.png']) {
+    const anonymous = await proxy(authRequest(pathname));
+    assert.equal(anonymous.headers.get('x-middleware-rewrite'), null, `${pathname} must not be rewritten without a valid token`);
+    assert.notEqual(anonymous.status, 200, `${pathname} must not be served without a valid token`);
+
+    const authenticated = await proxy(authRequest(pathname, { headers: { cookie: `${AUTH_COOKIE_NAME}=${token}` } }));
+    assert.equal(authenticated.headers.get('x-middleware-rewrite'), `http://test.local/api/files${pathname}`);
+  }
+});
+
 test('proxy rejects cross-site style API write requests with unsupported content type', async () => {
   setAuthEnv();
   const { proxy } = loadProxy();

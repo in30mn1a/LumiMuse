@@ -236,7 +236,8 @@ function setIntersection<T>(a: Set<T>, b: Set<T>): Set<T> {
 // （"养了只叫小白的白猫" vs "小白最近生病了"），本就该并存；
 // 强行合并会静默丢掉新事实，且返回值仍报 mergeCount 成功。
 // 记忆完整性优先：宁可多存一条，不可丢事实。target 只用于 supersede（语义是旧的作废）。
-function mergeMemories(existing: Memory[], newMemories: Memory[]): Memory[] {
+// contributions（可选）：记录每个结果 id 吸收了哪些新条目，供写库时乐观锁落空后只插入本轮内容。
+function mergeMemories(existing: Memory[], newMemories: Memory[], contributions?: Map<string, Memory[]>): Memory[] {
   const result = [...existing];
 
   for (const newEntry of newMemories) {
@@ -293,6 +294,11 @@ function mergeMemories(existing: Memory[], newMemories: Memory[]): Memory[] {
           metadata: sourceAttribution ? { ...existingEntry.metadata, sourceAttribution } : existingEntry.metadata,
           updated_at: new Date().toISOString(),
         };
+        if (contributions) {
+          const absorbed = contributions.get(existingEntry.id);
+          if (absorbed) absorbed.push(newEntry);
+          else contributions.set(existingEntry.id, [newEntry]);
+        }
         continue;
       }
     }
@@ -919,7 +925,8 @@ export async function extractMemories(
   const insertEntries = newEntries.filter(entry => entry.lifecycle_action === 'insert');
   const supersedeEntries = newEntries.filter(entry => entry.lifecycle_action === 'supersede');
   const upsertEntries = newEntries.filter(entry => entry.lifecycle_action === 'upsert');
-  const merged = mergeMemories(normalizedExisting, upsertEntries);
+  const upsertContributions = new Map<string, Memory[]>();
+  const merged = mergeMemories(normalizedExisting, upsertEntries, upsertContributions);
 
   // 真实统计：mergeCount 是"已有条目被有效更新"的数量；
   // insertCount 是"全新插入到 DB"的数量。
@@ -1025,9 +1032,9 @@ export async function extractMemories(
           // 等边界的兜底，避免任何残留旧 token 集被后续检索误用。
           invalidateMemoryTokenCache(entry.id);
           // 乐观锁：守卫 LLM 前快照的 updated_at。
-          // - status 已非 active（同事务 supersede）→ 落空，插入新 active 行
-          // - 用户在 LLM 窗口内手工改过该记忆 → updated_at 变了，落空，不覆盖用户版本，
-          //   把本轮合并信息作为新 active 记忆插入，双保留、不丢内容
+          // - status 已非 active（同事务 supersede、用户归档）→ 落空
+          // - 用户在 LLM 窗口内手工改过该记忆 → updated_at 变了，落空，不覆盖用户版本
+          // 落空时只插入本轮吸收进来的新条目，双保留、不丢新事实
           const result = db.prepare(`
             UPDATE memories
             SET content = ?, confidence = ?, tags = ?, source_msg_ids = ?, memory_kind = ?, importance = ?, emotional_weight = ?, metadata = ?, updated_at = ?
@@ -1049,8 +1056,12 @@ export async function extractMemories(
             mergeCount++;
             embeddingTasks.push({ memoryId: entry.id, characterId: entry.character_id, reason: 'updated' });
           } else {
-            // UPDATE 落空：supersede 或用户并发编辑。新信息作为全新 active 记忆插入，避免静默丢失。
-            insertMemory({ ...entry, id: crypto.randomUUID().slice(0, 12), created_at: entry.updated_at } as NewMemoryEntry);
+            // UPDATE 落空：supersede、归档或用户并发编辑。不能插入合并快照——它以 LLM 前的旧行为底，
+            // content 取较长一方，会把用户刚归档/改短/作废的旧内容换个 id 复活成 active。
+            // 只插入本轮条目（多条彼此近重复时按同一规则先合并），避免新事实静默丢失。
+            for (const fresh of mergeMemories([], upsertContributions.get(entry.id) ?? [])) {
+              insertMemory({ ...fresh, id: crypto.randomUUID().slice(0, 12), created_at: entry.updated_at, updated_at: entry.updated_at } as NewMemoryEntry);
+            }
           }
         }
       } else {

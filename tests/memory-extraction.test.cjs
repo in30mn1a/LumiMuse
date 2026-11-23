@@ -1103,3 +1103,74 @@ test('extractMemories upsert 遇用户并发编辑时不覆盖用户版本，改
   assert.ok(activeRows.some(row => row.content.includes('再询问是否需要分析')));
   assert.ok(result.insertCount >= 1);
 });
+
+// 合并规则是「content 取更长的一方」。旧记忆比本轮条目长时，合并快照的 content 就是旧内容；
+// 乐观锁落空后若插入合并快照，主人刚归档/改短的旧内容会换个新 id 复活成 active，新事实反而丢失。
+test('extractMemories upsert 乐观锁落空时只插入本轮条目，不复活 LLM 前的旧内容', async t => {
+  const oldContent = '角色承诺以后主人难过时，会先安静陪伴主人，再询问是否需要分析。';
+  const freshContent = '角色承诺以后主人难过时，会先安静陪伴主人，再询问是否需要。';
+  const concurrentChanges = {
+    // 对照组：无并发修改时必须走合并（UPDATE 命中），证明这组样本确实进入了 upsert 合并路径
+    none: () => {},
+    archived: db => db.prepare(`
+      UPDATE memories SET status = 'archived', updated_at = '2026-06-02T12:00:00.000Z' WHERE id = 'mem-long'
+    `).run(),
+    shortened: db => db.prepare(`
+      UPDATE memories SET content = '主人难过时先递纸巾。', updated_at = '2026-06-02T12:00:00.000Z' WHERE id = 'mem-long'
+    `).run(),
+  };
+
+  for (const [name, applyConcurrentChange] of Object.entries(concurrentChanges)) {
+    await t.test(name, async () => {
+      const db = createExtractionDb();
+      insertExisting(db, { id: 'mem-long', content: oldContent, source_msg_ids: ['msg-old'], tags: ['陪伴'] });
+
+      const { extractMemories } = requireFreshWithMocks('../src/lib/memory-engine.ts', {
+        '@/lib/db': { getDb: () => db },
+        '@/lib/api-client': {
+          chatCompletion: async () => {
+            applyConcurrentChange(db);
+            return JSON.stringify({
+              memories: [{
+                category: '关系动态',
+                memory_kind: 'character_promise',
+                content: freshContent,
+                tags: ['陪伴'],
+                importance: 0.9,
+                emotional_weight: 0.85,
+                lifecycle_action: 'upsert',
+              }],
+            });
+          },
+          REASONING_SAFE_MAX_TOKENS: 16384,
+        },
+        '@/lib/memory-index-trigger': { triggerMemoryIndexProcessing: () => false },
+      });
+
+      const result = await extractMemories('char-a', longConversation(), settings(), {
+        messageIds: ['msg-new'],
+      });
+
+      const inserted = db.prepare("SELECT content, source_msg_ids, status FROM memories WHERE id != 'mem-long'").all();
+      if (name === 'none') {
+        assert.equal(result.mergeCount, 1);
+        assert.equal(result.insertCount, 0);
+        assert.equal(inserted.length, 0);
+        const mergedRow = db.prepare("SELECT content, source_msg_ids FROM memories WHERE id = 'mem-long'").get();
+        assert.equal(mergedRow.content, oldContent, '合并取更长的一方');
+        assert.deepEqual(JSON.parse(mergedRow.source_msg_ids), ['msg-old', 'msg-new']);
+        return;
+      }
+      assert.equal(result.insertCount, 1);
+      assert.equal(inserted.length, 1);
+      assert.equal(inserted[0].status, 'active');
+      assert.equal(inserted[0].content, freshContent, '插入的应是本轮条目，而不是 LLM 前的旧内容');
+      assert.deepEqual(JSON.parse(inserted[0].source_msg_ids), ['msg-new'], '旧记忆的来源不应带进新行');
+      assert.equal(
+        db.prepare('SELECT COUNT(*) AS n FROM memories WHERE status = ? AND content = ?').get('active', oldContent).n,
+        0,
+        '旧内容不得以 active 复活',
+      );
+    });
+  }
+});

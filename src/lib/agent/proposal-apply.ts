@@ -567,6 +567,14 @@ function restoreBatchMemberSnapshots(
   }
 }
 
+/**
+ * 排序不算改动：在侧边栏拖动任意角色都会重写全部角色的 sort_order。
+ * 只比对批准时快照里的列，之后迁移新增的列不会让历史创建项全部无法撤销。
+ */
+function isCreatedCharacterUnchanged(current: CreatedCharacterSnapshot, created: CreatedCharacterSnapshot): boolean {
+  return Object.keys(created).every(key => key === 'sort_order' || current[key] === created[key]);
+}
+
 function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): string[] {
   const characterId = proposal.character_id;
   const result = JSON.parse(item.result_json!) as ProposalApplyResult;
@@ -575,7 +583,7 @@ function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalIt
     const id = before.character_creation.id;
     const current = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as CreatedCharacterSnapshot | undefined;
     if (item.op !== 'create' || characterId !== null || !result.created_character || result.created_character.id !== id
-      || !current || JSON.stringify(current) !== JSON.stringify(result.created_character)) {
+      || !current || !isCreatedCharacterUnchanged(current, result.created_character)) {
       throw new ProposalUndoConflict(`角色卡 ${id} 在创建后已被改动或删除，不能撤销`);
     }
     // 在删除事务内检查全部角色关联表；未来新增的数据也默认保留。

@@ -178,13 +178,13 @@ test('原样新角色可撤销，删除会话后历史及按角色筛选仍保�
 });
 
 test('新角色任何后续字段或运行配置修改均阻止撤销', async t => {
-  for (const field of ['personality', 'avatar_url', 'background_model', 'memory_chat_injection_mode', 'sort_order', 'updated_at']) {
+  for (const field of ['personality', 'avatar_url', 'background_model', 'memory_chat_injection_mode', 'updated_at']) {
     await t.test(field, subtest => {
       const ctx = setup(subtest);
       const proposal = propose(ctx);
       approve(ctx, proposal);
       ctx.db.prepare(`UPDATE characters SET ${field} = ? WHERE id = ?`)
-        .run(field === 'sort_order' ? 5 : field === 'memory_chat_injection_mode' ? 'local' : '后续修改', proposal.characterId);
+        .run(field === 'memory_chat_injection_mode' ? 'local' : '后续修改', proposal.characterId);
       const before = characters(ctx.db);
       const outcome = undoProposalItem(ctx.db, proposal.id, proposal.itemId, T2);
       assert.equal(outcome.status, 409);
@@ -192,6 +192,35 @@ test('新角色任何后续字段或运行配置修改均阻止撤销', async t 
       assert.equal(getProposalView(ctx.db, proposal.id).items[0].state, 'applied');
     });
   }
+});
+
+test('侧边栏拖动排序重写 sort_order 后新角色仍可撤销', async t => {
+  const ctx = setup(t);
+  ctx.db.prepare('INSERT INTO characters (id, name, sort_order) VALUES (?, ?, ?)').run('existing', '已有角色', 0);
+  const proposal = propose(ctx);
+  approve(ctx, proposal);
+  const reorderRoute = require('../src/app/api/characters/reorder/route.ts');
+  // 拖动的是已有角色，但前端提交完整列表，新角色的 sort_order 也随之重写。
+  const response = await reorderRoute.PUT(new NextRequest('http://localhost/api/characters/reorder', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: ['existing', proposal.characterId] }),
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(ctx.db.prepare('SELECT sort_order FROM characters WHERE id = ?').get(proposal.characterId).sort_order, 1);
+  const outcome = undoProposalItem(ctx.db, proposal.id, proposal.itemId, T2);
+  assert.equal(outcome.ok, true, outcome.error);
+  assert.deepEqual(characters(ctx.db).map(row => row.id), ['existing']);
+});
+
+test('批准后迁移给角色表新增列，不影响撤销原样的新角色', t => {
+  const ctx = setup(t);
+  const proposal = propose(ctx);
+  approve(ctx, proposal);
+  ctx.db.exec("ALTER TABLE characters ADD COLUMN future_setting TEXT NOT NULL DEFAULT 'default'");
+  const outcome = undoProposalItem(ctx.db, proposal.id, proposal.itemId, T2);
+  assert.equal(outcome.ok, true, outcome.error);
+  assert.deepEqual(characters(ctx.db), []);
 });
 
 test('已有对话、记忆、Agent 关联及未来新增关联表时拒绝撤销并保留数据', async t => {

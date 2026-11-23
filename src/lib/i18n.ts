@@ -525,6 +525,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'message.copy': '复制',
     'message.copied': '已复制',
+    'message.copyFailed': '复制失败，请手动选中文字复制',
     'message.edit': '编辑消息',
     'message.delete': '删除消息',
     'message.deleteFailed': '删除消息失败',
@@ -1655,6 +1656,7 @@ const translations: Record<Lang, Record<string, string>> = {
 
     'message.copy': 'Copy',
     'message.copied': 'Copied',
+    'message.copyFailed': 'Copy failed. Select the text and copy it manually.',
     'message.edit': 'Edit message',
     'message.delete': 'Delete message',
     'message.deleteFailed': 'Failed to delete message',

@@ -8,6 +8,7 @@ import { Message } from '@/types';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { splitByHighlightRanges, type TextHighlightRange } from '@/lib/text-highlight';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import { sanitizeGeneratedImages, type GeneratedImage, type GeneratedImageVersion } from '@/lib/generated-image-assets';
 import { CheckIcon, ClockIcon, CopyIcon, PencilIcon, RefreshIcon, TrashIcon, ReplyIcon, SummaryIcon, ImageIcon } from '@/components/ui/icons';
 import ReservedChatImage from '@/components/chat/ReservedChatImage';
@@ -307,7 +308,12 @@ function MessageBubbleInner({
   const [editContent, setEditContent] = useState('');
   const [editAttachments, setEditAttachments] = useState<Array<{ type: string; name: string; data?: string; url?: string; mimeType: string }>>([]);
   const [savingEdit, setSavingEdit] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  useEffect(() => {
+    if (copyState === 'idle') return;
+    const timer = window.setTimeout(() => setCopyState('idle'), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
   const [showActions, setShowActions] = useState(false);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -340,10 +346,16 @@ function MessageBubbleInner({
   }, [editing, editContent]);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(message.content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await copyTextToClipboard(message.content);
+      setCopyState('copied');
+    } catch {
+      setCopyState('failed');
+    }
   };
+  const copyLabelKey = copyState === 'copied'
+    ? 'message.copied'
+    : copyState === 'failed' ? 'message.copyFailed' : 'message.copy';
 
   const handleEditStart = () => {
     setEditContent(message.content);
@@ -434,14 +446,14 @@ function MessageBubbleInner({
               className={`ml-auto flex items-center gap-0.5 transition-opacity duration-150 ${isUser ? 'flex-row-reverse' : ''} ${showActions ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100'}`}
               onClick={e => e.stopPropagation()}
             >
-              {/* 复制：已复制时显示 ✓ */}
+              {/* 复制：已复制时显示 ✓，失败时提示手动复制 */}
               <button
                 onClick={handleCopy}
                 className={isUser ? btnUser : btnAssistant}
-                title={copied ? t('message.copied') : t('message.copy')}
-                aria-label={copied ? t('message.copied') : t('message.copy')}
+                title={t(copyLabelKey)}
+                aria-label={t(copyLabelKey)}
               >
-                {copied
+                {copyState === 'copied'
                   ? <CheckIcon className="h-3.5 w-3.5" />
                   : <CopyIcon className="h-3.5 w-3.5" />
                 }

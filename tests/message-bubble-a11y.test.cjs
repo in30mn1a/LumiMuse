@@ -184,3 +184,39 @@ test('image lightbox traps focus, closes with Escape, and restores thumbnail foc
   assert.equal(within(document.body).queryByRole('dialog'), null);
   assert.ok(document.activeElement === image.closest('button'), 'focus should return to the lightbox trigger');
 });
+
+// 用 http://局域网IP 访问时不是安全上下文，浏览器不提供 navigator.clipboard。
+function withoutClipboardApi(t, execCommand) {
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+  document.execCommand = execCommand;
+  t.after(() => {
+    if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard);
+    else delete navigator.clipboard;
+    document.execCommand = originalExecCommand;
+  });
+}
+
+test('copy falls back to execCommand when the page has no clipboard API', async t => {
+  const copied = [];
+  withoutClipboardApi(t, command => {
+    copied.push({ command, text: document.activeElement?.value });
+    return true;
+  });
+  const view = renderBubble();
+  view.getByRole('button', { name: 'message.copy' }).click();
+
+  await waitFor(() => assert.ok(view.getByRole('button', { name: 'message.copied' })));
+  assert.deepEqual(copied, [{ command: 'copy', text: 'response' }]);
+  assert.equal(document.querySelector('textarea'), null, 'the temporary textarea must be removed');
+});
+
+test('copy reports failure instead of throwing when every copy method is rejected', async t => {
+  withoutClipboardApi(t, () => false);
+  const view = renderBubble();
+  view.getByRole('button', { name: 'message.copy' }).click();
+
+  await waitFor(() => assert.ok(view.getByRole('button', { name: 'message.copyFailed' })));
+  assert.equal(document.querySelector('textarea'), null, 'the temporary textarea must be removed');
+});

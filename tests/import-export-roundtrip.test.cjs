@@ -125,7 +125,8 @@ function createImportDb() {
       background_system_prompt_by_model TEXT NOT NULL DEFAULT '{}',
       image_prompt_system_prompt_by_model TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
+      updated_at TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE conversations (
@@ -354,10 +355,19 @@ test('/api/import ignores old backup sampling values without clearing existing u
   }
 });
 
+// 导入成功后排了索引任务才会触发 drain；记录调用，不启动真实的后台索引。
+const indexTriggerCalls = [];
+const DEFAULT_INDEX_TARGET = { provider: 'openai-compatible', model: 'fake-model', dimension: 2 };
+let indexTarget = DEFAULT_INDEX_TARGET;
+
 function loadImportRoute(db, useRealCardNormalizer = false) {
   const mocks = {
     'next/server': jsonResponseMock(),
     '@/lib/db': { getDb: () => db },
+    '@/lib/memory-index-trigger': {
+      triggerMemoryIndexProcessing: () => { indexTriggerCalls.push(Date.now()); return true; },
+      resolveMemoryIndexTarget: () => indexTarget,
+    },
   };
   if (!useRealCardNormalizer) {
     mocks['@/lib/character-card-import'] = { normalizeCharacterCard: () => null };
@@ -881,6 +891,8 @@ test('/api/import prepares repeated insert and lookup statements once while pres
 
   assert.equal(response.status, 200);
   for (const [sql, count] of prepareCounts) {
+    // 索引任务走共享队列 helper（与复制角色、提取同一入口），它每次入队自己 prepare，不在本断言范围。
+    if (sql.includes('memory_embedding_tasks')) continue;
     if (/^(INSERT INTO|SELECT id FROM characters WHERE id = \?)/.test(sql)) {
       assert.equal(count, 1, `statement should be prepared once: ${sql}`);
     }
@@ -1367,6 +1379,152 @@ test('/api/import skips embeddings whose memory was not imported (orphan vector)
   // 确认没有写入任何 embedding
   const count = db.prepare('SELECT COUNT(*) as count FROM memory_embeddings').get().count;
   assert.equal(count, 0);
+});
+
+test('/api/import queues index work for active memories that arrive without a ready vector', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  indexTriggerCalls.length = 0;
+
+  const embeddingBuffer = Buffer.alloc(8);
+  embeddingBuffer.writeFloatLE(0.5, 0);
+  embeddingBuffer.writeFloatLE(0.6, 4);
+  const memory = (id, content, extra = {}) => ({
+    id,
+    character_id: 'old-char',
+    category: '重要事件',
+    content,
+    created_at: '2026-06-01T00:00:00.000Z',
+    updated_at: '2026-06-01T00:00:00.000Z',
+    ...extra,
+  });
+
+  const response = await route.POST(importRequest({
+    version: 2,
+    memories: [
+      memory('mem-no-vector', '没有向量的活跃记忆'),
+      memory('mem-with-vector', '自带向量的活跃记忆'),
+      memory('mem-archived', '已归档的记忆', { status: 'archived' }),
+    ],
+    memory_embeddings: [{
+      memory_id: 'mem-with-vector',
+      character_id: 'old-char',
+      provider: 'openai-compatible',
+      model: 'fake-model',
+      dimension: 2,
+      embedding_blob: embeddingBuffer,
+      embedding_text_hash: 'hash-with-vector',
+      status: 'ready',
+    }],
+  }, 'target_character_id=target-char&include_character=0&include_embeddings=1'));
+
+  assert.equal(response.status, 200);
+  const tasks = db.prepare(`
+    SELECT m.content, t.character_id, t.reason, t.status
+    FROM memory_embedding_tasks t JOIN memories m ON m.id = t.memory_id
+  `).all();
+  assert.deepEqual(tasks, [{
+    content: '没有向量的活跃记忆',
+    character_id: 'target-char',
+    reason: 'imported',
+    status: 'pending',
+  }]);
+  assert.equal(indexTriggerCalls.length, 1);
+});
+
+async function importOneMemoryWithVector(vectorModel, t) {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  t.after(() => db.close());
+  const embeddingBuffer = Buffer.alloc(8);
+  embeddingBuffer.writeFloatLE(0.5, 0);
+  embeddingBuffer.writeFloatLE(0.6, 4);
+  const response = await route.POST(importRequest({
+    version: 2,
+    memories: [{ id: 'mem-vector', character_id: 'old-char', category: '重要事件', content: '带向量的记忆' }],
+    memory_embeddings: [{
+      memory_id: 'mem-vector',
+      character_id: 'old-char',
+      provider: 'openai-compatible',
+      model: vectorModel,
+      dimension: 2,
+      embedding_blob: embeddingBuffer,
+      embedding_text_hash: 'hash-vector',
+      status: 'ready',
+    }],
+  }, 'target_character_id=target-char&include_character=0&include_embeddings=1'));
+  assert.equal(response.status, 200);
+  return db.prepare('SELECT reason FROM memory_embedding_tasks').all().map(row => row.reason);
+}
+
+test('/api/import reuses a backed-up vector only when it matches the current index model', async t => {
+  indexTarget = DEFAULT_INDEX_TARGET;
+  t.after(() => { indexTarget = DEFAULT_INDEX_TARGET; });
+  // 同模型：直接复用导入的向量
+  assert.deepEqual(await importOneMemoryWithVector('fake-model', t), []);
+  // 备份来自别的嵌入模型：检索按当前模型过滤看不到它，必须重新索引
+  assert.deepEqual(await importOneMemoryWithVector('another-model', t), ['imported']);
+  // 同模型但维度不同，同样用不了
+  indexTarget = { ...DEFAULT_INDEX_TARGET, dimension: 1024 };
+  assert.deepEqual(await importOneMemoryWithVector('fake-model', t), ['imported']);
+});
+
+test('/api/import queues every active memory when no embedding model is configured yet', async t => {
+  indexTarget = null;
+  t.after(() => { indexTarget = DEFAULT_INDEX_TARGET; });
+  assert.deepEqual(await importOneMemoryWithVector('fake-model', t), ['imported']);
+});
+
+test('/api/import does not start index processing when every imported memory already has a vector', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+  indexTriggerCalls.length = 0;
+
+  const response = await route.POST(importRequest({
+    version: 2,
+    memories: [{ id: 'mem-archived-only', character_id: 'old-char', category: '重要事件', content: '归档', status: 'archived' }],
+  }, 'target_character_id=target-char&include_character=0'));
+
+  assert.equal(response.status, 200);
+  assert.equal(indexTriggerCalls.length, 0);
+});
+
+test('/api/import puts imported characters ahead of existing ones in their backed-up drag order', async () => {
+  const db = createImportDb();
+  db.prepare('UPDATE characters SET sort_order = 5 WHERE id = ?').run('target-char');
+  const route = loadImportRoute(db);
+
+  const response = await route.POST(importRequest({
+    version: 2,
+    characters: [
+      { id: 'c-third', name: '第三', sort_order: 2 },
+      { id: 'c-first', name: '第一', sort_order: 0 },
+      { id: 'c-second', name: '第二', sort_order: 1 },
+    ],
+  }, 'include_memories=0&include_conversations=0'));
+
+  assert.equal(response.status, 200);
+  const names = db.prepare('SELECT name FROM characters ORDER BY sort_order ASC, updated_at DESC').all()
+    .map(row => row.name);
+  assert.deepEqual(names, ['第一', '第二', '第三', '目标角色']);
+});
+
+test('/api/import keeps export order for old backups whose characters have no sort_order', async () => {
+  const db = createImportDb();
+  const route = loadImportRoute(db);
+
+  const response = await route.POST(importRequest({
+    version: 2,
+    characters: [
+      { id: 'old-a', name: '最近更新' },
+      { id: 'old-b', name: '较早更新' },
+    ],
+  }, 'include_memories=0&include_conversations=0'));
+
+  assert.equal(response.status, 200);
+  const rows = db.prepare('SELECT name, sort_order FROM characters ORDER BY sort_order ASC, updated_at DESC').all();
+  assert.deepEqual(rows.map(row => row.name), ['最近更新', '较早更新', '目标角色']);
+  assert.equal(new Set(rows.map(row => row.sort_order)).size, 3);
 });
 
 test('/api/import handles open_threads as array or JSON string', async () => {

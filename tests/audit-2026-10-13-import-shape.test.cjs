@@ -72,7 +72,8 @@ function createImportDb() {
       background_system_prompt_by_model TEXT NOT NULL DEFAULT '{}',
       image_prompt_system_prompt_by_model TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
+      updated_at TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE conversations (

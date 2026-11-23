@@ -13,6 +13,8 @@ import { MEMORY_KINDS, MEMORY_STATUSES } from '@/types';
 import { parseMessageMetadata } from '@/lib/messages';
 import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib/message-token-provenance';
 import { presetImportWarningsSchema, presetInjectionTriggerSchema } from '@/lib/schemas';
+import { enqueueMemoryEmbeddingTask, ensureMemoryEmbeddingTables } from '@/lib/memory-embeddings';
+import { resolveMemoryIndexTarget, triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
 
 interface ImportPayload {
   version?: number;
@@ -647,7 +649,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const { results, resolvePresetId } = importPayload({
+  const { results, resolvePresetId, indexingQueued } = importPayload({
     db,
     characterExists,
     charactersToImport,
@@ -662,6 +664,7 @@ export async function POST(request: NextRequest) {
     presetEntriesToImport,
     target_character_id,
   });
+  if (indexingQueued > 0) triggerMemoryIndexProcessing();
 
   const draftSource = asRecord(payload.character) ?? asArray<Record<string, unknown>>(payload.characters)[0];
   const mappedDraft = characterDraft ? {
@@ -733,6 +736,8 @@ function importPayload({
     conversationMessageIdMap: Map<string, string>;
   }> = [];
   const memoryIdMap = new Map<string, string>(); // 原记忆 id → 新记忆 id（embedding 导入需要）
+  const importedActiveMemories: Array<{ memoryId: string; characterId: string }> = [];
+  let indexingQueued = 0;
   const presetIdMap = new Map<string, string>();
   const missingPresetIds = new Set<string>();
   const hasPresetTable = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompt_presets'").get());
@@ -761,9 +766,9 @@ function importPayload({
       memory_chat_injection_mode, created_at, updated_at,
       background_model, image_prompt_model, background_provider_id,
       background_reasoning_by_model, image_prompt_reasoning_by_model,
-      background_system_prompt_by_model, image_prompt_system_prompt_by_model, active_preset_id
+      background_system_prompt_by_model, image_prompt_system_prompt_by_model, active_preset_id, sort_order
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertConversation = db.prepare(`
     INSERT INTO conversations (id, character_id, title, ignore_memory, created_at, updated_at, sort_order)
@@ -882,6 +887,16 @@ function importPayload({
           asNumber(entry.sort_order) ?? 0, asString(entry.created_at) || now, asString(entry.updated_at) || now);
     }
     // ── 导入角色 ────────────────────────────────────────────────
+    // 导入的角色整体排到列表最前（与新建角色一致），组内按备份的 sort_order 还原拖拽顺序；
+    // 旧备份没有该字段时按导出顺序（导出按最近更新排序，与列表的次级排序一致）。
+    const minSortRow = db.prepare('SELECT MIN(sort_order) AS min_sort FROM characters').get() as { min_sort: number | null };
+    const firstImportedSort = minSortRow.min_sort === null ? 0 : minSortRow.min_sort - charactersToImport.length;
+    const characterSortRank = new Map(
+      charactersToImport
+        .map((char, index) => ({ char, index, order: asNumber(char.sort_order) ?? 0 }))
+        .sort((a, b) => a.order - b.order || a.index - b.index)
+        .map(({ char }, rank) => [char, rank]),
+    );
     // 用 asString / asArray 替换原先的 `as string` 断言，确保即使输入 JSON
     // 把字段类型恶意改成对象 / 数字，也不会污染 SQLite 参数或导致运行时异常。
     for (const char of charactersToImport) {
@@ -935,6 +950,7 @@ function importPayload({
         serializePromptMap(char.background_system_prompt_by_model),
         serializePromptMap(char.image_prompt_system_prompt_by_model),
         resolvePresetId(char.active_preset_id),
+        firstImportedSort + (characterSortRank.get(char) ?? 0),
       );
       results.imported++;
     }
@@ -1041,6 +1057,8 @@ function importPayload({
       const metadataJson = jsonRecordString(mem.metadata);
       const metadata = JSON.parse(metadataJson) as Record<string, unknown>;
       if (hasMemoryMetadataReferences(metadata)) memoryMetadataToRemap.push({ memoryId: newMemId, metadata });
+      const status = asString(mem.status) || 'active';
+      if (status === 'active') importedActiveMemories.push({ memoryId: newMemId, characterId: newCharId });
       insertMemory.run(
         newMemId,
         newCharId,
@@ -1052,7 +1070,7 @@ function importPayload({
         asString(mem.memory_kind) || defaults.memory_kind,
         asNumber(mem.importance) ?? defaults.importance,
         asNumber(mem.emotional_weight) ?? defaults.emotional_weight,
-        asString(mem.status) || 'active',
+        status,
         asFlag(mem.pinned),
         asString(mem.last_used_at) || null,
         asNumber(mem.usage_count) ?? 0,
@@ -1169,6 +1187,28 @@ function importPayload({
       results.embeddingsImported++;
     }
 
+    // 没带可用向量的活跃记忆排入索引任务，与记忆同一事务提交。否则开着向量检索时，
+    // 这些记忆既召回不到，也当不了提取阶段二的冲突参照，只能等主人手动补索引。
+    // 「可用」指与索引队列当前模型一致：备份里别的嵌入模型生成的向量检索时会被过滤掉。
+    // 队列模型未知（未配置 embedding）时一律排队，配好后按届时的模型生成。
+    if (importedActiveMemories.length > 0) {
+      ensureMemoryEmbeddingTables(db);
+      const indexTarget = resolveMemoryIndexTarget();
+      const findTargetVector = indexTarget && db.prepare(`
+        SELECT 1 FROM memory_embeddings
+        WHERE memory_id = ? AND status = 'ready' AND provider = ? AND model = ?
+          ${indexTarget.dimension > 0 ? 'AND dimension = ?' : ''}
+        LIMIT 1
+      `);
+      const targetParams = indexTarget
+        ? [indexTarget.provider, indexTarget.model, ...(indexTarget.dimension > 0 ? [indexTarget.dimension] : [])]
+        : [];
+      for (const { memoryId, characterId } of importedActiveMemories) {
+        if (findTargetVector && findTargetVector.get(memoryId, ...targetParams)) continue;
+        if (enqueueMemoryEmbeddingTask(memoryId, characterId, 'imported', db)) indexingQueued++;
+      }
+    }
+
     // ── 导入角色级记忆配置 ──────────────────────────────────────
     // 按 character_id 重映射；目标角色不存在则跳过。可空字段保持 null。
     for (const config of configsToImport) {
@@ -1243,5 +1283,5 @@ function importPayload({
 
   importAll();
 
-  return { results, resolvePresetId };
+  return { results, resolvePresetId, indexingQueued };
 }

@@ -73,6 +73,28 @@ function resolveEmbeddingProcessingConfig(): EmbeddingAdapterConfig | null {
   return resolveEmbeddingProcessingConfigState().config;
 }
 
+/**
+ * 后台索引队列现在会用哪个模型生成向量。未配置 embedding、索引被关闭或设置读取失败时返回 null。
+ * 导入等路径据此判断已有向量能否直接用，避免和队列的实际产出对不上。
+ */
+export function resolveMemoryIndexTarget(): { provider: string; model: string; dimension: number } | null {
+  let config: EmbeddingAdapterConfig | null;
+  try {
+    config = resolveEmbeddingProcessingConfig();
+  } catch (error) {
+    structuredLog('error', 'memory.index.config_resolve_failed', {
+      operation: 'resolve_target', status: 'failed',
+    }, error);
+    return null;
+  }
+  if (!config?.model) return null;
+  return {
+    provider: config.provider || 'openai-compatible',
+    model: config.model,
+    dimension: Math.floor(Number(config.dimension || 0)),
+  };
+}
+
 export function getMemoryIndexProcessingBlockedReason(): MemoryIndexProcessingBlockedReason | null {
   return resolveEmbeddingProcessingConfigState().blockedReason;
 }

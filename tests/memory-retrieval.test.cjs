@@ -3861,7 +3861,7 @@ test('未启用条数限制时不从 token 预算派生召回或最终条数 cap
   assert.equal(explicitlyLimited.selectedMemories.length, 7);
 });
 
-test('trimByTokenBudget 两种 ordinary skip 模式保持 profile、预算边界与高优先级截断的 golden 输出', () => {
+test('trimByTokenBudget 跳过放不下的普通记忆后继续装，保持 profile、预算边界与高优先级截断的 golden 输出', () => {
   const { trimByTokenBudget, renderPackage } = loadMemoryRetrievalBudgetInternals();
   const profileText = '关系状态：主人和角色保持稳定陪伴。';
   const first = memory({
@@ -3901,114 +3901,66 @@ test('trimByTokenBudget 两种 ordinary skip 模式保持 profile、预算边界
     final_top_k: ranked.length,
   };
 
-  const snapshots = [false, true].map(skipOversizedOrdinary => {
-    let tokenCounterCalls = 0;
-    const result = trimByTokenBudget(
-      ranked,
-      config,
-      text => {
-        tokenCounterCalls += 1;
-        return text.length;
-      },
-      profileText,
-      ranked.length,
-      { skipOversizedOrdinary },
-    );
-    return {
-      skipOversizedOrdinary,
-      selected: result.selected.map(item => ({ id: item.id, content: item.content })),
-      text: result.text,
-      tokenCount: result.tokenCount,
-      tokenCounterCalls,
-    };
-  });
-
-  const expectedFalsePromise = { ...oversizedPromise, content: `${oversizedPromise.content.slice(0, 76)}…` };
-  const expectedTruePromise = { ...oversizedPromise, content: `${oversizedPromise.content.slice(0, 65)}…` };
-  assert.deepEqual(snapshots.map(snapshot => ({
-    skipOversizedOrdinary: snapshot.skipOversizedOrdinary,
-    selected: snapshot.selected,
-    text: snapshot.text,
-    tokenCount: snapshot.tokenCount,
-  })), [
-    {
-      skipOversizedOrdinary: false,
-      selected: [
-        { id: first.id, content: first.content },
-        { id: expectedFalsePromise.id, content: expectedFalsePromise.content },
-      ],
-      text: renderPackage([first, expectedFalsePromise], profileText),
-      tokenCount: budget,
-    },
-    {
-      skipOversizedOrdinary: true,
-      selected: [
-        { id: first.id, content: first.content },
-        { id: laterOrdinary.id, content: laterOrdinary.content },
-        { id: expectedTruePromise.id, content: expectedTruePromise.content },
-      ],
-      text: renderPackage([first, laterOrdinary, expectedTruePromise], profileText),
-      tokenCount: budget,
-    },
-  ]);
-  // 行级累加装箱后，调用次数取决于分层标题/行 bullet/截断二分，不再固定为旧整包二分的 13。
-  // 仍应远小于「对每个候选整包 encode」的 O(n) 量级（此处候选仅 4 条，截断二分占大头）。
-  assert.ok(snapshots[0].tokenCounterCalls <= 40, `false 模式调用次数应受控，actual=${snapshots[0].tokenCounterCalls}`);
-  assert.ok(snapshots[1].tokenCounterCalls <= 40, `true 模式调用次数应受控，actual=${snapshots[1].tokenCounterCalls}`);
-});
-
-test('trimByTokenBudget skipOversizedOrdinary=false 不应 tokenize 行为上必定跳过的 ordinary 尾项', () => {
-  const { trimByTokenBudget, renderPackage } = loadMemoryRetrievalBudgetInternals();
-  const profileText = '关系状态：稳定陪伴。';
-  const first = memory({ id: 'calls-first', content: '第一条普通记忆。', importance: 0.4, pinned: false });
-  const oversizedOrdinary = memory({
-    id: 'calls-huge-ordinary',
-    content: `无效调用超大普通-${'很长'.repeat(160)}`,
-    importance: 0.3,
-    pinned: false,
-  });
-  const laterOrdinary = memory({
-    id: 'calls-later-ordinary',
-    content: '无效调用后续短普通。',
-    importance: 0.2,
-    pinned: false,
-  });
-  const promise = memory({
-    id: 'calls-promise',
-    category: '关系动态',
-    content: `高优先级承诺-${'继续陪伴'.repeat(100)}`,
-    memory_kind: 'character_promise',
-    importance: 0.95,
-    pinned: true,
-  });
-  const ranked = [first, oversizedOrdinary, laterOrdinary, promise].map(rankedMemory);
-  const budget = renderPackage([first], profileText).length + 88;
-  const calls = [];
-
+  let tokenCounterCalls = 0;
   const result = trimByTokenBudget(
     ranked,
-    { ...baseSettings().memory_engine, memory_package_token_budget: budget, final_top_k: ranked.length },
+    config,
     text => {
-      calls.push(text);
+      tokenCounterCalls += 1;
       return text.length;
     },
     profileText,
     ranked.length,
-    { skipOversizedOrdinary: false },
   );
 
-  const hugeProbe = renderPackage([first, oversizedOrdinary], profileText);
-  const laterProbe = renderPackage([first, laterOrdinary], profileText);
-  assert.deepEqual(result.selected.map(item => item.id), ['calls-first', 'calls-promise']);
-  // 前缀装箱可能对超长 ordinary 做一次行级 token（`- …`），但不应整包 probe；
-  // skipOversized=false 时后续 ordinary 尾项必须完全跳过，连行级也不该碰。
-  assert.equal(calls.filter(text => text === hugeProbe).length, 0, `不应整包 probe 超长 ordinary, calls=${calls.length}`);
-  assert.equal(calls.filter(text => text === laterProbe).length, 0, `calls=${calls.length}`);
-  assert.equal(
-    calls.filter(text => text.includes('无效调用后续短普通')).length,
-    0,
-    'skipOversizedOrdinary=false 不得 tokenize 后续普通记忆',
-  );
+  const expectedPromise = { ...oversizedPromise, content: `${oversizedPromise.content.slice(0, 65)}…` };
+  assert.deepEqual({
+    selected: result.selected.map(item => ({ id: item.id, content: item.content })),
+    text: result.text,
+    tokenCount: result.tokenCount,
+  }, {
+    selected: [
+      { id: first.id, content: first.content },
+      { id: laterOrdinary.id, content: laterOrdinary.content },
+      { id: expectedPromise.id, content: expectedPromise.content },
+    ],
+    text: renderPackage([first, laterOrdinary, expectedPromise], profileText),
+    tokenCount: budget,
+  });
+  // 行级累加装箱后，调用次数取决于分层标题/行 bullet/截断二分，不再固定为旧整包二分的 13。
+  // 仍应远小于「对每个候选整包 encode」的 O(n) 量级（此处候选仅 4 条，截断二分占大头）。
+  assert.ok(tokenCounterCalls <= 40, `调用次数应受控，actual=${tokenCounterCalls}`);
+});
+
+// 生产入口回归：两条生产调用都走同一装箱；放不下的长普通记忆不能让后面放得下的短记忆被丢掉。
+test('retrieveWorkingMemoryPackage 跳过放不下的长普通记忆后仍注入后面的短记忆', async () => {
+  const { renderPackage } = loadMemoryRetrievalBudgetInternals();
+  const ordinary = { importance: 0.4, memory_kind: 'general', pinned: false };
+  const first = memory({ id: 'tail-first', content: '主人喜欢傍晚散步。', ...ordinary });
+  const huge = memory({ id: 'tail-huge', content: `很长的普通记忆-${'细节'.repeat(400)}`, ...ordinary });
+  const later = memory({ id: 'tail-later', content: '主人怕打雷。', ...ordinary });
+  const budget = renderPackage([first, later], '').length + 20;
+
+  const result = await retrieveWorkingMemoryPackage({
+    characterId: 'char-a',
+    queryText: '傍晚',
+    settings: baseSettings({
+      limit_inject: true,
+      memory_max_inject: 30,
+      memory_engine: { memory_package_token_budget: budget, final_top_k: 30 },
+    }),
+    deps: {
+      loadPriorityMemories: () => [],
+      localRetrieve: () => [first, huge, later],
+      tokenCounter: text => text.length,
+    },
+  });
+
+  const ids = result.selectedMemories.map(item => item.id);
+  assert.ok(!ids.includes(huge.id), 'the oversized ordinary memory does not fit');
+  assert.ok(ids.includes(first.id));
+  assert.ok(ids.includes(later.id), 'a later memory that still fits must be injected');
+  assert.ok(result.tokenCount <= budget);
 });
 
 test('全量注入不受历史 300 条候选上限截断（回归）', async () => {

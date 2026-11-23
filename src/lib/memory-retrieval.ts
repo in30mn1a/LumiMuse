@@ -516,10 +516,6 @@ function truncateMemoryForBudget(
   return { ...memory, content: `${content.slice(0, lo)}…` };
 }
 
-interface TrimByTokenBudgetOptions {
-  skipOversizedOrdinary?: boolean;
-}
-
 /**
  * 增量装箱状态：用「骨架 + 分层标题 + 行 bullet」分项累加近似整包 token。
  *
@@ -587,7 +583,6 @@ function trimByTokenBudget(
   tokenCounter: (text: string) => number,
   profileText = '',
   maxMemoryCount = Math.max(1, config.final_top_k),
-  options: TrimByTokenBudgetOptions = {},
 ): { text: string; selected: Memory[]; tokenCount: number } {
   const budget = config.memory_package_token_budget;
   const exactTokenCache = new Map<string, number>();
@@ -619,29 +614,19 @@ function trimByTokenBudget(
   const selected: Memory[] = ranked.slice(0, lo).map(candidate => candidate.memory);
 
   // ── 阶段二：尾部扫描 ──────────────────────────────────────────────────
-  // skipOversizedOrdinary：跳过超长普通，继续装后面的短记忆。
+  // 放不下的普通记忆跳过，继续装后面仍放得下的记忆，不让预算闲置。
   // 高优先级装不下时精确截断（整包二分，低频）。
-  // skipOversizedOrdinary=false：只处理高优先级，普通尾项不 tokenize 行内容。
   for (let index = lo; index < limit && selected.length < maxMemoryCount; index += 1) {
     const memory = ranked[index].memory;
-    const highPriority = isHighPriorityMemory(memory);
-
-    if (!options.skipOversizedOrdinary && !highPriority) {
-      continue;
-    }
-
-    const content = memory.content.trim();
-    if (!content) continue;
+    if (!memory.content.trim()) continue;
 
     if (packer.costIfAdd(memory) <= budget) {
-      if (options.skipOversizedOrdinary || highPriority) {
-        packer.add(memory);
-        selected.push(memory);
-      }
+      packer.add(memory);
+      selected.push(memory);
       continue;
     }
 
-    if (highPriority) {
+    if (isHighPriorityMemory(memory)) {
       const truncated = truncateMemoryForBudget(
         memory,
         budget,
@@ -654,11 +639,6 @@ function trimByTokenBudget(
       }
       // 高优先级截断后预算已贴边，结束尾部扫描（避免截断内容与 packer 累加漂移）
       break;
-    }
-
-    // 普通记忆装不下：skip 后继续
-    if (!options.skipOversizedOrdinary) {
-      continue;
     }
   }
 

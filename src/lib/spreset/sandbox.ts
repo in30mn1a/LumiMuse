@@ -147,6 +147,17 @@ class ScriptContext {
           const keys = Object.keys;
           const toString = String;
           globalThis.console = { log() {}, warn() {}, error() {} };
+          // SPreset 脚本源自浏览器环境，常直接访问 window / top / parent；
+          // 用 getter 返回隔离沙箱自身的 globalThis（无宿主对象），避免直接赋值形成
+          // QuickJS 引用计数环而在内存极限触发 WASM GC 故障，同时不削弱隔离。
+          const getGlobal = () => globalThis;
+          for (const alias of ['window', 'self', 'top', 'parent']) {
+            Object.defineProperty(globalThis, alias, {
+              get: getGlobal,
+              enumerable: true,
+              configurable: true,
+            });
+          }
           return {
             invoke: (fn, json) => fn(json === undefined ? undefined : parse(json)),
             serialize: value => stringify(value),

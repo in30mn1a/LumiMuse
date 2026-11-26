@@ -396,3 +396,31 @@ test('真实请求处理器仍接收原始控制指令与已展开的输入', as
   );
   assert.ok(result.some(message => String(message.content).includes('<<<|catgodml|setLastMessage:CURRENT_UNIQUE>>>')));
 });
+
+test('自由动态格式 SPreset：从 menu 格式条目提取容器标签，忽略注释中的教学宏', () => {
+  const plan = protocol.planSpresetCompat(
+    [
+      '{{// 教程示例：<<<|catgodml|registerPart:字段名:<ignored></ignored>>>> }}',
+      '<<<|catgodml|menu:输出格式模块:📏<game>正文包裹>>>\n正文要用<game></game>包上',
+      '<<<|catgodml|menu:输出格式模块:📏<options>行动选项>>>\n<options>\n<option>选项1</option>\n</options>',
+      '<<<|catgodml|menu:输出格式模块:📏<summary>场记>>>\n<summary></summary>',
+      '<<<|catgodml|menu:额外设定:⚙️背景>>>\n<background></background>',
+      '请在<think_nya>中思考',
+    ],
+    {
+      extensions: {
+        SPreset: {
+          ToolBindings: {
+            'entry-1': {
+              enabled: true,
+              resolvedName: 'soliumbra_reply',
+              form: { name: 'soliumbra_reply', parameters: [{ name: 'think_nya', type: 'string' }] },
+            },
+          },
+        },
+      },
+    },
+  );
+  assert.deepEqual(plan.parts, []);
+  assert.deepEqual(plan.stripTags, ['game', 'options', 'option', 'summary', '#think_nya']);
+});

@@ -56,12 +56,55 @@ export interface PresetRuntime {
   dispose(): void;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 落库前按 strip_tags 剥掉了外层容器（如 <game>…</game>），但部分预设的
+ * FinalRequestProcessing 会用该容器识别「这条历史回复是本预设产出的」，否则会把历史
+ * 误判成外部旧档并大幅截断。送入脚本前为已剥离的 assistant 历史还原这个外层容器。
+ */
+function detectRequestContainerTag(
+  preset: Partial<Pick<PromptPreset, 'story_plot_strip' | 'strip_tags'>>,
+  finalRequestScript: string | undefined,
+): string | null {
+  if (preset.story_plot_strip !== true || !Array.isArray(preset.strip_tags) || !finalRequestScript) {
+    return null;
+  }
+  const blockTags: string[] = [];
+  for (const raw of preset.strip_tags) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const name = trimmed.toLowerCase();
+    if (name === 'story_plot') return null;
+    if (/^[a-z][a-z0-9_~-]*$/.test(name) && !blockTags.includes(name)) blockTags.push(name);
+  }
+  for (const tag of blockTags) {
+    const tagMention = new RegExp(`<${escapeRegExp(tag)}(?![A-Za-z0-9_~-])`, 'i');
+    if (tagMention.test(finalRequestScript)) return tag;
+  }
+  return null;
+}
+
+function restoreStrippedAssistantTag(messages: ChatMessage[], tag: string): ChatMessage[] {
+  const openTagRe = new RegExp(`<${escapeRegExp(tag)}(?![A-Za-z0-9_~-])`, 'i');
+  return messages.map((message) => {
+    if (message.role !== 'assistant' || typeof message.content !== 'string' || !message.content.trim()) {
+      return message;
+    }
+    if (openTagRe.test(message.content)) return message;
+    return { ...message, content: `<${tag}>\n${message.content}\n</${tag}>` };
+  });
+}
+
 /**
  * 由预设的 `extensions` 构造运行时。没有插件配置 / 配置全部关闭时返回 null，
  * 调用方继续走普通聊天路径。
  */
 export function createPresetRuntime(
-  preset: Pick<PromptPreset, 'extensions'>,
+  preset: Pick<PromptPreset, 'extensions'> & Partial<Pick<PromptPreset, 'story_plot_strip' | 'strip_tags'>>,
   entries: readonly PresetEntry[],
   options: {
     userName?: string;
@@ -72,6 +115,7 @@ export function createPresetRuntime(
   const config = parseSpresetConfig(preset.extensions);
   if (!config || !hasSpresetRuntime(config)) return null;
 
+  const requestContainerTag = detectRequestContainerTag(preset, config.finalRequest?.script);
   const scope = createSandboxScope();
   try {
     const enabledEntryIds = new Set(entries.filter(entry => entry.enabled).map(entry => entry.id));
@@ -93,9 +137,12 @@ export function createPresetRuntime(
       dispose: () => scope.dispose(),
 
       async buildRequest(messages: ChatMessage[], settings: Settings): Promise<Record<string, unknown>> {
-        const squashed = config.chatSquash
-          ? applyChatSquash(messages, config.chatSquash, userName, { scope })
+        const prepared = requestContainerTag
+          ? restoreStrippedAssistantTag(messages, requestContainerTag)
           : messages;
+        const squashed = config.chatSquash
+          ? applyChatSquash(prepared, config.chatSquash, userName, { scope })
+          : prepared;
 
         const body = buildChatRequestBody(settings, settings.streaming !== false);
         body.messages = squashed;

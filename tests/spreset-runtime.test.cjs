@@ -927,3 +927,61 @@ test('LumiMuse 原生格式可往返携带 extensions', () => {
   const preset = lib.getPreset(report.preset_id);
   assert.deepEqual(preset.extensions, { SPreset: { ChatSquash: { enabled: true } } });
 });
+
+test('运行时：开启 strip_tags 且脚本检测容器标签时，送入 FinalRequestProcessing 前自动还原已剥离的 assistant 历史', async () => {
+  const runtime = runtimeLib.createPresetRuntime(
+    {
+      story_plot_strip: true,
+      strip_tags: ['game', '#think_nya'],
+      extensions: {
+        SPreset: {
+          FinalRequestProcessing: {
+            enabled: true,
+            script: `({ request }) => {
+              // 模拟脚本检测 <game> 标签区分历史来源
+              const seen = request.messages.filter(m => m.role === 'assistant').map(m => ({
+                hasGame: /<game\\b[^>]*>[\\s\\S]*?<\\/game>/i.test(m.content),
+                content: m.content,
+              }));
+              request.messages = [{ role: 'user', content: JSON.stringify(seen) }];
+              return request;
+            }`,
+          },
+        },
+      },
+    },
+    [],
+  );
+  assert.ok(runtime);
+  const request = await runtime.buildRequest([
+    { role: 'system', content: 'SYS' },
+    { role: 'assistant', content: '纯文本历史回复' },
+    { role: 'user', content: '下一句' },
+    { role: 'assistant', content: '<game>\n原本已带标签\n</game>' },
+  ], DEFAULT_SETTINGS);
+  const seen = JSON.parse(request.messages[0].content);
+  assert.deepEqual(seen, [
+    { hasGame: true, content: '<game>\n纯文本历史回复\n</game>' },
+    { hasGame: true, content: '<game>\n原本已带标签\n</game>' },
+  ]);
+  runtime.dispose();
+
+  // 脚本未检测该标签时，历史原样透传不擅自包裹
+  const plainRuntime = runtimeLib.createPresetRuntime(
+    {
+      story_plot_strip: true,
+      strip_tags: ['game', '#think_nya'],
+      extensions: {
+        SPreset: {
+          FinalRequestProcessing: { enabled: true, script: '({ request }) => request' },
+        },
+      },
+    },
+    [],
+  );
+  const plainRequest = await plainRuntime.buildRequest([
+    { role: 'assistant', content: '原样保持' },
+  ], DEFAULT_SETTINGS);
+  assert.equal(plainRequest.messages[0].content, '原样保持');
+  plainRuntime.dispose();
+});

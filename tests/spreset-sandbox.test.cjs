@@ -316,3 +316,35 @@ test('one timed-out script does not prevent a separate request from executing', 
     release(healthy);
   }
 });
+
+test('browser window globals alias isolated globalThis without leaking host APIs', () => {
+  const fn = sandbox.evaluateFunction(`() => {
+    let cur = window;
+    let steps = 0;
+    for (let i = 0; i < 8; i += 1) {
+      steps += 1;
+      if (cur?.SillyTavern) return { found: true, steps };
+      if (!cur.parent || cur === cur.parent) break;
+      cur = cur.parent;
+    }
+    const host = window.top || window;
+    host.__probe = 'ok';
+    return {
+      sameGlobal: window === globalThis && self === globalThis && top === globalThis && parent === globalThis,
+      steps,
+      probe: window.__probe,
+      hostLeak: [typeof window.process, typeof window.require, typeof window.fetch].join(','),
+    };
+  }`);
+  assert.ok(fn);
+  try {
+    assert.deepEqual(fn({}), {
+      sameGlobal: true,
+      steps: 1,
+      probe: 'ok',
+      hostLeak: 'undefined,undefined,undefined',
+    });
+  } finally {
+    release(fn);
+  }
+});

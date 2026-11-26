@@ -25,6 +25,12 @@
 const DIRECTIVE_PREFIX = '<<<|catgodml|';
 const DIRECTIVE_SUFFIX = '>>>';
 const DIRECTIVE_RE = /<<<\|catgodml\|[\s\S]*?>>>/g;
+const ST_COMMENT_RE = /\{\{\/\/[\s\S]*?\}\}/g;
+const MENU_DIRECTIVE_RE = /<<<\|catgodml\|(?:menu|radio):([\s\S]*?)>>>/gi;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /** 插件的请求拼装标记；只有在确认是 SPreset 预设时才会被调用方剥掉。 */
 const CONTROL_TOKENS = ['<|sep|>', '<|merge|>', '<run_tool_replacement>'] as const;
@@ -67,14 +73,15 @@ function tagsIn(source: string): string[] {
   return tags;
 }
 
-/** 按出现顺序收集 registerPart 声明的输出分区。 */
+/** 按出现顺序收集 registerPart 声明的输出分区（忽略 {{// ...}} 注释中的教学示例）。 */
 export function collectSpresetParts(contents: readonly string[]): SpresetPart[] {
   const parts: SpresetPart[] = [];
   const seen = new Set<string>();
 
   for (const content of contents) {
     if (typeof content !== 'string' || !content.includes(DIRECTIVE_PREFIX)) continue;
-    for (const match of content.matchAll(DIRECTIVE_RE)) {
+    const uncommented = content.replace(ST_COMMENT_RE, '');
+    for (const match of uncommented.matchAll(DIRECTIVE_RE)) {
       const inner = match[0].slice(DIRECTIVE_PREFIX.length, -DIRECTIVE_SUFFIX.length);
       const colon = inner.indexOf(':');
       if (colon < 0 || inner.slice(0, colon).trim() !== 'registerPart') continue;
@@ -91,6 +98,40 @@ export function collectSpresetParts(contents: readonly string[]): SpresetPart[] 
   }
 
   return parts;
+}
+
+/**
+ * 收集自由动态格式 SPreset 菜单条目的输出容器标签：
+ * 条目的 `<<<|catgodml|menu:...<game>...>>>` 指令名里声明了标签时，把指令中的标签与同条目正文里
+ * 成对出现的标签（如 `<options>` 里的 `<option>`）一并纳入剥离规则。
+ */
+export function collectSpresetMenuFormatTags(contents: readonly string[]): string[] {
+  const tags: string[] = [];
+
+  for (const content of contents) {
+    if (typeof content !== 'string' || !content.includes(DIRECTIVE_PREFIX)) continue;
+    const uncommented = content.replace(ST_COMMENT_RE, '');
+    const menuTags: string[] = [];
+    for (const match of uncommented.matchAll(MENU_DIRECTIVE_RE)) {
+      for (const tag of tagsIn(match[1])) {
+        if (!menuTags.includes(tag)) menuTags.push(tag);
+      }
+    }
+    if (menuTags.length === 0) continue;
+
+    for (const tag of menuTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+    const body = stripSpresetControl(uncommented);
+    for (const tag of tagsIn(body)) {
+      const escaped = escapeRegExp(tag);
+      const hasOpen = new RegExp(`<${escaped}(?![A-Za-z0-9_~-])`, 'i').test(body);
+      const hasClose = new RegExp(`</${escaped}\\s*>`, 'i').test(body);
+      if (hasOpen && hasClose && !tags.includes(tag)) tags.push(tag);
+    }
+  }
+
+  return tags;
 }
 
 interface ToolBinding {
@@ -168,6 +209,7 @@ export function planSpresetCompat(
 ): SpresetCompatPlan {
   const joined = contents.join('\n');
   const parts = collectSpresetParts(contents);
+  const menuFormatTags = collectSpresetMenuFormatTags(contents);
   const tools = collectSpresetToolBindings(root);
   const thinkingTags: string[] = [];
 
@@ -175,8 +217,8 @@ export function planSpresetCompat(
     for (const param of tool.params) {
       // 参数被写成标签（<draft_notes>…</draft_notes>）说明它是正文分区；否则无从判断，跳过。
       if (!joined.includes(`<${param}`)) continue;
-      // 与 registerPart 的分区标签同名时不抢：分区标签优先按「剥容器留正文」处理。
-      if (parts.some(part => part.tags.includes(param))) continue;
+      // 与 registerPart 或菜单格式标签同名时不抢：容器标签优先按「剥容器留正文」处理。
+      if (parts.some(part => part.tags.includes(param)) || menuFormatTags.includes(param)) continue;
       if (!thinkingTags.includes(param)) thinkingTags.push(param);
     }
   }
@@ -186,6 +228,9 @@ export function planSpresetCompat(
     for (const tag of part.tags) {
       if (!stripTags.includes(tag)) stripTags.push(tag);
     }
+  }
+  for (const tag of menuFormatTags) {
+    if (!stripTags.includes(tag)) stripTags.push(tag);
   }
   for (const tag of thinkingTags) {
     if (!stripTags.includes(`#${tag}`)) stripTags.push(`#${tag}`);

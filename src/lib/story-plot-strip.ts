@@ -22,6 +22,24 @@ const DROP_PREFIX = '#';
 
 const RAW_NAME_RE = /^[A-Za-z][A-Za-z0-9_~-]*$/;
 
+/** 酒馆 SPreset 等思考块闭合后常附带的哨兵注释（如 `</think_nya><!--</think>-->`）。 */
+const DROP_TRAILING_COMMENT_RE = /^\s*<!--\s*<\/think>\s*-->/i;
+
+function couldBeDropTrailingCommentPrefix(text: string): boolean {
+  const trimmed = text.replace(/^\s+/, '');
+  if (!trimmed) return false;
+  if (trimmed.length <= 4) return '<!--'.startsWith(trimmed);
+  if (!trimmed.startsWith('<!--')) return false;
+  let rest = trimmed.slice(4).replace(/^\s+/, '');
+  if (!rest) return true;
+  const lowerRest = rest.toLowerCase();
+  if (lowerRest.length <= 8) return '</think>'.startsWith(lowerRest);
+  if (!lowerRest.startsWith('</think>')) return false;
+  rest = rest.slice(8).replace(/^\s+/, '');
+  if (!rest) return true;
+  return '-->'.startsWith(rest);
+}
+
 /** 解析单条 tag 规则，返回 [mode, name]；非法返回 null。 */
 function parseTagEntry(raw: unknown): { mode: 'block' | 'drop'; name: string } | null {
   if (typeof raw !== 'string') return null;
@@ -220,6 +238,7 @@ function transformParameterizedTags(
   let matched = false;
   let protocolActive = false;
   let protocolAtHead = false;
+  let stoppedAtDropComment = false;
   const blockStack: BlockContext[] = [];
   const dropStack: DropContext[] = [];
   if (partialStart !== null && partialStart === firstNonWhitespace) {
@@ -253,9 +272,22 @@ function transformParameterizedTags(
       if (token.mode === 'drop' && token.name === activeDrop.name && token.kind === 'close') {
         const closedDrop = dropStack.pop();
         if (dropStack.length === 0) {
+          let closeEnd = token.end;
+          const afterClose = rawText.slice(closeEnd);
+          const trailingComment = DROP_TRAILING_COMMENT_RE.exec(afterClose);
+          if (trailingComment) {
+            closeEnd += trailingComment[0].length;
+            while (index + 1 < tokens.length && tokens[index + 1].start < closeEnd) {
+              index += 1;
+            }
+          } else if (streaming && couldBeDropTrailingCommentPrefix(afterClose)) {
+            stoppedAtDropComment = true;
+            cursor = closeEnd;
+            break;
+          }
           cursor = closedDrop?.preserveLeadingLayout
-            ? skipLayoutWhitespaceAfter(rawText, token.end)
-            : token.end;
+            ? skipLayoutWhitespaceAfter(rawText, closeEnd)
+            : closeEnd;
           continue;
         }
       }
@@ -329,7 +361,7 @@ function transformParameterizedTags(
 
   const stoppedAtAmbiguousBlock = streaming && cursor < rawText.length
     && tokens.some(token => token.start === cursor && token.mode === 'block' && token.kind === 'open');
-  if (!stoppedAtAmbiguousBlock) {
+  if (!stoppedAtAmbiguousBlock && !stoppedAtDropComment) {
     const visibleEnd = partialStart ?? rawText.length;
     appendVisible(rawText.slice(cursor, visibleEnd));
     if (!streaming && partialStart !== null && !protocolActive && dropStack.length === 0) {
@@ -596,10 +628,13 @@ export function collapseDropBlocks(rawText: string, rules: string[]): string {
   let cursor = 0;
   let activeDrop: string | null = null;
   for (const token of tokens) {
+    if (token.start < cursor) continue;
     if (activeDrop !== null) {
       if (token.kind === 'close' && token.name === activeDrop) {
         activeDrop = null;
         cursor = token.end;
+        const trailingComment = DROP_TRAILING_COMMENT_RE.exec(rawText.slice(cursor));
+        if (trailingComment) cursor += trailingComment[0].length;
       }
       continue;
     }

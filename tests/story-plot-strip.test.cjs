@@ -591,3 +591,25 @@ test('最终参数化：未闭合 block 的长空白输入保持线性级响应'
   const elapsedMs = performance.now() - startedAt;
   assert.ok(elapsedMs < 100, `1000 字符耗时 ${elapsedMs.toFixed(1)}ms，疑似超线性回溯`);
 });
+
+test('drop 闭合后的 <!--</think>--> 哨兵注释在全量、流式与 collapseDropBlocks 中均被清理', () => {
+  const rules = ['game', '#think_nya'];
+  const cases = [
+    ['<think_nya>\n思考\n</think_nya><!--</think>-->\n<game>\n正文内容\n</game>', '正文内容'],
+    ['<think_nya>思考</think_nya> <!-- </think> --> \n<game>正文</game>', '正文'],
+    ['前文\n<think_nya>思考</think_nya><!--</think>-->\n后文', '前文\n后文'],
+    ['前文<think_nya>思考</think_nya><!not-comment>后文', '前文<!not-comment>后文'],
+    ['<!--普通注释--><game>正文</game>', '<!--普通注释-->正文'],
+  ];
+  for (const [full, expected] of cases) {
+    assert.equal(stripByPresetRules(full, rules), expected, `stripByPresetRules: ${full}`);
+    assert.equal(stripByPresetRules(collapseDropBlocks(full, rules), rules), expected, `collapseDropBlocks: ${full}`);
+    assert.equal(collectLengthDeltas(full, rules, [1]), expected, `streaming[1]: ${full}`);
+    assert.equal(collectLengthDeltas(full, rules, [3, 1, 5, 2]), expected, `streaming[mixed]: ${full}`);
+  }
+  // 同时包含 #think 与 #think_nya 时注释中的 </think> 也不干扰解析
+  assert.equal(
+    stripByPresetRules('<think_nya>思考</think_nya><!--</think>-->\n<game>正文</game>', ['game', '#think', '#think_nya']),
+    '正文',
+  );
+});

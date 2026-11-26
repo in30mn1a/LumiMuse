@@ -377,3 +377,117 @@ test('stopping a real SSE tool stream never stores incomplete arguments as assis
     },
   })));
 });
+
+test('window-probing SPreset runtime strips think comment and game tags cleanly across multiple turns', async () => {
+  const longTurn1Body = '第一轮长正文。'.repeat(80);
+  await fixture(async h => {
+    const report = h.bind(presetSource({
+      prompts: [
+        { identifier: 'init', name: 'init', role: 'system', content: '请在<think_nya>中思考<run_tool_replacement>' },
+        { identifier: 'charDescription', name: 'Char Description', role: 'system', marker: true },
+        { identifier: 'beforeHist', name: 'beforeHist', role: 'system', content: '<<<|catgodml|historyStart>>>' },
+        { identifier: 'chatHistory', name: 'Chat History', role: 'system', marker: true },
+        { identifier: 'afterHist', name: 'afterHist', role: 'system', content: '<<<|catgodml|historyEnd>>>' },
+        { identifier: 'fmtGame', name: 'game', role: 'system', content: '<<<|catgodml|menu:输出格式模块:📏<game>正文包裹>>>\n<game></game>' },
+        { identifier: 'lastMsg', name: 'lastMsg', role: 'system', content: '<<<|catgodml|setLastMessage:{{lastUserMessage}}>>>' },
+      ],
+      prompt_order: [{
+        character_id: 100001,
+        order: ['init', 'charDescription', 'beforeHist', 'chatHistory', 'afterHist', 'fmtGame', 'lastMsg']
+          .map(identifier => ({ identifier, enabled: true })),
+      }],
+      extensions: {
+        SPreset: {
+          ToolBindings: {
+            lastMsg: {
+              enabled: true,
+              valid: true,
+              resolvedName: 'soliumbra_reply',
+              code: 'return { name: "soliumbra_reply", description: "reply", parameters: { type: "object", properties: { think_nya: { type: "string" } }, required: ["think_nya"] }, action: async () => JSON.stringify({ ok: true }) };',
+              form: { name: 'soliumbra_reply', parameters: [{ name: 'think_nya', type: 'string', required: true }] },
+            },
+          },
+          FinalRequestProcessing: {
+            enabled: true,
+            script: `async ({ request }) => {
+              const host = (() => {
+                try {
+                  let cur = window;
+                  for (let i = 0; i < 4; i += 1) {
+                    if (!cur.parent || cur === cur.parent) break;
+                    cur = cur.parent;
+                  }
+                  return window.top || window;
+                } catch {
+                  return window;
+                }
+              })();
+              host.__ok = true;
+              const assistantReplies = request.messages
+                .filter(m => m.role === 'assistant')
+                .map(m => ({
+                  isCatGod: /<game\\b[^>]*>[\\s\\S]*?<\\/game>/i.test(String(m.content || '')),
+                  len: String(m.content || '').length,
+                  content: String(m.content || ''),
+                }));
+              request.tools = [{
+                type: 'function',
+                function: {
+                  name: 'soliumbra_reply',
+                  parameters: {
+                    type: 'object',
+                    properties: { think_nya: { type: 'string' }, game_content: { type: 'string' } },
+                    required: ['think_nya', 'game_content'],
+                  },
+                },
+              }];
+              request.messages = [{ role: 'user', content: JSON.stringify({ assistantReplies }) }];
+              return request;
+            }`,
+          },
+          OutputPreprocessing: {
+            enabled: true,
+            consumeToolCalls: true,
+            script: '({ buffer, state = {} }) => ({ output: String(buffer ?? ""), hold: "", state })',
+            toolCallFormatter: {
+              enabled: true,
+              script: `({ calls }) => {
+                const args = JSON.parse(calls[0].arguments);
+                return '<think_nya>\\n' + args.think_nya + '\\n</think_nya><!--</think>-->\\n<game>\\n' + args.game_content + '\\n</game>';
+              }`,
+            },
+          },
+        },
+      },
+    }));
+    const importedPreset = h.presets.getPreset(report.preset_id);
+    assert.deepEqual(importedPreset.strip_tags, ['game', '#think_nya']);
+
+    // 第 1 轮：流式与落库正文均不含 <think_nya>、<!--</think>--> 或 <game>
+    await h.chat('第一轮输入');
+    assert.equal(h.chunks.join(''), longTurn1Body);
+    assert.deepEqual(assistantRows(h).map(row => row.content), [longTurn1Body]);
+    assert.deepEqual(
+      Object.keys(h.requests[0].tools[0].function.parameters.properties),
+      ['think_nya', 'game_content'],
+    );
+
+    // 第 2 轮：脚本应拿到还原了 <game> 的完整第 1 轮正文，不被误判为外人旧档
+    await h.chat('第二轮输入');
+    const secondPayload = JSON.parse(h.requests[1].messages[0].content);
+    assert.equal(secondPayload.assistantReplies.length, 1);
+    assert.equal(secondPayload.assistantReplies[0].isCatGod, true);
+    assert.ok(secondPayload.assistantReplies[0].content.includes(longTurn1Body));
+    assert.deepEqual(assistantRows(h).map(row => row.content), [longTurn1Body, '第二轮正文']);
+  }, { streaming: true }, (body) => {
+    const turn = body.messages[0].content.includes(longTurn1Body) ? 2 : 1;
+    const args = JSON.stringify({
+      think_nya: `第${turn}轮软萌思考喵`,
+      game_content: turn === 1 ? longTurn1Body : '第二轮正文',
+    });
+    const chunk = { choices: [{ delta: { tool_calls: [{
+      index: 0, id: `call-${turn}`, function: { name: 'soliumbra_reply', arguments: args },
+    }] } }] };
+    return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`);
+  });
+});

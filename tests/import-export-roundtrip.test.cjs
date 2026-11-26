@@ -2193,3 +2193,363 @@ test('/api/export materialises linked conversation chains on both export paths',
 
   db.close();
 });
+
+// ── 作品片单（works）导出 / 导入 ─────────────────────────────────
+
+const WORKS_T0 = '2026-07-01T00:00:00.000Z';
+
+function seedWorksSource(db) {
+  db.prepare("INSERT INTO characters (id, name) VALUES ('works-char', '片单角色')").run();
+  db.prepare(`INSERT INTO conversations (id, character_id, title, created_at, updated_at)
+    VALUES ('works-conv', 'works-char', '一起看片', ?, ?)`).run(WORKS_T0, WORKS_T0);
+  const insertMessage = db.prepare(`INSERT INTO messages (id, conversation_id, role, content, created_at, seq)
+    VALUES (?, 'works-conv', ?, ?, ?, ?)`);
+  insertMessage.run('works-msg-user', 'user', '昨晚看完了千与千寻', '2026-07-01T00:00:01.000Z', 1);
+  insertMessage.run('works-msg-assistant', 'assistant', '芙莉莲追到第二季第 2 集了吗', '2026-07-01T00:00:02.000Z', 2);
+  const insertMemory = db.prepare(`INSERT INTO memories (id, character_id, category, content, created_at, updated_at)
+    VALUES (?, 'works-char', '偏好习惯', ?, ?, ?)`);
+  insertMemory.run('works-mem-movie', '用户看完了千与千寻，打了 9 分以上', WORKS_T0, WORKS_T0);
+  insertMemory.run('works-mem-series', '用户在追葬送的芙莉莲', WORKS_T0, WORKS_T0);
+  const insertWork = db.prepare(`
+    INSERT INTO character_works (
+      id, character_id, work_type, title, aliases, status, rating, progress, note,
+      source_memory_ids, source_msg_ids, first_seen_at, dismissed_at, created_at, updated_at
+    ) VALUES (?, 'works-char', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  // 依据里混入备份之外的 id（源库里已删除的记忆/消息）：导入时映射不到，必须丢掉。
+  insertWork.run(
+    'work-movie', 'movie', '千与千寻', JSON.stringify(['神隐少女']), 'watched', '9.0–9.5', '', '雨夜一起看的',
+    JSON.stringify(['works-mem-movie', 'mem-gone', 'works-mem-series']),
+    JSON.stringify(['works-msg-user', 'msg-gone']),
+    '2026-07-01T00:00:01.000Z', null, '2026-07-01T00:00:03.000Z', '2026-07-02T00:00:03.000Z',
+  );
+  insertWork.run(
+    'work-dismissed', 'series', '葬送的芙莉莲', '[]', 'watching', '', '第二季第 2 集', '',
+    JSON.stringify(['works-mem-series']), JSON.stringify(['works-msg-assistant']),
+    '2026-07-01T00:00:02.000Z', '2026-07-05T00:00:00.000Z', '2026-07-01T00:00:04.000Z', '2026-07-05T00:00:00.000Z',
+  );
+}
+
+function worksExportRequest(type, query = '') {
+  const base = `http://test.local/api/export?type=${type}${type === 'character' ? '&id=works-char' : ''}`;
+  return { nextUrl: new URL(query ? `${base}&${query}` : base) };
+}
+
+test('/api/export and /api/import round-trip the works catalog with dismissed state and remapped evidence', async (t) => {
+  for (const type of ['all', 'character']) {
+    await t.test(type, async () => {
+      const source = createPresetRoundtripDb();
+      const target = createPresetRoundtripDb();
+      try {
+        seedWorksSource(source);
+        const payload = await (await loadExportRoute(source).GET(worksExportRequest(type))).json();
+
+        assert.equal(payload.version, 4);
+        assert.equal(payload.works.length, 2);
+        const exportedMovie = payload.works.find(work => work.id === 'work-movie');
+        assert.equal(exportedMovie.character_id, 'works-char');
+        assert.deepEqual(exportedMovie.aliases, ['神隐少女']);
+        assert.deepEqual(exportedMovie.source_memory_ids, ['works-mem-movie', 'mem-gone', 'works-mem-series']);
+        assert.equal(payload.works.find(work => work.id === 'work-dismissed').dismissed_at, '2026-07-05T00:00:00.000Z');
+
+        // 损坏的行只跳过自己，不影响其他条目，也不让整次导入失败。
+        payload.works.push(
+          null,
+          { ...exportedMovie, id: 'bad-type', title: '坏类型', work_type: 'music' },
+          { ...exportedMovie, id: 'bad-status', title: '坏状态', status: 'dropped' },
+          { ...exportedMovie, id: 'bad-title', title: '《》' },
+          { ...exportedMovie, id: 'orphan', title: '别的角色', character_id: 'missing-char' },
+        );
+        const response = await loadImportRoute(target).POST(importRequest(payload));
+        assert.equal(response.status, 200, JSON.stringify(response.body));
+        assert.equal(response.body.worksImported, 2);
+
+        const character = target.prepare("SELECT id FROM characters WHERE name = '片单角色'").get();
+        const memoryId = content => target.prepare('SELECT id FROM memories WHERE content = ?').get(content).id;
+        const messageId = content => target.prepare('SELECT id FROM messages WHERE content = ?').get(content).id;
+        const rows = target.prepare('SELECT * FROM character_works ORDER BY first_seen_at').all();
+        assert.equal(rows.length, 2);
+        const [movie, series] = rows;
+        assert.ok(rows.every(row => row.character_id === character.id));
+        assert.ok(rows.every(row => !['work-movie', 'work-dismissed'].includes(row.id)));
+
+        assert.deepEqual(
+          { ...movie, id: undefined, character_id: undefined },
+          {
+            id: undefined,
+            character_id: undefined,
+            work_type: 'movie',
+            title: '千与千寻',
+            aliases: JSON.stringify(['神隐少女']),
+            status: 'watched',
+            rating: '9.0–9.5',
+            progress: '',
+            note: '雨夜一起看的',
+            // 依据改写到导入后的新记忆 / 新消息，备份之外的 id 被丢掉。
+            source_memory_ids: JSON.stringify([memoryId('用户看完了千与千寻，打了 9 分以上'), memoryId('用户在追葬送的芙莉莲')]),
+            source_msg_ids: JSON.stringify([messageId('昨晚看完了千与千寻')]),
+            first_seen_at: '2026-07-01T00:00:01.000Z',
+            dismissed_at: null,
+            created_at: '2026-07-01T00:00:03.000Z',
+            updated_at: '2026-07-02T00:00:03.000Z',
+          },
+        );
+        assert.equal(series.dismissed_at, '2026-07-05T00:00:00.000Z');
+        assert.equal(series.status, 'watching');
+        assert.equal(series.progress, '第二季第 2 集');
+        assert.deepEqual(JSON.parse(series.source_memory_ids), [memoryId('用户在追葬送的芙莉莲')]);
+        assert.deepEqual(JSON.parse(series.source_msg_ids), [messageId('芙莉莲追到第二季第 2 集了吗')]);
+      } finally {
+        source.close();
+        target.close();
+      }
+    });
+  }
+});
+
+test('/api/export leaves works out when memories are not exported, and /api/import follows include_memories', async () => {
+  const source = createPresetRoundtripDb();
+  const target = createPresetRoundtripDb();
+  try {
+    seedWorksSource(source);
+    for (const type of ['all', 'character']) {
+      const payload = await (await loadExportRoute(source).GET(worksExportRequest(type, 'include_memories=0'))).json();
+      assert.deepEqual(payload.works, [], type);
+    }
+
+    const full = await (await loadExportRoute(source).GET(worksExportRequest('character'))).json();
+    const skipped = await loadImportRoute(target).POST(importRequest(full, 'include_memories=0'));
+    assert.equal(skipped.status, 200);
+    assert.equal(skipped.body.worksImported, 0);
+    assert.equal(target.prepare('SELECT COUNT(*) AS count FROM character_works').get().count, 0);
+
+    // 叠加导入到已有角色：片单跟记忆一起挂到目标角色上，依据指向目标角色里新导入的记忆。
+    target.prepare("INSERT INTO characters (id, name) VALUES ('overlay-target', '目标角色')").run();
+    const overlay = await loadImportRoute(target).POST(importRequest(full, 'target_character_id=overlay-target'));
+    assert.equal(overlay.status, 200, JSON.stringify(overlay.body));
+    assert.equal(overlay.body.worksImported, 2);
+    const overlayRows = target.prepare("SELECT * FROM character_works WHERE character_id = 'overlay-target'").all();
+    assert.equal(overlayRows.length, 2);
+    const overlayMemoryIds = new Set(target.prepare(
+      "SELECT id FROM memories WHERE character_id = 'overlay-target'",
+    ).all().map(row => row.id));
+    for (const row of overlayRows) {
+      const ids = JSON.parse(row.source_memory_ids);
+      assert.ok(ids.length > 0 && ids.every(id => overlayMemoryIds.has(id)), row.title);
+    }
+
+    // 同一份备份再叠加一次：目标角色已有这些作品（含已移除的），不再新建重复条目
+    const again = await loadImportRoute(target).POST(importRequest(full, 'target_character_id=overlay-target'));
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(again.body.worksImported, 0);
+    const afterAgain = target.prepare("SELECT id FROM character_works WHERE character_id = 'overlay-target'").all();
+    assert.deepEqual(afterAgain.map(row => row.id).sort(), overlayRows.map(row => row.id).sort());
+  } finally {
+    source.close();
+    target.close();
+  }
+});
+
+/** 最小的全量格式备份：一个角色 + 若干片单行，未给的字段取空值。 */
+function worksBackup(works) {
+  return {
+    version: 4,
+    characters: [{ id: 'works-src', name: '片单备份角色' }],
+    memories: [],
+    conversations: [],
+    works: works.map((work, index) => ({
+      id: `backup-work-${index}`,
+      character_id: 'works-src',
+      aliases: [],
+      rating: '',
+      progress: '',
+      note: '',
+      source_memory_ids: [],
+      source_msg_ids: [],
+      first_seen_at: WORKS_T0,
+      dismissed_at: null,
+      created_at: WORKS_T0,
+      updated_at: WORKS_T0,
+      ...work,
+    })),
+  };
+}
+
+function insertTargetWork(db, { id, characterId, type, title, aliases = [], status = 'watched', note = '', dismissedAt = null }) {
+  db.prepare(`
+    INSERT INTO character_works (
+      id, character_id, work_type, title, aliases, status, rating, progress, note,
+      source_memory_ids, source_msg_ids, first_seen_at, dismissed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, '', '', ?, '[]', '[]', ?, ?, ?, ?)
+  `).run(id, characterId, type, title, JSON.stringify(aliases), status, note, WORKS_T0, dismissedAt, WORKS_T0, WORKS_T0);
+}
+
+test('/api/import keeps a dismissed entry and an active entry that share a name within one backup', async () => {
+  const target = createPresetRoundtripDb();
+  try {
+    // 源库里两条并存：已移除的《Her》在前，在看的《她》（别名 Her）在后。
+    // 去重若把本次刚写入的墓碑也算进去，《她》会被挡掉，片单里只剩一条已移除的。
+    const backup = worksBackup([
+      { work_type: 'movie', title: 'Her', status: 'watched', dismissed_at: '2026-07-05T00:00:00.000Z' },
+      { work_type: 'movie', title: '她', aliases: ['Her'], status: 'watching' },
+    ]);
+    const response = await loadImportRoute(target).POST(importRequest(backup));
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.worksImported, 2);
+    const rows = target.prepare('SELECT title, aliases, status, dismissed_at FROM character_works ORDER BY title').all();
+    assert.deepEqual(rows, [
+      { title: 'Her', aliases: '[]', status: 'watched', dismissed_at: '2026-07-05T00:00:00.000Z' },
+      { title: '她', aliases: JSON.stringify(['Her']), status: 'watching', dismissed_at: null },
+    ]);
+  } finally {
+    target.close();
+  }
+});
+
+test('/api/import onto an existing character skips only rows that match entries the target already had', async () => {
+  const target = createPresetRoundtripDb();
+  try {
+    target.prepare("INSERT INTO characters (id, name) VALUES ('works-overlay', '叠加目标')").run();
+    insertTargetWork(target, { id: 'target-her', characterId: 'works-overlay', type: 'movie', title: '她', note: '目标原有' });
+    insertTargetWork(target, {
+      id: 'target-spirited', characterId: 'works-overlay', type: 'movie', title: '千与千寻',
+      aliases: ['神隐少女'], dismissedAt: '2026-07-03T00:00:00.000Z',
+    });
+    const backup = worksBackup([
+      // 规范名命中目标已有的《她》：跳过，目标原条目不动
+      { work_type: 'movie', title: '她', aliases: ['Her'], status: 'watching', note: '备份里的' },
+      // 目标的《她》没有别名 Her，不算同一条：照常写入（源库里它也是单独的墓碑）
+      { work_type: 'movie', title: 'Her', status: 'watched', dismissed_at: '2026-07-05T00:00:00.000Z' },
+      // 同名不同类型：不是同一部作品
+      { work_type: 'book', title: '她', status: 'want' },
+      // 命中目标里已移除条目的别名：保留目标的墓碑，不把主人移除的作品加回来
+      { work_type: 'movie', title: '《神隐少女》', status: 'watched' },
+      { work_type: 'movie', title: '星际穿越', status: 'want' },
+    ]);
+    const route = loadImportRoute(target);
+    const response = await route.POST(importRequest(backup, 'target_character_id=works-overlay'));
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.worksImported, 3);
+
+    const rows = target.prepare(
+      "SELECT id, work_type, title, status, note, dismissed_at FROM character_works WHERE character_id = 'works-overlay'",
+    ).all();
+    assert.equal(rows.length, 5);
+    assert.deepEqual(
+      rows.filter(row => !row.id.startsWith('target-')).map(row => `${row.work_type}:${row.title}`).sort(),
+      ['book:她', 'movie:Her', 'movie:星际穿越'],
+    );
+    const original = rows.find(row => row.id === 'target-her');
+    assert.equal(original.status, 'watched');
+    assert.equal(original.note, '目标原有');
+    assert.equal(rows.find(row => row.id === 'target-spirited').dismissed_at, '2026-07-03T00:00:00.000Z');
+
+    // 同一份备份再叠加一次：每行都已在目标里，不再新建
+    const again = await route.POST(importRequest(backup, 'target_character_id=works-overlay'));
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(again.body.worksImported, 0);
+    assert.equal(target.prepare("SELECT COUNT(*) AS count FROM character_works WHERE character_id = 'works-overlay'").get().count, 5);
+  } finally {
+    target.close();
+  }
+});
+
+test('/api/import clips over-long works fields and keeps at most the alias limit', async () => {
+  const target = createPresetRoundtripDb();
+  try {
+    const longAlias = 'B'.repeat(120);
+    const aliases = [longAlias, ...Array.from({ length: 9 }, (_, index) => `别名${index + 1}`)];
+    const backup = worksBackup([{
+      work_type: 'game',
+      title: `《${'长'.repeat(150)}》`,
+      aliases,
+      status: 'watching',
+      rating: '9'.repeat(30),
+      progress: '进'.repeat(50),
+      // 按字符截断：emoji 是代理对，不能切成半个
+      note: '🎬'.repeat(70),
+    }]);
+    const response = await loadImportRoute(target).POST(importRequest(backup));
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.worksImported, 1);
+    const row = target.prepare('SELECT * FROM character_works').get();
+    assert.equal(row.title, '长'.repeat(100));
+    assert.deepEqual(JSON.parse(row.aliases), ['B'.repeat(100), ...aliases.slice(1, 8)]);
+    assert.equal(row.rating, '9'.repeat(16));
+    assert.equal(row.progress, '进'.repeat(40));
+    assert.equal(row.note, '🎬'.repeat(60));
+  } finally {
+    target.close();
+  }
+});
+
+test('/api/import stores parseable works timestamps as ISO', async () => {
+  const target = createPresetRoundtripDb();
+  try {
+    const backup = worksBackup([{
+      work_type: 'movie',
+      title: '千与千寻',
+      status: 'watched',
+      // SQLite CURRENT_TIMESTAMP 格式：UTC、空格分隔、无时区
+      first_seen_at: '2026-07-01 08:30:00',
+      dismissed_at: '2026-07-05 09:00:00',
+      created_at: '2026-07-01 08:31:00',
+      updated_at: undefined,
+    }]);
+    const response = await loadImportRoute(target).POST(importRequest(backup));
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    const row = target.prepare('SELECT first_seen_at, dismissed_at, created_at, updated_at FROM character_works').get();
+    assert.deepEqual(row, {
+      first_seen_at: '2026-07-01T08:30:00.000Z',
+      dismissed_at: '2026-07-05T09:00:00.000Z',
+      created_at: '2026-07-01T08:31:00.000Z',
+      // 缺失时回退到 created_at
+      updated_at: '2026-07-01T08:31:00.000Z',
+    });
+  } finally {
+    target.close();
+  }
+});
+
+test('/api/import de-duplicates a large works backup in linear time', async () => {
+  const target = createPresetRoundtripDb();
+  try {
+    const backup = worksBackup(Array.from({ length: 2000 }, (_, index) => ({
+      work_type: 'movie',
+      title: `作品 ${index}`,
+      aliases: [`Work ${index}`],
+      status: 'watched',
+    })));
+    target.prepare("INSERT INTO characters (id, name) VALUES ('works-bulk', '大片单')").run();
+    const route = loadImportRoute(target);
+    const first = await route.POST(importRequest(backup, 'target_character_id=works-bulk'));
+    assert.equal(first.body.worksImported, 2000);
+    // 第二次每行都要和目标已有的 2000 条比对：逐行查表 + 解析 + 排序是平方级，会慢一个数量级以上
+    const startedAt = Date.now();
+    const second = await route.POST(importRequest(backup, 'target_character_id=works-bulk'));
+    const elapsed = Date.now() - startedAt;
+    assert.equal(second.body.worksImported, 0);
+    assert.ok(elapsed < 3000, `second import took ${elapsed}ms`);
+  } finally {
+    target.close();
+  }
+});
+
+test('/api/import accepts an old backup without works and leaves the catalog empty', async () => {
+  const target = createPresetRoundtripDb();
+  try {
+    const response = await loadImportRoute(target).POST(importRequest({
+      version: 3,
+      characters: [{ id: 'old-char', name: '旧备份角色' }],
+      memories: [{ id: 'old-mem', character_id: 'old-char', category: '偏好习惯', content: '用户喜欢宫崎骏的电影' }],
+      conversations: [],
+    }));
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.imported, 1);
+    assert.equal(response.body.memoriesImported, 1);
+    assert.equal(response.body.worksImported, 0);
+    assert.equal(target.prepare('SELECT COUNT(*) AS count FROM character_works').get().count, 0);
+  } finally {
+    target.close();
+  }
+});

@@ -86,6 +86,7 @@ It takes three things seriously:
 | 🎭 | **Characters** | Personality, scenario, greeting, example dialogue, system prompt and image tags. Import SillyTavern character card JSON, or have the built-in Agent draft a card |
 | 💬 | **Chat** | Streaming replies; edit, delete and regenerate messages and switch between versions; image and text attachments; manual summaries for long chats |
 | 🧠 | **Long-term memory** | Automatic extraction, categorisation, de-duplication and superseding; optional vector search and reranking; character profiles, archiving and revision history |
+| 🎬 | **Works catalog** | Keeps track of the films, series, books and games you have finished, are in the middle of or want to try, with ratings and episode progress; sent to the character in full every turn so it won't recommend what you've already seen; editable by hand, and the built-in Agent can rebuild it from older memories |
 | 🤖 | **Built-in Agent** | Reads characters, chats, memories and logs to troubleshoot, tidy memories and edit character cards. Every change starts as a proposal awaiting approval |
 | 🧩 | **Prompt presets** | Import SillyTavern presets, set a default per character, and bind different presets to different chat models |
 | 🎨 | **Image generation** | Stable Diffusion WebUI, NovelAI (including V5), ComfyUI and custom endpoints. Images keep their version history and can be managed or downloaded in bulk |

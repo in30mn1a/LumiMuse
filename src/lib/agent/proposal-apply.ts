@@ -20,9 +20,14 @@ import {
   type MemoryBusinessSnapshot,
 } from '@/lib/memory-mutations';
 import { applyMessageEdit } from '@/lib/message-mutations';
+import { parseMemoryMetadata } from '@/lib/metadata';
 import { publicErrorMessage } from '@/lib/public-error';
 import type { MemoryUpdate } from '@/lib/schemas';
-import type { MemoryStatus } from '@/types';
+import { parseStoredTimestamp } from '@/lib/memory-time-cutoff';
+import {
+  createWork, deleteWork, findMatchingWork, getWork, listWorks, mergeIdLists, normalizeWorkTitle, updateWork,
+} from '@/lib/works-catalog';
+import type { MemoryStatus, WorkEntry, WorkType } from '@/types';
 import type { ProposalDecisionEventItem } from './messages';
 import {
   candidateTaskSucceeded,
@@ -38,6 +43,7 @@ import {
   type ProposalMemoryTarget,
   type ProposalRepairAfter,
   type ProposalRow,
+  type ProposalWorkFields,
 } from './proposals';
 import { appendAgentMessage } from './store';
 import {
@@ -77,6 +83,8 @@ export interface ProposalApplyResult {
   created_character?: CreatedCharacterSnapshot;
   /** 消息修改应用后的正文，撤销时据此判断之后是否又被编辑。 */
   message?: { id: string; content: string };
+  /** 片单条目应用后的完整快照，撤销时据此判断之后是否又被改动。 */
+  work?: WorkEntry;
 }
 
 type DecisionFailure = { ok: false; status: 400 | 404 | 409; error: string };
@@ -88,6 +96,11 @@ export type UndoProposalOutcome = { ok: true } | DecisionFailure;
 type ItemOutcome =
   | { state: 'applied'; result: ProposalApplyResult; indexIds: string[] }
   | { state: 'stale'; detail: string };
+
+type DecidedOutcome = ItemOutcome | { state: 'failed'; detail: string };
+
+/** 回滚合并组 savepoint 用的哨兵，只在 applyProposalDecision 内抛出和捕获。 */
+const MERGE_ROLLBACK = new Error('merge unit rollback');
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -210,6 +223,196 @@ function loadCharacterMessage(
   `).get(messageId, characterId) as (Record<string, unknown> & { content: string }) | undefined;
 }
 
+/** 依据里仍属于该角色的记忆和消息（待批期间可能被删除），保持原顺序。 */
+function liveWorkEvidence(db: Database.Database, characterId: string, evidence: ProposalEvidence): { memoryIds: string[]; messageIds: string[] } {
+  const memoryIds = evidence.memory_ids ?? [];
+  const foundMemories = new Set(memoryIds.length === 0 ? [] : (db.prepare(`
+    SELECT id FROM memories WHERE character_id = ? AND id IN (SELECT value FROM json_each(?))
+  `).all(characterId, JSON.stringify(memoryIds)) as { id: string }[]).map(row => row.id));
+  const foundMessages = existingMessageIds(db, characterId, evidence.message_ids);
+  return {
+    memoryIds: memoryIds.filter(id => foundMemories.has(id)),
+    messageIds: evidence.message_ids.filter(id => foundMessages.has(id)),
+  };
+}
+
+/**
+ * 依据里最早的时间，作为新条目的 first_seen_at（历史重新生成按它截断）。只给 create 用，update 不推算。
+ * 记忆按它来源消息的时间算：提取是批量、延后进行的，记忆行的 created_at 往往晚于它描述的对话；
+ * 来源消息都查不到时才用记忆自己的 created_at。归档摘要和合并结果的来源是全部原始记忆来源的并集，
+ * 最早一条可能比这部作品第一次被提到早几个月，所以直接用它们自己的 created_at。都没有返回 null。
+ */
+function earliestEvidenceTime(db: Database.Database, characterId: string, memoryIds: readonly string[], messageIds: readonly string[]): string | null {
+  const times: number[] = [];
+  const messageTimes = (ids: readonly string[]) => (ids.length === 0 ? [] : (db.prepare(`
+    SELECT m.created_at FROM messages m JOIN conversations c ON c.id = m.conversation_id
+    WHERE c.character_id = ? AND m.id IN (SELECT value FROM json_each(?))
+  `).all(characterId, JSON.stringify(ids)) as { created_at: string }[])
+    .map(row => parseStoredTimestamp(row.created_at))
+    .filter((time): time is number => time !== null));
+  times.push(...messageTimes(messageIds));
+  const memories = memoryIds.length === 0 ? [] : db.prepare(`
+    SELECT created_at, source_msg_ids, metadata FROM memories WHERE character_id = ? AND id IN (SELECT value FROM json_each(?))
+  `).all(characterId, JSON.stringify(memoryIds)) as { created_at: string; source_msg_ids: string | null; metadata: string | null }[];
+  for (const memory of memories) {
+    const meta = parseMemoryMetadata(memory.metadata);
+    const aggregated = meta.archiveRole === 'summary' || meta.mergeRole === 'result';
+    let sources: string[] = [];
+    if (!aggregated) {
+      try {
+        const parsed: unknown = JSON.parse(memory.source_msg_ids ?? '[]');
+        if (Array.isArray(parsed)) sources = parsed.filter((id): id is string => typeof id === 'string');
+      } catch {
+        // 坏的来源列表按没有来源处理
+      }
+    }
+    const sourceTimes = messageTimes(sources);
+    if (sourceTimes.length > 0) times.push(...sourceTimes);
+    else {
+      const own = parseStoredTimestamp(memory.created_at);
+      if (own !== null) times.push(own);
+    }
+  }
+  if (times.length === 0) return null;
+  return new Date(times.reduce((min, time) => (time < min ? time : min))).toISOString();
+}
+
+/** 条目自提案（或批准）以来是否没变：任何写入都会更新 updated_at，整条快照比较也覆盖直接改库。 */
+function sameWork(current: WorkEntry | null, snapshot: WorkEntry, characterId: string): current is WorkEntry {
+  return current !== null && current.character_id === characterId && JSON.stringify(current) === JSON.stringify(snapshot);
+}
+
+const workNameKeys = (names: readonly string[]) => new Set(names.map(normalizeWorkTitle).filter(Boolean));
+
+/** 同角色同类型、未移除的条目里与 names 重名的一条（排除 excludeId 自己）；没有返回 null。 */
+function activeNameClash(
+  db: Database.Database,
+  characterId: string,
+  type: WorkType,
+  names: readonly string[],
+  excludeId: string,
+): WorkEntry | null {
+  const keys = workNameKeys(names);
+  if (keys.size === 0) return null;
+  return listWorks(db, characterId).find(entry => entry.id !== excludeId && entry.work_type === type
+    && [entry.title, ...entry.aliases].some(name => keys.has(normalizeWorkTitle(name)))) ?? null;
+}
+
+/** update 批准后条目的类型和全部名称。 */
+function workIdentityAfter(entry: WorkEntry, changes: ProposalWorkFields): { type: WorkType; names: string[] } {
+  return { type: changes.work_type ?? entry.work_type, names: [changes.title ?? entry.title, ...(changes.aliases ?? entry.aliases)] };
+}
+
+/**
+ * 撤销后条目新拿回的名称：撤销 retire 让条目回到片单，撤销改名让它带回旧名。这些名称可能已经并进别的条目
+ * （合并重复条目后只撤销 retire），要先查重名。撤销后仍是已移除状态的条目不占名称。
+ */
+function namesRegainedByUndo(original: WorkEntry, applied: WorkEntry): string[] {
+  if (original.dismissed_at !== null) return [];
+  const names = [original.title, ...original.aliases];
+  if (applied.dismissed_at !== null || applied.work_type !== original.work_type) return names;
+  const kept = workNameKeys([applied.title, ...applied.aliases]);
+  return names.filter(name => !kept.has(normalizeWorkTitle(name)));
+}
+
+/** 片单条目项（update / retire）的目标快照；其他项返回 null。 */
+function workTarget(item: ProposalItemRow): WorkEntry | null {
+  const before = JSON.parse(item.before_json) as ProposalBefore;
+  return before && 'work' in before ? before.work : null;
+}
+
+/**
+ * 批准项的应用顺序：片单 retire 先于 update / create，合并重复条目时保留的一条改名不会撞上待移除的那条。
+ * 合并（update 保留的一条、并入另一条的名称，同一份提案里 retire 另一条）两项都批准时编成一组，
+ * 组内 update 放最后；其他项各自一组。只调整片单项的先后，其他类型的提案不含片单项，顺序不变。
+ */
+function applyUnits(items: readonly ProposalItemRow[]): ProposalItemRow[][] {
+  const retires = items.flatMap(item => {
+    const target = item.op === 'retire' ? workTarget(item) : null;
+    return target ? [{ item, target }] : [];
+  });
+  const retireIds = new Set(retires.map(({ item }) => item.id));
+  const grouped = new Set<number>();
+  const merges: ProposalItemRow[][] = [];
+  for (const item of items) {
+    const target = item.op === 'update' ? workTarget(item) : null;
+    if (!target) continue;
+    const next = workIdentityAfter(target, JSON.parse(item.after_json) as ProposalWorkFields);
+    const keys = workNameKeys(next.names);
+    const partners = retires.filter(({ item: retire, target: other }) => !grouped.has(retire.id)
+      && other.work_type === next.type && [other.title, ...other.aliases].some(name => keys.has(normalizeWorkTitle(name))));
+    if (partners.length === 0) continue;
+    for (const { item: retire } of partners) grouped.add(retire.id);
+    grouped.add(item.id);
+    merges.push([...partners.map(({ item: retire }) => retire), item]);
+  }
+  return [
+    ...retires.filter(({ item }) => !grouped.has(item.id)).map(({ item }) => [item]),
+    ...merges,
+    ...items.filter(item => !grouped.has(item.id) && !retireIds.has(item.id)).map(item => [item]),
+  ];
+}
+
+/** 片单项的批准：create 新增条目，update 按字段写入（经主人批准可以清空，已移除的条目同时恢复），retire 移除。 */
+function applyWorkItem(db: Database.Database, characterId: string, item: ProposalItemRow, before: ProposalBefore, now: string): ItemOutcome {
+  const evidence = liveWorkEvidence(db, characterId, JSON.parse(item.evidence_json) as ProposalEvidence);
+  const applied = (work: WorkEntry): ItemOutcome => ({
+    state: 'applied', indexIds: [],
+    result: { memory_ids: [], created_memory_id: null, batch_id: null, after: [], work },
+  });
+  if (before && 'work_creation' in before) {
+    if (item.op !== 'create' || before.work_creation.character_id !== characterId) throw new Error('片单新增提案格式不正确');
+    const fields = JSON.parse(item.after_json) as Required<Omit<ProposalWorkFields, 'first_seen_at'>> & { first_seen_at?: string };
+    // 待批期间自动更新或主人可能已经加了同一部作品（含移除过的），不再重复新增
+    const clash = findMatchingWork(db, characterId, fields.work_type, [fields.title, ...fields.aliases]);
+    if (clash) {
+      return {
+        state: 'stale',
+        detail: `片单里已有「${clash.title}」（${clash.id}）${clash.dismissed_at === null ? '' : '，是主人移除过的条目'}，没有新增`,
+      };
+    }
+    return applied(createWork(db, {
+      character_id: characterId,
+      work_type: fields.work_type,
+      title: fields.title,
+      aliases: fields.aliases,
+      status: fields.status,
+      rating: fields.rating,
+      progress: fields.progress,
+      note: fields.note,
+      source_memory_ids: evidence.memoryIds,
+      source_msg_ids: evidence.messageIds,
+      first_seen_at: fields.first_seen_at ?? earliestEvidenceTime(db, characterId, evidence.memoryIds, evidence.messageIds) ?? now,
+    }, now));
+  }
+  if (!before || !('work' in before)) throw new Error('片单提案格式不正确');
+  const target = before.work;
+  const current = getWork(db, target.id);
+  if (!sameWork(current, target, characterId)) {
+    return { state: 'stale', detail: `片单条目「${target.title}」（${target.id}）在提案生成后已被改动或删除，没有修改` };
+  }
+  if (item.op === 'retire') return applied(updateWork(db, target.id, { dismissed: true }, now));
+  if (item.op !== 'update') throw new Error(`${item.op} 不能用于片单条目`);
+  const changes = JSON.parse(item.after_json) as ProposalWorkFields;
+  // 创建时允许改名撞上同一份提案里要 retire 的条目，但批准时逐项独立：retire 可能没批准、已过期，
+  // 恢复已移除的条目时同名作品也可能已经加回。按当前片单重查，撞上就过期，不造出重复条目
+  const next = workIdentityAfter(current, changes);
+  const clash = activeNameClash(db, characterId, next.type, next.names, current.id);
+  if (clash) {
+    return {
+      state: 'stale',
+      detail: `批准后会与片单里的「${clash.title}」（${clash.id}）重名，没有修改；合并重复条目要连同移除「${clash.title}」的那一项一起批准`,
+    };
+  }
+  return applied(updateWork(db, target.id, {
+    ...changes,
+    // 依据并入条目的来源，片单里能追溯到这次修改凭的是什么
+    source_memory_ids: mergeIdLists(current.source_memory_ids, evidence.memoryIds),
+    source_msg_ids: mergeIdLists(current.source_msg_ids, evidence.messageIds),
+    dismissed: false,
+  }, now));
+}
+
 function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): ItemOutcome {
   const characterId = proposal.character_id;
   const before = JSON.parse(item.before_json) as ProposalBefore;
@@ -230,6 +433,7 @@ function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalI
     };
   }
   if (!characterId) throw new Error('提案缺少目标角色');
+  if (before && ('work' in before || 'work_creation' in before)) return applyWorkItem(db, characterId, item, before, now);
   if (before && 'character' in before) {
     const target = before.character;
     const current = loadCharacterCard(db, characterId);
@@ -457,33 +661,64 @@ export function applyProposalDecision(
       UPDATE agent_proposal_items SET state = ?, reject_reason = ?, result_json = ?, applied_at = ? WHERE id = ?
     `);
     const decided: ProposalDecisionEventItem[] = [];
+    const toApply: ProposalItemRow[] = [];
     for (const item of items) {
       if (item.state !== 'pending') continue;
+      if (approved.has(item.id)) {
+        toApply.push(item);
+        continue;
+      }
       const head = { seq: item.seq, op: item.op };
-      if (!approved.has(item.id)) {
-        const reason = rejectReasons.get(item.id);
-        updateItem.run('rejected', reason ?? null, null, null, item.id);
-        decided.push(reason ? { ...head, state: 'rejected', reason } : { ...head, state: 'rejected' });
-        continue;
-      }
-      let result: ItemOutcome;
+      const reason = rejectReasons.get(item.id);
+      updateItem.run('rejected', reason ?? null, null, null, item.id);
+      decided.push(reason ? { ...head, state: 'rejected', reason } : { ...head, state: 'rejected' });
+    }
+
+    const run = (item: ProposalItemRow): DecidedOutcome => {
       try {
-        result = db.transaction(() => applyItem(db, proposal, item, now))();
+        return db.transaction(() => applyItem(db, proposal, item, now))();
       } catch (error) {
-        const detail = publicErrorMessage(error, '应用时出错');
-        updateItem.run('failed', null, JSON.stringify({ detail }), null, item.id);
-        decided.push({ ...head, state: 'failed', reason: detail });
-        continue;
+        return { state: 'failed', detail: publicErrorMessage(error, '应用时出错') };
       }
-      if (result.state === 'stale') {
-        updateItem.run('stale', null, JSON.stringify({ detail: result.detail }), null, item.id);
-        decided.push({ ...head, state: 'stale', reason: result.detail });
-      } else {
+    };
+    const record = (item: ProposalItemRow, result: DecidedOutcome) => {
+      const head = { seq: item.seq, op: item.op };
+      if (result.state === 'applied') {
         updateItem.run('applied', null, JSON.stringify(result.result), now, item.id);
         indexIds.push(...result.indexIds);
         decided.push({ ...head, state: 'applied' });
+      } else {
+        updateItem.run(result.state, null, JSON.stringify({ detail: result.detail }), null, item.id);
+        decided.push({ ...head, state: result.state, reason: result.detail });
       }
+    };
+    for (const unit of applyUnits(toApply)) {
+      if (unit.length === 1) {
+        record(unit[0], run(unit[0]));
+        continue;
+      }
+      // 合并组：保留条目的 update 没有生效（过期或出错）就连同 retire 一起回滚。否则另一条被移除、
+      // 名称却没并进保留的条目，之后再提到这个名称时自动更新会认出已移除的条目，一直忽略
+      const kept = unit[unit.length - 1];
+      let results: DecidedOutcome[] = [];
+      try {
+        db.transaction(() => {
+          results = unit.map(run);
+          if (results[results.length - 1].state !== 'applied' && results.some(result => result.state === 'applied')) {
+            throw MERGE_ROLLBACK;
+          }
+        })();
+      } catch (error) {
+        if (error !== MERGE_ROLLBACK) throw error;
+        results = results.map((result, index): DecidedOutcome => (index === results.length - 1 || result.state !== 'applied' ? result : {
+          state: 'stale',
+          detail: `与第 ${kept.seq} 项是同一次合并，第 ${kept.seq} 项没有生效，这一项也没有移除（否则名称没并进保留的条目，之后再提到会被当成已移除的作品）`,
+        }));
+      }
+      unit.forEach((item, index) => record(item, results[index]));
     }
+    // 应用顺序可能与项序号不同，记录仍按序号排列
+    decided.sort((a, b) => a.seq - b.seq);
 
     db.prepare(`UPDATE agent_proposals SET status = 'decided', decided_at = ? WHERE id = ?`).run(now, proposalId);
     if (proposal.session_id) {
@@ -575,6 +810,58 @@ function isCreatedCharacterUnchanged(current: CreatedCharacterSnapshot, created:
   return Object.keys(created).every(key => key === 'sort_order' || current[key] === created[key]);
 }
 
+/**
+ * 片单项的撤销：批准后条目又被改动（自动更新、主人手动、其他提案）就拒绝，避免覆盖后来的修改；
+ * 恢复出的条目会与未移除的条目重名时也拒绝。否则恢复批准前的条目，新增的条目直接删除。
+ */
+function undoWorkItem(
+  db: Database.Database,
+  characterId: string,
+  item: ProposalItemRow,
+  before: ProposalBefore,
+  result: ProposalApplyResult,
+  now: string,
+): void {
+  const applied = result.work;
+  const current = applied ? getWork(db, applied.id) : null;
+  if (!applied || !sameWork(current, applied, characterId)) {
+    throw new ProposalUndoConflict(`片单条目「${applied?.title ?? ''}」在批准后又被改动或删除，不能撤销`);
+  }
+  if (before && 'work_creation' in before) {
+    if (item.op !== 'create') throw new ProposalUndoConflict(`第 ${item.seq} 项（${item.op}）不能撤销`);
+    deleteWork(db, applied.id);
+    return;
+  }
+  if (!before || !('work' in before) || before.work.id !== applied.id) {
+    throw new ProposalUndoConflict(`第 ${item.seq} 项（${item.op}）不能撤销`);
+  }
+  const original = before.work;
+  const clash = activeNameClash(db, characterId, original.work_type, namesRegainedByUndo(original, applied), original.id);
+  if (clash) {
+    throw new ProposalUndoConflict(
+      `撤销后「${original.title}」会与片单里的「${clash.title}」（${clash.id}）重名：`
+      + `先撤销把这些名称并入「${clash.title}」的那一项（或手动修改、移除「${clash.title}」），再撤销这一项`,
+    );
+  }
+  updateWork(db, original.id, {
+    work_type: original.work_type,
+    title: original.title,
+    aliases: original.aliases,
+    status: original.status,
+    rating: original.rating,
+    progress: original.progress,
+    note: original.note,
+    source_memory_ids: original.source_memory_ids,
+    source_msg_ids: original.source_msg_ids,
+    first_seen_at: original.first_seen_at,
+    dismissed: original.dismissed_at !== null,
+  }, now);
+  // updateWork 移除时写当前时间；恢复成原来的移除时间，「已移除」区域的顺序和显示不变
+  if (original.dismissed_at !== null) {
+    db.prepare('UPDATE character_works SET dismissed_at = ? WHERE id = ?').run(original.dismissed_at, original.id);
+  }
+}
+
 function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): string[] {
   const characterId = proposal.character_id;
   const result = JSON.parse(item.result_json!) as ProposalApplyResult;
@@ -601,6 +888,10 @@ function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalIt
     return [];
   }
   if (!characterId) throw new ProposalUndoConflict('提案缺少目标角色，不能撤销');
+  if (before && ('work' in before || 'work_creation' in before)) {
+    undoWorkItem(db, characterId, item, before, result, now);
+    return [];
+  }
   if (before && 'character' in before) {
     const applied = result.character;
     const current = loadCharacterCard(db, characterId);

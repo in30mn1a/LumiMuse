@@ -16,7 +16,10 @@ import {
   MEMORY_KINDS,
   MEMORY_STATUSES,
   WEB_SEARCH_PROVIDER_IDS,
+  WORK_STATUSES,
+  WORK_TYPES,
 } from '@/types';
+import { isUsableWorkTitle, WORK_FIELD_LIMITS } from '@/lib/works-catalog';
 
 // --------- 通用尺寸常量 ---------
 const MAX_NAME = 100;
@@ -641,3 +644,45 @@ export function formatZodFieldErrors(error: z.ZodError): Record<string, string[]
   }
   return result;
 }
+
+// --------- /api/works 作品片单 ---------
+// 长度上限取 WORK_FIELD_LIMITS（按字符数，与自动更新的截断一致）；接口超长直接拒绝，不截断。
+function workTextSchema(limit: number) {
+  return z.string().trim().refine(
+    value => Array.from(value).length <= limit,
+    { message: `Must be at most ${limit} characters` },
+  );
+}
+
+const workTitleSchema = workTextSchema(WORK_FIELD_LIMITS.title)
+  .refine(isUsableWorkTitle, { message: 'Title is required' });
+const workAliasesSchema = z.array(workTextSchema(WORK_FIELD_LIMITS.alias)).max(WORK_FIELD_LIMITS.aliases);
+
+const workOptionalFields = {
+  aliases: workAliasesSchema.optional(),
+  rating: workTextSchema(WORK_FIELD_LIMITS.rating).optional(),
+  progress: workTextSchema(WORK_FIELD_LIMITS.progress).optional(),
+  note: workTextSchema(WORK_FIELD_LIMITS.note).optional(),
+};
+
+// 依据（source_memory_ids / source_msg_ids）不由手动接口写入：主人新增的条目本来就没有对话依据，
+// 依据只来自自动更新和批准的 Agent 提案。
+export const workCreateSchema = z.object({
+  character_id: z.string().min(1).max(64),
+  work_type: z.enum(WORK_TYPES),
+  title: workTitleSchema,
+  status: z.enum(WORK_STATUSES),
+  ...workOptionalFields,
+});
+export type WorkCreate = z.infer<typeof workCreateSchema>;
+
+// 归属声明走 query param `?character_id=`（同 memories PUT），不在 body 里。
+// 手动修改可以把评分、进度、印象、别名清空；`dismissed` 为 true 移除、false 恢复（恢复保留原字段）。
+export const workUpdateSchema = z.object({
+  work_type: z.enum(WORK_TYPES).optional(),
+  title: workTitleSchema.optional(),
+  status: z.enum(WORK_STATUSES).optional(),
+  ...workOptionalFields,
+  dismissed: z.boolean().optional(),
+});
+export type WorkUpdate = z.infer<typeof workUpdateSchema>;

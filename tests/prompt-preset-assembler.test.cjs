@@ -1071,3 +1071,125 @@ for (const depth of [1, 2]) {
     });
   }
 }
+
+// ── 作品片单：跟在记忆包后面占同一个位置，计入 baseTokens ──────────────────────
+const WORKS_CATALOG = '## 用户的作品清单\n这是用户看过、在看和想看的作品。\n### 电影\n- 看过：《她》｜评分 9';
+const CATALOG_MEMORY = '### 本轮相关回忆\n- 用户喜欢咖啡';
+
+function presetSettings(overrides = {}) {
+  return { ...DEFAULT_SETTINGS, show_timestamps: false, context_window: 131072, max_tokens: 4096, ...overrides };
+}
+
+function catalogMessages(result) {
+  return result.filter(message => typeof message.content === 'string' && message.content.includes('用户的作品清单'));
+}
+
+test('作品片单在 memoryPackage 标记处紧跟记忆包，合成同一条消息', async () => {
+  const { normalizeMemoryContextText } = require(path.join(root, 'src', 'lib', 'chat-engine.ts'));
+  const preset = lib.createPreset({ name: 'catalog-marker' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Pre', role: 'system', content: 'PRE_UNIQUE', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Mem', role: 'system', sort_order: 20, is_marker: true, marker_key: 'memoryPackage' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 30, is_marker: true, marker_key: 'chatHistory' });
+
+  const result = await assembler.assemblePresetPrompt(
+    makeCharacter(), [makeMessage(1, 'user', 'CURRENT_INPUT')], presetSettings(), CATALOG_MEMORY, undefined,
+    preset, lib.loadEnabledEntries(preset.id), { worksCatalogText: WORKS_CATALOG },
+  );
+
+  const slots = catalogMessages(result);
+  assert.equal(slots.length, 1, '片单只出现一次');
+  assert.equal(slots[0].role, 'system');
+  assert.equal(slots[0].content, `${normalizeMemoryContextText(CATALOG_MEMORY)}\n\n${WORKS_CATALOG}`);
+  const slotIndex = result.indexOf(slots[0]);
+  assert.ok(result.findIndex(m => m.content === 'PRE_UNIQUE') < slotIndex, '片单在标记位置，不提前');
+  assert.ok(slotIndex < result.findIndex(m => m.content === 'CURRENT_INPUT'), '片单在历史之前');
+});
+
+test('没有 memoryPackage 标记时片单跟记忆包一起作为历史前的 system 消息', async () => {
+  const { normalizeMemoryContextText } = require(path.join(root, 'src', 'lib', 'chat-engine.ts'));
+  const preset = lib.createPreset({ name: 'catalog-no-marker' });
+  lib.upsertEntry({ preset_id: preset.id, name: 'Only', role: 'user', content: '普通预设内容', sort_order: 10 });
+  lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 20, is_marker: true, marker_key: 'chatHistory' });
+
+  const result = await assembler.assemblePresetPrompt(
+    makeCharacter(), [makeMessage(1, 'user', 'CURRENT_INPUT')], presetSettings(), CATALOG_MEMORY, undefined,
+    preset, lib.loadEnabledEntries(preset.id), { worksCatalogText: WORKS_CATALOG },
+  );
+
+  const slots = catalogMessages(result);
+  assert.equal(slots.length, 1);
+  assert.equal(slots[0].role, 'system');
+  assert.equal(slots[0].content, `${normalizeMemoryContextText(CATALOG_MEMORY)}\n\n${WORKS_CATALOG}`);
+  assert.ok(result.indexOf(slots[0]) < result.findIndex(m => m.content === 'CURRENT_INPUT'));
+});
+
+test('记忆为空时片单单独占记忆位置（有标记和无标记两种）', async () => {
+  for (const withMarker of [true, false]) {
+    const preset = lib.createPreset({ name: `catalog-empty-memory-${withMarker}` });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Pre', role: 'system', content: 'PRE_UNIQUE', sort_order: 10 });
+    if (withMarker) {
+      lib.upsertEntry({ preset_id: preset.id, name: 'Mem', role: 'user', sort_order: 20, is_marker: true, marker_key: 'memoryPackage' });
+    }
+    lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 30, is_marker: true, marker_key: 'chatHistory' });
+
+    const result = await assembler.assemblePresetPrompt(
+      makeCharacter(), [makeMessage(1, 'assistant', 'PREVIOUS_REPLY'), makeMessage(2, 'user', 'CURRENT_INPUT')],
+      presetSettings(), '', undefined, preset, lib.loadEnabledEntries(preset.id), { worksCatalogText: WORKS_CATALOG },
+    );
+
+    const slots = catalogMessages(result);
+    assert.equal(slots.length, 1, `withMarker=${withMarker}`);
+    assert.equal(slots[0].content, WORKS_CATALOG, '没有记忆时不加记忆标题，也不加多余空行');
+    assert.equal(slots[0].role, withMarker ? 'user' : 'system', '标记处沿用条目的 role');
+    assert.ok(!result.some(m => typeof m.content === 'string' && m.content.includes('## 记忆上下文')));
+  }
+});
+
+test('片单为空时预设请求逐字节不变', async () => {
+  for (const withMarker of [true, false]) {
+    const preset = lib.createPreset({ name: `catalog-empty-${withMarker}` });
+    lib.upsertEntry({ preset_id: preset.id, name: 'Pre', role: 'system', content: 'PRE_UNIQUE', sort_order: 10 });
+    if (withMarker) {
+      lib.upsertEntry({ preset_id: preset.id, name: 'Mem', role: 'system', sort_order: 20, is_marker: true, marker_key: 'memoryPackage' });
+    }
+    lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 30, is_marker: true, marker_key: 'chatHistory' });
+    const entries = lib.loadEnabledEntries(preset.id);
+    for (const memory of [CATALOG_MEMORY, '']) {
+      const messages = [makeMessage(1, 'user', 'CURRENT_INPUT')];
+      const without = await assembler.assemblePresetPrompt(makeCharacter(), messages, presetSettings(), memory, undefined, preset, entries);
+      const empty = await assembler.assemblePresetPrompt(
+        makeCharacter(), messages, presetSettings(), memory, undefined, preset, entries, { worksCatalogText: '' },
+      );
+      assert.deepEqual(empty, without, `withMarker=${withMarker} memory=${Boolean(memory)}`);
+    }
+  }
+});
+
+test('片单计入预设的 baseTokens：片单很大时裁掉旧历史，但保留当前 user', async () => {
+  const bigCatalog = `${WORKS_CATALOG}\n${'- 看过：《很长的片名》｜评分 8\n'.repeat(400)}`;
+  for (const withMarker of [true, false]) {
+    const preset = lib.createPreset({ name: `catalog-budget-${withMarker}` });
+    if (withMarker) {
+      lib.upsertEntry({ preset_id: preset.id, name: 'Mem', role: 'system', sort_order: 10, is_marker: true, marker_key: 'memoryPackage' });
+    }
+    lib.upsertEntry({ preset_id: preset.id, name: 'History', role: 'system', sort_order: 20, is_marker: true, marker_key: 'chatHistory' });
+    const entries = lib.loadEnabledEntries(preset.id);
+    const messages = [
+      makeMessage(1, 'user', `OLD_QUESTION ${'内容 '.repeat(100)}`),
+      makeMessage(2, 'assistant', `OLD_REPLY ${'内容 '.repeat(100)}`),
+      makeMessage(3, 'user', 'CURRENT_INPUT'),
+    ];
+    const settings = presetSettings({ context_window: 3000, max_tokens: 100 });
+    const flatten = result => result.map(m => (typeof m.content === 'string' ? m.content : '')).join('\n');
+
+    const without = flatten(await assembler.assemblePresetPrompt(makeCharacter(), messages, settings, '', undefined, preset, entries));
+    assert.match(without, /OLD_QUESTION/, '样本必须让旧历史在没有片单时放得下，否则测不出来');
+
+    const withCatalog = flatten(await assembler.assemblePresetPrompt(
+      makeCharacter(), messages, settings, '', undefined, preset, entries, { worksCatalogText: bigCatalog },
+    ));
+    assert.doesNotMatch(withCatalog, /OLD_QUESTION|OLD_REPLY/, `withMarker=${withMarker}：片单没计入 baseTokens`);
+    assert.match(withCatalog, /CURRENT_INPUT/);
+    assert.ok(withCatalog.includes(bigCatalog), '片单本身不被截断');
+  }
+});

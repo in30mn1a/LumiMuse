@@ -139,6 +139,8 @@ export interface MessageMetadata {
   web_search?: WebSearchData;
   /** 助手消息：本轮回复依据的联网来源，仅供界面展示。 */
   web_search_sources?: WebSearchSource[];
+  /** 助手消息：本轮注入的作品片单条数与 token 数；本轮没注入片单时不写。 */
+  last_works_catalog_injection?: { count: number; tokens: number };
   [key: string]: unknown;
 }
 
@@ -254,6 +256,39 @@ export interface MemoryListItem {
 
 export interface Memory extends MemoryListItem {
   source_msg_ids: string[];
+}
+
+/** 作品片单的作品类型：电影 / 剧集·动画 / 书 / 游戏。 */
+export const WORK_TYPES = ['movie', 'series', 'book', 'game'] as const;
+export type WorkType = typeof WORK_TYPES[number];
+
+/** 作品状态：看过（含读过、通关）/ 在看（含在读、在玩）/ 想看。 */
+export const WORK_STATUSES = ['watched', 'watching', 'want'] as const;
+export type WorkStatus = typeof WORK_STATUSES[number];
+
+/** 片单条目（character_works 一行，JSON 列已解析）。 */
+export interface WorkEntry {
+  id: string;
+  character_id: string;
+  work_type: WorkType;
+  /** 规范名（通行中文名） */
+  title: string;
+  aliases: string[];
+  status: WorkStatus;
+  /** 自由文本，允许区间，如「9.0–9.5」；空串表示没有 */
+  rating: string;
+  /** 剧集进度，如「第二季第 2 集」；空串表示没有 */
+  progress: string;
+  /** 一句话印象；空串表示没有 */
+  note: string;
+  source_memory_ids: string[];
+  source_msg_ids: string[];
+  /** 最早依据的时间，历史重新生成按它截断 */
+  first_seen_at: string;
+  /** 非空 = 已移除（墓碑） */
+  dismissed_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export type MemoryCategory =

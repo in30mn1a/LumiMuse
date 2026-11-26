@@ -4,11 +4,13 @@ import type React from 'react';
 import type {
   ProposalCandidateTask,
   ProposalCandidateTarget,
+  ProposalEvidenceMemory,
   ProposalEvidenceMessage,
   ProposalItemView,
   ProposalMemoryFields,
   ProposalMemoryTarget,
   ProposalRepairAfter,
+  ProposalWorkFields,
 } from '@/lib/agent/proposals';
 import { NO_EVIDENCE_NOTE, type ProposalItemFlags } from '@/lib/agent/proposal-flags';
 import { diffText } from '@/lib/text-diff';
@@ -16,6 +18,14 @@ import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { getMemorySourceAttribution } from '@/lib/metadata';
 import type { CharacterCardField, CharacterCardSnapshot, ProposalCharacterFields } from '@/lib/agent/character-card';
+import type { WorkType } from '@/types';
+
+type WorkField = keyof ProposalWorkFields;
+/** 片单条目快照与提案字段都按这个形状读。 */
+type WorkLike = Partial<Record<WorkField, unknown>>;
+const WORK_FIELD_ORDER: readonly WorkField[] = ['work_type', 'title', 'aliases', 'status', 'rating', 'progress', 'note', 'first_seen_at'];
+/** 条目概览里逐行显示的字段；类型和名称在标题行 */
+const WORK_DETAIL_FIELDS: readonly WorkField[] = ['aliases', 'status', 'rating', 'progress', 'note'];
 
 type MemoryField = keyof ProposalMemoryFields;
 /** 快照与提案字段都按这个形状读；值来自 JSON，逐个判断类型再显示。 */
@@ -247,6 +257,101 @@ function CandidateInfo({ candidate, currentTask }: { candidate: ProposalCandidat
   );
 }
 
+function useWorkFieldValue() {
+  const { t } = useTranslation();
+  return (field: WorkField, value: unknown, type: WorkType): string => {
+    if (value === undefined || value === null || value === '') return '—';
+    if (field === 'work_type') return t(`agent.works.type.${String(value)}`);
+    if (field === 'status') return t(`agent.works.status.${type}.${String(value)}`);
+    if (Array.isArray(value)) return value.length > 0 ? value.join(' / ') : '—';
+    if (field === 'first_seen_at') {
+      const date = new Date(String(value));
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString();
+    }
+    return String(value);
+  };
+}
+
+function workTypeOf(value: unknown): WorkType {
+  return value === 'series' || value === 'book' || value === 'game' ? value : 'movie';
+}
+
+function WorkTitle({ work }: { work: WorkLike }) {
+  const { t } = useTranslation();
+  return (
+    <p className="font-medium [overflow-wrap:anywhere]" data-work-title="">
+      {formatTemplate(t('agent.works.entry'), {
+        type: t(`agent.works.type.${workTypeOf(work.work_type)}`),
+        title: typeof work.title === 'string' ? work.title : '',
+      })}
+    </p>
+  );
+}
+
+/** 条目概览：标题行加非空字段。 */
+function WorkBox({ work, muted = false }: { work: WorkLike; muted?: boolean }) {
+  const { t } = useTranslation();
+  const fieldValue = useWorkFieldValue();
+  const type = workTypeOf(work.work_type);
+  const parts = WORK_DETAIL_FIELDS
+    .filter(field => fieldValue(field, work[field], type) !== '—')
+    .map(field => `${t(`agent.works.field.${field}`)}：${fieldValue(field, work[field], type)}`);
+  return (
+    <div className={`space-y-1 rounded-lg border border-border-light px-2.5 py-2 ${muted ? 'bg-surface-2/40 text-text-secondary' : 'bg-surface'}`}>
+      <WorkTitle work={work} />
+      {parts.length > 0 && <p className="text-[11px] leading-relaxed text-text-muted [overflow-wrap:anywhere]">{parts.join(' · ')}</p>}
+    </div>
+  );
+}
+
+/** 片单项：新增显示完整条目，修改逐字段对照修改前后，移除显示被移除的条目。 */
+function WorkChange({ item }: { item: ProposalItemView }) {
+  const { t } = useTranslation();
+  const fieldValue = useWorkFieldValue();
+  const before = item.before;
+  if (before && 'work_creation' in before) {
+    return <Labeled label={t('agent.works.new')}><WorkBox work={(item.after ?? {}) as WorkLike} /></Labeled>;
+  }
+  if (!before || !('work' in before)) return null;
+  const entry = before.work as WorkLike & { dismissed_at: string | null };
+  if (item.op === 'retire') {
+    return (
+      <div className="space-y-1">
+        <WorkBox work={entry} muted />
+        <p className="text-[11px] text-text-muted">{t('agent.works.retireHint')}</p>
+      </div>
+    );
+  }
+  const changes = (item.after ?? {}) as WorkLike;
+  const fields = WORK_FIELD_ORDER.filter(field => field in changes);
+  const beforeType = workTypeOf(entry.work_type);
+  const afterType = workTypeOf(changes.work_type ?? entry.work_type);
+  return (
+    <div className="space-y-2">
+      {fields.length > 0 ? <WorkTitle work={entry} /> : <WorkBox work={entry} muted />}
+      {entry.dismissed_at !== null && <p className="text-[11px] text-text-muted" data-work-restore="">{t('agent.works.restoreHint')}</p>}
+      {fields.map(field => (
+        <Labeled key={field} label={t(`agent.works.field.${field}`)}>
+          <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]" data-work-field={field}>
+            <del className="text-text-muted decoration-danger/60">{fieldValue(field, entry[field], beforeType)}</del>
+            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
+            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{fieldValue(field, changes[field], afterType)}</ins>
+          </p>
+        </Labeled>
+      ))}
+    </div>
+  );
+}
+
+/** 片单项的操作名：对已移除条目的修改就是恢复。不是片单项时返回 null。 */
+function workOpKey(item: ProposalItemView): string | null {
+  if (!item.before) return null;
+  if ('work_creation' in item.before) return 'agent.works.op.create';
+  if (!('work' in item.before)) return null;
+  if (item.op === 'retire') return 'agent.works.op.retire';
+  return item.before.work.dismissed_at !== null ? 'agent.works.op.restore' : 'agent.works.op.update';
+}
+
 function memoriesOf(item: ProposalItemView): ProposalMemoryTarget[] {
   return item.before && 'memories' in item.before ? item.before.memories : [];
 }
@@ -261,6 +366,7 @@ function ItemChange({ item }: { item: ProposalItemView }) {
   const before = memoriesOf(item).map(target => target.snapshot as MemoryLike);
   const after = (item.after ?? {}) as MemoryLike;
   const candidate = candidateOf(item);
+  if (workOpKey(item)) return <WorkChange item={item} />;
   switch (item.op) {
     case 'create':
       if (item.before && 'character_creation' in item.before) {
@@ -322,14 +428,47 @@ function ItemChange({ item }: { item: ProposalItemView }) {
   }
 }
 
-function Evidence({ item, messages }: { item: ProposalItemView; messages: Map<string, ProposalEvidenceMessage> }) {
+function Evidence({ item, messages, memories }: {
+  item: ProposalItemView;
+  messages: Map<string, ProposalEvidenceMessage>;
+  memories: Map<string, ProposalEvidenceMemory>;
+}) {
   const { t } = useTranslation();
   const ids = item.evidence.message_ids;
+  const memoryIds = item.evidence.memory_ids ?? [];
   const note = item.evidence.note;
   const ownerQuote = item.evidence.owner_quote;
-  if (ids.length === 0 && !ownerQuote && (!note || note === NO_EVIDENCE_NOTE)) return null;
+  if (ids.length === 0 && memoryIds.length === 0 && !ownerQuote && (!note || note === NO_EVIDENCE_NOTE)) return null;
   return (
     <div className="space-y-1.5">
+      {memoryIds.length > 0 && (
+        <details className="group" data-evidence="memories">
+          <summary className="inline-flex min-h-8 cursor-pointer list-none items-center text-[11px] font-medium text-accent-dark [&::-webkit-details-marker]:hidden">
+            {formatTemplate(t('agent.works.evidenceMemories'), { count: memoryIds.length })}
+          </summary>
+          <div className="mt-1 space-y-1.5">
+            {memoryIds.map(id => {
+              const memory = memories.get(id);
+              if (!memory) {
+                return (
+                  <p key={id} className="rounded-lg border border-dashed border-border-light px-2.5 py-1.5 text-text-muted [overflow-wrap:anywhere]">
+                    {formatTemplate(t('agent.works.evidenceMemoryMissing'), { id })}
+                  </p>
+                );
+              }
+              return (
+                <blockquote key={id} className="rounded-lg border-l-2 border-accent/40 bg-surface-2/40 px-2.5 py-1.5" data-evidence-memory={id}>
+                  <p className="mb-0.5 text-[11px] text-text-muted">
+                    {t(`memory.status.${memory.status}`)}
+                    {memory.no_longer_true && <span className="text-amber-700 dark:text-amber-300"> · {t('agent.works.evidenceMemoryNoLongerTrue')}</span>}
+                  </p>
+                  <p className="whitespace-pre-wrap leading-relaxed">{memory.content}</p>
+                </blockquote>
+              );
+            })}
+          </div>
+        </details>
+      )}
       {ownerQuote && (
         <blockquote className="rounded-lg border-l-2 border-accent/40 bg-surface-2/40 px-2.5 py-1.5" data-owner-quote="">
           <p className="mb-0.5 text-[11px] text-text-muted">{t('agent.proposal.ownerQuote')}</p>
@@ -393,18 +532,22 @@ interface Props {
   item: ProposalItemView;
   flags: ProposalItemFlags;
   messages: Map<string, ProposalEvidenceMessage>;
+  /** 片单提案的依据记忆；其他提案没有 */
+  memories?: Map<string, ProposalEvidenceMemory>;
   /** 有值时显示复选框；矛盾发现和已决定的项没有 */
   selection?: { checked: boolean; disabled: boolean; onChange: (checked: boolean) => void };
   undo?: { busy: boolean; disabled: boolean; error: string | null; onUndo: () => void };
 }
 
-export default function ProposalCardItem({ item, flags, messages, selection, undo }: Props) {
+const NO_MEMORIES = new Map<string, ProposalEvidenceMemory>();
+
+export default function ProposalCardItem({ item, flags, messages, memories = NO_MEMORIES, selection, undo }: Props) {
   const { t } = useTranslation();
   const checkboxId = `proposal-item-${item.id}`;
-  const opLabel = t(item.before && 'character_creation' in item.before
+  const opLabel = t(workOpKey(item) ?? (item.before && 'character_creation' in item.before
     ? 'agent.proposal.op.characterCreate'
     : item.before && 'character' in item.before ? 'agent.proposal.op.characterUpdate'
-    : item.before && 'message' in item.before ? 'agent.proposal.op.messageUpdate' : `agent.proposal.op.${item.op}`);
+    : item.before && 'message' in item.before ? 'agent.proposal.op.messageUpdate' : `agent.proposal.op.${item.op}`));
   return (
     <li className="min-w-0 space-y-2 rounded-xl border border-border-light bg-surface-raised px-3 py-2.5" data-proposal-item={item.id}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -456,10 +599,15 @@ export default function ProposalCardItem({ item, flags, messages, selection, und
           {formatTemplate(t('agent.proposal.flag.unfamiliarChars'), { chars: flags.unfamiliarChars.join('、') })}
         </p>
       )}
+      {flags.invalidEvidenceMemoryIds.length > 0 && (
+        <p className={`text-[11px] ${WARNING_CHIP} [overflow-wrap:anywhere]`} data-flag="invalid-evidence">
+          {formatTemplate(t('agent.works.flag.invalidEvidence'), { ids: flags.invalidEvidenceMemoryIds.join('、') })}
+        </p>
+      )}
 
       <p className="whitespace-pre-wrap leading-relaxed text-text-primary">{item.reason}</p>
       <ItemChange item={item} />
-      <Evidence item={item} messages={messages} />
+      <Evidence item={item} messages={messages} memories={memories} />
       <ItemOutcome item={item} />
 
       {undo && (

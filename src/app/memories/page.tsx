@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useSyncExternalStore } from 'react';
 import { Character } from '@/types';
 import MemoryList from '@/components/memories/MemoryList';
+import WorksCatalogPanel from '@/components/memories/WorksCatalogPanel';
 import Link from 'next/link';
 import { useTranslation } from '@/lib/i18n-context';
 import { getErrorMessage, parseJsonArrayResponse } from '@/lib/http';
@@ -10,11 +11,42 @@ import { useToast } from '@/components/ui/Toast';
 import { ArrowLeftIcon, MemoryIcon } from '@/components/ui/icons';
 import ContentState from '@/components/ui/ContentState';
 
+type MemoriesView = 'memories' | 'works';
+const VIEW_CHANGE_EVENT = 'lumimuse:memories-view';
+
+// 视图记在 URL 的 view 参数里（view=works），刷新后仍停在片单。
+// 用 history API 而不是 next/navigation：useSearchParams 要求整页包一层 Suspense，这里没必要。
+function subscribeView(onChange: () => void): () => void {
+  window.addEventListener('popstate', onChange);
+  window.addEventListener(VIEW_CHANGE_EVENT, onChange);
+  return () => {
+    window.removeEventListener('popstate', onChange);
+    window.removeEventListener(VIEW_CHANGE_EVENT, onChange);
+  };
+}
+
+function readView(): MemoriesView {
+  return new URLSearchParams(window.location.search).get('view') === 'works' ? 'works' : 'memories';
+}
+
+function readServerView(): MemoriesView {
+  return 'memories';
+}
+
+function writeView(view: MemoriesView): void {
+  const url = new URL(window.location.href);
+  if (view === 'works') url.searchParams.set('view', 'works');
+  else url.searchParams.delete('view');
+  window.history.replaceState(window.history.state, '', url);
+  window.dispatchEvent(new Event(VIEW_CHANGE_EVENT));
+}
+
 export default function MemoriesPage() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [charactersLoading, setCharactersLoading] = useState(true);
   const [charactersLoadError, setCharactersLoadError] = useState('');
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
+  const view = useSyncExternalStore(subscribeView, readView, readServerView);
   const { t } = useTranslation();
   const { showToast } = useToast();
 
@@ -67,6 +99,24 @@ export default function MemoriesPage() {
                   <option key={character.id} value={character.id}>{character.name}</option>
                 ))}
               </select>
+              <div role="group" aria-label={t('works.viewLabel')} className="flex gap-1.5">
+                <button
+                  type="button"
+                  aria-pressed={view === 'memories'}
+                  onClick={() => writeView('memories')}
+                  className={`chip min-h-11 cursor-pointer px-4 text-sm ${view === 'memories' ? 'chip-active font-medium' : 'hover:text-text-primary'}`}
+                >
+                  {t('works.viewMemories')}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={view === 'works'}
+                  onClick={() => writeView('works')}
+                  className={`chip min-h-11 cursor-pointer px-4 text-sm ${view === 'works' ? 'chip-active font-medium' : 'hover:text-text-primary'}`}
+                >
+                  {t('works.viewWorks')}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -78,7 +128,14 @@ export default function MemoriesPage() {
           ) : charactersLoadError ? (
             <div className="surface-panel"><ContentState mode="error" title={charactersLoadError} /></div>
           ) : selectedCharId ? (
-            <MemoryList characterId={selectedCharId} />
+            view === 'works' ? (
+              <WorksCatalogPanel
+                characterId={selectedCharId}
+                characterName={characters.find(character => character.id === selectedCharId)?.name ?? ''}
+              />
+            ) : (
+              <MemoryList characterId={selectedCharId} />
+            )
           ) : (
             <div className="surface-panel">
               <ContentState mode="empty" title={t('memories.noCharacter')} icon={<MemoryIcon className="h-5 w-5" />} />

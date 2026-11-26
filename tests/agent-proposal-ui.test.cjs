@@ -511,6 +511,75 @@ test('消息修改卡片显示发言方和正文差异，批准后作废客户�
   assert.ok(view.getByText('已生效'));
 });
 
+test('片单提案卡片显示新增、修改、恢复、移除，字段前后对照与依据记忆，依据已不成立的项默认不勾选', async () => {
+  const entry = (extra = {}) => ({
+    id: 'work-mirror', character_id: 'char-a', work_type: 'series', title: '黑镜', aliases: [], status: 'watching',
+    rating: '', progress: '第二季第 2 集', note: '', source_memory_ids: [], source_msg_ids: [],
+    first_seen_at: '2026-05-01T00:00:00.000Z', dismissed_at: null, created_at: '2026-05-01T00:00:00.000Z', updated_at: '2026-05-01T00:00:00.000Z', ...extra,
+  });
+  const items = [
+    item(201, 'create', {
+      before: { work_creation: { character_id: 'char-a' } },
+      after: { work_type: 'movie', title: '沙丘', aliases: ['Dune'], status: 'watched', rating: '8.5', progress: '', note: '' },
+      evidence: { message_ids: [], memory_ids: ['mem-ok'] },
+    }),
+    item(202, 'update', {
+      before: { work: entry() },
+      after: { status: 'watched', progress: '' },
+      evidence: { message_ids: [], memory_ids: ['mem-replaced'] },
+    }),
+    item(203, 'update', {
+      before: { work: entry({ id: 'work-math', work_type: 'book', title: '三体', status: 'watching', progress: '', dismissed_at: '2026-06-01T00:00:00.000Z' }) },
+      after: {},
+      evidence: { message_ids: ['msg-1'] },
+    }),
+    item(204, 'retire', {
+      before: { work: entry({ id: 'work-song', work_type: 'game', title: '星露谷物语', status: 'watched', progress: '' }) },
+      after: { dismissed: true },
+      evidence: { message_ids: ['msg-1'] },
+    }),
+  ];
+  const pending = proposalView({
+    items,
+    summary: '整理片单',
+    evidence_memories: [
+      { id: 'mem-ok', content: '用户看完了《沙丘》，打了 8.5 分', status: 'archived', created_at: '2026-05-03 00:00:00', no_longer_true: false },
+      { id: 'mem-replaced', content: '用户还在追《黑镜》', status: 'superseded', created_at: '2026-05-04 00:00:00', no_longer_true: true },
+    ],
+  });
+  const view = render(React.createElement(ProposalCard, { proposalId: 7, initialView: pending }));
+  const text = id => itemElement(view.container, id).textContent;
+  assert.equal(view.getByRole('checkbox', { name: '新增作品' }).checked, true);
+  assert.equal(view.getByRole('checkbox', { name: '修改作品' }).checked, false, '依据已不成立的项默认不勾选');
+  assert.equal(view.getByRole('checkbox', { name: '恢复作品' }).checked, true);
+  assert.equal(view.getByRole('checkbox', { name: '移除作品' }).checked, true);
+
+  assert.ok(text(201).includes('电影《沙丘》'));
+  assert.ok(text(201).includes(zh['agent.works.new']), '新增作品的小标题是「新作品」');
+  assert.equal(text(201).includes(zh['agent.proposal.new']), false, '不能沿用记忆提案的「新记忆」');
+  assert.ok(text(201).includes('别名：Dune'));
+  assert.ok(text(201).includes('状态：看过'));
+  assert.ok(text(201).includes('评分：8.5'));
+  assert.ok(text(201).includes('用户看完了《沙丘》，打了 8.5 分'), '依据记忆显示正文');
+
+  const status = itemElement(view.container, 202).querySelector('[data-work-field="status"]');
+  assert.equal(status.querySelector('del').textContent, '在看');
+  assert.equal(status.querySelector('ins').textContent, '看过');
+  const progress = itemElement(view.container, 202).querySelector('[data-work-field="progress"]');
+  assert.equal(progress.querySelector('del').textContent, '第二季第 2 集');
+  assert.equal(progress.querySelector('ins').textContent, '—', '清空显示为 —');
+  assert.equal(itemElement(view.container, 202).querySelector('[data-work-field="title"]') === null, true, '没改的字段不列出');
+  assert.equal(itemElement(view.container, 202).querySelector('[data-flag="invalid-evidence"]') !== null, true);
+  assert.ok(text(202).includes('mem-replaced'));
+  assert.ok(text(202).includes('已不成立'));
+
+  assert.ok(text(203).includes('书《三体》'));
+  assert.ok(text(203).includes('状态：在读'), '书的状态按读过、在读、想读显示');
+  assert.ok(text(203).includes(zh['agent.works.restoreHint']));
+  assert.ok(text(204).includes('游戏《星露谷物语》'));
+  assert.ok(text(204).includes(zh['agent.works.retireHint']));
+});
+
 test('从零创建角色卡完整展示所有文本，批准及撤销同步角色列表', async () => {
   const fields = {
     name: '暮星', basic_info: '观星者', personality: '温柔好奇', scenario: '夜晚的观测台',

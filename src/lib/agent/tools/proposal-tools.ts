@@ -8,6 +8,8 @@ import {
   createMemoryProposalSchema,
   createMessageProposal,
   createMessageProposalSchema,
+  createWorksProposal,
+  createWorksProposalSchema,
 } from '@/lib/agent/proposals';
 import { defineWriteTool } from './types';
 
@@ -95,6 +97,34 @@ export const createMessageProposalTool = defineWriteTool({
         ok: true, proposal_id: outcome.proposalId, pending_items: outcome.items.length,
         ...(warnings.length > 0 ? { warnings } : {}),
         note: '消息修改提案已生成，等待主人批准。本轮到此结束，批准前不要声称已经修改。',
+      },
+      terminate: true,
+    };
+  },
+});
+
+/** 片单唯一的写入入口：只生成待批准的提案，不修改 character_works。 */
+export const createWorksProposalTool = defineWriteTool({
+  name: 'create_works_proposal',
+  description: `生成待主人批准的作品片单修改提案。片单只收电影、剧集/动画、书、游戏，每部作品一个条目。提案本身不改片单，主人在卡片上逐项批准后才生效，支持撤销。
+先用 get_works_catalog 读取当前片单。items 每项处理一部作品：
+- create：新增条目。type、title、status 必填，可选 aliases、rating、progress、note、first_seen_at（不填时取依据里最早的时间）。片单里已有同一部作品（规范名或别名相同）时不能 create，要对它 update；主人移除过的条目也一样，对它 update 就是恢复。
+- update：修改 work_id 指向的条目，只写要改的字段；rating、progress、note 写空字符串表示清空；aliases 是完整列表，会整个替换，改名时把旧名也放进 aliases。first_seen_at 不会推算，要更正时显式写上。对已移除的条目 update 会同时恢复它。
+- retire：移除 work_id 指向的条目（收进「已移除」，主人可以恢复）。合并重复条目时，update 保留的一条并合并别名，同一份提案里 retire 另一条。
+同一个条目、同一部作品在一份提案里只能出现一次。每份最多 50 项，作品更多时分成几份提案。
+每项都要有 reason 和依据：evidence.memory_ids 写支持它的记忆 ID（已归档、已总结、被合并的原始记忆都可以），evidence.message_ids 写对话消息 ID；被新说法取代或已退场的记忆不能当依据。主人在本会话里的指示逐字写进 evidence.owner_quote；确实没有原文依据时，note 以「${NO_EVIDENCE_NOTE}」开头并解释。批准时依据会并入条目的来源。
+条目 ID、记忆 ID 和消息 ID 可以写至少 8 位的唯一前缀。「修改前」由系统读取；期间条目被改动时该项会过期。任何一项不合法时整份提案不会创建，按返回的原因修正后重试。
+生成成功后本轮立即结束，等待主人批准；不要声称已经修改。`,
+  schema: createWorksProposalSchema,
+  execute(args, ctx) {
+    const outcome = createWorksProposal(ctx.db, args, { sessionId: ctx.sessionId, now: new Date().toISOString() });
+    if (!outcome.ok) return { result: { ok: false, error: `提案未创建：\n${outcome.errors.join('\n')}` } };
+    const warnings = outcome.items.filter(item => item.warning).map(item => `第 ${item.seq} 项：${item.warning}`);
+    return {
+      result: {
+        ok: true, proposal_id: outcome.proposalId, pending_items: outcome.items.length,
+        ...(warnings.length > 0 ? { warnings } : {}),
+        note: '片单提案已生成，等待主人批准。本轮到此结束，批准前不要声称已经修改。',
       },
       terminate: true,
     };

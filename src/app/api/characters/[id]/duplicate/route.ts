@@ -17,6 +17,7 @@ import {
   createMessageTokenCount,
   metadataWithTokenCountProvenance,
 } from '@/lib/message-token-provenance';
+import { mergeIdLists } from '@/lib/works-catalog';
 
 type ConversationRow = {
   id: string;
@@ -166,6 +167,23 @@ type CharacterMemoryConfigRow = {
   updated_at: string;
 };
 
+type CharacterWorkRow = {
+  id: string;
+  work_type: string;
+  title: string;
+  aliases: string;
+  status: string;
+  rating: string;
+  progress: string;
+  note: string;
+  source_memory_ids: string;
+  source_msg_ids: string;
+  first_seen_at: string;
+  dismissed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type TextRange = {
   start: number;
   end: number;
@@ -254,6 +272,25 @@ function remapJsonIds(
   }
 }
 
+/**
+ * 片单依据换成副本里的新 id。副本复制了原角色的全部记忆和全部对话消息，所以两张映射表覆盖了
+ * 所有仍存在的依据；映射不到的只可能指向原角色里已删除的记忆或消息，直接丢掉，
+ * 不让副本的依据指回原角色的数据（原角色之后的删改不应波及副本）。
+ */
+function remapWorkSourceIds(value: string, idMap: ReadonlyMap<string, string>): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return '[]';
+  }
+  if (!Array.isArray(parsed)) return '[]';
+  return JSON.stringify(mergeIdLists(parsed.flatMap(id => {
+    const mapped = typeof id === 'string' ? idMap.get(id) : undefined;
+    return mapped ? [mapped] : [];
+  })));
+}
+
 function remapProfileSnapshotCharacterId(snapshotJson: string, characterId: string): string {
   try {
     const parsed = JSON.parse(snapshotJson) as unknown;
@@ -326,6 +363,10 @@ export async function POST(
     const memoryConfig = db.prepare(
       'SELECT * FROM character_memory_configs WHERE character_id = ?'
     ).get(id) as CharacterMemoryConfigRow | undefined;
+    // 作品片单整份复制（含已移除条目的墓碑）；片单更新任务带认领与租约，与记忆索引任务一样不克隆。
+    const works = db.prepare(
+      'SELECT * FROM character_works WHERE character_id = ? ORDER BY first_seen_at ASC, id ASC'
+    ).all(id) as CharacterWorkRow[];
     const modelPresetBindings = db.prepare(
       `SELECT model, preset_id, sort_order
        FROM character_model_preset_bindings
@@ -448,6 +489,12 @@ export async function POST(
       const memoryId = newMemoryIdMap.get(embedding.memory_id);
       return memoryId ? [{ ...embedding, memory_id: memoryId }] : [];
     });
+    const preparedWorks = works.map(work => ({
+      ...work,
+      id: crypto.randomUUID().slice(0, 12),
+      source_memory_ids: remapWorkSourceIds(work.source_memory_ids, newMemoryIdMap),
+      source_msg_ids: remapWorkSourceIds(work.source_msg_ids, newMessageIdMap),
+    }));
     const memoryIdsWithReadyEmbeddings = new Set(
       preparedEmbeddings.map(embedding => embedding.memory_id),
     );
@@ -559,6 +606,32 @@ export async function POST(
           memory.metadata,
           memory.created_at,
           memory.updated_at,
+        );
+      }
+
+      const insertWork = db.prepare(`
+        INSERT INTO character_works (
+          id, character_id, work_type, title, aliases, status, rating, progress, note,
+          source_memory_ids, source_msg_ids, first_seen_at, dismissed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const work of preparedWorks) {
+        insertWork.run(
+          work.id,
+          newCharacterId,
+          work.work_type,
+          work.title,
+          work.aliases,
+          work.status,
+          work.rating,
+          work.progress,
+          work.note,
+          work.source_memory_ids,
+          work.source_msg_ids,
+          work.first_seen_at,
+          work.dismissed_at,
+          work.created_at,
+          work.updated_at,
         );
       }
 

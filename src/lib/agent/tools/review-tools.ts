@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { MEMORY_STATUSES } from '@/types';
 import { blobToEmbedding, loadReadyMemoryEmbeddings } from '@/lib/memory-embeddings';
 import { createMemoryReviewPlan, getMemoryReviewPlanBatch } from '@/lib/memory-review-plan';
-import { MEMORY_REVIEW_SKILL } from '@/lib/agent/skills/memory-review';
+import { AGENT_SKILL_DEFINITIONS } from '@/lib/agent/skills/memory-review';
 import { defineReadTool } from './types';
 import { MEMORY_COLUMNS_SQL, runReadTool, sqlPlaceholders, toMemoryView } from './shared';
 
@@ -10,12 +10,13 @@ export const AGENT_REVIEW_BATCH_SIZE = 40;
 
 export const loadSkillTool = defineReadTool({
   name: 'load_skill',
-  description: '读取内置 skill 的完整规则。开始整理记忆前先读取 memory-review。',
-  schema: z.object({ name: z.enum(['memory-review']) }),
+  description: '读取内置 skill 的完整规则。开始整理记忆前先读取 memory-review，整理或检查作品片单前先读取 works-catalog。',
+  schema: z.object({ name: z.enum(['memory-review', 'works-catalog']) }),
   execute(args, ctx) {
     return runReadTool(ctx, () => {
-      if (args.name !== MEMORY_REVIEW_SKILL.name) return { ok: false, error: 'Skill 不存在' };
-      return { ok: true, skill: MEMORY_REVIEW_SKILL };
+      const skill = AGENT_SKILL_DEFINITIONS.find(candidate => candidate.name === args.name);
+      if (!skill) return { ok: false, error: 'Skill 不存在' };
+      return { ok: true, skill };
     });
   },
 });

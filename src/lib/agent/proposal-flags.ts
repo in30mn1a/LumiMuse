@@ -1,14 +1,44 @@
 /**
  * 提案项的醒目标注。服务端校验和卡片共用，本文件不引入任何服务端模块，客户端可以直接导入。
  */
+import { parseMemoryMetadata } from '@/lib/metadata';
 import { contentFidelityIssues, messageEditFidelityIssues, type ContentFidelityIssues, type ContentShrink } from './content-fidelity';
-import type { ProposalItemView } from './proposals';
+import type { ProposalEvidenceMemory, ProposalItemView } from './proposals';
 
 /** 没有原文依据时 evidence.note 以这句开头，后面可以写原因；卡片会醒目标出。 */
 export const NO_EVIDENCE_NOTE = '无原文依据';
 
 export function declaresNoEvidence(note: string | undefined): boolean {
   return typeof note === 'string' && note.trim().startsWith(NO_EVIDENCE_NOTE);
+}
+
+/**
+ * 记忆本身说的事是否已不成立：被提取取代（新说法推翻了旧说法）或被 Agent 退场的记忆不能再当依据。
+ * superseded 有两种来源，只能靠 metadata 区分：合并产生的 superseded 事实仍在合并结果里，照样成立；
+ * 已归档、已总结的原始记忆也照样成立。只看这一行：合并结果、摘要后来是否又不成立见 memoryFactCarrier。
+ */
+export function isMemoryNoLongerTrue(status: string, metadata: unknown): boolean {
+  if (status !== 'superseded') return false;
+  const meta = parseMemoryMetadata(metadata);
+  if (meta.retiredByProposalItem !== undefined) return true;
+  return meta.supersededBy?.action !== 'memory_merge' && typeof meta.mergedInto !== 'string';
+}
+
+/**
+ * 合并、归档的原始记忆把事实交给了谁：合并结果（mergedInto）或归档摘要（summarizedBy）。没有时返回 null。
+ * 结果或摘要后来被提取取代、被退场时，原始记忆同样不再成立；服务端顺着这条链检查（proposals.ts）。
+ */
+export function memoryFactCarrier(status: string, metadata: unknown): string | null {
+  const meta = parseMemoryMetadata(metadata);
+  if (status === 'superseded') {
+    if (typeof meta.mergedInto === 'string') return meta.mergedInto;
+    const by = meta.supersededBy;
+    return by?.action === 'memory_merge' && typeof by.memoryId === 'string' ? by.memoryId : null;
+  }
+  if (status === 'archived' || status === 'summarized') {
+    return typeof meta.summarizedBy === 'string' ? meta.summarizedBy : null;
+  }
+  return null;
 }
 
 /** Agent 对建议的把握低于这个值时，卡片标出并默认不勾选。规格没有给出数值，取 0.6。 */
@@ -27,6 +57,8 @@ export interface ProposalItemFlags {
   shrink: ContentShrink | null;
   /** 退场的记忆出现在同一份提案的矛盾报告里：是 Agent 对矛盾的建议，要主人确认 */
   conflictRetire: boolean;
+  /** 依据记忆里已不成立（被取代、被退场）或已删除的条目；没有传入依据记忆的当前状态时为空 */
+  invalidEvidenceMemoryIds: string[];
 }
 
 /** 同一份提案里矛盾报告涉及的记忆 ID。 */
@@ -57,13 +89,20 @@ function rewriteIssues(item: Pick<ProposalItemView, 'op' | 'before'> & Partial<P
 
 export function proposalItemFlags(
   item: Pick<ProposalItemView, 'op' | 'evidence' | 'confidence' | 'before' | 'current_candidate_task'> & Partial<Pick<ProposalItemView, 'after'>>,
-  context: { conflictMemoryIds?: ReadonlySet<string> } = {},
+  context: {
+    conflictMemoryIds?: ReadonlySet<string>;
+    /** 提案视图里依据记忆的当前状态（evidence_memories），按 ID 索引 */
+    evidenceMemories?: ReadonlyMap<string, Pick<ProposalEvidenceMemory, 'no_longer_true'>>;
+  } = {},
 ): ProposalItemFlags {
   const candidate = item.before && 'candidate' in item.before ? item.before.candidate : null;
   const currentTask = item.current_candidate_task === undefined ? candidate?.task ?? null : item.current_candidate_task;
   const taskSucceeded = currentTask !== null && (currentTask.status === 'done' || currentTask.result_committed);
+  const memoryIds = item.evidence.memory_ids ?? [];
+  const evidenceMemories = context.evidenceMemories;
   return {
-    noEvidence: item.evidence.message_ids.length === 0 && !item.evidence.owner_quote && declaresNoEvidence(item.evidence.note),
+    noEvidence: item.evidence.message_ids.length === 0 && memoryIds.length === 0
+      && !item.evidence.owner_quote && declaresNoEvidence(item.evidence.note),
     lowConfidence: item.confidence < LOW_CONFIDENCE_THRESHOLD,
     duplicateRiskCount: item.op === 'repair_candidate' && taskSucceeded
       ? currentTask.result_insert_count
@@ -71,6 +110,9 @@ export function proposalItemFlags(
     ...rewriteIssues(item),
     conflictRetire: item.op === 'retire' && Boolean(item.before && 'memories' in item.before
       && item.before.memories.some(target => context.conflictMemoryIds?.has(target.id))),
+    invalidEvidenceMemoryIds: evidenceMemories
+      ? memoryIds.filter(id => evidenceMemories.get(id)?.no_longer_true ?? true)
+      : [],
   };
 }
 
@@ -78,5 +120,5 @@ export function proposalItemFlags(
 export function isCheckedByDefault(flags: ProposalItemFlags): boolean {
   return !flags.noEvidence && !flags.lowConfidence && flags.duplicateRiskCount === null
     && flags.missingQuotes.length === 0 && flags.unfamiliarChars.length === 0 && flags.shrink === null
-    && !flags.conflictRetire;
+    && !flags.conflictRetire && flags.invalidEvidenceMemoryIds.length === 0;
 }

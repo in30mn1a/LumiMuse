@@ -39,7 +39,7 @@ require.extensions['.ts'] = function loadTs(module, filename) {
   module._compile(output.outputText, filename);
 };
 
-const { assemblePrompt } = require('../src/lib/chat-engine.ts');
+const { assemblePrompt, normalizeMemoryContextText } = require('../src/lib/chat-engine.ts');
 
 function baseCharacter(overrides = {}) {
   return {
@@ -469,6 +469,89 @@ test('full 记忆包变化时首差落在 system（把记忆放进前缀的固�
   assert.match(turnA[0].content, /用户不爱吃甜的/);
   assert.doesNotMatch(turnA[0].content, /用户开始学做甜点/);
   assert.match(turnB[0].content, /用户开始学做甜点/);
+});
+
+// ── 作品片单：确定性文本，固定在 system 的记忆槽位之后 ──────────────────────────
+const WORKS_CATALOG = '## 用户的作品清单\n这是用户看过、在看和想看的作品。\n### 电影\n- 看过：《她》｜评分 9\n### 剧集/动画\n- 在看：《黑镜》｜进度 第二季第 2 集';
+
+test('带片单时两轮 system 逐字节相同，第 N 轮仍是第 N+1 轮的严格前缀', async () => {
+  const character = baseCharacter();
+  const settings = stampedSettings();
+  const settled = [
+    message({ id: 'u1', content: '第一轮提问', created_at: '2026-08-30T01:40:00.000Z' }),
+    message({ id: 'a1', role: 'assistant', content: '第一轮回答', created_at: '2026-08-30T01:41:00.000Z' }),
+    message({ id: 'u2', content: '第二轮提问', created_at: '2026-08-30T01:50:00.000Z' }),
+  ];
+
+  const turnA = await assemblePrompt(character, settled, settings, MEMORY_TEXT, timeAt(57), true, WORKS_CATALOG);
+  const turnB = await assemblePrompt(
+    character,
+    [
+      ...settled,
+      message({ id: 'a2', role: 'assistant', content: '第二轮回答', created_at: '2026-08-30T01:51:00.000Z' }),
+      message({ id: 'u3', content: '第三轮提问', created_at: '2026-08-30T01:58:00.000Z' }),
+    ],
+    settings,
+    MEMORY_TEXT,
+    timeAt(58),
+    true,
+    WORKS_CATALOG,
+  );
+
+  assert.equal(turnA[0].content, turnB[0].content, '带片单的 system 必须逐字节相同');
+  assert.ok(turnB.length > turnA.length);
+  for (let i = 0; i < turnA.length; i += 1) {
+    assert.deepEqual(turnA[i], turnB[i], `messages[${i}] 在下一轮被改写了——片单打断了续聊前缀`);
+  }
+
+  assert.ok(
+    turnA[0].content.includes(`${normalizeMemoryContextText(MEMORY_TEXT)}\n\n${WORKS_CATALOG}\n\n## 行为要求`),
+    '片单必须紧跟记忆槽位、排在 ## 行为要求 之前',
+  );
+});
+
+test('检索模式下记忆进尾部块，片单仍留在 system 且逐轮稳定', async () => {
+  const character = baseCharacter();
+  const settings = stampedSettings();
+  const settled = [
+    message({ id: 'u1', content: '第一轮提问', created_at: '2026-08-30T01:40:00.000Z' }),
+    message({ id: 'a1', role: 'assistant', content: '第一轮回答', created_at: '2026-08-30T01:41:00.000Z' }),
+    message({ id: 'u2', content: '第二轮提问', created_at: '2026-08-30T01:50:00.000Z' }),
+  ];
+
+  const turnA = await assemblePrompt(character, settled, settings, MEMORY_TEXT, timeAt(57), false, WORKS_CATALOG);
+  const turnB = await assemblePrompt(
+    character,
+    [
+      ...settled,
+      message({ id: 'a2', role: 'assistant', content: '第二轮回答', created_at: '2026-08-30T01:51:00.000Z' }),
+      message({ id: 'u3', content: '第三轮提问', created_at: '2026-08-30T01:58:00.000Z' }),
+    ],
+    settings,
+    MEMORY_TEXT_AFTER_EXTRACT,
+    timeAt(58),
+    false,
+    WORKS_CATALOG,
+  );
+
+  assert.equal(turnA[0].content, turnB[0].content, '记忆变了也不影响 system 里的片单');
+  assert.ok(turnA[0].content.includes(`${WORKS_CATALOG}\n\n## 行为要求`));
+  assert.doesNotMatch(turnA[0].content, /用户不爱吃甜的/, '检索模式的记忆不得留在 system');
+  assert.ok(!lastUserContent(turnA).includes('用户的作品清单'), '片单不得进尾部块');
+  assert.match(lastUserContent(turnA), /用户不爱吃甜的/);
+});
+
+test('空片单不改变请求的任何一个字节', async () => {
+  const settled = [
+    message({ id: 'u1', content: '第一轮提问', created_at: '2026-08-30T01:40:00.000Z' }),
+  ];
+  for (const stable of [true, false]) {
+    for (const memory of [MEMORY_TEXT, '']) {
+      const without = await assemblePrompt(baseCharacter(), settled, stampedSettings(), memory, timeAt(57), stable);
+      const empty = await assemblePrompt(baseCharacter(), settled, stampedSettings(), memory, timeAt(57), stable, '');
+      assert.deepEqual(empty, without);
+    }
+  }
 });
 
 test('检索模式的记忆包仍会打破前缀（该配置的已知上限）', async () => {

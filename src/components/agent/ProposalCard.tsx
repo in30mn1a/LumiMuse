@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ProposalEvidenceMessage, ProposalItemView, ProposalView } from '@/lib/agent/proposals';
+import type { ProposalEvidenceMemory, ProposalEvidenceMessage, ProposalItemView, ProposalView } from '@/lib/agent/proposals';
 import { conflictMemoryIds, isCheckedByDefault, proposalItemFlags } from '@/lib/agent/proposal-flags';
 import { getErrorMessage, HttpResponseError, parseJsonResponse } from '@/lib/http';
 import { useTranslation } from '@/lib/i18n-context';
@@ -16,10 +16,17 @@ function isPendingDecision(item: ProposalItemView): boolean {
   return item.state === 'pending' && item.op !== 'report_conflict';
 }
 
+/** 片单提案的依据记忆按 ID 索引；旧版接口没有这一项。 */
+function evidenceMemoryMap(view: ProposalView | null): Map<string, ProposalEvidenceMemory> {
+  return new Map((view?.evidence_memories ?? []).map(memory => [memory.id, memory]));
+}
+
 function defaultSelection(view: ProposalView): Set<number> {
   const conflicts = conflictMemoryIds(view.items);
+  const evidenceMemories = evidenceMemoryMap(view);
   return new Set(view.items
-    .filter(item => isPendingDecision(item) && isCheckedByDefault(proposalItemFlags(item, { conflictMemoryIds: conflicts })))
+    .filter(item => isPendingDecision(item)
+      && isCheckedByDefault(proposalItemFlags(item, { conflictMemoryIds: conflicts, evidenceMemories })))
     .map(item => item.id));
 }
 
@@ -100,6 +107,7 @@ export default function ProposalCard({ proposalId, initialView, busy = false, de
     () => new Map<string, ProposalEvidenceMessage>((view?.evidence_messages ?? []).map(message => [message.id, message])),
     [view],
   );
+  const evidenceMemories = useMemo(() => evidenceMemoryMap(view), [view]);
 
   if (!view) {
     return (
@@ -176,7 +184,7 @@ export default function ProposalCard({ proposalId, initialView, busy = false, de
 
   const conflictTargets = conflictMemoryIds(conflicts);
   const renderItem = (item: ProposalItemView) => {
-    const flags = proposalItemFlags(item, { conflictMemoryIds: conflictTargets });
+    const flags = proposalItemFlags(item, { conflictMemoryIds: conflictTargets, evidenceMemories });
     const selectable = decidable && isPendingDecision(item);
     return (
       <ProposalCardItem
@@ -184,6 +192,7 @@ export default function ProposalCard({ proposalId, initialView, busy = false, de
         item={item}
         flags={flags}
         messages={messages}
+        memories={evidenceMemories}
         selection={selectable ? {
           checked: selected.has(item.id),
           disabled: locked,

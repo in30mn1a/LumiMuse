@@ -9,8 +9,10 @@
  *     避免读到不认识的字段后写出半成品数据。
  *
  * 历史：
- *   - v3（当前）：包含预设和条目，完整恢复默认选择与模型绑定；旧版本会忽略这些角色指令，必须拒绝降级导入
+ *   - v4（当前）：每份导出带 `works`（作品片单，含已移除条目，跟随记忆导出）；旧版本会静默丢掉片单
+ *     和主人移除的墓碑，必须拒绝降级导入。v1~v3 的备份照常导入，缺 `works` 时片单为空
+ *   - v3：包含预设和条目，完整恢复默认选择与模型绑定；旧版本会忽略这些角色指令，必须拒绝降级导入
  *   - v2：包含 characters / memories / conversations / version / exported_at
  *   - v1（已淘汰，仍可被 import 兼容读取）：早期单角色格式
  */
-export const EXPORT_VERSION = 3;
+export const EXPORT_VERSION = 4;

@@ -390,6 +390,7 @@ test('F06: /api/import never throws on a null element in any other array field',
     { field: 'model_preset_bindings', extra: { character: { id: 'old-char', name: '绑定角色' } }, characters: 2 },
     { field: 'prompt_presets' },
     { field: 'prompt_preset_entries' },
+    { field: 'works' },
   ];
 
   // 先收集全部结果再一次性断言，失败时能看到每个字段各自的表现。

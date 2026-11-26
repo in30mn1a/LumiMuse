@@ -8,6 +8,8 @@ import {
   buildChainMessageScope,
   resolveConversationChain,
 } from '@/lib/conversation-chain';
+import { compareWorks, parseWorkRow } from '@/lib/works-catalog';
+import type { WorkEntry } from '@/types';
 
 /**
  * GET /api/export?type=character&id=xxx  — 导出单个角色（含记忆和对话）
@@ -23,6 +25,11 @@ import {
  * 单角色导出（type=character）始终尝试带上画像 / 画像版本 / embedding，
  * 并受 include_profiles / include_embeddings 控制；include_memories=0 时
  * embedding 自动跳过（没有记忆就没有向量索引）。
+ *
+ * 作品片单（works）跟着 include_memories 走，两种导出格式一致：片单是从记忆和对话里整理出来的
+ * 「用户看过什么」，依据也指向记忆；只导出片单不导出记忆时依据全部悬空，只导出记忆不导出片单
+ * 又会让迁移后的角色忘掉看过的作品。片单没有单独的开关，也不导出片单更新任务（任务带认领与租约，
+ * 只对源实例有意义）。
  *
  * 路由内 requireAuth：与 import/maintenance/settings 对称的防御纵深。
  * export 是单请求即可拿走全部角色/对话/记忆/画像的最大批量读路径，
@@ -89,6 +96,8 @@ export async function GET(request: NextRequest) {
     const embeddings = includeEmbeddings
       ? loadEmbeddingsForCharacter(db, characterId)
       : [];
+    // 作品片单：含已移除条目（墓碑要跟着走，否则导入后自动更新会把主人移除的作品加回来）。
+    const works = includeMemories ? loadWorksForCharacter(db, characterId) : [];
     // 角色级记忆引擎覆盖（token 预算 / 向量 / reranker 等），与角色绑定导出。
     const memoryConfig = loadMemoryConfigForCharacter(db, characterId);
     const modelPresetBindings = loadModelPresetBindingsForCharacter(db, characterId);
@@ -107,6 +116,7 @@ export async function GET(request: NextRequest) {
       memory_profile: profile,
       memory_profile_versions: profileVersions,
       memory_embeddings: embeddings,
+      works,
       character_memory_config: memoryConfig,
       model_preset_bindings: modelPresetBindings,
       ...presetData,
@@ -138,6 +148,8 @@ export async function GET(request: NextRequest) {
   const profiles = includeProfiles ? loadAllProfiles(db) : [];
   const profileVersions = includeProfiles ? loadAllProfileVersions(db) : [];
   const embeddings = includeEmbeddings ? loadAllEmbeddings(db) : [];
+  // 作品片单跟着记忆走（见文件头注释），含已移除条目。
+  const works = includeMemories ? loadAllWorks(db) : [];
   // 角色级记忆配置随角色导出；include_characters=0 时也不带配置行。
   const memoryConfigs = includeCharacters ? loadAllMemoryConfigs(db) : [];
   const modelPresetBindings = includeCharacters ? loadAllModelPresetBindings(db) : [];
@@ -151,6 +163,7 @@ export async function GET(request: NextRequest) {
     memory_profiles: profiles,
     memory_profile_versions: profileVersions,
     memory_embeddings: embeddings,
+    works,
     character_memory_configs: memoryConfigs,
     character_model_preset_bindings: modelPresetBindings,
     ...loadPresetData(db, includeCharacters ? undefined : []),
@@ -284,6 +297,27 @@ function loadAllEmbeddings(db: ReturnType<typeof getDb>): Record<string, unknown
   return (db.prepare(
     "SELECT * FROM memory_embeddings WHERE status = 'ready' ORDER BY character_id, memory_id",
   ).all() as Record<string, unknown>[]).map(serializeEmbedding);
+}
+
+/**
+ * 片单行按 parseWorkRow 序列化：aliases / source_memory_ids / source_msg_ids 导出为数组（与记忆的
+ * tags、source_msg_ids 一致），dismissed_at 等时间原样保留。类型或状态不认识的行
+ * （只可能来自手工改库）读取端本来就不显示，导出也跳过，导入端同样会拒收。
+ */
+function loadWorksForCharacter(db: ReturnType<typeof getDb>, characterId: string): WorkEntry[] {
+  if (!tableExists(db, 'character_works')) return [];
+  return (db.prepare('SELECT * FROM character_works WHERE character_id = ?').all(characterId) as Parameters<typeof parseWorkRow>[0][])
+    .map(parseWorkRow)
+    .filter((entry): entry is WorkEntry => entry !== null)
+    .sort(compareWorks);
+}
+
+function loadAllWorks(db: ReturnType<typeof getDb>): WorkEntry[] {
+  if (!tableExists(db, 'character_works')) return [];
+  return (db.prepare('SELECT * FROM character_works').all() as Parameters<typeof parseWorkRow>[0][])
+    .map(parseWorkRow)
+    .filter((entry): entry is WorkEntry => entry !== null)
+    .sort((a, b) => (a.character_id < b.character_id ? -1 : a.character_id > b.character_id ? 1 : compareWorks(a, b)));
 }
 
 function loadMemoryConfigForCharacter(

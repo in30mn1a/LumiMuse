@@ -8,16 +8,23 @@
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { MEMORY_CATEGORIES, MEMORY_KINDS, type MemoryCategory } from '@/types';
+import {
+  MEMORY_CATEGORIES, MEMORY_KINDS, WORK_STATUSES, WORK_TYPES,
+  type MemoryCategory, type WorkEntry, type WorkStatus, type WorkType,
+} from '@/types';
 import { MAX_MEMORY_CONTENT, MAX_MESSAGE_CONTENT, MAX_TAG_LENGTH, MAX_TAGS } from '@/lib/schemas';
 import { normalizeTags } from '@/lib/memory-tag-spec';
 import { getMergeSourceIssue, type MemoryMergeSourceIssue } from '@/lib/memory-merge';
 import { memoryBusinessSnapshot, type MemoryBusinessSnapshot } from '@/lib/memory-mutations';
 import { getMemorySourceAttribution } from '@/lib/metadata';
+import { parseStoredTimestamp } from '@/lib/memory-time-cutoff';
+import {
+  WORK_FIELD_LIMITS, cleanWorkAliases, cleanWorkTitle, isUsableWorkTitle, listWorks, normalizeWorkTitle,
+} from '@/lib/works-catalog';
 import {
   contentFidelityIssues, findSourceNotePhrases, messageEditFidelityIssues, type ContentFidelityIssues,
 } from './content-fidelity';
-import { NO_EVIDENCE_NOTE, declaresNoEvidence } from './proposal-flags';
+import { NO_EVIDENCE_NOTE, declaresNoEvidence, isMemoryNoLongerTrue, memoryFactCarrier } from './proposal-flags';
 import {
   CHARACTER_CARD_FIELDS,
   characterCardCreateSchema,
@@ -152,8 +159,54 @@ export const createMessageProposalSchema = z.strictObject({
 });
 export type CreateMessageProposalInput = z.infer<typeof createMessageProposalSchema>;
 
+const textLimit = (limit: number) => `最多 ${limit} 字`;
+
+const worksProposalItemSchema = z.strictObject({
+  op: z.enum(['create', 'update', 'retire']).describe('create 新增条目；update 修改已有条目（对已移除条目 update 即恢复）；retire 移除条目'),
+  work_id: z.string().min(1).optional().describe('update、retire 的目标条目 ID（get_works_catalog 返回的 id）'),
+  type: z.enum(WORK_TYPES).optional().describe('作品类型：movie 电影，series 剧集/动画，book 书，game 游戏。create 必填'),
+  title: z.string().optional().describe(`规范名，用通行的中文名，不带书名号；${textLimit(WORK_FIELD_LIMITS.title)}。create 必填`),
+  aliases: z.array(z.string()).optional()
+    .describe(`其他叫法（原名、简称等）的完整列表，update 时整个替换，要保留的旧别名和改名前的旧名都要写上；最多 ${WORK_FIELD_LIMITS.aliases} 个，每个${textLimit(WORK_FIELD_LIMITS.alias)}`),
+  status: z.enum(WORK_STATUSES).optional()
+    .describe('watched 看过/读过/玩过，watching 在看/在读/在玩，want 想看/想读/想玩。create 必填'),
+  rating: z.string().optional().describe(`主人给的评分，照原话写（如「9.0」「8.5–9」）；${textLimit(WORK_FIELD_LIMITS.rating)}，update 时空字符串清空`),
+  progress: z.string().optional().describe(`进度，如「第二季第 2 集」；${textLimit(WORK_FIELD_LIMITS.progress)}，update 时空字符串清空`),
+  note: z.string().optional().describe(`一句话印象；${textLimit(WORK_FIELD_LIMITS.note)}，update 时空字符串清空`),
+  first_seen_at: z.string().optional().describe('最早提到这部作品的时间（ISO 时间）；create 不填时批准时取依据里最早的时间，update 不会推算，要更正时显式写上'),
+  reason: z.string().max(MAX_REASON).describe('为什么这样改，写给主人看'),
+  evidence: evidenceSchema.extend({
+    memory_ids: z.array(z.string().min(1)).max(MAX_EVIDENCE_MESSAGES).default([])
+      .describe('支持这一项的记忆 ID，可以是已归档、已总结或被合并的原始记忆；被新说法取代或已退场的记忆不能当依据'),
+  }).optional(),
+  confidence: z.number().min(0).max(1).describe('对这项建议的把握（0–1）'),
+});
+
+export const createWorksProposalSchema = z.strictObject({
+  character_id: z.string().min(1).describe('片单所属角色 ID'),
+  summary: z.string().max(MAX_SUMMARY).describe('一句话概括这份提案'),
+  items: z.array(worksProposalItemSchema).min(1).max(MAX_PROPOSAL_ITEMS)
+    .describe(`每项处理一部作品，最多 ${MAX_PROPOSAL_ITEMS} 项；作品更多时分成几份提案`),
+});
+export type CreateWorksProposalInput = z.infer<typeof createWorksProposalSchema>;
+type WorksProposalItemInput = CreateWorksProposalInput['items'][number];
+
+/** 片单提案的 after_json：create 是完整的新条目，update 只含改动的字段。 */
+export interface ProposalWorkFields {
+  work_type?: WorkType;
+  title?: string;
+  aliases?: string[];
+  status?: WorkStatus;
+  rating?: string;
+  progress?: string;
+  note?: string;
+  first_seen_at?: string;
+}
+
 export interface ProposalEvidence {
   message_ids: string[];
+  /** 片单提案的依据记忆；记忆提案没有这一项 */
+  memory_ids?: string[];
   note?: string;
   /** 主人在本会话里说过的原话，服务端已核对 */
   owner_quote?: string;
@@ -200,13 +253,17 @@ export interface ProposalRepairAfter {
   memories: MemoryFields[];
 }
 
-/** before_json 的形状：create 为 null。 */
+/** before_json 的形状：记忆 create 为 null。 */
 export type ProposalBefore =
   | { memories: ProposalMemoryTarget[] }
   | { candidate: ProposalCandidateTarget }
   | { character: ProposalCharacterTarget }
   | { character_creation: { id: string } }
   | { message: ProposalMessageTarget }
+  /** 片单 update、retire：提案时的完整条目，批准和撤销据此判断是否已被改动 */
+  | { work: WorkEntry }
+  /** 片单 create：新条目批准前不存在 */
+  | { work_creation: { character_id: string } }
   | null;
 
 export interface CreatedProposalItem {
@@ -398,19 +455,27 @@ function resolveIdPrefixes(
   });
 }
 
+/** 角色内记忆 ID、消息 ID 的精确查询与前缀查询，供 resolveIdPrefixes 使用。 */
+function characterIdLookups(db: Database.Database, characterId: string) {
+  return {
+    memoryExact: (ids: readonly string[]) => new Set(ids.length === 0 ? [] : (db.prepare(`
+      SELECT id FROM memories WHERE character_id = ? AND id IN (${placeholders(ids.length)})
+    `).all(characterId, ...ids) as { id: string }[]).map(row => row.id)),
+    memoryPrefix: (pattern: string, limit: number) => (db.prepare(`
+      SELECT id FROM memories WHERE character_id = ? AND id GLOB ? ORDER BY id LIMIT ?
+    `).all(characterId, pattern, limit) as { id: string }[]).map(row => row.id),
+    messageExact: (ids: readonly string[]) => existingMessageIds(db, characterId, ids),
+    messagePrefix: (pattern: string, limit: number) => (db.prepare(`
+      SELECT m.id FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE c.character_id = ? AND m.id GLOB ? ORDER BY m.id LIMIT ?
+    `).all(characterId, pattern, limit) as { id: string }[]).map(row => row.id),
+  };
+}
+
 /** 提案里的记忆 ID 与依据消息 ID 先补全前缀，存下的提案一律是完整 ID。 */
 function resolveItemIds(db: Database.Database, characterId: string, item: ProposalItemInput, errors: string[]): ProposalItemInput {
-  const memoryExact = (ids: readonly string[]) => new Set(ids.length === 0 ? [] : (db.prepare(`
-    SELECT id FROM memories WHERE character_id = ? AND id IN (${placeholders(ids.length)})
-  `).all(characterId, ...ids) as { id: string }[]).map(row => row.id));
-  const memoryPrefix = (pattern: string, limit: number) => (db.prepare(`
-    SELECT id FROM memories WHERE character_id = ? AND id GLOB ? ORDER BY id LIMIT ?
-  `).all(characterId, pattern, limit) as { id: string }[]).map(row => row.id);
-  const messagePrefix = (pattern: string, limit: number) => (db.prepare(`
-    SELECT m.id FROM messages m
-    JOIN conversations c ON c.id = m.conversation_id
-    WHERE c.character_id = ? AND m.id GLOB ? ORDER BY m.id LIMIT ?
-  `).all(characterId, pattern, limit) as { id: string }[]).map(row => row.id);
+  const { memoryExact, memoryPrefix, messageExact, messagePrefix } = characterIdLookups(db, characterId);
 
   const resolved: ProposalItemInput = { ...item };
   if (item.memory_id !== undefined) {
@@ -422,13 +487,13 @@ function resolveItemIds(db: Database.Database, characterId: string, item: Propos
   if (item.fields?.source_msg_ids !== undefined) {
     resolved.fields = {
       ...item.fields,
-      source_msg_ids: resolveIdPrefixes(item.fields.source_msg_ids, ids => existingMessageIds(db, characterId, ids), messagePrefix, '来源消息 ID', errors),
+      source_msg_ids: resolveIdPrefixes(item.fields.source_msg_ids, messageExact, messagePrefix, '来源消息 ID', errors),
     };
   }
   if (item.evidence?.message_ids?.length) {
     resolved.evidence = {
       ...item.evidence,
-      message_ids: resolveIdPrefixes(item.evidence.message_ids, ids => existingMessageIds(db, characterId, ids), messagePrefix, '消息 ID', errors),
+      message_ids: resolveIdPrefixes(item.evidence.message_ids, messageExact, messagePrefix, '消息 ID', errors),
     };
   }
   return resolved;
@@ -931,6 +996,274 @@ export function createMessageProposal(
   return savePreparedProposal(db, characterId, summary, prepared, context);
 }
 
+const charCount = (value: string) => Array.from(value).length;
+
+/** 字段长度按 WORK_FIELD_LIMITS 校验（字符数，与自动更新的截断口径一致）；超长直接拒绝，不替模型截断。 */
+function checkWorkFieldLimits(item: WorksProposalItemInput, errors: string[]): void {
+  const over = (value: string | undefined, limit: number, label: string) => {
+    if (value !== undefined && charCount(value.trim()) > limit) errors.push(`${label}超过 ${limit} 字`);
+  };
+  if (item.title !== undefined) over(cleanWorkTitle(item.title), WORK_FIELD_LIMITS.title, '名称');
+  if (item.aliases !== undefined) {
+    if (item.aliases.length > WORK_FIELD_LIMITS.aliases) errors.push(`别名最多 ${WORK_FIELD_LIMITS.aliases} 个`);
+    for (const alias of item.aliases) over(cleanWorkTitle(alias), WORK_FIELD_LIMITS.alias, `别名「${alias}」`);
+  }
+  over(item.rating, WORK_FIELD_LIMITS.rating, '评分');
+  over(item.progress, WORK_FIELD_LIMITS.progress, '进度');
+  over(item.note, WORK_FIELD_LIMITS.note, '印象');
+}
+
+/** first_seen_at 统一存成 ISO；兼容只写日期或 SQLite 时间格式。空串视为没给。 */
+function normalizeFirstSeen(value: string | undefined, errors: string[]): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const timestamp = parseStoredTimestamp(trimmed);
+  if (timestamp === null) {
+    errors.push(`first_seen_at 不是有效的时间：${trimmed}`);
+    return undefined;
+  }
+  return new Date(timestamp).toISOString();
+}
+
+/** 同一类型下，名称或别名归一化后与 names 有交集的条目（含已移除），排除 excludeId。 */
+function clashingWorks(entries: readonly WorkEntry[], type: WorkType, names: readonly string[], excludeId: string | null): WorkEntry[] {
+  const keys = new Set(names.map(normalizeWorkTitle).filter(Boolean));
+  return entries.filter(entry => entry.id !== excludeId && entry.work_type === type
+    && [entry.title, ...entry.aliases].some(name => keys.has(normalizeWorkTitle(name))));
+}
+
+/** 片单条目 ID 前缀补全：只在该角色的条目里找，规则同记忆 ID。 */
+function resolveWorkId(entries: readonly WorkEntry[], id: string, errors: string[]): string {
+  return resolveIdPrefixes(
+    [id],
+    ids => new Set(entries.filter(entry => ids.includes(entry.id)).map(entry => entry.id)),
+    (pattern, limit) => entries.map(entry => entry.id)
+      .filter(entryId => entryId.startsWith(pattern.slice(0, -1))).sort().slice(0, limit),
+    '片单条目 ID',
+    errors,
+  )[0];
+}
+
+/** 顺着合并结果、归档摘要往下找的层数上限；正常只有一两层，上限和 seen 集合只防坏数据成环。 */
+const MAX_MEMORY_CHAIN_DEPTH = 8;
+
+/**
+ * ids 里说的事现在已不成立的记忆（片单提案的依据检查和卡片标注共用）。
+ * 合并、归档的原始记忆本身仍算成立，但事实已交给合并结果或摘要：它们后来被提取取代或被退场时，
+ * 原始记忆同样不成立。查不到的记忆、链断在已删除的结果上，都不算在内（已删除的依据由调用方另行处理）。
+ */
+export function noLongerTrueMemoryIds(db: Database.Database, characterId: string, ids: readonly string[]): Set<string> {
+  const select = db.prepare('SELECT status, metadata FROM memories WHERE id = ? AND character_id = ?');
+  const cache = new Map<string, { status: string; metadata: string | null } | undefined>();
+  const load = (id: string) => {
+    if (!cache.has(id)) cache.set(id, select.get(id, characterId) as { status: string; metadata: string | null } | undefined);
+    return cache.get(id);
+  };
+  const result = new Set<string>();
+  for (const id of new Set(ids)) {
+    const seen = new Set<string>();
+    let current: string | null = id;
+    while (current !== null && !seen.has(current) && seen.size <= MAX_MEMORY_CHAIN_DEPTH) {
+      seen.add(current);
+      const row = load(current);
+      if (!row) break;
+      if (isMemoryNoLongerTrue(row.status, row.metadata)) {
+        result.add(id);
+        break;
+      }
+      current = memoryFactCarrier(row.status, row.metadata);
+    }
+  }
+  return result;
+}
+
+/**
+ * 片单项的依据：记忆、消息、主人原话三者至少有一，或 note 以「无原文依据」开头。
+ * 记忆和消息都必须属于该角色。记忆可以是任何状态（归档、合并的原始记忆仍是事实），
+ * 但已不成立的记忆（含合并结果、摘要后来不成立的原始记忆）只返回给调用方提示，由卡片标出，不拒绝整份提案。
+ */
+function checkWorkEvidence(
+  db: Database.Database,
+  characterId: string,
+  input: WorksProposalItemInput['evidence'],
+  sessionId: string | null,
+  errors: string[],
+): { evidence: ProposalEvidence; invalidMemoryIds: string[] } {
+  const memoryIds = [...new Set(input?.memory_ids ?? [])];
+  let invalidMemoryIds: string[] = [];
+  if (memoryIds.length > 0) {
+    const found = new Set((db.prepare(`
+      SELECT id FROM memories WHERE character_id = ? AND id IN (SELECT value FROM json_each(?))
+    `).all(characterId, JSON.stringify(memoryIds)) as { id: string }[]).map(row => row.id));
+    const missing = memoryIds.filter(id => !found.has(id));
+    if (missing.length > 0) errors.push(`依据记忆不存在或不属于该角色：${missing.join('、')}`);
+    const noLongerTrue = noLongerTrueMemoryIds(db, characterId, memoryIds.filter(id => found.has(id)));
+    invalidMemoryIds = memoryIds.filter(id => noLongerTrue.has(id));
+  }
+  const base = checkEvidence(db, characterId, input, false, sessionId, errors);
+  if (memoryIds.length === 0 && base.message_ids.length === 0 && base.owner_quote === undefined && !declaresNoEvidence(base.note)) {
+    errors.push(`缺少依据：请在 evidence.memory_ids 或 evidence.message_ids 给出来源；依据是主人在本会话里的指示时，把原话逐字写进 owner_quote；确实没有原文依据时，note 以「${NO_EVIDENCE_NOTE}」开头`);
+  }
+  return { evidence: { ...base, memory_ids: memoryIds }, invalidMemoryIds };
+}
+
+const WORK_INPUT_FIELDS = ['type', 'title', 'aliases', 'status', 'rating', 'progress', 'note', 'first_seen_at'] as const;
+
+/**
+ * 创建片单修改提案，沿用提案批准流程，创建时不写 character_works。
+ * 任何一项不合法时整份不创建：目标条目不属于该角色、同一份提案里两项指向同一条目或同一作品、
+ * create 撞上已有条目（未移除的要改用 update，已移除的对它 update 即恢复）、字段超长、依据不属于该角色。
+ */
+export function createWorksProposal(
+  db: Database.Database,
+  input: CreateWorksProposalInput,
+  context: { sessionId: string | null; now: string },
+): CreateProposalOutcome {
+  const characterId = input.character_id;
+  if (!db.prepare('SELECT id FROM characters WHERE id = ?').get(characterId)) {
+    return { ok: false, errors: [`角色 ${characterId} 不存在`] };
+  }
+  const errors: string[] = [];
+  const summary = input.summary.trim();
+  if (!summary) errors.push('缺少提案概述（summary）');
+
+  const entries = listWorks(db, characterId, { includeDismissed: true });
+  const entriesById = new Map(entries.map(entry => [entry.id, entry]));
+  const lookups = characterIdLookups(db, characterId);
+
+  // 先补全全部 ID：合并重复条目是「update 一条并 retire 另一条」，检查 update 改名后是否重名时要知道哪些条目会被移除
+  const itemErrors = input.items.map((): string[] => []);
+  const workIds = input.items.map((item, index) => (
+    item.work_id === undefined ? undefined : resolveWorkId(entries, item.work_id, itemErrors[index])
+  ));
+  const evidenceInputs = input.items.map((item, index) => (item.evidence === undefined ? undefined : {
+    ...item.evidence,
+    memory_ids: resolveIdPrefixes(item.evidence.memory_ids, lookups.memoryExact, lookups.memoryPrefix, '记忆 ID', itemErrors[index]),
+    message_ids: resolveIdPrefixes(item.evidence.message_ids, lookups.messageExact, lookups.messagePrefix, '消息 ID', itemErrors[index]),
+  }));
+  const retiring = new Set(input.items.flatMap((item, index) => (item.op === 'retire' && workIds[index] ? [workIds[index]] : [])));
+
+  const prepared: PreparedItem[] = [];
+  const workClaims = new Map<string, number>();
+  const nameClaims = new Map<string, number>();
+  input.items.forEach((item, index) => {
+    const seq = index + 1;
+    const problems = itemErrors[index];
+    const workId = workIds[index];
+    const reason = item.reason.trim();
+    if (!reason) problems.push('缺少理由');
+    const givenFields = WORK_INPUT_FIELDS.filter(field => item[field] !== undefined);
+    if (item.op === 'create') {
+      if (item.work_id !== undefined) problems.push('create 不使用 work_id');
+      for (const field of ['type', 'title', 'status'] as const) {
+        if (item[field] === undefined) problems.push(`create 需要 ${field}`);
+      }
+    } else {
+      if (item.work_id === undefined) problems.push(`${item.op} 需要 work_id`);
+      if (item.op === 'retire' && givenFields.length > 0) problems.push(`retire 不使用 ${givenFields.join('、')}`);
+    }
+    checkWorkFieldLimits(item, problems);
+    const firstSeen = normalizeFirstSeen(item.first_seen_at, problems);
+
+    let before: ProposalBefore = null;
+    let after: ProposalWorkFields | { dismissed: true } | null = null;
+    let identity: { type: WorkType; names: string[] } | null = null;
+    const warnings: string[] = [];
+    if (problems.length === 0 && item.op === 'create') {
+      const title = cleanWorkTitle(item.title!);
+      if (!isUsableWorkTitle(title)) problems.push('作品名称不能为空');
+      const aliases = cleanWorkAliases(item.aliases ?? [], title);
+      identity = { type: item.type!, names: [title, ...aliases] };
+      for (const clash of clashingWorks(entries, item.type!, identity.names, null)) {
+        problems.push(clash.dismissed_at === null
+          ? `片单里已有「${clash.title}」（${clash.id}）：同一作品请改用 update`
+          : `「${clash.title}」（${clash.id}）是主人移除过的条目：确实要恢复时对它用 update，批准后即恢复`);
+      }
+      before = { work_creation: { character_id: characterId } };
+      after = {
+        work_type: item.type!, title, aliases, status: item.status!,
+        rating: item.rating?.trim() ?? '', progress: item.progress?.trim() ?? '', note: item.note?.trim() ?? '',
+        ...(firstSeen === undefined ? {} : { first_seen_at: firstSeen }),
+      };
+    } else if (problems.length === 0) {
+      const entry = entriesById.get(workId!);
+      if (!entry) {
+        problems.push(`片单条目 ${workId} 不存在或不属于该角色`);
+      } else if (item.op === 'retire') {
+        if (entry.dismissed_at !== null) problems.push(`「${entry.title}」（${entry.id}）已经移除`);
+        before = { work: entry };
+        after = { dismissed: true };
+      } else {
+        const changes: ProposalWorkFields = {};
+        if (item.type !== undefined && item.type !== entry.work_type) changes.work_type = item.type;
+        if (item.title !== undefined) {
+          const title = cleanWorkTitle(item.title);
+          if (!isUsableWorkTitle(title)) problems.push('作品名称不能为空');
+          else if (title !== entry.title) changes.title = title;
+        }
+        const nextTitle = changes.title ?? entry.title;
+        const currentAliases = cleanWorkAliases(entry.aliases, nextTitle);
+        if (item.aliases !== undefined) {
+          const aliases = cleanWorkAliases(item.aliases, nextTitle);
+          if (!sameStringSet(aliases, entry.aliases)) changes.aliases = aliases;
+        }
+        for (const field of ['rating', 'progress', 'note'] as const) {
+          const value = item[field]?.trim();
+          if (value !== undefined && value !== entry[field]) changes[field] = value;
+        }
+        if (item.status !== undefined && item.status !== entry.status) changes.status = item.status;
+        if (firstSeen !== undefined && firstSeen !== entry.first_seen_at) changes.first_seen_at = firstSeen;
+        if (Object.keys(changes).length === 0 && entry.dismissed_at === null) {
+          problems.push(`对「${entry.title}」（${entry.id}）没有实际改动`);
+        }
+        if (entry.dismissed_at !== null) warnings.push(`「${entry.title}」是主人移除过的条目，批准这一项会恢复它`);
+        const type = changes.work_type ?? entry.work_type;
+        identity = { type, names: [nextTitle, ...(changes.aliases ?? currentAliases)] };
+        for (const clash of clashingWorks(entries, type, identity.names, entry.id)) {
+          if (clash.dismissed_at !== null || retiring.has(clash.id)) continue;
+          problems.push(`改动后与片单里的「${clash.title}」（${clash.id}）重名：同一作品请 update 保留的一条（合并别名），并在同一份提案里 retire 另一条`);
+        }
+        before = { work: entry };
+        after = changes;
+      }
+    }
+
+    // 同一份提案里两项动同一条目或同一作品，后批准的一项必然过期或造出重复，创建时就指出
+    if (workId !== undefined && entriesById.has(workId)) {
+      const claimedBy = workClaims.get(workId);
+      if (claimedBy !== undefined) problems.push(`条目 ${workId} 已在第 ${claimedBy} 项中处理，一个条目只能出现在一项里`);
+      else workClaims.set(workId, seq);
+    }
+    if (identity) {
+      const clashes = new Set<number>();
+      for (const name of identity.names) {
+        const normalized = normalizeWorkTitle(name);
+        if (!normalized) continue;
+        const key = `${identity.type}:${normalized}`;
+        const claimedBy = nameClaims.get(key);
+        if (claimedBy !== undefined) clashes.add(claimedBy);
+        else nameClaims.set(key, seq);
+      }
+      for (const claimedBy of clashes) problems.push(`与第 ${claimedBy} 项是同一部作品，一部作品只能出现在一项里`);
+    }
+
+    const { evidence, invalidMemoryIds } = checkWorkEvidence(db, characterId, evidenceInputs[index], context.sessionId, problems);
+    if (invalidMemoryIds.length > 0) {
+      warnings.push(`依据记忆 ${invalidMemoryIds.join('、')} 已被新说法取代或已退场（或它并入的合并结果、归档摘要已被取代或退场），不能证明现在的情况，卡片已标出并默认不勾选`);
+    }
+    if (problems.length === 0) {
+      prepared.push({
+        op: item.op, reason, evidence, confidence: item.confidence, before, after,
+        state: 'pending', memoryTargets: [], candidateTarget: null,
+        warning: warnings.length > 0 ? warnings.join('；') : null,
+      });
+    }
+    for (const message of problems) errors.push(`第 ${seq} 项（${item.op}）：${message}`);
+  });
+  if (errors.length > 0) return { ok: false, errors };
+  return savePreparedProposal(db, characterId, summary, prepared, context);
+}
+
 export interface ProposalRow {
   id: number;
   session_id: string | null;
@@ -982,9 +1315,20 @@ export interface ProposalEvidenceMessage {
   created_at: string;
 }
 
+/** 依据记忆（片单提案）的当前状态，卡片直接显示；已删除的记忆不在其中。 */
+export interface ProposalEvidenceMemory {
+  id: string;
+  content: string;
+  status: string;
+  created_at: string;
+  /** 已被新说法取代或已退场：不能再证明现在的情况，卡片标出 */
+  no_longer_true: boolean;
+}
+
 export interface ProposalView extends ProposalRow {
   items: ProposalItemView[];
   evidence_messages: ProposalEvidenceMessage[];
+  evidence_memories: ProposalEvidenceMemory[];
 }
 
 export function listProposalItems(db: Database.Database, proposalId: number): ProposalItemRow[] {
@@ -1042,7 +1386,17 @@ function toProposalView(db: Database.Database, proposal: ProposalRow): ProposalV
     WHERE c.character_id = ? AND m.id IN (SELECT value FROM json_each(?))
     ORDER BY m.created_at, m.id
   `).all(proposal.character_id, JSON.stringify(messageIds)) as ProposalEvidenceMessage[];
-  return { ...proposal, items, evidence_messages: evidenceMessages };
+  const memoryIds = [...new Set(items.flatMap(item => item.evidence.memory_ids ?? []))];
+  const noLongerTrue = memoryIds.length === 0 || !proposal.character_id
+    ? new Set<string>()
+    : noLongerTrueMemoryIds(db, proposal.character_id, memoryIds);
+  const evidenceMemories = memoryIds.length === 0 ? [] : (db.prepare(`
+    SELECT id, content, status, created_at FROM memories
+    WHERE character_id = ? AND id IN (SELECT value FROM json_each(?))
+    ORDER BY created_at, id
+  `).all(proposal.character_id, JSON.stringify(memoryIds)) as Omit<ProposalEvidenceMemory, 'no_longer_true'>[])
+    .map((memory): ProposalEvidenceMemory => ({ ...memory, no_longer_true: noLongerTrue.has(memory.id) }));
+  return { ...proposal, items, evidence_messages: evidenceMessages, evidence_memories: evidenceMemories };
 }
 
 /** 原提取任务的实时状态。候选记录状态只决定能否处理，不代表任务是否已经重试成功。 */

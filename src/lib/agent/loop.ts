@@ -131,7 +131,7 @@ function eventModelText(payload: AgentEventPayload): string | null {
     case 'error':
       return '（系统记录：上一轮因请求失败中断。）';
     case 'proposal_decision':
-      return `（系统记录：主人处理了提案 #${payload.proposal_id}。\n${payload.items.map(decisionLine).join('\n')}\n只有「已批准并生效」的项改了记忆。）`;
+      return `（系统记录：主人处理了提案 #${payload.proposal_id}。\n${payload.items.map(decisionLine).join('\n')}\n只有「已批准并生效」的项真正写入了数据。）`;
     case 'compaction':
       // 摘要由 buildHistoryEntries 放在历史开头，不在原位置重复
       return null;

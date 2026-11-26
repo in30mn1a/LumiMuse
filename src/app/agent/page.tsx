@@ -39,6 +39,8 @@ function AgentPageInner() {
   const searchParams = useSearchParams();
   const activeId = searchParams.get('session');
   const conversationParam = searchParams.get('conversation');
+  // 其它页面带来的草稿（如片单的「让 Agent 从记忆整理」）：只预填输入框，不建会话、不发送
+  const draftParam = searchParams.get('draft');
 
   const sessions = useAgentSessions();
   const { create: createSession, refresh: refreshSessions } = sessions;
@@ -372,6 +374,7 @@ function AgentPageInner() {
           compacting={chat.compacting}
           compactDisabled={sendPending || chat.sending || chat.serverRunning || !chat.detail?.messages.some(message => message.role !== 'event')}
           onContinue={canContinue ? () => void handleSend(t('agent.proposal.continuePrompt')) : undefined}
+          draft={draftParam}
         />
       </main>
 

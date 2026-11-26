@@ -115,7 +115,7 @@ for (const type of ['all', 'character']) {
       const before = await assemblePresetPrompt(source.prepare("SELECT * FROM characters WHERE id='original'").get(), [], settings, '', undefined, preset, presets.loadEnabledEntries(preset.id));
       assert.ok(JSON.stringify(before).includes(instruction));
       const backup = await (await fresh('src/app/api/export/route.ts').GET(request(null, `/api/export?type=${type}&id=original`))).json();
-      assert.equal(backup.version, 3);
+      assert.equal(backup.version, 4);
       assert.equal(backup.prompt_presets.length, 1);
       assert.equal(backup.prompt_preset_entries.length, 3);
       current = target;

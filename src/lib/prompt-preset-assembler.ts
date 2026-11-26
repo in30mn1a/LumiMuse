@@ -148,7 +148,8 @@ function renderEntry(
   entry: PresetEntry,
   ctx: {
     character: Character;
-    memoryText: string;
+    /** 记忆槽位的最终文本：规范化后的记忆包 + 作品片单，均为空时为 ''。 */
+    memorySlotText: string;
     macro: MacroContext;
     renderContent: (content: string) => string;
   },
@@ -185,7 +186,7 @@ function renderEntry(
       return [{ role: entry.role, content: `## 示例对话\n\n${body}` }];
     }
     case 'memoryPackage': {
-      const text = normalizeMemoryContextText(ctx.memoryText);
+      const text = ctx.memorySlotText;
       if (!text) return [];
       return [{ role: entry.role, content: text }];
     }
@@ -280,6 +281,8 @@ export interface AssemblePresetPromptOptions {
   generationType?: 'normal' | 'regenerate';
   /** 按请求脚本不存在来组装：脚本运行失败时的回退，控制指令不能留给上游。 */
   ignoreRequestProcessor?: boolean;
+  /** 已渲染的作品片单，跟在记忆包后面占同一个位置；不注入时为空。 */
+  worksCatalogText?: string;
 }
 
 function hasAttachments(messages: Message[]): boolean {
@@ -330,10 +333,14 @@ export async function assemblePresetPrompt(
     .filter(e => e.injection_position === 0)
     .sort((a, b) => a.sort_order - b.sort_order);
   const inChatEntries = enabledEntries.filter(e => e.injection_position === 1);
-  const normalizedMemoryText = normalizeMemoryContextText(memoryText);
+  // 记忆槽位 = 记忆包 + 作品片单（片单在后）。记忆为空时片单单独占这个位置；
+  // 两者都为空时为 ''，不产生任何消息，请求与没有片单时逐字节相同。
+  const memorySlotText = [normalizeMemoryContextText(memoryText), options?.worksCatalogText ?? '']
+    .filter(Boolean)
+    .join('\n\n');
   const hasMemoryPackageMarker = relativeEntries.some(e => e.marker_key === 'memoryPackage');
-  const memoryMessages: ChatMessage[] = !hasMemoryPackageMarker && normalizedMemoryText
-    ? [{ role: 'system', content: normalizedMemoryText }]
+  const memoryMessages: ChatMessage[] = !hasMemoryPackageMarker && memorySlotText
+    ? [{ role: 'system', content: memorySlotText }]
     : [];
 
   // 取当前 user 正文及文本附件供 {{lastUserMessage}} 替换，不含展示层时间戳。
@@ -388,7 +395,7 @@ export async function assemblePresetPrompt(
   const segments: RelativeSegment[] = [];
   const renderCtx = {
     character,
-    memoryText,
+    memorySlotText,
     macro,
     renderContent,
   };
@@ -455,7 +462,8 @@ export async function assemblePresetPrompt(
       0,
     );
   }
-  if (memoryMessages.length > 0) baseTokens += estimateTokens(normalizedMemoryText);
+  // memoryPackage 标记处的槽位已在上面的 segments 里计入；这里只补无标记时的独立 system。
+  if (memoryMessages.length > 0) baseTokens += estimateTokens(memorySlotText);
   // 进 system 的生图指令已含在 behaviorAndTimeContent 里，只有挂最后一条 user 时才需另计。
   if (inlinePromptInstruction && !inlinePromptInSystem) {
     baseTokens += estimateTokens(inlinePromptInstruction);

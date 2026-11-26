@@ -9,6 +9,7 @@ import { estimateTokens } from '@/lib/token-counter';
 import { retrieveRelevantMemories } from '@/lib/memory-engine';
 import { retrieveWorkingMemoryPackage } from '@/lib/memory-retrieval';
 import { createMemoryTimeCutoffFilter, type MemorySourceMessage } from '@/lib/memory-time-cutoff';
+import { loadWorksCatalogText } from '@/lib/works-catalog';
 import { normalizeCharacterMemoryChatInjectionMode } from '@/lib/memory-runtime-policy';
 import { buildCurrentTimeInstruction, buildTimestampAnchoredTimeInstruction, ChatTimeContext, formatChatTimestamp, resolveCurrentTimeContext } from '@/lib/chat-time';
 import { serializeTypedMessages, parseMessageMetadata } from '@/lib/messages';
@@ -254,6 +255,7 @@ function buildSystemPrompt(
   character: Character,
   exampleDialogue: string,
   memoryText: string,
+  worksCatalogText: string,
   timeInstruction: string,
   inlinePromptInstruction: string,
   inlinePromptInSystem: boolean,
@@ -290,6 +292,12 @@ function buildSystemPrompt(
 
   if (memoryText) {
     prompt += `${normalizeMemoryContextText(memoryText)}\n\n`;
+  }
+
+  // 作品片单固定跟在记忆槽位之后：片单变化时不会让前面的全量记忆缓存失效。
+  // 检索模式下记忆移到尾部块，片单仍留在这里，所以它始终在稳定前缀里。
+  if (worksCatalogText) {
+    prompt += `${worksCatalogText}\n\n`;
   }
 
   prompt += `## 行为要求\n${BEHAVIOR_INSTRUCTION}`;
@@ -509,6 +517,8 @@ export async function assemblePrompt(
   memories: string[] | string,
   timeContext?: ChatTimeContext,
   memoryIsStable = true,
+  /** 已渲染的作品片单；调用方按 memory_inject 决定是否读取，不注入时传空串。 */
+  worksCatalogText = '',
 ): Promise<ChatMessage[]> {
   const memoryText = settings.memory_inject
     ? (typeof memories === 'string' ? memories.trim() : renderLegacyMemoryContext(memories, settings))
@@ -522,6 +532,7 @@ export async function assemblePrompt(
   //     'system' 进 system（字节稳定、利于前缀缓存；约束力较弱，部分模型会被角色人设压掉）
   //   - full 记忆包：不看 query，本轮字节稳定，必须留在 system
   //   - 检索模式记忆包逐轮变 → 进尾部块
+  //   - 作品片单：确定性渲染，片单不变时逐字节相同 → 两种模式都留在 system
   const inlinePromptInstruction = settings.image_gen?.enabled && settings.image_gen?.inline_prompt
     ? buildInlinePromptInstruction(
         prepareImageTagsForLlm(character.image_tags).tagsForLlm,
@@ -539,6 +550,7 @@ export async function assemblePrompt(
       ? renderExampleDialogue(character.example_dialogue, character.name)
       : '',
     memoryIsStable ? memoryText : '',
+    worksCatalogText,
     useStableTimeInstruction ? buildTimestampAnchoredTimeInstruction(timeContext) : '',
     inlinePromptInstruction,
     inlinePromptInSystem,
@@ -887,6 +899,31 @@ export async function runChat(
     }
   }
 
+  // 作品片单：与记忆同受 memory_inject 控制，每轮整份注入。它不经过记忆检索，
+  // 不占 memory_package_token_budget，也不影响记忆的入选集合。
+  // 重新生成 / 插入历史回复时与记忆共用同一个时间截断，只给那一刻之前就有的作品。
+  let worksCatalogText = '';
+  let lastWorksCatalogInjection: { count: number; tokens: number } | undefined;
+  if (chatSettings.memory_inject) {
+    try {
+      const catalog = loadWorksCatalogText(
+        db,
+        conversation.character_id,
+        memoryCutoff ? { cutoff: memoryCutoff.cutoff, inclusive: memoryCutoff.inclusive } : {},
+      );
+      if (catalog.count > 0 && catalog.text) {
+        worksCatalogText = catalog.text;
+        lastWorksCatalogInjection = { count: catalog.count, tokens: estimateTokens(catalog.text) };
+      }
+    } catch (error) {
+      // 片单读取失败不阻塞聊天：本轮不带片单照常回复。
+      structuredLog('warn', 'works_catalog.inject_failed', {
+        conversationId,
+        characterId: conversation.character_id,
+      }, error);
+    }
+  }
+
   // full 不看 queryText，本轮可留在 system 前缀里；检索/legacy-fallback 逐轮会变，必须挂最后一条 user。
   // memory_inject 关闭时没有 lastMemoryInjection，记忆包为空，走哪条都一样。
   const memoryIsStable = !lastMemoryInjection || lastMemoryInjection.mode === 'full';
@@ -914,7 +951,11 @@ export async function runChat(
       effectiveTimeContext,
       preset,
       presetEntries,
-      { generationType: options?.regenerateAssistantId ? 'regenerate' : 'normal', ignoreRequestProcessor },
+      {
+        generationType: options?.regenerateAssistantId ? 'regenerate' : 'normal',
+        ignoreRequestProcessor,
+        worksCatalogText,
+      },
     );
     chatMessages = await assemble(false);
     const { createPresetRuntime } = await import('@/lib/spreset/runtime');
@@ -925,7 +966,15 @@ export async function runChat(
     }
     presetRuntime = createPresetRuntime(activePreset, presetEntries, { fallbackMessages: () => assemble(true) });
   } else {
-    chatMessages = await assemblePrompt(character, contextMessages, chatSettings, memoryContents, effectiveTimeContext, memoryIsStable);
+    chatMessages = await assemblePrompt(
+      character,
+      contextMessages,
+      chatSettings,
+      memoryContents,
+      effectiveTimeContext,
+      memoryIsStable,
+      worksCatalogText,
+    );
   }
 
   // 捕获上游返回的真实 usage（流式在最后一个 chunk，非流式在响应 body）。
@@ -1000,6 +1049,12 @@ export async function runChat(
       if (lastMemoryInjection) {
         meta.last_memory_injection = lastMemoryInjection;
       }
+      // 片单统计只描述本轮：本轮没注入时清掉旧版本留下的值，避免前端显示过期占用
+      if (lastWorksCatalogInjection) {
+        meta.last_works_catalog_injection = lastWorksCatalogInjection;
+      } else {
+        delete meta.last_works_catalog_injection;
+      }
       if (webSearchSources?.length) {
         meta.web_search_sources = webSearchSources;
       } else {
@@ -1038,6 +1093,9 @@ export async function runChat(
       // 保存本轮记忆注入统计（条数 + token 数 + 模式），供前端展示
       if (lastMemoryInjection) {
         meta.last_memory_injection = lastMemoryInjection;
+      }
+      if (lastWorksCatalogInjection) {
+        meta.last_works_catalog_injection = lastWorksCatalogInjection;
       }
       if (webSearchSources?.length) {
         meta.web_search_sources = webSearchSources;

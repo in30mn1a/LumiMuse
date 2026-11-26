@@ -169,6 +169,52 @@ test('character DELETE checks only collected candidates and preserves other char
   db.close();
 });
 
+test('character DELETE cascades the works catalog and its pending update tasks to the deleted character only', async () => {
+  // 用真实 migrate 的表结构并打开外键（与 getDb() 一致）：片单两张表靠 ON DELETE CASCADE 跟随角色删除，
+  // 删除路由没有为它们写显式 DELETE。
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  require('../src/lib/db.ts').__migrateForTests(db);
+  try {
+    db.prepare('INSERT INTO characters (id, name) VALUES (?, ?)').run('char-target', 'Target');
+    db.prepare('INSERT INTO characters (id, name) VALUES (?, ?)').run('char-keep', 'Keep');
+    const insertWork = db.prepare(`
+      INSERT INTO character_works (
+        id, character_id, work_type, title, status, first_seen_at, dismissed_at, created_at, updated_at
+      ) VALUES (?, ?, 'movie', ?, 'watched', '2026-08-01T00:00:00.000Z', ?, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')
+    `);
+    insertWork.run('work-target', 'char-target', '千与千寻', null);
+    insertWork.run('work-target-dismissed', 'char-target', '星际穿越', '2026-08-02T00:00:00.000Z');
+    insertWork.run('work-keep', 'char-keep', '千与千寻', null);
+    const insertTask = db.prepare(
+      "INSERT INTO character_works_update_tasks (character_id, source_text, status) VALUES (?, '对话片段', ?)",
+    );
+    insertTask.run('char-target', 'pending');
+    insertTask.run('char-target', 'processing');
+    insertTask.run('char-keep', 'pending');
+
+    const route = loadDeleteRoute(db, {
+      collectCharacterLocalAssetUrls: () => new Set(),
+      filterUnreferencedLocalAssetUrls: () => [],
+      deleteLocalAssetUrls: async () => [],
+    });
+    const response = await route.DELETE({}, { params: Promise.resolve({ id: 'char-target' }) });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(db.prepare('SELECT id FROM characters ORDER BY id').all(), [{ id: 'char-keep' }]);
+    assert.deepEqual(
+      db.prepare('SELECT id, character_id FROM character_works ORDER BY id').all(),
+      [{ id: 'work-keep', character_id: 'char-keep' }],
+    );
+    assert.deepEqual(
+      db.prepare('SELECT character_id, status FROM character_works_update_tasks ORDER BY id').all(),
+      [{ character_id: 'char-keep', status: 'pending' }],
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('character editor prevents duplicate deletes and exposes localized pending state', () => {
   const page = fs.readFileSync(path.join(root, 'src/app/characters/[id]/page.tsx'), 'utf8');
   const i18n = fs.readFileSync(path.join(root, 'src/lib/i18n.ts'), 'utf8');

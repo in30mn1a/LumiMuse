@@ -188,7 +188,7 @@ export function getDb(): Database.Database {
 /**
  * 后台队列启动注册表：每条独立 import + recover + trigger。
  * 新增队列时在此追加一项即可，不要再往 getDb 里堆 setImmediate 分支。
- * 三个租约队列走 recoverAndWakeAtLeaseExpiry：快速重启留下的未过期租约到期后会自动补跑一次。
+ * 四个租约队列（提取、画像、片单、向量索引）走 recoverAndWakeAtLeaseExpiry：快速重启留下的未过期租约到期后会自动补跑一次。
  */
 const BACKGROUND_QUEUE_BOOT: Array<{
   run: (onError: (err: unknown) => void) => Promise<void>;
@@ -219,6 +219,20 @@ const BACKGROUND_QUEUE_BOOT: Array<{
     },
     onError: (err) => {
       structuredLog('error', 'memory.profile.boot_failed', {
+        operation: 'recover_and_drain', status: 'failed',
+      }, err);
+    },
+  },
+  {
+    run: async (onError) => {
+      const { recoverStaleWorksCatalogTasks, triggerWorksCatalogQueue } = await import('@/lib/works-catalog-update');
+      recoverAndWakeAtLeaseExpiry(getDb(), 'character_works_update_tasks', {
+        recover: recoverStaleWorksCatalogTasks,
+        trigger: triggerWorksCatalogQueue,
+      }, onError);
+    },
+    onError: (err) => {
+      structuredLog('error', 'memory.works_catalog.boot_failed', {
         operation: 'recover_and_drain', status: 'failed',
       }, err);
     },
@@ -1239,6 +1253,45 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_memory_revisions_memory ON memory_revisions(character_id, memory_id, id);
     CREATE INDEX IF NOT EXISTS idx_memory_revisions_item ON memory_revisions(proposal_item_id);
+
+    -- 作品片单：每个角色每部作品一行，由程序按字段维护（见 works-catalog.ts）。
+    -- 类型与状态取值在代码里校验；dismissed_at 非空即主人移除（墓碑，自动更新不会加回）。
+    -- 只新增表、不提升 CURRENT_SCHEMA_VERSION，旧镜像不读这些表，仍可回滚启动。
+    CREATE TABLE IF NOT EXISTS character_works (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      work_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      aliases TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL,
+      rating TEXT NOT NULL DEFAULT '',
+      progress TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      source_memory_ids TEXT NOT NULL DEFAULT '[]',
+      source_msg_ids TEXT NOT NULL DEFAULT '[]',
+      first_seen_at TEXT NOT NULL,
+      dismissed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_character_works_character ON character_works(character_id, work_type);
+
+    CREATE TABLE IF NOT EXISTS character_works_update_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      conversation_id TEXT,
+      source_text TEXT NOT NULL,
+      source_msg_ids TEXT NOT NULL DEFAULT '[]',
+      source_time TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      claim_token TEXT,
+      lease_expires_at TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_character_works_update_tasks_status ON character_works_update_tasks(status, id);
   `);
 
   allowCharacterlessAgentProposals(db);

@@ -15,6 +15,18 @@ import { createMessageTokenCount, metadataWithTokenCountProvenance } from '@/lib
 import { presetImportWarningsSchema, presetInjectionTriggerSchema } from '@/lib/schemas';
 import { enqueueMemoryEmbeddingTask, ensureMemoryEmbeddingTables } from '@/lib/memory-embeddings';
 import { resolveMemoryIndexTarget, triggerMemoryIndexProcessing } from '@/lib/memory-index-trigger';
+import { parseStoredTimestamp } from '@/lib/memory-time-cutoff';
+import {
+  WORK_FIELD_LIMITS,
+  cleanWorkAliases,
+  cleanWorkTitle,
+  clipWorkText,
+  isUsableWorkTitle,
+  isWorkStatus,
+  isWorkType,
+  mergeIdLists,
+  normalizeWorkTitle,
+} from '@/lib/works-catalog';
 
 interface ImportPayload {
   version?: number;
@@ -39,6 +51,8 @@ interface ImportPayload {
   character_model_preset_bindings?: Record<string, unknown>[];
   prompt_presets?: Record<string, unknown>[];
   prompt_preset_entries?: Record<string, unknown>[];
+  // 作品片单（v4 起，两种格式字段名相同，每行带 character_id）；旧备份没有此字段
+  works?: Record<string, unknown>[];
 }
 
 interface ConversationWithMessages {
@@ -293,6 +307,28 @@ function jsonRecordString(value: unknown): string {
   return JSON.stringify(asRecord(value) || {});
 }
 
+/**
+ * 片单依据（记忆 / 消息 id 列表）改写成本次导入的新 id：映射不到的说明对应记忆或对话没导入，
+ * 直接丢掉，不留下指向目标实例里其他数据的悬空依据。导出是数组，也接受数据库原样的 JSON 字符串。
+ */
+function remapWorkSourceIds(value: unknown, idMap: Map<string, string>): string {
+  const ids = (JSON.parse(jsonStringArray(value)) as string[])
+    .flatMap(id => {
+      const mapped = idMap.get(id);
+      return mapped ? [mapped] : [];
+    });
+  return JSON.stringify(mergeIdLists(ids));
+}
+
+/**
+ * 片单时间戳能解析时统一存成 ISO：first_seen_at 截断片单时用 Date.parse（SQLite 格式会被当成本地时间），
+ * 排序按字符串比较，两种格式混存都会错位。解析不了时原样返回（缺失为空串），由调用方回退。
+ */
+function normalizeWorkTimestamp(value: unknown): string {
+  const timestamp = parseStoredTimestamp(value);
+  return timestamp === null ? asString(value) : new Date(timestamp).toISOString();
+}
+
 function remapSourceMessageIds(value: unknown, messageIdMap: Map<string, string>): string {
   const remapped = remapJsonStringIds(jsonArrayString(value), messageIdMap);
   try {
@@ -454,6 +490,7 @@ function createEmptyResults() {
     embeddingsImported: 0,
     memoryConfigsImported: 0,
     modelPresetBindingsImported: 0,
+    worksImported: 0,
     // 同名冲突重命名后的角色列表，便于前端提示用户「这些角色已重命名导入」。
     warnings: [] as Array<
       { type: 'character_renamed'; originalName: string; newName: string }
@@ -556,6 +593,11 @@ export async function POST(request: NextRequest) {
   const embeddingsToImport: Record<string, unknown>[] = includeEmbeddings
     ? asRecordArray<Record<string, unknown>>(payload.memory_embeddings)
     : [];
+  // 作品片单跟着记忆导入，与导出端对称：片单依据指向记忆，二者分开迁移会让依据悬空。
+  // 可选字段：v1~v3 旧备份没有 works，导入照常成功，片单保持为空。
+  const worksToImport: Record<string, unknown>[] = includeMemories
+    ? asRecordArray<Record<string, unknown>>(payload.works)
+    : [];
   // 角色级记忆配置：单角色字段 character_memory_config，全量 character_memory_configs。
   // 与角色绑定；导入时按 idMap / target_character_id 重映射。可选字段，旧备份无此字段则空数组。
   const configsToImport: Record<string, unknown>[] = [
@@ -634,6 +676,7 @@ export async function POST(request: NextRequest) {
     profilesToImport.length === 0 &&
     profileVersionsToImport.length === 0 &&
     embeddingsToImport.length === 0 &&
+    worksToImport.length === 0 &&
     configsToImport.length === 0 &&
     modelPresetBindingsToImport.length === 0
   ) {
@@ -658,6 +701,7 @@ export async function POST(request: NextRequest) {
     profilesToImport,
     profileVersionsToImport,
     embeddingsToImport,
+    worksToImport,
     configsToImport,
     modelPresetBindingsToImport,
     presetsToImport,
@@ -706,6 +750,7 @@ function importPayload({
   profilesToImport,
   profileVersionsToImport,
   embeddingsToImport,
+  worksToImport,
   configsToImport,
   modelPresetBindingsToImport,
   presetsToImport,
@@ -720,6 +765,7 @@ function importPayload({
   profilesToImport: Record<string, unknown>[];
   profileVersionsToImport: Record<string, unknown>[];
   embeddingsToImport: Record<string, unknown>[];
+  worksToImport: Record<string, unknown>[];
   configsToImport: Record<string, unknown>[];
   modelPresetBindingsToImport: Record<string, unknown>[];
   presetsToImport: Record<string, unknown>[];
@@ -1087,6 +1133,93 @@ function importPayload({
       for (const { memoryId, metadata } of memoryMetadataToRemap) {
         const remapped = remapMemoryMetadataReferences(metadata, { memoryIdMap, messageIdMap, batchIdMap });
         updateMemoryMetadata.run(JSON.stringify(remapped), memoryId);
+      }
+    }
+
+    // ── 导入作品片单 ────────────────────────────────────────────
+    // 放在记忆和消息之后：依据要用完整的 memoryIdMap / messageIdMap 改写。
+    // 每行换新 id，character_id 按 idMap / target_character_id 重映射；类型、状态不认识或名称为空的行跳过。
+    // 墓碑 dismissed_at 保留（否则自动更新会把主人移除的作品加回来），first_seen_at 决定
+    // 历史重新生成时片单截到哪里，也保留；这几个时间戳能解析时统一转成 ISO。
+    // 文本字段按 WORK_FIELD_LIMITS 截断，与自动更新口径一致。
+    // 有片单时才 prepare：片单表由 migrate 建立，没有片单的导入不依赖它。
+    if (worksToImport.length > 0) {
+      const insertWork = db.prepare(`
+        INSERT INTO character_works (
+          id, character_id, work_type, title, aliases, status, rating, progress, note,
+          source_memory_ids, source_msg_ids, first_seen_at, dismissed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const resolveWorkCharId = (work: Record<string, unknown>) => {
+        const originalCharId = asString(work.character_id);
+        return target_character_id || idMap.get(originalCharId) || originalCharId;
+      };
+
+      // 去重只对照本次导入之前目标里已有的条目（含已移除）：导入到已有角色、目标里已有这部作品时保留原条目。
+      // 备份内部的多行原样写入、与源库一致——若把本次刚写入的行也算进去，备份里已移除的《Her》
+      // 会挡掉同一份备份里在看的《她》（别名 Her）。循环前一次性按（角色, 类型）收好已有名称和别名的
+      // 归一化结果，循环里只查内存，整体线性。
+      const workKey = (characterId: string, workType: string) => `${characterId}\u0000${workType}`;
+      const existingWorkNames = new Map<string, Set<string>>();
+      const selectExistingWorks = db.prepare(
+        'SELECT work_type, title, aliases, status FROM character_works WHERE character_id = ?',
+      );
+      for (const characterId of new Set(worksToImport.map(resolveWorkCharId))) {
+        const rows = selectExistingWorks.all(characterId) as Array<{
+          work_type: string;
+          title: string;
+          aliases: string;
+          status: string;
+        }>;
+        for (const row of rows) {
+          // 与 parseWorkRow 一致：类型或状态不认识的行不参与匹配
+          if (!isWorkType(row.work_type) || !isWorkStatus(row.status)) continue;
+          const key = workKey(characterId, row.work_type);
+          let names = existingWorkNames.get(key);
+          if (!names) {
+            names = new Set();
+            existingWorkNames.set(key, names);
+          }
+          for (const name of [row.title, ...(JSON.parse(jsonStringArray(row.aliases)) as string[])]) {
+            const normalized = normalizeWorkTitle(name);
+            if (normalized) names.add(normalized);
+          }
+        }
+      }
+
+      for (const work of worksToImport) {
+        const newCharId = resolveWorkCharId(work);
+        if (!characterExists(newCharId)) continue;
+        if (!isWorkType(work.work_type) || !isWorkStatus(work.status)) continue;
+        const title = clipWorkText(cleanWorkTitle(asString(work.title)), WORK_FIELD_LIMITS.title);
+        if (!isUsableWorkTitle(title)) continue;
+        const aliases = cleanWorkAliases(
+          (JSON.parse(jsonStringArray(work.aliases)) as string[])
+            .map(alias => clipWorkText(cleanWorkTitle(alias), WORK_FIELD_LIMITS.alias)),
+          title,
+        ).slice(0, WORK_FIELD_LIMITS.aliases);
+        const existingNames = existingWorkNames.get(workKey(newCharId, work.work_type));
+        if (existingNames && [title, ...aliases].some(name => existingNames.has(normalizeWorkTitle(name)))) continue;
+
+        const createdAt = normalizeWorkTimestamp(work.created_at) || now;
+        insertWork.run(
+          crypto.randomUUID().slice(0, 12),
+          newCharId,
+          work.work_type,
+          title,
+          JSON.stringify(aliases),
+          work.status,
+          clipWorkText(asString(work.rating), WORK_FIELD_LIMITS.rating),
+          clipWorkText(asString(work.progress), WORK_FIELD_LIMITS.progress),
+          clipWorkText(asString(work.note), WORK_FIELD_LIMITS.note),
+          remapWorkSourceIds(work.source_memory_ids, memoryIdMap),
+          remapWorkSourceIds(work.source_msg_ids, messageIdMap),
+          normalizeWorkTimestamp(work.first_seen_at) || createdAt,
+          normalizeWorkTimestamp(work.dismissed_at) || null,
+          createdAt,
+          normalizeWorkTimestamp(work.updated_at) || createdAt,
+        );
+        results.worksImported++;
       }
     }
 

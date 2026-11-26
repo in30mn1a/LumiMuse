@@ -17,7 +17,7 @@ import ChatToolbar from './ChatToolbar';
 import ChatMessageList, { type SearchHighlight } from './ChatMessageList';
 import ChatModals from './ChatModals';
 import type { DuplicateMode } from './DuplicateConvModal';
-import type { TokenBreakdownItem, RealUsage, MemoryInjectionInfo } from './TokenBreakdownModal';
+import type { TokenBreakdownItem, RealUsage, MemoryInjectionInfo, WorksCatalogInjectionInfo } from './TokenBreakdownModal';
 import { ConversationDrawer } from './ConversationListPanels';
 import { useTranslation } from '@/lib/i18n-context';
 import { useConversationLoader } from '@/hooks/chat/useConversationLoader';
@@ -438,6 +438,14 @@ export default function ChatView({
     return limitInject ? Math.min(fullTokens, memoryPackageBudget) : fullTokens;
   }, [memories, memoryInjectEnabled, memoryPackageBudget, limitInject]);
 
+  // 从最近一轮注入记忆的 assistant 消息 metadata.last_works_catalog_injection 派生片单占用
+  const lastWorksCatalogInjection = useMemo(
+    () => extractLastWorksCatalogInjection(visibleMessages),
+    [visibleMessages],
+  );
+  // 片单与记忆同受注入开关控制；前端没有片单原文，用服务端上一轮实际注入的 token 数
+  const worksCatalogTokens = memoryInjectEnabled ? (lastWorksCatalogInjection?.tokens ?? 0) : 0;
+
   const systemPromptTokens = useMemo(() => {
     return (
       systemPromptParts.systemPrompt
@@ -447,8 +455,9 @@ export default function ChatView({
       + systemPromptParts.otherInfo
       + systemPromptParts.exampleDialogue
       + memoriesTokens
+      + worksCatalogTokens
     );
-  }, [systemPromptParts, memoriesTokens]);
+  }, [systemPromptParts, memoriesTokens, worksCatalogTokens]);
 
   // 估算总量（fallback 用）：当没有真实 usage 时（新对话/上游不支持）才显示
   const estimatedTokenCount = messageTokens + systemPromptTokens;
@@ -468,9 +477,10 @@ export default function ChatView({
         tokens: memoriesTokens,
         detail: formatTemplate(t('token.memoriesDetail'), { count: memories.length }),
       },
+      { labelKey: 'token.worksCatalog', tokens: worksCatalogTokens },
       { labelKey: 'token.messages', tokens: messageTokens },
     ];
-  }, [systemPromptParts, memoriesTokens, messageTokens, memories.length, t]);
+  }, [systemPromptParts, memoriesTokens, worksCatalogTokens, messageTokens, memories.length, t]);
 
   // 从最近 assistant 消息 metadata.last_usage 派生真实统计。
   // 派生逻辑抽成纯函数（extractLastRealUsage），useMemo 只调用纯函数，
@@ -1197,6 +1207,7 @@ export default function ChatView({
             items={tokenBreakdownItems}
             lastRealUsage={lastRealUsage}
             lastMemoryInjection={lastMemoryInjection}
+            lastWorksCatalogInjection={memoryInjectEnabled ? lastWorksCatalogInjection : null}
           />
         )}
       </ChatModals>
@@ -1221,6 +1232,28 @@ function extractLastMemoryInjection(messages: Message[]): MemoryInjectionInfo | 
         mode: injection.mode,
       };
     }
+  }
+  return null;
+}
+
+/**
+ * 从最近一轮注入记忆的 assistant 消息派生作品片单占用。
+ * 片单与记忆同受 memory_inject 控制，那一轮必然写了 last_memory_injection；
+ * 片单为空时服务端不写 last_works_catalog_injection，所以只看这一条，不往更早的消息找，
+ * 否则片单清空后还会显示过期的占用。
+ */
+function extractLastWorksCatalogInjection(messages: Message[]): WorksCatalogInjectionInfo | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    const meta = (msg.metadata || {}) as Record<string, unknown>;
+    if (!meta.last_memory_injection) continue;
+    const injection = meta.last_works_catalog_injection as { count?: number; tokens?: number } | undefined;
+    if (!injection || !Number.isFinite(injection.count) || Number(injection.count) <= 0) return null;
+    return {
+      count: Number(injection.count),
+      tokens: Number.isFinite(injection.tokens) ? Number(injection.tokens) : 0,
+    };
   }
   return null;
 }

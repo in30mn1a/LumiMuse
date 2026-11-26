@@ -45,6 +45,14 @@ export interface MemoryInjectionInfo {
   mode?: string;
 }
 
+/** 上一轮作品片单注入统计（来自 assistant 消息 metadata.last_works_catalog_injection） */
+export interface WorksCatalogInjectionInfo {
+  /** 注入的作品条数 */
+  count: number;
+  /** 片单文本的 token 数（服务端 cl100k_base 估算） */
+  tokens: number;
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -53,9 +61,18 @@ interface Props {
   lastRealUsage?: RealUsage | null;
   /** 上一轮记忆注入统计；无则不展示注入信息 */
   lastMemoryInjection?: MemoryInjectionInfo | null;
+  /** 上一轮作品片单注入统计；无则不展示 */
+  lastWorksCatalogInjection?: WorksCatalogInjectionInfo | null;
 }
 
-export default function TokenBreakdownModal({ open, onClose, items, lastRealUsage, lastMemoryInjection }: Props) {
+export default function TokenBreakdownModal({
+  open,
+  onClose,
+  items,
+  lastRealUsage,
+  lastMemoryInjection,
+  lastWorksCatalogInjection,
+}: Props) {
   const { t } = useTranslation();
 
   const estimatedTotal = useMemo(() => items.reduce((sum, item) => sum + item.tokens, 0), [items]);
@@ -120,6 +137,15 @@ export default function TokenBreakdownModal({ open, onClose, items, lastRealUsag
                         {t('token.mode.failed')}
                       </span>
                     )}
+                  </div>
+                )}
+                {/* 作品片单行：展示上一轮实际注入的作品数和未缩放的 token 数 */}
+                {item.labelKey === 'token.worksCatalog' && lastWorksCatalogInjection && (
+                  <div className="pl-2 text-xs text-text-muted">
+                    {formatTemplate(t('token.worksCatalogLastInjection'), {
+                      count: lastWorksCatalogInjection.count,
+                      tokens: lastWorksCatalogInjection.tokens,
+                    })}
                   </div>
                 )}
               </li>

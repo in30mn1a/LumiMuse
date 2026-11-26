@@ -249,6 +249,24 @@ function createCharacterDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE character_works (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+      work_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      aliases TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL,
+      rating TEXT NOT NULL DEFAULT '',
+      progress TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      source_memory_ids TEXT NOT NULL DEFAULT '[]',
+      source_msg_ids TEXT NOT NULL DEFAULT '[]',
+      first_seen_at TEXT NOT NULL,
+      dismissed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   const sourceCreatedAt = '2026-08-01T00:00:00.000Z';
@@ -786,6 +804,80 @@ test('/api/characters/[id]/duplicate copies committed memory authority and remap
     ]) {
       assert.equal(countForCharacter(db, table, payload.id), 0, table);
     }
+  } finally {
+    db.close();
+  }
+});
+
+test('/api/characters/[id]/duplicate copies the works catalog with evidence remapped into the copy', async () => {
+  const db = createCharacterDb();
+  const insertWork = db.prepare(`
+    INSERT INTO character_works (
+      id, character_id, work_type, title, aliases, status, rating, progress, note,
+      source_memory_ids, source_msg_ids, first_seen_at, dismissed_at, created_at, updated_at
+    ) VALUES (?, 'char-source', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  // 依据里混入原角色已删除的记忆/消息 id：复制后必须丢掉，而不是指回原角色。
+  insertWork.run(
+    'work-movie', 'movie', '千与千寻', JSON.stringify(['神隐少女']), 'watched', '9.5', '', '雨夜一起看的',
+    JSON.stringify(['mem-source', 'mem-deleted', 'mem-result']), JSON.stringify(['msg-user', 'msg-deleted']),
+    '2026-08-01T00:00:01.000Z', null, '2026-08-01T00:00:03.000Z', '2026-08-02T00:00:03.000Z',
+  );
+  insertWork.run(
+    'work-dismissed', 'series', '葬送的芙莉莲', '[]', 'watching', '', '第二季第 2 集', '',
+    JSON.stringify(['mem-result']), JSON.stringify(['msg-assistant']),
+    '2026-08-01T00:00:02.000Z', '2026-08-04T00:00:00.000Z', '2026-08-01T00:00:04.000Z', '2026-08-04T00:00:00.000Z',
+  );
+  const originalRows = db.prepare('SELECT * FROM character_works ORDER BY id').all();
+  const assets = createAssetMocks();
+  const route = loadDuplicateRoute(db, assets);
+
+  try {
+    const response = await route.POST({}, { params: Promise.resolve({ id: 'char-source' }) });
+    const payload = await response.json();
+    assert.equal(response.status, 201);
+
+    const copiedMemoryIdByContent = new Map(db.prepare(
+      'SELECT id, content FROM memories WHERE character_id = ?',
+    ).all(payload.id).map(row => [row.content, row.id]));
+    const copiedSourceMemory = copiedMemoryIdByContent.get('主人喜欢雨夜听轻音乐。');
+    const copiedResultMemory = copiedMemoryIdByContent.get('雨夜是两人的重要共同回忆。');
+    const copiedMessageIdByContent = new Map(db.prepare(`
+      SELECT m.id, m.content FROM messages m JOIN conversations c ON c.id = m.conversation_id
+      WHERE c.character_id = ?
+    `).all(payload.id).map(row => [row.content.split('\n')[0], row.id]));
+    const copiedUserMessage = copiedMessageIdByContent.get('主人喜欢雨夜。');
+    const copiedAssistantMessage = copiedMessageIdByContent.get('艾莉丝会一直记得。');
+    assert.ok(copiedSourceMemory && copiedResultMemory && copiedUserMessage && copiedAssistantMessage);
+
+    const copied = db.prepare(
+      'SELECT * FROM character_works WHERE character_id = ? ORDER BY first_seen_at',
+    ).all(payload.id);
+    assert.equal(copied.length, 2);
+    const [movie, series] = copied;
+    assert.ok(!['work-movie', 'work-dismissed'].includes(movie.id));
+    assert.ok(!['work-movie', 'work-dismissed'].includes(series.id));
+    assert.notEqual(movie.id, series.id);
+
+    assert.deepEqual(
+      { ...movie, id: undefined, character_id: undefined, source_memory_ids: undefined, source_msg_ids: undefined },
+      { ...originalRows.find(row => row.id === 'work-movie'), id: undefined, character_id: undefined, source_memory_ids: undefined, source_msg_ids: undefined },
+    );
+    assert.deepEqual(JSON.parse(movie.source_memory_ids), [copiedSourceMemory, copiedResultMemory]);
+    assert.deepEqual(JSON.parse(movie.source_msg_ids), [copiedUserMessage]);
+
+    // 已移除条目连同墓碑一起复制，副本的自动更新同样不会把它加回来。
+    assert.equal(series.dismissed_at, '2026-08-04T00:00:00.000Z');
+    assert.equal(series.progress, '第二季第 2 集');
+    assert.equal(series.first_seen_at, '2026-08-01T00:00:02.000Z');
+    assert.deepEqual(JSON.parse(series.source_memory_ids), [copiedResultMemory]);
+    assert.deepEqual(JSON.parse(series.source_msg_ids), [copiedAssistantMessage]);
+
+    // 原角色的片单一个字节都不变。
+    assert.deepEqual(
+      db.prepare("SELECT * FROM character_works WHERE character_id = 'char-source' ORDER BY id").all(),
+      originalRows,
+    );
   } finally {
     db.close();
   }

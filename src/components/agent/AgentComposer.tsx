@@ -25,12 +25,20 @@ interface Props {
   compactDisabled?: boolean;
   /** 任务计划还有没做完的步骤、会话空闲时提供：点一下等于发送「继续」 */
   onContinue?: () => void;
+  /** 外部带来的草稿（`/agent?draft=…`）：只预填进输入框，不发送；输入框里已有内容时不覆盖 */
+  draft?: string | null;
 }
 
 /** Agent 输入框，布局同聊天页。桌面 Enter 发送、Shift+Enter 换行；触屏上回车只换行，发送走按钮。 */
-export default function AgentComposer({ busy, canStop, onSend, onStop, model, context = null, onCompact, compacting = false, compactDisabled = true, onContinue }: Props) {
+export default function AgentComposer({ busy, canStop, onSend, onStop, model, context = null, onCompact, compacting = false, compactDisabled = true, onContinue, draft = null }: Props) {
   const { t } = useTranslation();
   const [value, setValue] = useState('');
+  // 每份草稿只预填一次：主人清空或改写后不会被同一份草稿再填回来
+  const [appliedDraft, setAppliedDraft] = useState<string | null>(null);
+  if (draft && draft !== appliedDraft) {
+    setAppliedDraft(draft);
+    setValue(prev => (prev.trim() ? prev : draft));
+  }
   const [enterInsertsNewline, setEnterInsertsNewline] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);

@@ -14,6 +14,7 @@ import { getDb } from '@/lib/db';
 import { Message } from '@/types';
 import { loadSettings } from '@/lib/settings';
 import { enqueueMemoryProfilePatchExtraction, triggerMemoryProfileQueue } from '@/lib/memory-profile';
+import { enqueueWorksCatalogUpdate, triggerWorksCatalogQueue } from '@/lib/works-catalog-update';
 import { structuredLog } from '@/lib/structured-log';
 import { formatExtractionTimestamp } from '@/lib/chat-time';
 import { isMessageMemoryExtracted, parseMessageMetadata } from '@/lib/messages';
@@ -399,6 +400,26 @@ async function processOneExtractionTask(): Promise<{ claimed: number }> {
             operation: 'enqueue_profile_update',
             status: 'failed',
           }, profileErr);
+        }
+
+        // 同一轮对话入队作品片单更新。独立 try/catch：失败不得影响提取结果，也不得影响上面的画像入队。
+        // 「不提取记忆」的对话由 enqueueWorksCatalogUpdate 自己跳过（手动提取接口不检查该开关）。
+        try {
+          const worksTaskId = enqueueWorksCatalogUpdate(task.character_id, {
+            sourceText: convText,
+            sourceMsgIds: Object.values(messageRefs),
+            sourceTime: messages[messages.length - 1].created_at,
+            conversationId: task.conversation_id,
+          }, db);
+          if (worksTaskId !== null) triggerWorksCatalogQueue();
+        } catch (worksErr) {
+          structuredLog('error', 'memory.works_catalog.enqueue_failed', {
+            taskId: task.id,
+            characterId: task.character_id,
+            conversationId: task.conversation_id,
+            operation: 'enqueue_works_catalog_update',
+            status: 'failed',
+          }, worksErr);
         }
       } else {
         markIncludedUserMessagesProcessed(db, messages, includedCompleteUserIds, new Date().toISOString());

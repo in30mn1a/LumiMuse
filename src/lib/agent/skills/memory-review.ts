@@ -1,5 +1,6 @@
 import { TAG_SPEC_PROMPT_SECTION } from '@/lib/memory-tag-spec';
 import { MEMORY_CATEGORIES } from '@/types';
+import { WORKS_CATALOG_SKILL } from './works-catalog';
 
 export const MEMORY_REVIEW_SKILL = {
   name: 'memory-review',
@@ -55,4 +56,7 @@ report_conflict 只记录发现，不修改数据，不可批准执行；有可�
 `,
 } as const;
 
-export const AGENT_SKILLS = [{ name: MEMORY_REVIEW_SKILL.name, summary: MEMORY_REVIEW_SKILL.summary }] as const;
+/** load_skill 能读取的全部内置 skill；系统提示词里的 skill 目录只列名称和摘要（AGENT_SKILLS）。 */
+export const AGENT_SKILL_DEFINITIONS = [MEMORY_REVIEW_SKILL, WORKS_CATALOG_SKILL] as const;
+
+export const AGENT_SKILLS = AGENT_SKILL_DEFINITIONS.map(skill => ({ name: skill.name, summary: skill.summary }));

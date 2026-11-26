@@ -385,12 +385,12 @@ function withEngine(ctx, overrides) {
 
 const ids = rows => rows.map(row => row.id);
 
-test('registry: 17 read tools with unique names and convertible schemas', () => {
-  assert.equal(AGENT_READ_TOOLS.length, 17);
-  assert.equal(TOOLS.size, 17);
+test('registry: 18 read tools with unique names and convertible schemas', () => {
+  assert.equal(AGENT_READ_TOOLS.length, 18);
+  assert.equal(TOOLS.size, 18);
   for (const item of AGENT_READ_TOOLS) assert.equal(item.kind, 'read');
   const definitions = toolDefinitions(AGENT_READ_TOOLS);
-  assert.equal(definitions.length, 17);
+  assert.equal(definitions.length, 18);
   for (const definition of definitions) {
     assert.equal(definition.function.parameters.type, 'object');
     assert.equal(definition.function.parameters.$schema, undefined);
@@ -1101,7 +1101,8 @@ function sweepCalls() {
     list_app_events: [{ limit: 50 }],
     list_failed_tasks: [{ limit: 50 }],
     list_repairable_candidates: [{ limit: 50 }],
-    load_skill: [{ name: 'memory-review' }],
+    load_skill: [{ name: 'memory-review' }, { name: 'works-catalog' }],
+    get_works_catalog: [{ character_id: 'char-a' }, { character_id: 'char-b' }],
     prepare_memory_review: [{ character_id: 'char-a' }],
     read_review_batch: [{ character_id: 'char-a', plan_id: 'fixture-read-plan', batch_index: 0 }],
     query_table: QUERYABLE_TABLE_NAMES.flatMap(table => [

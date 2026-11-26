@@ -681,6 +681,25 @@ test('预设提案卡片逐处显示定位替换、剥离设置与脚本风险�
   assert.equal(hasUndecidedProposal([...messages, { id: 3, role: 'event', event: { kind: 'proposal_decision', proposal_id: 88, items: [] } }]), false);
 });
 
+// 会话流的提案工具名单是客户端里的字面量（不能 import 服务端工具表），新增提案工具时容易漏加：
+// 漏了卡片不出现在会话里，待决定的提案也拦不住「继续」和压缩。这里按真实工具表逐个核对。
+test('every proposal-creating write tool gets an inline card and counts as undecided', () => {
+  const NOT_PROPOSAL_TOOLS = new Set(['remember', 'update_task_plan']);
+  const proposalTools = AGENT_TOOLS
+    .filter(tool => tool.kind === 'write' && !NOT_PROPOSAL_TOOLS.has(tool.name))
+    .map(tool => tool.name);
+  assert.ok(proposalTools.includes('create_works_proposal'));
+  for (const [index, name] of proposalTools.entries()) {
+    const proposalId = 500 + index;
+    const messages = [
+      { id: 1, role: 'assistant', content: '', tool_calls: [{ id: `call-${name}`, name, arguments: '{}' }] },
+      { id: 2, role: 'tool', content: JSON.stringify({ ok: true, proposal_id: proposalId, pending_items: 1 }), tool_call_id: `call-${name}`, tool_name: name, tool_ok: true },
+    ];
+    assert.deepEqual(buildAgentDisplayItems(messages).map(entry => entry.kind), ['tool', 'proposal'], `${name} 没有在会话里显示提案卡片`);
+    assert.equal(hasUndecidedProposal(messages), true, `${name} 的待决定提案没有被识别`);
+  }
+});
+
 test('从零创建角色卡完整展示所有文本，批准及撤销同步角色列表', async () => {
   const fields = {
     name: '暮星', basic_info: '观星者', personality: '温柔好奇', scenario: '夜晚的观测台',

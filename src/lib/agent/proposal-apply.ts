@@ -22,7 +22,7 @@ import {
 import { applyMessageEdit } from '@/lib/message-mutations';
 import { parseMemoryMetadata } from '@/lib/metadata';
 import { publicErrorMessage } from '@/lib/public-error';
-import type { MemoryUpdate } from '@/lib/schemas';
+import { stripTagRulesSchema, type MemoryUpdate } from '@/lib/schemas';
 import { parseStoredTimestamp } from '@/lib/memory-time-cutoff';
 import {
   createWork, deleteWork, findMatchingWork, getWork, listWorks, mergeIdLists, normalizeWorkTitle, updateWork,
@@ -50,6 +50,18 @@ import {
   applyCharacterCardCreate, applyCharacterCardUpdate, characterCardCreateSchema, completeCharacterCard,
   loadCharacterCard, type CreatedCharacterSnapshot, type ProposalCharacterFields,
 } from './character-card';
+import {
+  getPresetScript,
+  loadPresetEntryRecord,
+  loadPresetRecord,
+  setPresetScript,
+  updatePresetEntryFields,
+  updatePresetExtensions,
+  updatePresetSettings,
+  type PresetEntryAfter,
+  type PresetScriptAfter,
+  type PresetSettingsAfter,
+} from './preset-edit';
 
 const MAX_REJECT_REASON = 2000;
 
@@ -85,6 +97,12 @@ export interface ProposalApplyResult {
   message?: { id: string; content: string };
   /** 片单条目应用后的完整快照，撤销时据此判断之后是否又被改动。 */
   work?: WorkEntry;
+  /** 预设条目修改应用后的快照，撤销时据此判断之后是否又被改动。 */
+  preset_entry?: { preset_id: string; id: string; name: string; enabled: boolean; content: string };
+  /** 预设标签剥离设置应用后的快照，撤销时据此判断之后是否又被改动。 */
+  preset_settings?: { preset_id: string; story_plot_strip: boolean; strip_tags: string[] };
+  /** 预设脚本修改应用后的快照，撤销时据此判断之后是否又被改动。 */
+  preset_script?: { preset_id: string; path: string; content: string };
 }
 
 type DecisionFailure = { ok: false; status: 400 | 404 | 409; error: string };
@@ -413,9 +431,133 @@ function applyWorkItem(db: Database.Database, characterId: string, item: Proposa
   }, now));
 }
 
+function applyPresetItem(
+  db: Database.Database,
+  item: ProposalItemRow,
+  before: Extract<NonNullable<ProposalBefore>, { preset_entry: unknown } | { preset_settings: unknown } | { preset_script: unknown }>,
+  now: string,
+): ItemOutcome {
+  if (item.op !== 'update') throw new Error(`${item.op} 不能用于预设修改`);
+
+  if ('preset_entry' in before) {
+    const target = before.preset_entry;
+    const preset = loadPresetRecord(db, target.preset_id);
+    const current = preset ? loadPresetEntryRecord(db, target.preset_id, target.entry.id) : null;
+    if (
+      !preset || !current
+      || current.name !== target.entry.name
+      || current.enabled !== target.entry.enabled
+      || current.content !== target.entry.content
+    ) {
+      return {
+        state: 'stale',
+        detail: `预设「${target.preset_name}」的条目「${target.entry.name}」（${target.entry.id}）在提案生成后已被改动或删除，没有修改`,
+      };
+    }
+    const after = JSON.parse(item.after_json) as PresetEntryAfter;
+    if (current.is_marker && after.content !== undefined) {
+      throw new Error(`占位标记条目「${current.name}」不能修改正文`);
+    }
+    const patch: { name?: string; enabled?: boolean; content?: string } = {};
+    if (after.name !== undefined) patch.name = after.name;
+    if (after.enabled !== undefined) patch.enabled = after.enabled;
+    if (after.content !== undefined) patch.content = after.content;
+    updatePresetEntryFields(db, target.preset_id, target.entry.id, patch, now);
+    return {
+      state: 'applied',
+      indexIds: [],
+      result: {
+        memory_ids: [],
+        created_memory_id: null,
+        batch_id: null,
+        after: [],
+        preset_entry: {
+          preset_id: target.preset_id,
+          id: target.entry.id,
+          name: patch.name ?? current.name,
+          enabled: patch.enabled ?? current.enabled,
+          content: patch.content ?? current.content,
+        },
+      },
+    };
+  }
+
+  if ('preset_settings' in before) {
+    const target = before.preset_settings;
+    const preset = loadPresetRecord(db, target.preset_id);
+    if (
+      !preset
+      || preset.story_plot_strip !== target.story_plot_strip
+      || JSON.stringify(preset.strip_tags) !== JSON.stringify(target.strip_tags)
+    ) {
+      return {
+        state: 'stale',
+        detail: `预设「${target.preset_name}」的标签剥离设置在提案生成后已被改动或删除，没有修改`,
+      };
+    }
+    const after = JSON.parse(item.after_json) as PresetSettingsAfter;
+    const patch: { story_plot_strip?: boolean; strip_tags?: string[] } = {};
+    if (after.story_plot_strip !== undefined) patch.story_plot_strip = after.story_plot_strip;
+    if (after.strip_tags !== undefined) {
+      const validated = stripTagRulesSchema.safeParse(after.strip_tags);
+      if (!validated.success) {
+        throw new Error(`strip_tags 不合法：${validated.error.issues.map(issue => issue.message).join('；')}`);
+      }
+      patch.strip_tags = validated.data;
+    }
+    updatePresetSettings(db, target.preset_id, patch, now);
+    return {
+      state: 'applied',
+      indexIds: [],
+      result: {
+        memory_ids: [],
+        created_memory_id: null,
+        batch_id: null,
+        after: [],
+        preset_settings: {
+          preset_id: target.preset_id,
+          story_plot_strip: patch.story_plot_strip ?? preset.story_plot_strip,
+          strip_tags: patch.strip_tags ?? preset.strip_tags,
+        },
+      },
+    };
+  }
+
+  const target = before.preset_script;
+  const preset = loadPresetRecord(db, target.preset_id);
+  const currentScript = preset ? getPresetScript(preset.extensions, target.path) : null;
+  if (!preset || !currentScript || currentScript.content !== target.content) {
+    return {
+      state: 'stale',
+      detail: `预设「${target.preset_name}」的脚本「${target.label}」（${target.path}）在提案生成后已被改动或删除，没有修改`,
+    };
+  }
+  const after = JSON.parse(item.after_json) as PresetScriptAfter;
+  const nextExtensions = setPresetScript(preset.extensions, target.path, after.content);
+  updatePresetExtensions(db, target.preset_id, nextExtensions, now);
+  return {
+    state: 'applied',
+    indexIds: [],
+    result: {
+      memory_ids: [],
+      created_memory_id: null,
+      batch_id: null,
+      after: [],
+      preset_script: {
+        preset_id: target.preset_id,
+        path: target.path,
+        content: after.content,
+      },
+    },
+  };
+}
+
 function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): ItemOutcome {
   const characterId = proposal.character_id;
   const before = JSON.parse(item.before_json) as ProposalBefore;
+  if (before && ('preset_entry' in before || 'preset_settings' in before || 'preset_script' in before)) {
+    return applyPresetItem(db, item, before, now);
+  }
   if (before && 'character_creation' in before) {
     if (item.op !== 'create' || characterId !== null) throw new Error('角色创建提案格式不正确');
     const id = before.character_creation.id;
@@ -862,10 +1004,84 @@ function undoWorkItem(
   }
 }
 
+function undoPresetItem(
+  db: Database.Database,
+  item: ProposalItemRow,
+  before: Extract<NonNullable<ProposalBefore>, { preset_entry: unknown } | { preset_settings: unknown } | { preset_script: unknown }>,
+  result: ProposalApplyResult,
+  now: string,
+): void {
+  if ('preset_entry' in before) {
+    const target = before.preset_entry;
+    const applied = result.preset_entry;
+    const preset = loadPresetRecord(db, target.preset_id);
+    const current = preset ? loadPresetEntryRecord(db, target.preset_id, target.entry.id) : null;
+    if (
+      !applied || applied.preset_id !== target.preset_id || applied.id !== target.entry.id
+      || !preset || !current
+      || current.name !== applied.name
+      || current.enabled !== applied.enabled
+      || current.content !== applied.content
+    ) {
+      throw new ProposalUndoConflict(
+        `预设「${target.preset_name}」的条目「${target.entry.name}」（${target.entry.id}）在批准后又被改动或删除，不能撤销`,
+      );
+    }
+    const after = JSON.parse(item.after_json) as PresetEntryAfter;
+    const restore: { name?: string; enabled?: boolean; content?: string } = {};
+    if ('name' in after) restore.name = target.entry.name;
+    if ('enabled' in after) restore.enabled = target.entry.enabled;
+    if ('content' in after) restore.content = target.entry.content;
+    updatePresetEntryFields(db, target.preset_id, target.entry.id, restore, now);
+    return;
+  }
+
+  if ('preset_settings' in before) {
+    const target = before.preset_settings;
+    const applied = result.preset_settings;
+    const preset = loadPresetRecord(db, target.preset_id);
+    if (
+      !applied || applied.preset_id !== target.preset_id
+      || !preset
+      || preset.story_plot_strip !== applied.story_plot_strip
+      || JSON.stringify(preset.strip_tags) !== JSON.stringify(applied.strip_tags)
+    ) {
+      throw new ProposalUndoConflict(
+        `预设「${target.preset_name}」的标签剥离设置在批准后又被改动或删除，不能撤销`,
+      );
+    }
+    const after = JSON.parse(item.after_json) as PresetSettingsAfter;
+    const restore: { story_plot_strip?: boolean; strip_tags?: string[] } = {};
+    if ('story_plot_strip' in after) restore.story_plot_strip = target.story_plot_strip;
+    if ('strip_tags' in after) restore.strip_tags = target.strip_tags;
+    updatePresetSettings(db, target.preset_id, restore, now);
+    return;
+  }
+
+  const target = before.preset_script;
+  const applied = result.preset_script;
+  const preset = loadPresetRecord(db, target.preset_id);
+  const currentScript = preset ? getPresetScript(preset.extensions, target.path) : null;
+  if (
+    !applied || applied.preset_id !== target.preset_id || applied.path !== target.path
+    || !preset || !currentScript || currentScript.content !== applied.content
+  ) {
+    throw new ProposalUndoConflict(
+      `预设「${target.preset_name}」的脚本「${target.label}」（${target.path}）在批准后又被改动或删除，不能撤销`,
+    );
+  }
+  const nextExtensions = setPresetScript(preset.extensions, target.path, target.content);
+  updatePresetExtensions(db, target.preset_id, nextExtensions, now);
+}
+
 function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): string[] {
   const characterId = proposal.character_id;
   const result = JSON.parse(item.result_json!) as ProposalApplyResult;
   const before = JSON.parse(item.before_json) as ProposalBefore;
+  if (before && ('preset_entry' in before || 'preset_settings' in before || 'preset_script' in before)) {
+    undoPresetItem(db, item, before, result, now);
+    return [];
+  }
   if (before && 'character_creation' in before) {
     const id = before.character_creation.id;
     const current = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as CreatedCharacterSnapshot | undefined;

@@ -8,6 +8,8 @@ import {
   createMemoryProposalSchema,
   createMessageProposal,
   createMessageProposalSchema,
+  createPresetProposal,
+  createPresetProposalSchema,
   createWorksProposal,
   createWorksProposalSchema,
 } from '@/lib/agent/proposals';
@@ -125,6 +127,34 @@ export const createWorksProposalTool = defineWriteTool({
         ok: true, proposal_id: outcome.proposalId, pending_items: outcome.items.length,
         ...(warnings.length > 0 ? { warnings } : {}),
         note: '片单提案已生成，等待主人批准。本轮到此结束，批准前不要声称已经修改。',
+      },
+      terminate: true,
+    };
+  },
+});
+
+export const createPresetProposalTool = defineWriteTool({
+  name: 'create_preset_proposal',
+  description: `生成待主人批准的提示词预设修改提案。提案本身不改预设，主人在卡片上逐项批准后才生效，支持撤销。
+先用 get_preset 和 read_preset_text 读到目标原文再修改；只改需要改的地方，不要无故改动其他内容。一份提案只改一个预设（preset_id、entry_id 均支持至少 8 位的唯一前缀）。
+items 每项指定 target：
+- entry：修改 entry_id 指向的条目，可改正文（edits）、启用开关（enabled）或名称（name）；占位标记（marker）条目不能改正文，只能改 enabled。
+- settings：修改标签剥离设置（story_plot_strip、strip_tags 整表替换）。
+- script：修改 SPreset 运行时白名单脚本（script 路径 + edits）；脚本会在每次用这个预设聊天时执行，修改脚本要格外谨慎。
+定位替换 edits 按顺序依次作用在文本上：old_text 必须逐字复制原文且在当时的文本中恰好出现一次（重叠出现也算多次），不唯一时多带前后上下文；new_text 为空字符串表示删除。同一条目、同一脚本路径、settings 在一份提案里各自只能出现一次。
+每项都要有 reason 和依据：预设不绑定角色，不接受 evidence.message_ids，只能把主人在本会话里的原话逐字写进 evidence.owner_quote；确实没有原文依据时，note 以「${NO_EVIDENCE_NOTE}」开头并解释。
+「修改前」由系统从数据库读取；期间目标已被改动时该项会过期。任何一项不合法时整份提案不会创建，按返回的原因修正后重试。
+生成成功后本轮立即结束，等待主人批准；不要声称已经修改。`,
+  schema: createPresetProposalSchema,
+  execute(args, ctx) {
+    const outcome = createPresetProposal(ctx.db, args, { sessionId: ctx.sessionId, now: new Date().toISOString() });
+    if (!outcome.ok) return { result: { ok: false, error: `提案未创建：\n${outcome.errors.join('\n')}` } };
+    return {
+      result: {
+        ok: true,
+        proposal_id: outcome.proposalId,
+        pending_items: outcome.items.length,
+        note: '预设修改提案已生成，等待主人批准。本轮到此结束，批准前不要声称已经修改。',
       },
       terminate: true,
     };

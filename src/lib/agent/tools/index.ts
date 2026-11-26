@@ -15,8 +15,9 @@ import {
 } from './memory-tools';
 import {
   createCharacterProposalTool, createCharacterTool, createMemoryProposalTool, createMessageProposalTool,
-  createWorksProposalTool,
+  createPresetProposalTool, createWorksProposalTool,
 } from './proposal-tools';
+import { getPresetTool, listPresetsTool, readPresetTextTool } from './preset-tools';
 import { queryTableTool } from './query-table-tool';
 import { rememberTool } from './document-tools';
 import { loadSkillTool, prepareMemoryReviewTool, readReviewBatchTool } from './review-tools';
@@ -47,12 +48,15 @@ export const AGENT_READ_TOOLS: AgentReadTool[] = [
   prepareMemoryReviewTool,
   readReviewBatchTool,
   getWorksCatalogTool,
+  listPresetsTool,
+  getPresetTool,
+  readPresetTextTool,
 ];
 
-/** 角色卡、记忆、聊天消息与作品片单经提案、由主人批准后修改；其余工具只写 Agent 笔记与计划。 */
+/** 角色卡、记忆、聊天消息、作品片单与预设经提案、由主人批准后修改；其余工具只写 Agent 笔记与计划。 */
 export const AGENT_WRITE_TOOLS: AgentWriteTool[] = [
   createMemoryProposalTool, createCharacterProposalTool, createCharacterTool, createMessageProposalTool,
-  createWorksProposalTool, rememberTool, updateTaskPlanTool,
+  createWorksProposalTool, createPresetProposalTool, rememberTool, updateTaskPlanTool,
 ];
 
 /** 交给 Agent 循环的完整工具表（不含按设置启用的联网工具，见 agentToolsFor）。 */

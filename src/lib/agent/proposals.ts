@@ -12,7 +12,9 @@ import {
   MEMORY_CATEGORIES, MEMORY_KINDS, WORK_STATUSES, WORK_TYPES,
   type MemoryCategory, type WorkEntry, type WorkStatus, type WorkType,
 } from '@/types';
-import { MAX_MEMORY_CONTENT, MAX_MESSAGE_CONTENT, MAX_TAG_LENGTH, MAX_TAGS } from '@/lib/schemas';
+import {
+  MAX_LARGE_TEXT, MAX_MEMORY_CONTENT, MAX_MESSAGE_CONTENT, MAX_NAME, MAX_TAG_LENGTH, MAX_TAGS, stripTagRulesSchema,
+} from '@/lib/schemas';
 import { normalizeTags } from '@/lib/memory-tag-spec';
 import { getMergeSourceIssue, type MemoryMergeSourceIssue } from '@/lib/memory-merge';
 import { memoryBusinessSnapshot, type MemoryBusinessSnapshot } from '@/lib/memory-mutations';
@@ -33,6 +35,33 @@ import {
   loadCharacterCard,
   type CharacterCardSnapshot,
 } from './character-card';
+import {
+  applyTextEdits,
+  getPresetScript,
+  isWhitelistedScriptPath,
+  loadPresetEntryRecord,
+  loadPresetRecord,
+  resolvePresetEntryId,
+  resolvePresetId,
+  toPresetEntrySnapshot,
+  type PresetEntryAfter,
+  type PresetEntryBefore,
+  type PresetScriptAfter,
+  type PresetScriptBefore,
+  type PresetSettingsAfter,
+  type PresetSettingsBefore,
+  type PresetTextEdit,
+} from './preset-edit';
+
+export type {
+  PresetEntryAfter,
+  PresetEntryBefore,
+  PresetScriptAfter,
+  PresetScriptBefore,
+  PresetSettingsAfter,
+  PresetSettingsBefore,
+  PresetTextEdit,
+};
 
 export const PROPOSAL_ITEM_OPS = [
   'create',
@@ -191,6 +220,37 @@ export const createWorksProposalSchema = z.strictObject({
 export type CreateWorksProposalInput = z.infer<typeof createWorksProposalSchema>;
 type WorksProposalItemInput = CreateWorksProposalInput['items'][number];
 
+const MAX_PRESET_PROPOSAL_ITEMS = 20;
+const MAX_PRESET_TEXT_EDITS = 20;
+
+const presetTextEditSchema = z.strictObject({
+  old_text: z.string().min(1).describe('原文中要替换的片段，逐字复制，须在当前文本中恰好出现一次（含重叠计数）'),
+  new_text: z.string().describe('替换后的文本；空字符串表示删除'),
+});
+
+const presetProposalItemSchema = z.strictObject({
+  target: z.enum(['entry', 'settings', 'script']).describe('entry 修改条目；settings 修改标签剥离设置；script 修改 SPreset 脚本'),
+  entry_id: z.string().min(1).optional().describe('target=entry 必填，目标条目 ID（支持至少 8 位唯一前缀）'),
+  script: z.string().min(1).optional().describe('target=script 必填，SPreset 脚本白名单路径'),
+  edits: z.array(presetTextEditSchema).min(1).max(MAX_PRESET_TEXT_EDITS).optional()
+    .describe(`定位替换列表（1..${MAX_PRESET_TEXT_EDITS} 处），按顺序生效；仅用于 entry 正文或 script`),
+  enabled: z.boolean().optional().describe('仅用于 entry：开启或关闭该条目'),
+  name: z.string().optional().describe(`仅用于 entry：条目名称，trim 后非空，最多 ${MAX_NAME} 字`),
+  story_plot_strip: z.boolean().optional().describe('仅用于 settings：是否开启剧情标签剥离'),
+  strip_tags: z.array(z.string()).optional().describe('仅用于 settings：剥离标签规则完整列表，整表替换'),
+  reason: z.string().max(MAX_REASON).describe('为什么这样改，写给主人看'),
+  evidence: evidenceSchema.optional(),
+  confidence: z.number().min(0).max(1).describe('对这项建议的把握（0–1）'),
+});
+
+export const createPresetProposalSchema = z.strictObject({
+  preset_id: z.string().min(1).describe('目标预设 ID（支持至少 8 位唯一前缀）；一份提案只改一个预设'),
+  summary: z.string().max(MAX_SUMMARY).describe('一句话概括这份预设修改提案'),
+  items: z.array(presetProposalItemSchema).min(1).max(MAX_PRESET_PROPOSAL_ITEMS)
+    .describe(`修改项列表，1..${MAX_PRESET_PROPOSAL_ITEMS} 项`),
+});
+export type CreatePresetProposalInput = z.infer<typeof createPresetProposalSchema>;
+
 /** 片单提案的 after_json：create 是完整的新条目，update 只含改动的字段。 */
 export interface ProposalWorkFields {
   work_type?: WorkType;
@@ -264,6 +324,12 @@ export type ProposalBefore =
   | { work: WorkEntry }
   /** 片单 create：新条目批准前不存在 */
   | { work_creation: { character_id: string } }
+  /** 预设条目修改：提案时的名称、启用状态与正文快照，批准和撤销据此判断是否已被改动 */
+  | { preset_entry: PresetEntryBefore }
+  /** 预设标签剥离设置修改：提案时的 story_plot_strip 与 strip_tags 快照 */
+  | { preset_settings: PresetSettingsBefore }
+  /** 预设 SPreset 脚本修改：提案时该白名单路径上的脚本全文快照 */
+  | { preset_script: PresetScriptBefore }
   | null;
 
 export interface CreatedProposalItem {
@@ -1262,6 +1328,225 @@ export function createWorksProposal(
   });
   if (errors.length > 0) return { ok: false, errors };
   return savePreparedProposal(db, characterId, summary, prepared, context);
+}
+
+const PRESET_TARGET_ALLOWED_FIELDS: Record<'entry' | 'settings' | 'script', ReadonlySet<string>> = {
+  entry: new Set(['entry_id', 'edits', 'enabled', 'name']),
+  settings: new Set(['story_plot_strip', 'strip_tags']),
+  script: new Set(['script', 'edits']),
+};
+const PRESET_OPTIONAL_TARGET_FIELDS = ['entry_id', 'script', 'edits', 'enabled', 'name', 'story_plot_strip', 'strip_tags'] as const;
+
+/**
+ * 创建预设提示词修改提案，沿用提案批准流程，创建时不写 prompt_presets / prompt_preset_entries。
+ * 提案不绑定角色（character_id = NULL），依据只能是 owner_quote 或「无原文依据」note。
+ */
+export function createPresetProposal(
+  db: Database.Database,
+  input: CreatePresetProposalInput,
+  context: { sessionId: string | null; now: string },
+): CreateProposalOutcome {
+  const resolvedPreset = resolvePresetId(db, input.preset_id);
+  if (!resolvedPreset.ok) return { ok: false, errors: [resolvedPreset.error] };
+  const preset = loadPresetRecord(db, resolvedPreset.id);
+  if (!preset) return { ok: false, errors: [`预设不存在：${resolvedPreset.id}`] };
+
+  const errors: string[] = [];
+  const summary = input.summary.trim();
+  if (!summary) errors.push('缺少提案概述（summary）');
+
+  const claimedTargets = new Map<string, number>();
+  const prepared: PreparedItem[] = [];
+
+  input.items.forEach((item, index) => {
+    const seq = index + 1;
+    const itemErrors: string[] = [];
+    const reason = item.reason.trim();
+    if (!reason) itemErrors.push('缺少理由');
+
+    const allowed = PRESET_TARGET_ALLOWED_FIELDS[item.target];
+    const extraFields = PRESET_OPTIONAL_TARGET_FIELDS.filter(field => item[field] !== undefined && !allowed.has(field));
+    if (extraFields.length > 0) {
+      itemErrors.push(`${item.target} 项不能包含字段：${extraFields.join('、')}`);
+    }
+
+    const evidence = checkEvidence(db, null, item.evidence, true, context.sessionId, itemErrors);
+
+    let before: ProposalBefore = null;
+    let after: PresetEntryAfter | PresetSettingsAfter | PresetScriptAfter | null = null;
+
+    if (item.target === 'entry') {
+      if (item.entry_id === undefined) {
+        itemErrors.push('entry 项需要 entry_id');
+      } else {
+        const resolvedEntry = resolvePresetEntryId(db, preset.id, item.entry_id);
+        if (!resolvedEntry.ok) {
+          itemErrors.push(resolvedEntry.error);
+        } else {
+          const entry = loadPresetEntryRecord(db, preset.id, resolvedEntry.id);
+          if (!entry) {
+            itemErrors.push(`条目 ${resolvedEntry.id} 不存在或不属于预设 ${preset.id}`);
+          } else {
+            const claimKey = `entry:${entry.id}`;
+            const claimedBy = claimedTargets.get(claimKey);
+            if (claimedBy !== undefined) {
+              itemErrors.push(`条目 ${entry.id} 已在第 ${claimedBy} 项中修改，同一条目在一份提案里只能出现一次`);
+            } else {
+              claimedTargets.set(claimKey, seq);
+            }
+
+            const changes: PresetEntryAfter = {};
+            let fieldError = false;
+            if (item.name !== undefined) {
+              const trimmedName = item.name.trim();
+              if (!trimmedName) {
+                itemErrors.push('条目名称不能为空');
+                fieldError = true;
+              } else if (trimmedName.length > MAX_NAME) {
+                itemErrors.push(`条目名称不能超过 ${MAX_NAME} 字`);
+                fieldError = true;
+              } else if (trimmedName !== entry.name) {
+                changes.name = trimmedName;
+              }
+            }
+            if (item.enabled !== undefined && item.enabled !== entry.enabled) {
+              changes.enabled = item.enabled;
+            }
+            if (item.edits !== undefined) {
+              if (entry.is_marker) {
+                itemErrors.push(`条目「${entry.name}」（${entry.id}）是占位标记（marker），没有正文，不能修改正文`);
+                fieldError = true;
+              } else {
+                const edited = applyTextEdits(entry.content, item.edits);
+                if (!edited.ok) {
+                  itemErrors.push(edited.error);
+                  fieldError = true;
+                } else {
+                  // 普通条目沿用 promptPresetEntryUpsertSchema 的 MAX_LARGE_TEXT 上限；
+                  // 导入的超大条目（如酒馆十几万字条目）已超过该值，允许在其基础上小幅增改而不截断。
+                  const maxContentLength = entry.content.length <= MAX_LARGE_TEXT
+                    ? MAX_LARGE_TEXT
+                    : entry.content.length + MAX_LARGE_TEXT;
+                  if (edited.text.length > maxContentLength) {
+                    itemErrors.push(`条目正文长度（${edited.text.length}）超过上限（${maxContentLength}）`);
+                    fieldError = true;
+                  } else {
+                    changes.content = edited.text;
+                    changes.edits = item.edits;
+                  }
+                }
+              }
+            }
+            if (!fieldError && Object.keys(changes).length === 0) {
+              itemErrors.push(`对条目「${entry.name}」（${entry.id}）没有实际改动`);
+            }
+            before = {
+              preset_entry: {
+                preset_id: preset.id,
+                preset_name: preset.name,
+                entry: toPresetEntrySnapshot(entry),
+              },
+            };
+            after = changes;
+          }
+        }
+      }
+    } else if (item.target === 'settings') {
+      const claimedBy = claimedTargets.get('settings');
+      if (claimedBy !== undefined) {
+        itemErrors.push(`预设剥离设置已在第 ${claimedBy} 项中修改，同一份提案里只能出现一次`);
+      } else {
+        claimedTargets.set('settings', seq);
+      }
+
+      const changes: PresetSettingsAfter = {};
+      let fieldError = false;
+      if (item.story_plot_strip !== undefined && item.story_plot_strip !== preset.story_plot_strip) {
+        changes.story_plot_strip = item.story_plot_strip;
+      }
+      if (item.strip_tags !== undefined) {
+        const parsedTags = stripTagRulesSchema.safeParse(item.strip_tags);
+        if (!parsedTags.success) {
+          const detail = parsedTags.error.issues
+            .map(issue => (issue.path.length > 0 ? `strip_tags[${issue.path.join('.')}]: ${issue.message}` : issue.message))
+            .join('；');
+          itemErrors.push(`strip_tags 不合法：${detail}`);
+          fieldError = true;
+        } else if (JSON.stringify(parsedTags.data) !== JSON.stringify(preset.strip_tags)) {
+          changes.strip_tags = parsedTags.data;
+        }
+      }
+      if (!fieldError && Object.keys(changes).length === 0) {
+        itemErrors.push(`对预设「${preset.name}」的剥离设置没有实际改动`);
+      }
+      before = {
+        preset_settings: {
+          preset_id: preset.id,
+          preset_name: preset.name,
+          story_plot_strip: preset.story_plot_strip,
+          strip_tags: preset.strip_tags,
+        },
+      };
+      after = changes;
+    } else {
+      if (item.script === undefined) itemErrors.push('script 项需要 script');
+      if (item.edits === undefined) itemErrors.push('script 项需要 edits');
+      if (item.script !== undefined) {
+        if (!isWhitelistedScriptPath(item.script)) {
+          itemErrors.push(`脚本路径不在白名单内：${item.script}`);
+        } else {
+          const scriptInfo = getPresetScript(preset.extensions, item.script);
+          if (!scriptInfo) {
+            itemErrors.push(`预设「${preset.name}」不存在脚本路径：${item.script}`);
+          } else {
+            const claimKey = `script:${scriptInfo.path}`;
+            const claimedBy = claimedTargets.get(claimKey);
+            if (claimedBy !== undefined) {
+              itemErrors.push(`脚本 ${scriptInfo.path} 已在第 ${claimedBy} 项中修改，同一脚本在一份提案里只能出现一次`);
+            } else {
+              claimedTargets.set(claimKey, seq);
+            }
+            if (item.edits !== undefined) {
+              const edited = applyTextEdits(scriptInfo.content, item.edits);
+              if (!edited.ok) {
+                itemErrors.push(edited.error);
+              } else {
+                before = {
+                  preset_script: {
+                    preset_id: preset.id,
+                    preset_name: preset.name,
+                    path: scriptInfo.path,
+                    label: scriptInfo.label,
+                    content: scriptInfo.content,
+                  },
+                };
+                after = { content: edited.text, edits: item.edits };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (itemErrors.length === 0) {
+      prepared.push({
+        op: 'update',
+        reason,
+        evidence,
+        confidence: item.confidence,
+        before,
+        after,
+        state: 'pending',
+        memoryTargets: [],
+        candidateTarget: null,
+        warning: null,
+      });
+    }
+    for (const message of itemErrors) errors.push(`第 ${seq} 项：${message}`);
+  });
+
+  if (errors.length > 0) return { ok: false, errors };
+  return savePreparedProposal(db, null, summary, prepared, context);
 }
 
 export interface ProposalRow {

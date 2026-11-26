@@ -186,6 +186,34 @@ function seed(db) {
     created_at: T0,
     updated_at: T0,
   });
+  insertRow(db, 'prompt_presets', {
+    id: 'preset-1',
+    name: 'Fixture Preset',
+    description: '虚构测试预设',
+    is_built_in: 0,
+    story_plot_strip: 0,
+    strip_tags: JSON.stringify(['thought']),
+    import_warnings: JSON.stringify([]),
+    extensions: JSON.stringify({
+      SPreset: {
+        FinalRequestProcessing: { enabled: true, script: 'function pass(req) { return req; }' },
+      },
+    }),
+    created_at: T0,
+    updated_at: T0,
+  });
+  insertRow(db, 'prompt_preset_entries', {
+    id: 'preset-entry-1',
+    preset_id: 'preset-1',
+    name: '主指令',
+    role: 'system',
+    content: '保持自然语气。',
+    is_marker: 0,
+    enabled: 1,
+    sort_order: 1,
+    created_at: T0,
+    updated_at: T0,
+  });
 
   insertRow(db, 'conversations', {
     id: 'conv-a1', character_id: 'char-a', title: '初遇', created_at: T0, updated_at: '2026-10-01T10:10:00.000Z',
@@ -385,12 +413,12 @@ function withEngine(ctx, overrides) {
 
 const ids = rows => rows.map(row => row.id);
 
-test('registry: 18 read tools with unique names and convertible schemas', () => {
-  assert.equal(AGENT_READ_TOOLS.length, 18);
-  assert.equal(TOOLS.size, 18);
+test('registry: 21 read tools with unique names and convertible schemas', () => {
+  assert.equal(AGENT_READ_TOOLS.length, 21);
+  assert.equal(TOOLS.size, 21);
   for (const item of AGENT_READ_TOOLS) assert.equal(item.kind, 'read');
   const definitions = toolDefinitions(AGENT_READ_TOOLS);
-  assert.equal(definitions.length, 18);
+  assert.equal(definitions.length, 21);
   for (const definition of definitions) {
     assert.equal(definition.function.parameters.type, 'object');
     assert.equal(definition.function.parameters.$schema, undefined);
@@ -1103,6 +1131,12 @@ function sweepCalls() {
     list_repairable_candidates: [{ limit: 50 }],
     load_skill: [{ name: 'memory-review' }, { name: 'works-catalog' }],
     get_works_catalog: [{ character_id: 'char-a' }, { character_id: 'char-b' }],
+    list_presets: [{}],
+    get_preset: [{ preset_id: 'preset-1' }],
+    read_preset_text: [
+      { preset_id: 'preset-1', entry_id: 'preset-entry-1' },
+      { preset_id: 'preset-1', script: 'FinalRequestProcessing.script' },
+    ],
     prepare_memory_review: [{ character_id: 'char-a' }],
     read_review_batch: [{ character_id: 'char-a', plan_id: 'fixture-read-plan', batch_index: 0 }],
     query_table: QUERYABLE_TABLE_NAMES.flatMap(table => [
@@ -1163,11 +1197,20 @@ test('credentials pasted into chat or memory content are redacted before reachin
       db.prepare("UPDATE memories SET content = ? WHERE id = 'mem-name'").run(`用户把密钥 ${SECRETS.provider} 发给了我`);
       db.prepare("UPDATE messages SET content = ? WHERE id = 'msg-a1-1'").run(`你好，我的口令是 ${SECRETS.access}`);
       db.prepare("UPDATE messages SET content = ? WHERE id = 'msg-a1-2'").run(`搜索密钥 ${SECRETS.searchTavily} 和 ${SECRETS.searchExaEnv}`);
+      db.prepare("UPDATE prompt_presets SET extensions = ? WHERE id = 'preset-1'").run(JSON.stringify({
+        SPreset: {
+          FinalRequestProcessing: { enabled: true, script: `const key = "${SECRETS.provider}";` },
+        },
+      }));
     },
   });
 
   const searchKeys = await callOk('read_messages', { conversation_id: 'conv-a1', limit: 2 }, ctx);
   assert.equal(searchKeys.messages[1].content, `搜索密钥 ${REDACTED_PLACEHOLDER} 和 ${REDACTED_PLACEHOLDER}`);
+
+  const presetScript = await callOk('read_preset_text', { preset_id: 'preset-1', script: 'FinalRequestProcessing.script' }, ctx);
+  assert.ok(!JSON.stringify(presetScript).includes(SENTINEL), 'credential leaked from read_preset_text');
+  assert.equal(presetScript.text, `const key = "${REDACTED_PLACEHOLDER}";`);
 
   const memories = await callOk('get_memories', { memory_ids: ['mem-name'] }, ctx);
   assert.equal(memories.memories[0].content, `用户把密钥 ${REDACTED_PLACEHOLDER} 发给了我`);

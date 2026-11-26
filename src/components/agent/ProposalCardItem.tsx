@@ -2,6 +2,13 @@
 
 import type React from 'react';
 import type {
+  PresetEntryAfter,
+  PresetEntryBefore,
+  PresetScriptAfter,
+  PresetScriptBefore,
+  PresetSettingsAfter,
+  PresetSettingsBefore,
+  PresetTextEdit,
   ProposalCandidateTask,
   ProposalCandidateTarget,
   ProposalEvidenceMemory,
@@ -352,6 +359,111 @@ function workOpKey(item: ProposalItemView): string | null {
   return item.before.work.dismissed_at !== null ? 'agent.works.op.restore' : 'agent.works.op.update';
 }
 
+function presetOpKey(item: ProposalItemView): string | null {
+  if (!item.before) return null;
+  if ('preset_entry' in item.before) return 'agent.proposal.op.presetEntryUpdate';
+  if ('preset_settings' in item.before) return 'agent.proposal.op.presetSettingsUpdate';
+  if ('preset_script' in item.before) return 'agent.proposal.op.presetScriptUpdate';
+  return null;
+}
+
+/** 逐处渲染定位替换：不对整段长条目或脚本做整篇 diffText，避免中间十几万字撑爆卡片。 */
+function PresetEdits({ edits }: { edits: readonly PresetTextEdit[] }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-2">
+      {edits.map((edit, index) => (
+        <Labeled key={index} label={formatTemplate(t('agent.proposal.presetEditIndex'), { index: index + 1 })}>
+          <div data-preset-edit={index + 1}>
+            <ContentDiff before={edit.old_text} after={edit.new_text} />
+          </div>
+        </Labeled>
+      ))}
+    </div>
+  );
+}
+
+function PresetEntryChange({ before, after }: { before: PresetEntryBefore; after: PresetEntryAfter }) {
+  const { t } = useTranslation();
+  const enabledText = (value: boolean) => (value ? t('agent.proposal.presetEnabledOn') : t('agent.proposal.presetEnabledOff'));
+  return (
+    <div className="space-y-2">
+      <p className="font-medium [overflow-wrap:anywhere]">
+        {formatTemplate(t('agent.proposal.preset'), { name: before.preset_name })}
+        {' · '}
+        {formatTemplate(t('agent.proposal.presetEntry'), { name: before.entry.name })}
+      </p>
+      {'name' in after && typeof after.name === 'string' && (
+        <Labeled label={t('agent.proposal.field.name')}>
+          <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]" data-preset-field="name">
+            <del className="text-text-muted decoration-danger/60">{before.entry.name}</del>
+            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
+            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{after.name}</ins>
+          </p>
+        </Labeled>
+      )}
+      {'enabled' in after && typeof after.enabled === 'boolean' && (
+        <Labeled label={t('agent.proposal.presetEnabled')}>
+          <p className="leading-relaxed" data-preset-field="enabled">
+            <del className="text-text-muted decoration-danger/60">{enabledText(before.entry.enabled)}</del>
+            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
+            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{enabledText(after.enabled)}</ins>
+          </p>
+        </Labeled>
+      )}
+      {Array.isArray(after.edits) && after.edits.length > 0 && <PresetEdits edits={after.edits} />}
+    </div>
+  );
+}
+
+function PresetSettingsChange({ before, after }: { before: PresetSettingsBefore; after: PresetSettingsAfter }) {
+  const { t } = useTranslation();
+  const enabledText = (value: boolean) => (value ? t('agent.proposal.presetEnabledOn') : t('agent.proposal.presetEnabledOff'));
+  const formatTags = (tags: readonly string[]) => (tags.length > 0 ? tags.join(', ') : t('agent.proposal.presetStripTagsEmpty'));
+  return (
+    <div className="space-y-2">
+      <p className="font-medium [overflow-wrap:anywhere]">
+        {formatTemplate(t('agent.proposal.preset'), { name: before.preset_name })}
+      </p>
+      {'story_plot_strip' in after && typeof after.story_plot_strip === 'boolean' && (
+        <Labeled label={t('agent.proposal.presetStoryPlotStrip')}>
+          <p className="leading-relaxed" data-preset-field="story_plot_strip">
+            <del className="text-text-muted decoration-danger/60">{enabledText(before.story_plot_strip)}</del>
+            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
+            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{enabledText(after.story_plot_strip)}</ins>
+          </p>
+        </Labeled>
+      )}
+      {'strip_tags' in after && Array.isArray(after.strip_tags) && (
+        <Labeled label={t('agent.proposal.presetStripTags')}>
+          <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]" data-preset-field="strip_tags">
+            <del className="text-text-muted decoration-danger/60">{formatTags(before.strip_tags)}</del>
+            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
+            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{formatTags(after.strip_tags)}</ins>
+          </p>
+        </Labeled>
+      )}
+    </div>
+  );
+}
+
+function PresetScriptChange({ before, after }: { before: PresetScriptBefore; after: PresetScriptAfter }) {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-2">
+      <p className="font-medium [overflow-wrap:anywhere]">
+        {formatTemplate(t('agent.proposal.preset'), { name: before.preset_name })}
+        {' · '}
+        {formatTemplate(t('agent.proposal.presetScript'), { label: before.label })}
+      </p>
+      <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-200" data-preset-script-hint="">
+        {t('agent.proposal.presetScriptHint')}
+      </p>
+      {Array.isArray(after.edits) && after.edits.length > 0 && <PresetEdits edits={after.edits} />}
+    </div>
+  );
+}
+
 function memoriesOf(item: ProposalItemView): ProposalMemoryTarget[] {
   return item.before && 'memories' in item.before ? item.before.memories : [];
 }
@@ -384,6 +496,15 @@ function ItemChange({ item }: { item: ProposalItemView }) {
             <ContentDiff before={content} after={String(after.content ?? '')} />
           </Labeled>
         );
+      }
+      if (item.before && 'preset_entry' in item.before) {
+        return <PresetEntryChange before={item.before.preset_entry} after={(item.after ?? {}) as PresetEntryAfter} />;
+      }
+      if (item.before && 'preset_settings' in item.before) {
+        return <PresetSettingsChange before={item.before.preset_settings} after={(item.after ?? {}) as PresetSettingsAfter} />;
+      }
+      if (item.before && 'preset_script' in item.before) {
+        return <PresetScriptChange before={item.before.preset_script} after={(item.after ?? {}) as PresetScriptAfter} />;
       }
       return <UpdateDiff before={before[0] ?? {}} changes={after} />;
     case 'retire':
@@ -544,7 +665,7 @@ const NO_MEMORIES = new Map<string, ProposalEvidenceMemory>();
 export default function ProposalCardItem({ item, flags, messages, memories = NO_MEMORIES, selection, undo }: Props) {
   const { t } = useTranslation();
   const checkboxId = `proposal-item-${item.id}`;
-  const opLabel = t(workOpKey(item) ?? (item.before && 'character_creation' in item.before
+  const opLabel = t(workOpKey(item) ?? presetOpKey(item) ?? (item.before && 'character_creation' in item.before
     ? 'agent.proposal.op.characterCreate'
     : item.before && 'character' in item.before ? 'agent.proposal.op.characterUpdate'
     : item.before && 'message' in item.before ? 'agent.proposal.op.messageUpdate' : `agent.proposal.op.${item.op}`));
@@ -602,6 +723,16 @@ export default function ProposalCardItem({ item, flags, messages, memories = NO_
       {flags.invalidEvidenceMemoryIds.length > 0 && (
         <p className={`text-[11px] ${WARNING_CHIP} [overflow-wrap:anywhere]`} data-flag="invalid-evidence">
           {formatTemplate(t('agent.works.flag.invalidEvidence'), { ids: flags.invalidEvidenceMemoryIds.join('、') })}
+        </p>
+      )}
+      {flags.presetScript && (
+        <p className={`text-[11px] ${WARNING_CHIP}`} data-flag="preset-script">
+          {t('agent.proposal.flag.presetScript')}
+        </p>
+      )}
+      {flags.disablesMarker && (
+        <p className={`text-[11px] ${WARNING_CHIP}`} data-flag="disables-marker">
+          {t('agent.proposal.flag.disablesMarker')}
         </p>
       )}
 

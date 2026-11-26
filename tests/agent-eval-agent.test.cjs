@@ -55,10 +55,11 @@ function fixtureModel() {
 test('Agent evaluation drives the actual loop and tools, normalizes proposals and keeps memories unchanged', async () => {
   const model = fixtureModel();
   // 新建角色工具定义及提示增加约 834 token，当前完整「全部批次 + 来源」输入约 20,300 token。
-  // 消息修改工具定义及提示又增加数百 token；作品片单的读工具、提案工具、skill 目录与提示再增加约 1,950 token，
-  // 为输入保留 24,000 token；下面的断言继续验证旧结果折叠和来源重读。
+  // 消息修改工具定义及提示又增加数百 token；作品片单的读工具、提案工具、skill 目录与提示再增加约 1,950 token；
+  // 预设工具（3 读 1 提案）与提示再增加约 2,300 token，为输入保留 26,500 token；
+  // 下面的断言继续验证旧结果折叠和来源重读。
   const result = await runAgent(sample, model.complete, {
-    retryDelaysMs: [], contextWindow: REASONING_SAFE_MAX_TOKENS + 24_000,
+    retryDelaysMs: [], contextWindow: REASONING_SAFE_MAX_TOKENS + 26_500,
   });
   assert.equal(result.incomplete, false);
   assert.equal(result.memory_unchanged, true);

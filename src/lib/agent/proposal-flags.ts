@@ -59,6 +59,10 @@ export interface ProposalItemFlags {
   conflictRetire: boolean;
   /** 依据记忆里已不成立（被取代、被退场）或已删除的条目；没有传入依据记忆的当前状态时为空 */
   invalidEvidenceMemoryIds: string[];
+  /** 修改预设 SPreset 脚本：批准后会在聊天请求或响应时执行 */
+  presetScript: boolean;
+  /** 关闭了预设里的占位标记（marker）条目，会让对应内容不再进入请求 */
+  disablesMarker: boolean;
 }
 
 /** 同一份提案里矛盾报告涉及的记忆 ID。 */
@@ -81,9 +85,10 @@ function rewriteIssues(item: Pick<ProposalItemView, 'op' | 'before'> & Partial<P
     return { missingQuotes: [], unfamiliarChars: [], shrink: null };
   }
   if (item.before && 'message' in item.before) return messageEditFidelityIssues(after.content, item.before.message.content);
-  const sources = item.before && 'memories' in item.before
-    ? item.before.memories.map(target => (typeof target.snapshot.content === 'string' ? target.snapshot.content : ''))
-    : [];
+  if (!item.before || !('memories' in item.before)) {
+    return { missingQuotes: [], unfamiliarChars: [], shrink: null };
+  }
+  const sources = item.before.memories.map(target => (typeof target.snapshot.content === 'string' ? target.snapshot.content : ''));
   return contentFidelityIssues(item.op, after.content, sources);
 }
 
@@ -100,6 +105,7 @@ export function proposalItemFlags(
   const taskSucceeded = currentTask !== null && (currentTask.status === 'done' || currentTask.result_committed);
   const memoryIds = item.evidence.memory_ids ?? [];
   const evidenceMemories = context.evidenceMemories;
+  const afterRecord = item.after && typeof item.after === 'object' ? item.after as { enabled?: unknown } : null;
   return {
     noEvidence: item.evidence.message_ids.length === 0 && memoryIds.length === 0
       && !item.evidence.owner_quote && declaresNoEvidence(item.evidence.note),
@@ -113,6 +119,12 @@ export function proposalItemFlags(
     invalidEvidenceMemoryIds: evidenceMemories
       ? memoryIds.filter(id => evidenceMemories.get(id)?.no_longer_true ?? true)
       : [],
+    presetScript: Boolean(item.before && 'preset_script' in item.before),
+    disablesMarker: Boolean(
+      item.before && 'preset_entry' in item.before
+      && item.before.preset_entry.entry.is_marker
+      && afterRecord?.enabled === false,
+    ),
   };
 }
 
@@ -120,5 +132,6 @@ export function proposalItemFlags(
 export function isCheckedByDefault(flags: ProposalItemFlags): boolean {
   return !flags.noEvidence && !flags.lowConfidence && flags.duplicateRiskCount === null
     && flags.missingQuotes.length === 0 && flags.unfamiliarChars.length === 0 && flags.shrink === null
-    && !flags.conflictRetire && flags.invalidEvidenceMemoryIds.length === 0;
+    && !flags.conflictRetire && flags.invalidEvidenceMemoryIds.length === 0
+    && !flags.presetScript && !flags.disablesMarker;
 }

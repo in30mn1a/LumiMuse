@@ -580,6 +580,107 @@ test('片单提案卡片显示新增、修改、恢复、移除，字段前后�
   assert.ok(text(204).includes(zh['agent.works.retireHint']));
 });
 
+test('预设提案卡片逐处显示定位替换、剥离设置与脚本风险提示，脚本与关闭 marker 默认不勾选', () => {
+  const filler = '中间不变的十万字占位。'.repeat(200);
+  const items = [
+    item(301, 'update', {
+      before: {
+        preset_entry: {
+          preset_id: 'preset-1', preset_name: '星夜预设',
+          entry: { id: 'e-1', name: '旧条目名', enabled: false, content: `开头旧词${filler}结尾旧词`, is_marker: false },
+        },
+      },
+      after: {
+        name: '新条目名',
+        enabled: true,
+        content: `开头新词${filler}结尾新词`,
+        edits: [
+          { old_text: '开头旧词', new_text: '开头新词' },
+          { old_text: '结尾旧词', new_text: '结尾新词' },
+        ],
+      },
+      evidence: { message_ids: [], owner_quote: '把预设条目的首尾改一下' },
+    }),
+    item(302, 'update', {
+      before: {
+        preset_entry: {
+          preset_id: 'preset-1', preset_name: '星夜预设',
+          entry: { id: 'e-marker', name: '聊天历史', enabled: true, content: '', is_marker: true },
+        },
+      },
+      after: { enabled: false },
+      evidence: { message_ids: [], owner_quote: '先关掉聊天历史占位' },
+    }),
+    item(303, 'update', {
+      before: {
+        preset_settings: { preset_id: 'preset-1', preset_name: '星夜预设', story_plot_strip: false, strip_tags: ['thought'] },
+      },
+      after: { story_plot_strip: true, strip_tags: ['thought', '#ooc'] },
+      evidence: { message_ids: [], owner_quote: '开启剥离并过滤 ooc' },
+    }),
+    item(304, 'update', {
+      before: {
+        preset_script: {
+          preset_id: 'preset-1', preset_name: '星夜预设',
+          path: 'FinalRequestProcessing.script', label: '请求改写脚本', content: 'const mode = "strict";',
+        },
+      },
+      after: {
+        content: 'const mode = "loose";',
+        edits: [{ old_text: '"strict"', new_text: '"loose"' }],
+      },
+      evidence: { message_ids: [], owner_quote: '放宽脚本里的 mode' },
+    }),
+  ];
+  const view = render(React.createElement(ProposalCard, {
+    proposalId: 7,
+    initialView: proposalView({ character_id: null, items, summary: '调整星夜预设' }),
+  }));
+
+  assert.equal(checkbox(view.container, 301).checked, true, '普通预设条目带主人原话默认勾选');
+  assert.equal(checkbox(view.container, 302).checked, false, '关闭 marker 默认不勾选');
+  assert.equal(checkbox(view.container, 303).checked, true, '剥离设置带主人原话默认勾选');
+  assert.equal(checkbox(view.container, 304).checked, false, '脚本项默认不勾选');
+
+  const entryEl = itemElement(view.container, 301);
+  assert.ok(entryEl.textContent.includes('修改预设条目'));
+  assert.ok(entryEl.textContent.includes('预设：星夜预设'));
+  assert.ok(entryEl.textContent.includes('条目：旧条目名'));
+  assert.equal(entryEl.querySelector('[data-preset-field="name"] del').textContent, '旧条目名');
+  assert.equal(entryEl.querySelector('[data-preset-field="name"] ins').textContent, '新条目名');
+  assert.equal(entryEl.querySelector('[data-preset-field="enabled"] del').textContent, '关闭');
+  assert.equal(entryEl.querySelector('[data-preset-field="enabled"] ins').textContent, '开启');
+  assert.ok(entryEl.textContent.includes('第 1 处'));
+  assert.ok(entryEl.textContent.includes('第 2 处'));
+  assert.equal(entryEl.querySelector('[data-preset-edit="1"] del').textContent, '旧');
+  assert.equal(entryEl.querySelector('[data-preset-edit="1"] ins').textContent, '新');
+  assert.equal(entryEl.textContent.includes('十万字占位'), false, '只逐处显示 edits，不把中间整段正文渲染进卡片');
+
+  const markerEl = itemElement(view.container, 302);
+  assert.ok(markerEl.querySelector('[data-flag="disables-marker"]'));
+
+  const settingsEl = itemElement(view.container, 303);
+  assert.ok(settingsEl.textContent.includes('修改预设标签剥离'));
+  assert.equal(settingsEl.querySelector('[data-preset-field="story_plot_strip"] del').textContent, '关闭');
+  assert.equal(settingsEl.querySelector('[data-preset-field="story_plot_strip"] ins').textContent, '开启');
+  assert.equal(settingsEl.querySelector('[data-preset-field="strip_tags"] del').textContent, 'thought');
+  assert.equal(settingsEl.querySelector('[data-preset-field="strip_tags"] ins').textContent, 'thought, #ooc');
+
+  const scriptEl = itemElement(view.container, 304);
+  assert.ok(scriptEl.textContent.includes('修改预设脚本'));
+  assert.ok(scriptEl.textContent.includes('脚本：请求改写脚本'));
+  assert.ok(scriptEl.querySelector('[data-flag="preset-script"]'));
+  assert.equal(scriptEl.querySelector('[data-preset-script-hint]').textContent, zh['agent.proposal.presetScriptHint']);
+
+  const messages = [
+    { id: 1, role: 'assistant', content: '', tool_calls: [{ id: 'preset-call', name: 'create_preset_proposal', arguments: '{}' }] },
+    { id: 2, role: 'tool', content: '{"ok":true,"proposal_id":88,"pending_items":1}', tool_call_id: 'preset-call', tool_name: 'create_preset_proposal', tool_ok: true },
+  ];
+  assert.deepEqual(buildAgentDisplayItems(messages).map(entry => entry.kind), ['tool', 'proposal']);
+  assert.equal(hasUndecidedProposal(messages), true);
+  assert.equal(hasUndecidedProposal([...messages, { id: 3, role: 'event', event: { kind: 'proposal_decision', proposal_id: 88, items: [] } }]), false);
+});
+
 test('从零创建角色卡完整展示所有文本，批准及撤销同步角色列表', async () => {
   const fields = {
     name: '暮星', basic_info: '观星者', personality: '温柔好奇', scenario: '夜晚的观测台',

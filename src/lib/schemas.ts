@@ -22,8 +22,8 @@ import {
 import { isUsableWorkTitle, WORK_FIELD_LIMITS } from '@/lib/works-catalog';
 
 // --------- 通用尺寸常量 ---------
-const MAX_NAME = 100;
-const MAX_LARGE_TEXT = 32 * 1024;       // personality / system_prompt
+export const MAX_NAME = 100;
+export const MAX_LARGE_TEXT = 32 * 1024;       // personality / system_prompt
 const MAX_MEDIUM_TEXT = 16 * 1024;      // 描述类字段
 export const MAX_MEMORY_CONTENT = 8 * 1024;
 export const MAX_MESSAGE_CONTENT = 100 * 1024;

@@ -12,7 +12,7 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 1 });
 Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 1 });
 
-const { cleanup, render, waitFor, within } = require('@testing-library/react');
+const { act, cleanup, render, waitFor, within } = require('@testing-library/react');
 const userEvent = require('@testing-library/user-event').default;
 
 const root = path.resolve(__dirname, '..');
@@ -198,6 +198,12 @@ function withoutClipboardApi(t, execCommand) {
   });
 }
 
+// 复制在 await 之后才 setState。点击不包 act 时这次更新走 React 真实的调度器，排进的任务一开头就读
+// window.event；机器慢时任务会拖到文件末尾拆掉 jsdom 之后才跑，抛 window is not defined。
+async function clickInAct(element) {
+  await act(async () => { element.click(); });
+}
+
 test('copy falls back to execCommand when the page has no clipboard API', async t => {
   const copied = [];
   withoutClipboardApi(t, command => {
@@ -205,7 +211,7 @@ test('copy falls back to execCommand when the page has no clipboard API', async 
     return true;
   });
   const view = renderBubble();
-  view.getByRole('button', { name: 'message.copy' }).click();
+  await clickInAct(view.getByRole('button', { name: 'message.copy' }));
 
   await waitFor(() => assert.ok(view.getByRole('button', { name: 'message.copied' })));
   assert.deepEqual(copied, [{ command: 'copy', text: 'response' }]);
@@ -215,7 +221,7 @@ test('copy falls back to execCommand when the page has no clipboard API', async 
 test('copy reports failure instead of throwing when every copy method is rejected', async t => {
   withoutClipboardApi(t, () => false);
   const view = renderBubble();
-  view.getByRole('button', { name: 'message.copy' }).click();
+  await clickInAct(view.getByRole('button', { name: 'message.copy' }));
 
   await waitFor(() => assert.ok(view.getByRole('button', { name: 'message.copyFailed' })));
   assert.equal(document.querySelector('textarea'), null, 'the temporary textarea must be removed');

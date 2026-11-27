@@ -681,6 +681,92 @@ test('预设提案卡片逐处显示定位替换、剥离设置与脚本风险�
   assert.equal(hasUndecidedProposal([...messages, { id: 3, role: 'event', event: { kind: 'proposal_decision', proposal_id: 88, items: [] } }]), false);
 });
 
+test('预设提案卡片支持新增条目、删除条目、结构字段变化及删除 marker 警示', () => {
+  const items = [
+    item(311, 'create', {
+      before: { preset_entry_creation: { preset_id: 'preset-1', preset_name: '星夜预设', id: 'new-e-1' } },
+      after: {
+        name: '语气强化', role: 'user', content: '保持温柔。', enabled: true,
+        is_marker: false, marker_key: null, injection_position: 1, injection_depth: 2, injection_order: 50, sort_order: 15,
+      },
+      evidence: { message_ids: [], owner_quote: '新增一个聊天中注入的语气条目' },
+    }),
+    item(312, 'retire', {
+      before: {
+        preset_entry_deletion: {
+          preset_id: 'preset-1', preset_name: '星夜预设',
+          entry: {
+            id: 'del-e-1', name: '旧条目', role: 'system', content: '要删掉的正文。', is_marker: false, marker_key: null,
+            is_system_prompt: false, injection_position: 0, injection_depth: 4, injection_order: 100,
+            forbid_overrides: false, injection_trigger: [], enabled: true, sort_order: 5, created_at: '2026-11-01T00:00:00.000Z', updated_at: '2026-11-01T00:00:00.000Z',
+          },
+        },
+      },
+      after: { deleted: true },
+      evidence: { message_ids: [], owner_quote: '删掉旧条目' },
+    }),
+    item(313, 'retire', {
+      before: {
+        preset_entry_deletion: {
+          preset_id: 'preset-1', preset_name: '星夜预设',
+          entry: {
+            id: 'del-marker', name: '聊天历史', role: 'system', content: '', is_marker: true, marker_key: 'chatHistory',
+            is_system_prompt: false, injection_position: 0, injection_depth: 4, injection_order: 100,
+            forbid_overrides: false, injection_trigger: [], enabled: true, sort_order: 3, created_at: '2026-11-01T00:00:00.000Z', updated_at: '2026-11-01T00:00:00.000Z',
+          },
+        },
+      },
+      after: { deleted: true },
+      evidence: { message_ids: [], owner_quote: '删掉聊天历史占位' },
+    }),
+    item(314, 'update', {
+      before: {
+        preset_entry: {
+          preset_id: 'preset-1', preset_name: '星夜预设',
+          entry: {
+            id: 'struct-e-1', name: '结构条目', role: 'system', content: '原文', enabled: true,
+            is_marker: false, marker_key: null, injection_position: 0, injection_depth: 4, injection_order: 100, sort_order: 10,
+          },
+        },
+      },
+      after: { role: 'user', sort_order: 30, injection_position: 1, injection_depth: 2 },
+      evidence: { message_ids: [], owner_quote: '把结构条目改成聊天中深度 2' },
+    }),
+  ];
+  const view = render(React.createElement(ProposalCard, {
+    proposalId: 7,
+    initialView: proposalView({ character_id: null, items, summary: '增删改预设条目结构' }),
+  }));
+
+  assert.equal(checkbox(view.container, 311).checked, true);
+  assert.equal(checkbox(view.container, 312).checked, true);
+  assert.equal(checkbox(view.container, 313).checked, false, '删除 marker 默认不勾选');
+  assert.equal(checkbox(view.container, 314).checked, true);
+
+  const createEl = itemElement(view.container, 311);
+  assert.ok(createEl.textContent.includes('新增预设条目'));
+  assert.ok(createEl.textContent.includes('条目：语气强化'));
+  assert.ok(createEl.textContent.includes('保持温柔。'));
+  assert.ok(createEl.textContent.includes('注入深度：2'));
+
+  const delEl = itemElement(view.container, 312);
+  assert.ok(delEl.textContent.includes('删除预设条目'));
+  assert.ok(delEl.textContent.includes('要删掉的正文。'));
+  assert.ok(delEl.textContent.includes(zh['agent.proposal.presetDeleteHint']));
+
+  assert.ok(itemElement(view.container, 313).querySelector('[data-flag="disables-marker"]'));
+
+  const structEl = itemElement(view.container, 314);
+  assert.equal(structEl.querySelector('[data-preset-field="role"] del').textContent, 'system');
+  assert.equal(structEl.querySelector('[data-preset-field="role"] ins').textContent, 'user');
+  assert.equal(structEl.querySelector('[data-preset-field="sort_order"] del').textContent, '10');
+  assert.equal(structEl.querySelector('[data-preset-field="sort_order"] ins').textContent, '30');
+  assert.equal(structEl.querySelector('[data-preset-field="injection_position"] del').textContent, '相对位置');
+  assert.equal(structEl.querySelector('[data-preset-field="injection_position"] ins').textContent, '聊天中注入');
+  assert.equal(structEl.querySelector('[data-preset-field="injection_depth"] del').textContent, '4');
+  assert.equal(structEl.querySelector('[data-preset-field="injection_depth"] ins').textContent, '2');
+});
+
 // 会话流的提案工具名单是客户端里的字面量（不能 import 服务端工具表），新增提案工具时容易漏加：
 // 漏了卡片不出现在会话里，待决定的提案也拦不住「继续」和压缩。这里按真实工具表逐个核对。
 test('every proposal-creating write tool gets an inline card and counts as undecided', () => {

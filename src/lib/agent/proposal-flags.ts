@@ -105,7 +105,24 @@ export function proposalItemFlags(
   const taskSucceeded = currentTask !== null && (currentTask.status === 'done' || currentTask.result_committed);
   const memoryIds = item.evidence.memory_ids ?? [];
   const evidenceMemories = context.evidenceMemories;
-  const afterRecord = item.after && typeof item.after === 'object' ? item.after as { enabled?: unknown } : null;
+  const afterRecord = item.after && typeof item.after === 'object'
+    ? item.after as { enabled?: unknown; is_marker?: unknown; marker_key?: unknown }
+    : null;
+  const disablesMarker = Boolean(
+    (item.before && 'preset_entry_deletion' in item.before && item.before.preset_entry_deletion.entry.is_marker)
+    || (
+      item.before && 'preset_entry' in item.before
+      && item.before.preset_entry.entry.is_marker
+      && (
+        afterRecord?.enabled === false
+        || afterRecord?.is_marker === false
+        || (
+          afterRecord !== null && 'marker_key' in afterRecord
+          && afterRecord.marker_key !== item.before.preset_entry.entry.marker_key
+        )
+      )
+    ),
+  );
   return {
     noEvidence: item.evidence.message_ids.length === 0 && memoryIds.length === 0
       && !item.evidence.owner_quote && declaresNoEvidence(item.evidence.note),
@@ -120,11 +137,7 @@ export function proposalItemFlags(
       ? memoryIds.filter(id => evidenceMemories.get(id)?.no_longer_true ?? true)
       : [],
     presetScript: Boolean(item.before && 'preset_script' in item.before),
-    disablesMarker: Boolean(
-      item.before && 'preset_entry' in item.before
-      && item.before.preset_entry.entry.is_marker
-      && afterRecord?.enabled === false,
-    ),
+    disablesMarker,
   };
 }
 

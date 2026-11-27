@@ -410,7 +410,7 @@ export const characterUpdateSchema = characterCreateSchema;
 export type CharacterUpdate = z.infer<typeof characterUpdateSchema>;
 
 // --------- /api/prompt-presets ---------
-const presetMarkerKeySchema = z.enum([
+export const presetMarkerKeySchema = z.enum([
   'charDescription',
   'charPersonality',
   'scenario',

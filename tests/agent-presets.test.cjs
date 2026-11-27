@@ -418,7 +418,16 @@ test('创建校验：不合法项全部拒绝且整份不落库', async t => {
     ['没有实际变化', [{ target: 'entry', entry_id: ENTRY_SECOND_ID, enabled: false, name: '文风补充', reason: '无变化', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /没有实际改动/],
     ['改 marker 正文', [{ target: 'entry', entry_id: ENTRY_MARKER_ID, edits: [{ old_text: 'a', new_text: 'b' }], reason: '改 marker', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /marker.*不能修改正文/],
     ['条目属于别的预设', [{ target: 'entry', entry_id: ENTRY_ALT_ID, enabled: false, reason: '跨预设', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /不存在或不属于预设/],
-    ['同一条目重复出现', [validEntryItem, { ...validEntryItem, name: '新名字' }], /已在第 1 项中修改/],
+    ['同一条目重复出现', [validEntryItem, { ...validEntryItem, name: '新名字' }], /已在第 1 项中处理/],
+    ['同一条目同时修改和删除', [validEntryItem, { target: 'delete_entry', entry_id: ENTRY_SECOND_ID, reason: '顺便删', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /已在第 1 项中处理/],
+    ['create_entry 缺 name', [{ target: 'create_entry', content: '正文', reason: '新增', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /需要非空的 name/],
+    ['create_entry marker 缺 marker_key', [{ target: 'create_entry', name: '新占位', is_marker: true, reason: '新增', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /marker_key/],
+    ['create_entry marker 带正文', [{ target: 'create_entry', name: '新占位', is_marker: true, marker_key: 'scenario', content: '不行', reason: '新增', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /不能设置正文/],
+    ['create_entry 普通条目带 marker_key', [{ target: 'create_entry', name: '普通', marker_key: 'scenario', reason: '新增', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /普通条目不能设置 marker_key/],
+    ['create_entry 超 MAX_LARGE_TEXT', [{ target: 'create_entry', name: '超大', content: '字'.repeat(MAX_LARGE_TEXT + 1), reason: '新增', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /超过上限/],
+    ['entry 已有正文不能用 content 整段覆盖', [{ target: 'entry', entry_id: ENTRY_SECOND_ID, content: '重写', reason: '重写', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /用 edits 定位替换/],
+    ['entry 同时传 edits 和 content', [{ target: 'entry', entry_id: ENTRY_SECOND_ID, edits: [{ old_text: 'aa', new_text: 'bb' }], content: 'x', reason: '混用', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /不能同时提供/],
+    ['delete_entry 带多余字段', [{ target: 'delete_entry', entry_id: ENTRY_SECOND_ID, enabled: false, reason: '删', evidence: OWNER_EVIDENCE, confidence: 0.9 }], /不能包含字段：enabled/],
     ['settings 重复出现', [
       { target: 'settings', story_plot_strip: true, reason: '开启', evidence: OWNER_EVIDENCE, confidence: 0.9 },
       { target: 'settings', strip_tags: ['ooc'], reason: '再改', evidence: OWNER_EVIDENCE, confidence: 0.9 },
@@ -551,7 +560,7 @@ test('批准 entry、settings、script 三种项生效，保留 extensions 其�
   assert.equal(afterExt.SPreset.FinalRequestProcessing.extraFlag, 42);
 });
 
-test('过期检测：正文变更和删除预设判 stale；只改 injection_depth 仍可批准', async t => {
+test('过期检测：正文/结构字段变更和删除预设判 stale；只改未跟踪列或旧快照仍可批准', async t => {
   await t.test('content edited before apply -> stale', subtest => {
     const ctx = setup(subtest);
     const proposal = propose(ctx, [{
@@ -565,7 +574,7 @@ test('过期检测：正文变更和删除预设判 stale；只改 injection_dep
     assert.equal(ctx.db.prepare('SELECT content FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID).content, '主人抢先改过了');
   });
 
-  await t.test('injection_depth changed -> still applies', subtest => {
+  await t.test('tracked injection_depth changed -> stale', subtest => {
     const ctx = setup(subtest);
     const proposal = propose(ctx, [{
       target: 'entry', entry_id: ENTRY_SECOND_ID,
@@ -574,10 +583,53 @@ test('过期检测：正文变更和删除预设判 stale；只改 injection_dep
     }]);
     ctx.db.prepare('UPDATE prompt_preset_entries SET injection_depth = 9 WHERE id = ?').run(ENTRY_SECOND_ID);
     const outcome = approve(ctx, proposal);
+    assert.equal(outcome.items[0].state, 'stale');
+    assert.equal(ctx.db.prepare('SELECT enabled FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID).enabled, 0);
+  });
+
+  await t.test('untracked forbid_overrides changed -> still applies', subtest => {
+    const ctx = setup(subtest);
+    const proposal = propose(ctx, [{
+      target: 'entry', entry_id: ENTRY_SECOND_ID,
+      enabled: true,
+      reason: '开启条目', evidence: OWNER_EVIDENCE, confidence: 0.9,
+    }]);
+    ctx.db.prepare('UPDATE prompt_preset_entries SET forbid_overrides = 1 WHERE id = ?').run(ENTRY_SECOND_ID);
+    const outcome = approve(ctx, proposal);
     assert.equal(outcome.items[0].state, 'applied');
-    const row = ctx.db.prepare('SELECT enabled, injection_depth FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID);
+    const row = ctx.db.prepare('SELECT enabled, forbid_overrides FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID);
     assert.equal(row.enabled, 1);
-    assert.equal(row.injection_depth, 9);
+    assert.equal(row.forbid_overrides, 1);
+  });
+
+  await t.test('legacy snapshot without structural fields still applies and undoes', subtest => {
+    const ctx = setup(subtest);
+    const proposal = propose(ctx, [{
+      target: 'entry', entry_id: ENTRY_SECOND_ID,
+      enabled: true,
+      reason: '开启条目', evidence: OWNER_EVIDENCE, confidence: 0.9,
+    }]);
+    // 模拟旧版已落库提案（只保存 id/name/enabled/content/is_marker）
+    const legacyBefore = {
+      preset_entry: {
+        preset_id: PRESET_MAIN_ID,
+        preset_name: '星夜主预设',
+        entry: { id: ENTRY_SECOND_ID, name: '文风补充', enabled: false, content: 'aaabbb，第一处需要保留，第二处需要改写。', is_marker: false },
+      },
+    };
+    ctx.db.prepare('UPDATE agent_proposal_items SET before_json = ? WHERE id = ?')
+      .run(JSON.stringify(legacyBefore), proposal.itemId);
+    ctx.db.prepare('UPDATE prompt_preset_entries SET injection_depth = 9 WHERE id = ?').run(ENTRY_SECOND_ID);
+    assert.equal(approve(ctx, proposal).items[0].state, 'applied');
+    // 同样模拟旧版 result_json（无结构字段）撤销
+    const legacyResult = {
+      memory_ids: [], created_memory_id: null, batch_id: null, after: [],
+      preset_entry: { preset_id: PRESET_MAIN_ID, id: ENTRY_SECOND_ID, name: '文风补充', enabled: true, content: 'aaabbb，第一处需要保留，第二处需要改写。' },
+    };
+    ctx.db.prepare('UPDATE agent_proposal_items SET result_json = ? WHERE id = ?')
+      .run(JSON.stringify(legacyResult), proposal.itemId);
+    assert.equal(undoProposalItem(ctx.db, proposal.id, proposal.itemId, T2).ok, true);
+    assert.equal(ctx.db.prepare('SELECT enabled, injection_depth FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID).enabled, 0);
   });
 
   await t.test('preset deleted -> stale', subtest => {
@@ -602,17 +654,17 @@ test('撤销：只还原改过的键；批准后再被改动时 409 冲突且保
       { target: 'script', script: 'FinalRequestProcessing.script', edits: [{ old_text: '"strict"', new_text: '"loose"' }], reason: '改脚本', evidence: OWNER_EVIDENCE, confidence: 0.9 },
     ]);
     approve(ctx, proposal);
-    // 改动未跟踪的 injection_depth 不影响 entry 撤销
-    ctx.db.prepare('UPDATE prompt_preset_entries SET injection_depth = 7 WHERE id = ?').run(ENTRY_SECOND_ID);
+    // 改动未跟踪的 forbid_overrides 不影响 entry 撤销
+    ctx.db.prepare('UPDATE prompt_preset_entries SET forbid_overrides = 1 WHERE id = ?').run(ENTRY_SECOND_ID);
 
     for (const item of proposal.view.items) {
       const undone = undoProposalItem(ctx.db, proposal.id, item.id, T2);
       assert.equal(undone.ok, true, undone.error);
     }
 
-    const entryRow = ctx.db.prepare('SELECT enabled, injection_depth, name, content FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID);
+    const entryRow = ctx.db.prepare('SELECT enabled, forbid_overrides, name, content FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID);
     assert.equal(entryRow.enabled, 0);
-    assert.equal(entryRow.injection_depth, 7);
+    assert.equal(entryRow.forbid_overrides, 1);
     assert.equal(entryRow.name, '文风补充');
 
     const presetRow = ctx.db.prepare('SELECT story_plot_strip, strip_tags, extensions, updated_at FROM prompt_presets WHERE id = ?').get(PRESET_MAIN_ID);
@@ -696,4 +748,208 @@ test('标注：脚本项和关闭 marker 项默认不勾选；普通条目带主
   assert.equal(scriptFlags.presetScript, true);
   assert.equal(scriptFlags.disablesMarker, false);
   assert.equal(isCheckedByDefault(scriptFlags), false);
+});
+
+test('create_entry 支持顺序顺延 sort_order、完整结构字段、marker、批准与撤销冲突检测', async t => {
+  const ctx = setup(t);
+  const proposal = propose(ctx, [
+    {
+      target: 'create_entry',
+      name: '新增普通条目',
+      role: 'user',
+      content: '请保持轻松节奏。',
+      injection_position: 1,
+      injection_depth: 2,
+      injection_order: 50,
+      reason: '新增聊天中注入条目',
+      evidence: OWNER_EVIDENCE,
+      confidence: 0.9,
+    },
+    {
+      target: 'create_entry',
+      name: '记忆包占位',
+      is_marker: true,
+      marker_key: 'memoryPackage',
+      enabled: false,
+      reason: '新增记忆包占位',
+      evidence: OWNER_EVIDENCE,
+      confidence: 0.9,
+    },
+    {
+      target: 'create_entry',
+      name: '显式排序条目',
+      sort_order: 99,
+      content: '显式位置。',
+      reason: '指定 sort_order',
+      evidence: OWNER_EVIDENCE,
+      confidence: 0.9,
+    },
+  ]);
+
+  const [item1, item2, item3] = proposal.view.items;
+  assert.equal(item1.op, 'create');
+  // 现有最大 sort_order 为 3，前两条自动顺延为 13、23；第三条显式为 99
+  assert.equal(item1.after.sort_order, 13);
+  assert.equal(item2.after.sort_order, 23);
+  assert.equal(item3.after.sort_order, 99);
+  assert.equal(isCheckedByDefault(proposalItemFlags(item1)), true);
+
+  const applied = approve(ctx, proposal);
+  assert.deepEqual(applied.items.map(i => i.state), ['applied', 'applied', 'applied']);
+
+  const id1 = item1.before.preset_entry_creation.id;
+  const id2 = item2.before.preset_entry_creation.id;
+  const row1 = ctx.db.prepare('SELECT * FROM prompt_preset_entries WHERE id = ?').get(id1);
+  assert.equal(row1.name, '新增普通条目');
+  assert.equal(row1.role, 'user');
+  assert.equal(row1.content, '请保持轻松节奏。');
+  assert.equal(row1.injection_position, 1);
+  assert.equal(row1.injection_depth, 2);
+  assert.equal(row1.injection_order, 50);
+  assert.equal(row1.sort_order, 13);
+  assert.equal(row1.enabled, 1);
+
+  const row2 = ctx.db.prepare('SELECT * FROM prompt_preset_entries WHERE id = ?').get(id2);
+  assert.equal(row2.is_marker, 1);
+  assert.equal(row2.marker_key, 'memoryPackage');
+  assert.equal(row2.enabled, 0);
+
+  // 未改动时可正常撤销（删掉新建行）
+  assert.equal(undoProposalItem(ctx.db, proposal.id, item2.id, T2).ok, true);
+  assert.equal(ctx.db.prepare('SELECT 1 FROM prompt_preset_entries WHERE id = ?').get(id2), undefined);
+
+  // 批准后再编辑新建条目 → 撤销返回 409 且保留条目
+  ctx.db.prepare("UPDATE prompt_preset_entries SET content = '已手动改过' WHERE id = ?").run(id1);
+  const blocked = undoProposalItem(ctx.db, proposal.id, item1.id, T2);
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, 409);
+  assert.equal(ctx.db.prepare('SELECT content FROM prompt_preset_entries WHERE id = ?').get(id1).content, '已手动改过');
+});
+
+test('delete_entry 批准删除并支持无损撤销；删除 marker 默认不勾选；待批修改判 stale', async t => {
+  await t.test('delete and lossless undo preserves all columns including triggers', subtest => {
+    const ctx = setup(subtest);
+    ctx.db.prepare("UPDATE prompt_preset_entries SET is_system_prompt = 1, forbid_overrides = 1, injection_trigger = '[\"normal\"]' WHERE id = ?")
+      .run(ENTRY_SECOND_ID);
+    const original = ctx.db.prepare('SELECT * FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID);
+
+    const proposal = propose(ctx, [
+      { target: 'delete_entry', entry_id: 'entry-main-aaaa2', reason: '删掉旧条目', evidence: OWNER_EVIDENCE, confidence: 0.9 },
+      { target: 'delete_entry', entry_id: ENTRY_MARKER_ID, reason: '删掉聊天历史占位', evidence: OWNER_EVIDENCE, confidence: 0.9 },
+    ]);
+
+    const [normalDel, markerDel] = proposal.view.items;
+    assert.equal(normalDel.op, 'retire');
+    assert.equal(proposalItemFlags(normalDel).disablesMarker, false);
+    assert.equal(isCheckedByDefault(proposalItemFlags(normalDel)), true);
+    assert.equal(proposalItemFlags(markerDel).disablesMarker, true);
+    assert.equal(isCheckedByDefault(proposalItemFlags(markerDel)), false);
+
+    assert.equal(approve(ctx, proposal, [normalDel.id]).items[0].state, 'applied');
+    assert.equal(ctx.db.prepare('SELECT 1 FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID), undefined);
+
+    // 撤销删除：所有列原样恢复
+    assert.equal(undoProposalItem(ctx.db, proposal.id, normalDel.id, T2).ok, true);
+    const restored = ctx.db.prepare('SELECT * FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID);
+    assert.deepEqual(restored, original);
+  });
+
+  await t.test('edited before delete apply -> stale; deleted preset blocks undo with 409', subtest => {
+    const ctx = setup(subtest);
+    const proposal = propose(ctx, [
+      { target: 'delete_entry', entry_id: ENTRY_SECOND_ID, reason: '删除', evidence: OWNER_EVIDENCE, confidence: 0.9 },
+    ]);
+    ctx.db.prepare('UPDATE prompt_preset_entries SET sort_order = 77 WHERE id = ?').run(ENTRY_SECOND_ID);
+    assert.equal(approve(ctx, proposal).items[0].state, 'stale');
+    assert.ok(ctx.db.prepare('SELECT 1 FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID));
+
+    const proposal2 = propose(ctx, [
+      { target: 'delete_entry', entry_id: ENTRY_SECOND_ID, reason: '删除', evidence: OWNER_EVIDENCE, confidence: 0.9 },
+    ]);
+    assert.equal(approve(ctx, proposal2).items[0].state, 'applied');
+    ctx.db.prepare('DELETE FROM prompt_presets WHERE id = ?').run(PRESET_MAIN_ID);
+    assert.equal(undoProposalItem(ctx.db, proposal2.id, proposal2.itemId, T2).status, 409);
+  });
+});
+
+test('entry 支持修改结构属性、空正文直接填入、marker 转换与撤销', t => {
+  const ctx = setup(t);
+  // 给一个空正文条目测试直接写 content
+  insert(ctx.db, 'prompt_preset_entries', {
+    id: 'entry-empty-eeee5555',
+    preset_id: PRESET_MAIN_ID,
+    name: '空条目',
+    role: 'user',
+    content: '',
+    is_marker: 0,
+    injection_position: 0,
+    injection_depth: 4,
+    injection_order: 100,
+    enabled: 0,
+    sort_order: 10,
+    created_at: T0,
+    updated_at: T0,
+  });
+
+  const proposal = propose(ctx, [
+    {
+      target: 'entry',
+      entry_id: ENTRY_SECOND_ID,
+      role: 'assistant',
+      sort_order: 25,
+      injection_position: 0,
+      injection_depth: 1,
+      injection_order: 55,
+      reason: '调整位置与角色',
+      evidence: OWNER_EVIDENCE,
+      confidence: 0.9,
+    },
+    {
+      target: 'entry',
+      entry_id: 'entry-empty-eeee5555',
+      content: '从空白填入的新指令。',
+      enabled: true,
+      reason: '填入正文',
+      evidence: OWNER_EVIDENCE,
+      confidence: 0.9,
+    },
+    {
+      target: 'entry',
+      entry_id: ENTRY_MARKER_ID,
+      is_marker: false,
+      reason: '取消占位标记',
+      evidence: OWNER_EVIDENCE,
+      confidence: 0.9,
+    },
+  ]);
+
+  const [structItem, emptyFillItem, unmarkItem] = proposal.view.items;
+  assert.equal(unmarkItem.after.is_marker, false);
+  assert.equal(unmarkItem.after.marker_key, null, '取消 marker 自动清空 marker_key');
+  assert.equal(proposalItemFlags(unmarkItem).disablesMarker, true);
+  assert.equal(isCheckedByDefault(proposalItemFlags(unmarkItem)), false);
+
+  assert.deepEqual(approve(ctx, proposal).items.map(i => i.state), ['applied', 'applied', 'applied']);
+
+  const rowStruct = ctx.db.prepare('SELECT role, sort_order, injection_position, injection_depth, injection_order FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID);
+  assert.deepEqual(rowStruct, { role: 'assistant', sort_order: 25, injection_position: 0, injection_depth: 1, injection_order: 55 });
+
+  const rowEmpty = ctx.db.prepare('SELECT content, enabled FROM prompt_preset_entries WHERE id = ?').get('entry-empty-eeee5555');
+  assert.deepEqual(rowEmpty, { content: '从空白填入的新指令。', enabled: 1 });
+
+  const rowUnmark = ctx.db.prepare('SELECT is_marker, marker_key FROM prompt_preset_entries WHERE id = ?').get(ENTRY_MARKER_ID);
+  assert.deepEqual(rowUnmark, { is_marker: 0, marker_key: null });
+
+  // 全部撤销恢复原状
+  for (const item of [structItem, emptyFillItem, unmarkItem]) {
+    assert.equal(undoProposalItem(ctx.db, proposal.id, item.id, T2).ok, true);
+  }
+  assert.deepEqual(
+    ctx.db.prepare('SELECT role, sort_order, injection_position, injection_depth, injection_order FROM prompt_preset_entries WHERE id = ?').get(ENTRY_SECOND_ID),
+    { role: 'system', sort_order: 2, injection_position: 1, injection_depth: 4, injection_order: 100 },
+  );
+  assert.deepEqual(
+    ctx.db.prepare('SELECT is_marker, marker_key FROM prompt_preset_entries WHERE id = ?').get(ENTRY_MARKER_ID),
+    { is_marker: 1, marker_key: 'chatHistory' },
+  );
 });

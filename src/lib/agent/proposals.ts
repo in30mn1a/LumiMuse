@@ -13,7 +13,8 @@ import {
   type MemoryCategory, type WorkEntry, type WorkStatus, type WorkType,
 } from '@/types';
 import {
-  MAX_LARGE_TEXT, MAX_MEMORY_CONTENT, MAX_MESSAGE_CONTENT, MAX_NAME, MAX_TAG_LENGTH, MAX_TAGS, stripTagRulesSchema,
+  MAX_LARGE_TEXT, MAX_MEMORY_CONTENT, MAX_MESSAGE_CONTENT, MAX_NAME, MAX_TAG_LENGTH, MAX_TAGS,
+  presetMarkerKeySchema, stripTagRulesSchema,
 } from '@/lib/schemas';
 import { normalizeTags } from '@/lib/memory-tag-spec';
 import { getMergeSourceIssue, type MemoryMergeSourceIssue } from '@/lib/memory-merge';
@@ -41,11 +42,17 @@ import {
   isWhitelistedScriptPath,
   loadPresetEntryRecord,
   loadPresetRecord,
+  maxPresetEntrySortOrder,
   resolvePresetEntryId,
   resolvePresetId,
+  toPresetEntryFullSnapshot,
   toPresetEntrySnapshot,
   type PresetEntryAfter,
   type PresetEntryBefore,
+  type PresetEntryCreateAfter,
+  type PresetEntryCreationBefore,
+  type PresetEntryDeletionBefore,
+  type PresetEntryFullSnapshot,
   type PresetScriptAfter,
   type PresetScriptBefore,
   type PresetSettingsAfter,
@@ -56,6 +63,10 @@ import {
 export type {
   PresetEntryAfter,
   PresetEntryBefore,
+  PresetEntryCreateAfter,
+  PresetEntryCreationBefore,
+  PresetEntryDeletionBefore,
+  PresetEntryFullSnapshot,
   PresetScriptAfter,
   PresetScriptBefore,
   PresetSettingsAfter,
@@ -220,7 +231,7 @@ export const createWorksProposalSchema = z.strictObject({
 export type CreateWorksProposalInput = z.infer<typeof createWorksProposalSchema>;
 type WorksProposalItemInput = CreateWorksProposalInput['items'][number];
 
-const MAX_PRESET_PROPOSAL_ITEMS = 20;
+const MAX_PRESET_PROPOSAL_ITEMS = MAX_PROPOSAL_ITEMS;
 const MAX_PRESET_TEXT_EDITS = 20;
 
 const presetTextEditSchema = z.strictObject({
@@ -229,13 +240,30 @@ const presetTextEditSchema = z.strictObject({
 });
 
 const presetProposalItemSchema = z.strictObject({
-  target: z.enum(['entry', 'settings', 'script']).describe('entry 修改条目；settings 修改标签剥离设置；script 修改 SPreset 脚本'),
-  entry_id: z.string().min(1).optional().describe('target=entry 必填，目标条目 ID（支持至少 8 位唯一前缀）'),
+  target: z.enum(['entry', 'create_entry', 'delete_entry', 'settings', 'script'])
+    .describe('entry 修改条目；create_entry 新建条目；delete_entry 删除条目；settings 改标签剥离；script 改 SPreset 脚本'),
+  entry_id: z.string().min(1).optional().describe('target=entry 或 delete_entry 必填，条目 ID（支持至少 8 位唯一前缀）'),
   script: z.string().min(1).optional().describe('target=script 必填，SPreset 脚本白名单路径'),
   edits: z.array(presetTextEditSchema).min(1).max(MAX_PRESET_TEXT_EDITS).optional()
-    .describe(`定位替换列表（1..${MAX_PRESET_TEXT_EDITS} 处），按顺序生效；仅用于 entry 正文或 script`),
-  enabled: z.boolean().optional().describe('仅用于 entry：开启或关闭该条目'),
-  name: z.string().optional().describe(`仅用于 entry：条目名称，trim 后非空，最多 ${MAX_NAME} 字`),
+    .describe(`定位替换列表（1..${MAX_PRESET_TEXT_EDITS} 处），按顺序生效；用于 entry 正文或 script`),
+  content: z.string().optional()
+    .describe(`条目正文：用于 create_entry，或给原正文为空的 entry 填入正文（已有正文的条目请用 edits）；最多 ${MAX_LARGE_TEXT} 字`),
+  enabled: z.boolean().optional().describe('用于 entry / create_entry：启用开关（create_entry 默认 true）'),
+  name: z.string().optional().describe(`用于 entry / create_entry（create_entry 必填）：条目名称，trim 后非空，最多 ${MAX_NAME} 字`),
+  role: z.enum(['system', 'user', 'assistant']).optional()
+    .describe('用于 entry / create_entry：消息角色（create_entry 默认 system）'),
+  sort_order: z.number().int().optional()
+    .describe('用于 entry / create_entry：排序号（create_entry 省略时取当前最大值 + 10）'),
+  injection_position: z.union([z.literal(0), z.literal(1)]).optional()
+    .describe('用于 entry / create_entry：注入位置（0 相对位置，1 聊天中注入；create_entry 默认 0）'),
+  injection_depth: z.number().int().min(0).optional()
+    .describe('用于 entry / create_entry：聊天中注入深度（非负整数；create_entry 默认 4）'),
+  injection_order: z.number().int().optional()
+    .describe('用于 entry / create_entry：聊天中注入顺序（整数；create_entry 默认 100）'),
+  is_marker: z.boolean().optional()
+    .describe('用于 entry / create_entry：是否为占位标记（create_entry 默认 false）'),
+  marker_key: presetMarkerKeySchema.nullable().optional()
+    .describe('用于 entry / create_entry：占位标记类型（is_marker=true 必填，普通条目须为 null 或省略）'),
   story_plot_strip: z.boolean().optional().describe('仅用于 settings：是否开启剧情标签剥离'),
   strip_tags: z.array(z.string()).optional().describe('仅用于 settings：剥离标签规则完整列表，整表替换'),
   reason: z.string().max(MAX_REASON).describe('为什么这样改，写给主人看'),
@@ -324,8 +352,12 @@ export type ProposalBefore =
   | { work: WorkEntry }
   /** 片单 create：新条目批准前不存在 */
   | { work_creation: { character_id: string } }
-  /** 预设条目修改：提案时的名称、启用状态与正文快照，批准和撤销据此判断是否已被改动 */
+  /** 预设条目修改：提案时的名称、启用状态、正文与结构字段快照，批准和撤销据此判断是否已被改动 */
   | { preset_entry: PresetEntryBefore }
+  /** 预设条目新建：新条目批准前不存在，预分配条目 ID 供批准和撤销追踪 */
+  | { preset_entry_creation: PresetEntryCreationBefore }
+  /** 预设条目删除：提案时的整行完整快照，批准时核对未变，撤销时按原样恢复 */
+  | { preset_entry_deletion: PresetEntryDeletionBefore }
   /** 预设标签剥离设置修改：提案时的 story_plot_strip 与 strip_tags 快照 */
   | { preset_settings: PresetSettingsBefore }
   /** 预设 SPreset 脚本修改：提案时该白名单路径上的脚本全文快照 */
@@ -1330,12 +1362,26 @@ export function createWorksProposal(
   return savePreparedProposal(db, characterId, summary, prepared, context);
 }
 
-const PRESET_TARGET_ALLOWED_FIELDS: Record<'entry' | 'settings' | 'script', ReadonlySet<string>> = {
-  entry: new Set(['entry_id', 'edits', 'enabled', 'name']),
+type PresetProposalTarget = CreatePresetProposalInput['items'][number]['target'];
+
+const PRESET_TARGET_ALLOWED_FIELDS: Record<PresetProposalTarget, ReadonlySet<string>> = {
+  entry: new Set([
+    'entry_id', 'edits', 'content', 'enabled', 'name', 'role',
+    'sort_order', 'injection_position', 'injection_depth', 'injection_order', 'is_marker', 'marker_key',
+  ]),
+  create_entry: new Set([
+    'name', 'role', 'content', 'enabled', 'sort_order',
+    'injection_position', 'injection_depth', 'injection_order', 'is_marker', 'marker_key',
+  ]),
+  delete_entry: new Set(['entry_id']),
   settings: new Set(['story_plot_strip', 'strip_tags']),
   script: new Set(['script', 'edits']),
 };
-const PRESET_OPTIONAL_TARGET_FIELDS = ['entry_id', 'script', 'edits', 'enabled', 'name', 'story_plot_strip', 'strip_tags'] as const;
+const PRESET_OPTIONAL_TARGET_FIELDS = [
+  'entry_id', 'script', 'edits', 'content', 'enabled', 'name', 'role',
+  'sort_order', 'injection_position', 'injection_depth', 'injection_order', 'is_marker', 'marker_key',
+  'story_plot_strip', 'strip_tags',
+] as const;
 
 /**
  * 创建预设提示词修改提案，沿用提案批准流程，创建时不写 prompt_presets / prompt_preset_entries。
@@ -1357,6 +1403,8 @@ export function createPresetProposal(
 
   const claimedTargets = new Map<string, number>();
   const prepared: PreparedItem[] = [];
+  // 同一份提案里连续新建多条且省略 sort_order 时，依次 +10 顺延，与手动新建接口一致
+  let nextAutoSortOrder = maxPresetEntrySortOrder(db, preset.id) + 10;
 
   input.items.forEach((item, index) => {
     const seq = index + 1;
@@ -1372,10 +1420,86 @@ export function createPresetProposal(
 
     const evidence = checkEvidence(db, null, item.evidence, true, context.sessionId, itemErrors);
 
+    let op: ProposableOp = 'update';
     let before: ProposalBefore = null;
-    let after: PresetEntryAfter | PresetSettingsAfter | PresetScriptAfter | null = null;
+    let after: PresetEntryAfter | PresetEntryCreateAfter | { deleted: true } | PresetSettingsAfter | PresetScriptAfter | null = null;
 
-    if (item.target === 'entry') {
+    if (item.target === 'create_entry') {
+      op = 'create';
+      const trimmedName = item.name?.trim() ?? '';
+      if (!trimmedName) {
+        itemErrors.push('create_entry 项需要非空的 name');
+      } else if (trimmedName.length > MAX_NAME) {
+        itemErrors.push(`条目名称不能超过 ${MAX_NAME} 字`);
+      }
+
+      const isMarker = item.is_marker ?? false;
+      const markerKey = item.marker_key ?? null;
+      const content = item.content ?? '';
+      if (isMarker) {
+        if (!markerKey) itemErrors.push('占位标记（is_marker: true）必须提供有效的 marker_key');
+        if (content.length > 0) itemErrors.push('占位标记（marker）条目不能设置正文 content');
+      } else {
+        if (markerKey !== null) itemErrors.push('普通条目不能设置 marker_key（若要创建占位标记，请同时设 is_marker: true）');
+        if (content.length > MAX_LARGE_TEXT) {
+          itemErrors.push(`条目正文长度（${content.length}）超过上限（${MAX_LARGE_TEXT}）`);
+        }
+      }
+
+      const sortOrder = item.sort_order !== undefined ? item.sort_order : nextAutoSortOrder;
+      if (item.sort_order === undefined) nextAutoSortOrder += 10;
+
+      before = {
+        preset_entry_creation: {
+          preset_id: preset.id,
+          preset_name: preset.name,
+          id: randomUUID(),
+        },
+      };
+      after = {
+        name: trimmedName,
+        role: item.role ?? 'system',
+        content: isMarker ? '' : content,
+        enabled: item.enabled ?? true,
+        is_marker: isMarker,
+        marker_key: isMarker ? markerKey : null,
+        injection_position: item.injection_position ?? 0,
+        injection_depth: item.injection_depth ?? 4,
+        injection_order: item.injection_order ?? 100,
+        sort_order: sortOrder,
+      };
+    } else if (item.target === 'delete_entry') {
+      op = 'retire';
+      if (item.entry_id === undefined) {
+        itemErrors.push('delete_entry 项需要 entry_id');
+      } else {
+        const resolvedEntry = resolvePresetEntryId(db, preset.id, item.entry_id);
+        if (!resolvedEntry.ok) {
+          itemErrors.push(resolvedEntry.error);
+        } else {
+          const entry = loadPresetEntryRecord(db, preset.id, resolvedEntry.id);
+          if (!entry) {
+            itemErrors.push(`条目 ${resolvedEntry.id} 不存在或不属于预设 ${preset.id}`);
+          } else {
+            const claimKey = `entry:${entry.id}`;
+            const claimedBy = claimedTargets.get(claimKey);
+            if (claimedBy !== undefined) {
+              itemErrors.push(`条目 ${entry.id} 已在第 ${claimedBy} 项中处理，同一条目在一份提案里只能出现一次`);
+            } else {
+              claimedTargets.set(claimKey, seq);
+            }
+            before = {
+              preset_entry_deletion: {
+                preset_id: preset.id,
+                preset_name: preset.name,
+                entry: toPresetEntryFullSnapshot(entry),
+              },
+            };
+            after = { deleted: true };
+          }
+        }
+      }
+    } else if (item.target === 'entry') {
       if (item.entry_id === undefined) {
         itemErrors.push('entry 项需要 entry_id');
       } else {
@@ -1390,7 +1514,7 @@ export function createPresetProposal(
             const claimKey = `entry:${entry.id}`;
             const claimedBy = claimedTargets.get(claimKey);
             if (claimedBy !== undefined) {
-              itemErrors.push(`条目 ${entry.id} 已在第 ${claimedBy} 项中修改，同一条目在一份提案里只能出现一次`);
+              itemErrors.push(`条目 ${entry.id} 已在第 ${claimedBy} 项中处理，同一条目在一份提案里只能出现一次`);
             } else {
               claimedTargets.set(claimKey, seq);
             }
@@ -1412,8 +1536,43 @@ export function createPresetProposal(
             if (item.enabled !== undefined && item.enabled !== entry.enabled) {
               changes.enabled = item.enabled;
             }
-            if (item.edits !== undefined) {
-              if (entry.is_marker) {
+            if (item.role !== undefined && item.role !== entry.role) {
+              changes.role = item.role;
+            }
+            if (item.sort_order !== undefined && item.sort_order !== entry.sort_order) {
+              changes.sort_order = item.sort_order;
+            }
+            if (item.injection_position !== undefined && item.injection_position !== entry.injection_position) {
+              changes.injection_position = item.injection_position;
+            }
+            if (item.injection_depth !== undefined && item.injection_depth !== entry.injection_depth) {
+              changes.injection_depth = item.injection_depth;
+            }
+            if (item.injection_order !== undefined && item.injection_order !== entry.injection_order) {
+              changes.injection_order = item.injection_order;
+            }
+
+            const nextIsMarker = item.is_marker ?? entry.is_marker;
+            // 把 marker 改为普通条目且未显式给 marker_key 时，自动清空 marker_key 避免脏状态
+            const nextMarkerKey = item.marker_key !== undefined
+              ? item.marker_key
+              : (item.is_marker === false ? null : entry.marker_key);
+            if (nextIsMarker && !nextMarkerKey) {
+              itemErrors.push('占位标记（is_marker: true）必须提供有效的 marker_key');
+              fieldError = true;
+            } else if (!nextIsMarker && nextMarkerKey !== null) {
+              itemErrors.push('普通条目不能设置 marker_key（若要改为占位标记，请同时设 is_marker: true）');
+              fieldError = true;
+            } else {
+              if (nextIsMarker !== entry.is_marker) changes.is_marker = nextIsMarker;
+              if (nextMarkerKey !== entry.marker_key) changes.marker_key = nextMarkerKey;
+            }
+
+            if (item.edits !== undefined && item.content !== undefined) {
+              itemErrors.push('edits 和 content 不能同时提供');
+              fieldError = true;
+            } else if (item.edits !== undefined) {
+              if (nextIsMarker) {
                 itemErrors.push(`条目「${entry.name}」（${entry.id}）是占位标记（marker），没有正文，不能修改正文`);
                 fieldError = true;
               } else {
@@ -1436,7 +1595,21 @@ export function createPresetProposal(
                   }
                 }
               }
+            } else if (item.content !== undefined) {
+              if (nextIsMarker) {
+                itemErrors.push(`条目「${entry.name}」（${entry.id}）是占位标记（marker），没有正文，不能修改正文`);
+                fieldError = true;
+              } else if (entry.content.length > 0) {
+                itemErrors.push('已有正文的条目请用 edits 定位替换，不要用 content 整段覆盖');
+                fieldError = true;
+              } else if (item.content.length > MAX_LARGE_TEXT) {
+                itemErrors.push(`条目正文长度（${item.content.length}）超过上限（${MAX_LARGE_TEXT}）`);
+                fieldError = true;
+              } else if (item.content !== entry.content) {
+                changes.content = item.content;
+              }
             }
+
             if (!fieldError && Object.keys(changes).length === 0) {
               itemErrors.push(`对条目「${entry.name}」（${entry.id}）没有实际改动`);
             }
@@ -1530,7 +1703,7 @@ export function createPresetProposal(
 
     if (itemErrors.length === 0) {
       prepared.push({
-        op: 'update',
+        op,
         reason,
         evidence,
         confidence: item.confidence,

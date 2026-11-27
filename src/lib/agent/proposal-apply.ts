@@ -51,14 +51,22 @@ import {
   loadCharacterCard, type CreatedCharacterSnapshot, type ProposalCharacterFields,
 } from './character-card';
 import {
+  createPresetEntry,
+  deletePresetEntry,
   getPresetScript,
   loadPresetEntryRecord,
   loadPresetRecord,
+  restoreDeletedPresetEntry,
   setPresetScript,
   updatePresetEntryFields,
   updatePresetExtensions,
   updatePresetSettings,
   type PresetEntryAfter,
+  type PresetEntryCreateAfter,
+  type PresetEntryFieldPatch,
+  type PresetEntryFullSnapshot,
+  type PresetEntryRecord,
+  type PresetEntrySnapshot,
   type PresetScriptAfter,
   type PresetSettingsAfter,
 } from './preset-edit';
@@ -98,7 +106,11 @@ export interface ProposalApplyResult {
   /** 片单条目应用后的完整快照，撤销时据此判断之后是否又被改动。 */
   work?: WorkEntry;
   /** 预设条目修改应用后的快照，撤销时据此判断之后是否又被改动。 */
-  preset_entry?: { preset_id: string; id: string; name: string; enabled: boolean; content: string };
+  preset_entry?: { preset_id: string } & PresetEntrySnapshot;
+  /** 预设条目新建应用后的完整快照，撤销时据此判断之后是否又被改动。 */
+  preset_entry_creation?: { preset_id: string; id: string } & PresetEntryCreateAfter;
+  /** 预设条目删除应用后的记录，撤销时据此还原原条目。 */
+  preset_entry_deletion?: { preset_id: string; id: string };
   /** 预设标签剥离设置应用后的快照，撤销时据此判断之后是否又被改动。 */
   preset_settings?: { preset_id: string; story_plot_strip: boolean; strip_tags: string[] };
   /** 预设脚本修改应用后的快照，撤销时据此判断之后是否又被改动。 */
@@ -431,37 +443,134 @@ function applyWorkItem(db: Database.Database, characterId: string, item: Proposa
   }, now));
 }
 
+type PresetProposalBefore = Extract<
+  NonNullable<ProposalBefore>,
+  | { preset_entry: unknown }
+  | { preset_entry_creation: unknown }
+  | { preset_entry_deletion: unknown }
+  | { preset_settings: unknown }
+  | { preset_script: unknown }
+>;
+
+function isPresetBefore(before: ProposalBefore): before is PresetProposalBefore {
+  return Boolean(
+    before && (
+      'preset_entry' in before
+      || 'preset_entry_creation' in before
+      || 'preset_entry_deletion' in before
+      || 'preset_settings' in before
+      || 'preset_script' in before
+    ),
+  );
+}
+
+/** 比对条目当前值与快照；可选结构字段只在快照中存在时比对，以兼容旧版已落库提案。 */
+function matchesPresetEntrySnapshot(current: PresetEntryRecord, snapshot: PresetEntrySnapshot): boolean {
+  if (current.name !== snapshot.name || current.enabled !== snapshot.enabled || current.content !== snapshot.content) {
+    return false;
+  }
+  if (snapshot.is_marker !== undefined && current.is_marker !== snapshot.is_marker) return false;
+  if (snapshot.role !== undefined && current.role !== snapshot.role) return false;
+  if (snapshot.marker_key !== undefined && current.marker_key !== snapshot.marker_key) return false;
+  if (snapshot.injection_position !== undefined && current.injection_position !== snapshot.injection_position) return false;
+  if (snapshot.injection_depth !== undefined && current.injection_depth !== snapshot.injection_depth) return false;
+  if (snapshot.injection_order !== undefined && current.injection_order !== snapshot.injection_order) return false;
+  if (snapshot.sort_order !== undefined && current.sort_order !== snapshot.sort_order) return false;
+  return true;
+}
+
+/** 删除前核对整行全部业务列，避免把待批期间主人编辑过的条目删掉。 */
+function matchesFullPresetEntry(current: PresetEntryRecord, snapshot: PresetEntryFullSnapshot): boolean {
+  return matchesPresetEntrySnapshot(current, snapshot)
+    && current.is_system_prompt === snapshot.is_system_prompt
+    && current.forbid_overrides === snapshot.forbid_overrides
+    && JSON.stringify(current.injection_trigger) === JSON.stringify(snapshot.injection_trigger);
+}
+
 function applyPresetItem(
   db: Database.Database,
   item: ProposalItemRow,
-  before: Extract<NonNullable<ProposalBefore>, { preset_entry: unknown } | { preset_settings: unknown } | { preset_script: unknown }>,
+  before: PresetProposalBefore,
   now: string,
 ): ItemOutcome {
+  if ('preset_entry_creation' in before) {
+    if (item.op !== 'create') throw new Error(`${item.op} 不能用于新建预设条目`);
+    const target = before.preset_entry_creation;
+    const preset = loadPresetRecord(db, target.preset_id);
+    if (!preset) {
+      return { state: 'stale', detail: `预设「${target.preset_name}」（${target.preset_id}）已删除，没有新增条目` };
+    }
+    if (db.prepare('SELECT 1 FROM prompt_preset_entries WHERE id = ?').get(target.id)) {
+      return { state: 'stale', detail: `预设条目 ID ${target.id} 已被使用，没有新增` };
+    }
+    const after = JSON.parse(item.after_json) as PresetEntryCreateAfter;
+    createPresetEntry(db, target.preset_id, target.id, after, now);
+    return {
+      state: 'applied',
+      indexIds: [],
+      result: {
+        memory_ids: [],
+        created_memory_id: null,
+        batch_id: null,
+        after: [],
+        preset_entry_creation: { preset_id: target.preset_id, id: target.id, ...after },
+      },
+    };
+  }
+
+  if ('preset_entry_deletion' in before) {
+    if (item.op !== 'retire') throw new Error(`${item.op} 不能用于删除预设条目`);
+    const target = before.preset_entry_deletion;
+    const preset = loadPresetRecord(db, target.preset_id);
+    const current = preset ? loadPresetEntryRecord(db, target.preset_id, target.entry.id) : null;
+    if (!preset || !current || !matchesFullPresetEntry(current, target.entry)) {
+      return {
+        state: 'stale',
+        detail: `预设「${target.preset_name}」的条目「${target.entry.name}」（${target.entry.id}）在提案生成后已被改动或删除，没有删除`,
+      };
+    }
+    deletePresetEntry(db, target.preset_id, target.entry.id, now);
+    return {
+      state: 'applied',
+      indexIds: [],
+      result: {
+        memory_ids: [],
+        created_memory_id: null,
+        batch_id: null,
+        after: [],
+        preset_entry_deletion: { preset_id: target.preset_id, id: target.entry.id },
+      },
+    };
+  }
+
   if (item.op !== 'update') throw new Error(`${item.op} 不能用于预设修改`);
 
   if ('preset_entry' in before) {
     const target = before.preset_entry;
     const preset = loadPresetRecord(db, target.preset_id);
     const current = preset ? loadPresetEntryRecord(db, target.preset_id, target.entry.id) : null;
-    if (
-      !preset || !current
-      || current.name !== target.entry.name
-      || current.enabled !== target.entry.enabled
-      || current.content !== target.entry.content
-    ) {
+    if (!preset || !current || !matchesPresetEntrySnapshot(current, target.entry)) {
       return {
         state: 'stale',
         detail: `预设「${target.preset_name}」的条目「${target.entry.name}」（${target.entry.id}）在提案生成后已被改动或删除，没有修改`,
       };
     }
     const after = JSON.parse(item.after_json) as PresetEntryAfter;
-    if (current.is_marker && after.content !== undefined) {
+    const nextIsMarker = after.is_marker ?? current.is_marker;
+    if (nextIsMarker && after.content !== undefined) {
       throw new Error(`占位标记条目「${current.name}」不能修改正文`);
     }
-    const patch: { name?: string; enabled?: boolean; content?: string } = {};
+    const patch: PresetEntryFieldPatch = {};
     if (after.name !== undefined) patch.name = after.name;
     if (after.enabled !== undefined) patch.enabled = after.enabled;
     if (after.content !== undefined) patch.content = after.content;
+    if (after.role !== undefined) patch.role = after.role;
+    if (after.is_marker !== undefined) patch.is_marker = after.is_marker;
+    if (after.marker_key !== undefined) patch.marker_key = after.marker_key;
+    if (after.injection_position !== undefined) patch.injection_position = after.injection_position;
+    if (after.injection_depth !== undefined) patch.injection_depth = after.injection_depth;
+    if (after.injection_order !== undefined) patch.injection_order = after.injection_order;
+    if (after.sort_order !== undefined) patch.sort_order = after.sort_order;
     updatePresetEntryFields(db, target.preset_id, target.entry.id, patch, now);
     return {
       state: 'applied',
@@ -477,6 +586,13 @@ function applyPresetItem(
           name: patch.name ?? current.name,
           enabled: patch.enabled ?? current.enabled,
           content: patch.content ?? current.content,
+          is_marker: patch.is_marker ?? current.is_marker,
+          role: patch.role ?? current.role,
+          marker_key: patch.marker_key !== undefined ? patch.marker_key : current.marker_key,
+          injection_position: patch.injection_position ?? current.injection_position,
+          injection_depth: patch.injection_depth ?? current.injection_depth,
+          injection_order: patch.injection_order ?? current.injection_order,
+          sort_order: patch.sort_order ?? current.sort_order,
         },
       },
     };
@@ -555,7 +671,7 @@ function applyPresetItem(
 function applyItem(db: Database.Database, proposal: ProposalRow, item: ProposalItemRow, now: string): ItemOutcome {
   const characterId = proposal.character_id;
   const before = JSON.parse(item.before_json) as ProposalBefore;
-  if (before && ('preset_entry' in before || 'preset_settings' in before || 'preset_script' in before)) {
+  if (isPresetBefore(before)) {
     return applyPresetItem(db, item, before, now);
   }
   if (before && 'character_creation' in before) {
@@ -1007,10 +1123,51 @@ function undoWorkItem(
 function undoPresetItem(
   db: Database.Database,
   item: ProposalItemRow,
-  before: Extract<NonNullable<ProposalBefore>, { preset_entry: unknown } | { preset_settings: unknown } | { preset_script: unknown }>,
+  before: PresetProposalBefore,
   result: ProposalApplyResult,
   now: string,
 ): void {
+  if ('preset_entry_creation' in before) {
+    const target = before.preset_entry_creation;
+    const applied = result.preset_entry_creation;
+    const preset = loadPresetRecord(db, target.preset_id);
+    const current = preset ? loadPresetEntryRecord(db, target.preset_id, target.id) : null;
+    if (
+      item.op !== 'create'
+      || !applied || applied.preset_id !== target.preset_id || applied.id !== target.id
+      || !preset || !current
+      || !matchesPresetEntrySnapshot(current, applied)
+    ) {
+      throw new ProposalUndoConflict(
+        `预设「${target.preset_name}」新建的条目「${applied?.name ?? ''}」（${target.id}）在批准后又被改动或删除，不能撤销`,
+      );
+    }
+    deletePresetEntry(db, target.preset_id, target.id, now);
+    return;
+  }
+
+  if ('preset_entry_deletion' in before) {
+    const target = before.preset_entry_deletion;
+    const applied = result.preset_entry_deletion;
+    const preset = loadPresetRecord(db, target.preset_id);
+    if (
+      item.op !== 'retire'
+      || !applied || applied.preset_id !== target.preset_id || applied.id !== target.entry.id
+      || !preset
+    ) {
+      throw new ProposalUndoConflict(
+        `预设「${target.preset_name}」已删除或状态不匹配，无法还原条目「${target.entry.name}」`,
+      );
+    }
+    if (db.prepare('SELECT 1 FROM prompt_preset_entries WHERE id = ?').get(target.entry.id)) {
+      throw new ProposalUndoConflict(
+        `预设条目 ID ${target.entry.id} 已被重新占用，不能撤销删除`,
+      );
+    }
+    restoreDeletedPresetEntry(db, target.preset_id, target.entry, now);
+    return;
+  }
+
   if ('preset_entry' in before) {
     const target = before.preset_entry;
     const applied = result.preset_entry;
@@ -1019,19 +1176,32 @@ function undoPresetItem(
     if (
       !applied || applied.preset_id !== target.preset_id || applied.id !== target.entry.id
       || !preset || !current
-      || current.name !== applied.name
-      || current.enabled !== applied.enabled
-      || current.content !== applied.content
+      || !matchesPresetEntrySnapshot(current, applied)
     ) {
       throw new ProposalUndoConflict(
         `预设「${target.preset_name}」的条目「${target.entry.name}」（${target.entry.id}）在批准后又被改动或删除，不能撤销`,
       );
     }
     const after = JSON.parse(item.after_json) as PresetEntryAfter;
-    const restore: { name?: string; enabled?: boolean; content?: string } = {};
+    const restore: PresetEntryFieldPatch = {};
     if ('name' in after) restore.name = target.entry.name;
     if ('enabled' in after) restore.enabled = target.entry.enabled;
     if ('content' in after) restore.content = target.entry.content;
+    if ('role' in after && target.entry.role !== undefined) restore.role = target.entry.role;
+    if ('is_marker' in after) restore.is_marker = target.entry.is_marker;
+    if ('marker_key' in after && target.entry.marker_key !== undefined) restore.marker_key = target.entry.marker_key;
+    if ('injection_position' in after && target.entry.injection_position !== undefined) {
+      restore.injection_position = target.entry.injection_position;
+    }
+    if ('injection_depth' in after && target.entry.injection_depth !== undefined) {
+      restore.injection_depth = target.entry.injection_depth;
+    }
+    if ('injection_order' in after && target.entry.injection_order !== undefined) {
+      restore.injection_order = target.entry.injection_order;
+    }
+    if ('sort_order' in after && target.entry.sort_order !== undefined) {
+      restore.sort_order = target.entry.sort_order;
+    }
     updatePresetEntryFields(db, target.preset_id, target.entry.id, restore, now);
     return;
   }
@@ -1078,7 +1248,7 @@ function undoItem(db: Database.Database, proposal: ProposalRow, item: ProposalIt
   const characterId = proposal.character_id;
   const result = JSON.parse(item.result_json!) as ProposalApplyResult;
   const before = JSON.parse(item.before_json) as ProposalBefore;
-  if (before && ('preset_entry' in before || 'preset_settings' in before || 'preset_script' in before)) {
+  if (isPresetBefore(before)) {
     undoPresetItem(db, item, before, result, now);
     return [];
   }

@@ -6,7 +6,7 @@
  */
 import type Database from 'better-sqlite3';
 import { PRESET_ID_NONE } from '@/lib/prompt-presets';
-import { presetImportWarningsSchema, stripTagRulesSchema } from '@/lib/schemas';
+import { presetImportWarningsSchema, presetInjectionTriggerSchema, stripTagRulesSchema } from '@/lib/schemas';
 import { hasSpresetRuntime, parseSpresetConfig } from '@/lib/spreset/config';
 import type { PresetImportWarning, PresetMarkerKey } from '@/types';
 
@@ -46,27 +46,55 @@ export interface PresetEntryRecord {
   content: string;
   is_marker: boolean;
   marker_key: PresetMarkerKey | null;
+  is_system_prompt: boolean;
   injection_position: 0 | 1;
   injection_depth: number;
   injection_order: number;
+  forbid_overrides: boolean;
+  injection_trigger: string[];
   enabled: boolean;
   sort_order: number;
   created_at: string;
   updated_at: string;
 }
 
+/**
+ * 提案生成时的条目快照：用于批准过期检测与撤销冲突检测。
+ * role / marker_key / injection_* / sort_order 为可选，向后兼容旧版已落库的预设提案快照。
+ */
 export interface PresetEntrySnapshot {
   id: string;
   name: string;
   enabled: boolean;
   content: string;
   is_marker: boolean;
+  role?: 'system' | 'user' | 'assistant';
+  marker_key?: PresetMarkerKey | null;
+  injection_position?: 0 | 1;
+  injection_depth?: number;
+  injection_order?: number;
+  sort_order?: number;
 }
+
+/** 删除条目时的整行完整快照（不含 preset_id），撤销删除时按原样无损恢复。 */
+export type PresetEntryFullSnapshot = Omit<PresetEntryRecord, 'preset_id'>;
 
 export interface PresetEntryBefore {
   preset_id: string;
   preset_name: string;
   entry: PresetEntrySnapshot;
+}
+
+export interface PresetEntryCreationBefore {
+  preset_id: string;
+  preset_name: string;
+  id: string;
+}
+
+export interface PresetEntryDeletionBefore {
+  preset_id: string;
+  preset_name: string;
+  entry: PresetEntryFullSnapshot;
 }
 
 export interface PresetSettingsBefore {
@@ -84,11 +112,31 @@ export interface PresetScriptBefore {
   content: string;
 }
 
+export interface PresetEntryCreateAfter {
+  name: string;
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  enabled: boolean;
+  is_marker: boolean;
+  marker_key: PresetMarkerKey | null;
+  injection_position: 0 | 1;
+  injection_depth: number;
+  injection_order: number;
+  sort_order: number;
+}
+
 export interface PresetEntryAfter {
   name?: string;
   enabled?: boolean;
   content?: string;
   edits?: PresetTextEdit[];
+  role?: 'system' | 'user' | 'assistant';
+  is_marker?: boolean;
+  marker_key?: PresetMarkerKey | null;
+  injection_position?: 0 | 1;
+  injection_depth?: number;
+  injection_order?: number;
+  sort_order?: number;
 }
 
 export interface PresetSettingsAfter {
@@ -474,9 +522,12 @@ function rowToEntryRecord(row: Record<string, unknown>): PresetEntryRecord {
     content: typeof row.content === 'string' ? row.content : '',
     is_marker: Number(row.is_marker) === 1,
     marker_key: typeof row.marker_key === 'string' ? row.marker_key as PresetMarkerKey : null,
+    is_system_prompt: Number(row.is_system_prompt) === 1,
     injection_position: Number(row.injection_position) === 1 ? 1 : 0,
     injection_depth: Number(row.injection_depth ?? 4),
     injection_order: Number(row.injection_order ?? 100),
+    forbid_overrides: Number(row.forbid_overrides) === 1,
+    injection_trigger: presetInjectionTriggerSchema.safeParse(parseStoredJson(row.injection_trigger)).data ?? [],
     enabled: Number(row.enabled) === 1,
     sort_order: Number(row.sort_order ?? 0),
     created_at: String(row.created_at),
@@ -549,10 +600,13 @@ export function loadPresetRecord(db: Database.Database, presetId: string): Prese
   return row ? rowToPresetRecord(row) : null;
 }
 
+const ENTRY_SELECT_COLUMNS = `id, preset_id, name, role, content, is_marker, marker_key, is_system_prompt,
+  injection_position, injection_depth, injection_order, forbid_overrides, injection_trigger,
+  enabled, sort_order, created_at, updated_at`;
+
 export function listPresetEntries(db: Database.Database, presetId: string): PresetEntryRecord[] {
   const rows = db.prepare(`
-    SELECT id, preset_id, name, role, content, is_marker, marker_key,
-      injection_position, injection_depth, injection_order, enabled, sort_order, created_at, updated_at
+    SELECT ${ENTRY_SELECT_COLUMNS}
     FROM prompt_preset_entries
     WHERE preset_id = ?
     ORDER BY sort_order ASC, id ASC
@@ -566,12 +620,18 @@ export function loadPresetEntryRecord(
   entryId: string,
 ): PresetEntryRecord | null {
   const row = db.prepare(`
-    SELECT id, preset_id, name, role, content, is_marker, marker_key,
-      injection_position, injection_depth, injection_order, enabled, sort_order, created_at, updated_at
+    SELECT ${ENTRY_SELECT_COLUMNS}
     FROM prompt_preset_entries
     WHERE id = ? AND preset_id = ?
   `).get(entryId, presetId) as Record<string, unknown> | undefined;
   return row ? rowToEntryRecord(row) : null;
+}
+
+export function maxPresetEntrySortOrder(db: Database.Database, presetId: string): number {
+  const row = db.prepare(
+    'SELECT MAX(sort_order) AS max_sort FROM prompt_preset_entries WHERE preset_id = ?',
+  ).get(presetId) as { max_sort: number | null } | undefined;
+  return row?.max_sort ?? 0;
 }
 
 export function toPresetEntrySnapshot(entry: PresetEntryRecord): PresetEntrySnapshot {
@@ -581,7 +641,32 @@ export function toPresetEntrySnapshot(entry: PresetEntryRecord): PresetEntrySnap
     enabled: entry.enabled,
     content: entry.content,
     is_marker: entry.is_marker,
+    role: entry.role,
+    marker_key: entry.marker_key,
+    injection_position: entry.injection_position,
+    injection_depth: entry.injection_depth,
+    injection_order: entry.injection_order,
+    sort_order: entry.sort_order,
   };
+}
+
+export function toPresetEntryFullSnapshot(entry: PresetEntryRecord): PresetEntryFullSnapshot {
+  const { preset_id: _presetId, ...rest } = entry;
+  void _presetId;
+  return rest;
+}
+
+export interface PresetEntryFieldPatch {
+  name?: string;
+  enabled?: boolean;
+  content?: string;
+  role?: 'system' | 'user' | 'assistant';
+  is_marker?: boolean;
+  marker_key?: PresetMarkerKey | null;
+  injection_position?: 0 | 1;
+  injection_depth?: number;
+  injection_order?: number;
+  sort_order?: number;
 }
 
 /** 只更新有变化的条目列，并同步推进条目与预设的 updated_at。 */
@@ -589,7 +674,7 @@ export function updatePresetEntryFields(
   db: Database.Database,
   presetId: string,
   entryId: string,
-  patch: { name?: string; enabled?: boolean; content?: string },
+  patch: PresetEntryFieldPatch,
   now: string,
 ): void {
   const sets: string[] = [];
@@ -597,6 +682,13 @@ export function updatePresetEntryFields(
   if (patch.name !== undefined) { sets.push('name = ?'); values.push(patch.name); }
   if (patch.enabled !== undefined) { sets.push('enabled = ?'); values.push(patch.enabled ? 1 : 0); }
   if (patch.content !== undefined) { sets.push('content = ?'); values.push(patch.content); }
+  if (patch.role !== undefined) { sets.push('role = ?'); values.push(patch.role); }
+  if (patch.is_marker !== undefined) { sets.push('is_marker = ?'); values.push(patch.is_marker ? 1 : 0); }
+  if (patch.marker_key !== undefined) { sets.push('marker_key = ?'); values.push(patch.marker_key); }
+  if (patch.injection_position !== undefined) { sets.push('injection_position = ?'); values.push(patch.injection_position); }
+  if (patch.injection_depth !== undefined) { sets.push('injection_depth = ?'); values.push(patch.injection_depth); }
+  if (patch.injection_order !== undefined) { sets.push('injection_order = ?'); values.push(patch.injection_order); }
+  if (patch.sort_order !== undefined) { sets.push('sort_order = ?'); values.push(patch.sort_order); }
   if (sets.length === 0) throw new Error('预设条目没有可更新的字段');
   sets.push('updated_at = ?');
   values.push(now, entryId, presetId);
@@ -604,6 +696,90 @@ export function updatePresetEntryFields(
     `UPDATE prompt_preset_entries SET ${sets.join(', ')} WHERE id = ? AND preset_id = ?`,
   ).run(...values).changes;
   if (entryChanges !== 1) throw new Error(`更新预设条目 ${entryId} 失败`);
+  const presetChanges = db.prepare('UPDATE prompt_presets SET updated_at = ? WHERE id = ?').run(now, presetId).changes;
+  if (presetChanges !== 1) throw new Error(`更新预设 ${presetId} 时间戳失败`);
+}
+
+/** 在指定预设下新建一条目，并同步推进预设的 updated_at。 */
+export function createPresetEntry(
+  db: Database.Database,
+  presetId: string,
+  entryId: string,
+  fields: PresetEntryCreateAfter,
+  now: string,
+): void {
+  db.prepare(`
+    INSERT INTO prompt_preset_entries (
+      id, preset_id, name, role, content, is_marker, marker_key,
+      is_system_prompt, injection_position, injection_depth, injection_order,
+      forbid_overrides, injection_trigger, enabled, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, '[]', ?, ?, ?, ?)
+  `).run(
+    entryId,
+    presetId,
+    fields.name,
+    fields.role,
+    fields.content,
+    fields.is_marker ? 1 : 0,
+    fields.marker_key,
+    fields.injection_position,
+    fields.injection_depth,
+    fields.injection_order,
+    fields.enabled ? 1 : 0,
+    fields.sort_order,
+    now,
+    now,
+  );
+  const presetChanges = db.prepare('UPDATE prompt_presets SET updated_at = ? WHERE id = ?').run(now, presetId).changes;
+  if (presetChanges !== 1) throw new Error(`更新预设 ${presetId} 时间戳失败`);
+}
+
+/** 删除指定预设下的条目，并同步推进预设的 updated_at。 */
+export function deletePresetEntry(
+  db: Database.Database,
+  presetId: string,
+  entryId: string,
+  now: string,
+): void {
+  const changes = db.prepare('DELETE FROM prompt_preset_entries WHERE id = ? AND preset_id = ?')
+    .run(entryId, presetId).changes;
+  if (changes !== 1) throw new Error(`删除预设条目 ${entryId} 失败`);
+  const presetChanges = db.prepare('UPDATE prompt_presets SET updated_at = ? WHERE id = ?').run(now, presetId).changes;
+  if (presetChanges !== 1) throw new Error(`更新预设 ${presetId} 时间戳失败`);
+}
+
+/** 按删除前保存的完整快照原样插回被删除的条目，并推进预设 updated_at。 */
+export function restoreDeletedPresetEntry(
+  db: Database.Database,
+  presetId: string,
+  entry: PresetEntryFullSnapshot,
+  now: string,
+): void {
+  db.prepare(`
+    INSERT INTO prompt_preset_entries (
+      id, preset_id, name, role, content, is_marker, marker_key,
+      is_system_prompt, injection_position, injection_depth, injection_order,
+      forbid_overrides, injection_trigger, enabled, sort_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    entry.id,
+    presetId,
+    entry.name,
+    entry.role,
+    entry.content,
+    entry.is_marker ? 1 : 0,
+    entry.marker_key,
+    entry.is_system_prompt ? 1 : 0,
+    entry.injection_position,
+    entry.injection_depth,
+    entry.injection_order,
+    entry.forbid_overrides ? 1 : 0,
+    JSON.stringify(entry.injection_trigger),
+    entry.enabled ? 1 : 0,
+    entry.sort_order,
+    entry.created_at,
+    entry.updated_at,
+  );
   const presetChanges = db.prepare('UPDATE prompt_presets SET updated_at = ? WHERE id = ?').run(now, presetId).changes;
   if (presetChanges !== 1) throw new Error(`更新预设 ${presetId} 时间戳失败`);
 }

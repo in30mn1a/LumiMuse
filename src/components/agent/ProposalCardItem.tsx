@@ -4,6 +4,9 @@ import type React from 'react';
 import type {
   PresetEntryAfter,
   PresetEntryBefore,
+  PresetEntryCreateAfter,
+  PresetEntryCreationBefore,
+  PresetEntryDeletionBefore,
   PresetScriptAfter,
   PresetScriptBefore,
   PresetSettingsAfter,
@@ -361,11 +364,15 @@ function workOpKey(item: ProposalItemView): string | null {
 
 function presetOpKey(item: ProposalItemView): string | null {
   if (!item.before) return null;
+  if ('preset_entry_creation' in item.before) return 'agent.proposal.op.presetEntryCreate';
+  if ('preset_entry_deletion' in item.before) return 'agent.proposal.op.presetEntryDelete';
   if ('preset_entry' in item.before) return 'agent.proposal.op.presetEntryUpdate';
   if ('preset_settings' in item.before) return 'agent.proposal.op.presetSettingsUpdate';
   if ('preset_script' in item.before) return 'agent.proposal.op.presetScriptUpdate';
   return null;
 }
+
+const PRESET_DELETE_PREVIEW_LIMIT = 600;
 
 /** 逐处渲染定位替换：不对整段长条目或脚本做整篇 diffText，避免中间十几万字撑爆卡片。 */
 function PresetEdits({ edits }: { edits: readonly PresetTextEdit[] }) {
@@ -383,9 +390,25 @@ function PresetEdits({ edits }: { edits: readonly PresetTextEdit[] }) {
   );
 }
 
+function PresetScalarDiff({ field, label, before, after }: { field: string; label: string; before: string; after: string }) {
+  return (
+    <Labeled label={label}>
+      <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]" data-preset-field={field}>
+        <del className="text-text-muted decoration-danger/60">{before}</del>
+        <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
+        <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{after}</ins>
+      </p>
+    </Labeled>
+  );
+}
+
 function PresetEntryChange({ before, after }: { before: PresetEntryBefore; after: PresetEntryAfter }) {
   const { t } = useTranslation();
   const enabledText = (value: boolean) => (value ? t('agent.proposal.presetEnabledOn') : t('agent.proposal.presetEnabledOff'));
+  const yesNoText = (value: boolean) => (value ? t('agent.proposal.yes') : t('agent.proposal.no'));
+  const posText = (value: number | undefined) => (
+    value === 1 ? t('agent.proposal.presetPosInChat') : value === 0 ? t('agent.proposal.presetPosRelative') : '—'
+  );
   return (
     <div className="space-y-2">
       <p className="font-medium [overflow-wrap:anywhere]">
@@ -394,24 +417,110 @@ function PresetEntryChange({ before, after }: { before: PresetEntryBefore; after
         {formatTemplate(t('agent.proposal.presetEntry'), { name: before.entry.name })}
       </p>
       {'name' in after && typeof after.name === 'string' && (
-        <Labeled label={t('agent.proposal.field.name')}>
-          <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]" data-preset-field="name">
-            <del className="text-text-muted decoration-danger/60">{before.entry.name}</del>
-            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
-            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{after.name}</ins>
-          </p>
-        </Labeled>
+        <PresetScalarDiff field="name" label={t('agent.proposal.field.name')} before={before.entry.name} after={after.name} />
       )}
       {'enabled' in after && typeof after.enabled === 'boolean' && (
-        <Labeled label={t('agent.proposal.presetEnabled')}>
-          <p className="leading-relaxed" data-preset-field="enabled">
-            <del className="text-text-muted decoration-danger/60">{enabledText(before.entry.enabled)}</del>
-            <span className="px-1.5 text-text-muted" aria-hidden="true">→</span>
-            <ins className="font-medium text-emerald-800 no-underline dark:text-emerald-200">{enabledText(after.enabled)}</ins>
+        <PresetScalarDiff field="enabled" label={t('agent.proposal.presetEnabled')} before={enabledText(before.entry.enabled)} after={enabledText(after.enabled)} />
+      )}
+      {'role' in after && typeof after.role === 'string' && (
+        <PresetScalarDiff field="role" label={t('agent.proposal.presetRole')} before={before.entry.role ?? '—'} after={after.role} />
+      )}
+      {'sort_order' in after && typeof after.sort_order === 'number' && (
+        <PresetScalarDiff field="sort_order" label={t('agent.proposal.presetSortOrder')} before={before.entry.sort_order !== undefined ? String(before.entry.sort_order) : '—'} after={String(after.sort_order)} />
+      )}
+      {'injection_position' in after && typeof after.injection_position === 'number' && (
+        <PresetScalarDiff field="injection_position" label={t('agent.proposal.presetInjectionPosition')} before={posText(before.entry.injection_position)} after={posText(after.injection_position)} />
+      )}
+      {'injection_depth' in after && typeof after.injection_depth === 'number' && (
+        <PresetScalarDiff field="injection_depth" label={t('agent.proposal.presetInjectionDepth')} before={before.entry.injection_depth !== undefined ? String(before.entry.injection_depth) : '—'} after={String(after.injection_depth)} />
+      )}
+      {'injection_order' in after && typeof after.injection_order === 'number' && (
+        <PresetScalarDiff field="injection_order" label={t('agent.proposal.presetInjectionOrder')} before={before.entry.injection_order !== undefined ? String(before.entry.injection_order) : '—'} after={String(after.injection_order)} />
+      )}
+      {'is_marker' in after && typeof after.is_marker === 'boolean' && (
+        <PresetScalarDiff field="is_marker" label={t('agent.proposal.presetMarker')} before={yesNoText(before.entry.is_marker)} after={yesNoText(after.is_marker)} />
+      )}
+      {'marker_key' in after && (
+        <PresetScalarDiff field="marker_key" label={t('agent.proposal.presetMarkerKey')} before={before.entry.marker_key ?? '—'} after={after.marker_key ?? '—'} />
+      )}
+      {Array.isArray(after.edits) && after.edits.length > 0 ? (
+        <PresetEdits edits={after.edits} />
+      ) : (
+        typeof after.content === 'string' && (
+          <Labeled label={t('agent.proposal.field.content')}>
+            <ContentDiff before={before.entry.content} after={after.content} />
+          </Labeled>
+        )
+      )}
+    </div>
+  );
+}
+
+function PresetEntryCreation({ before, after }: { before: PresetEntryCreationBefore; after: PresetEntryCreateAfter }) {
+  const { t } = useTranslation();
+  const metaParts = [
+    `${t('agent.proposal.presetRole')}：${after.role}`,
+    `${t('agent.proposal.presetEnabled')}：${after.enabled ? t('agent.proposal.presetEnabledOn') : t('agent.proposal.presetEnabledOff')}`,
+    `${t('agent.proposal.presetSortOrder')}：#${after.sort_order}`,
+    `${t('agent.proposal.presetInjectionPosition')}：${after.injection_position === 1 ? t('agent.proposal.presetPosInChat') : t('agent.proposal.presetPosRelative')}`,
+  ];
+  if (after.injection_position === 1) {
+    metaParts.push(`${t('agent.proposal.presetInjectionDepth')}：${after.injection_depth}`);
+    metaParts.push(`${t('agent.proposal.presetInjectionOrder')}：${after.injection_order}`);
+  }
+  if (after.is_marker) {
+    metaParts.push(`${t('agent.proposal.presetMarkerKey')}：${after.marker_key ?? '—'}`);
+  }
+  return (
+    <div className="space-y-2" data-preset-entry-create="">
+      <p className="font-medium [overflow-wrap:anywhere]">
+        {formatTemplate(t('agent.proposal.preset'), { name: before.preset_name })}
+        {' · '}
+        {formatTemplate(t('agent.proposal.presetEntry'), { name: after.name })}
+      </p>
+      <p className="text-[11px] leading-relaxed text-text-muted">{metaParts.join(' · ')}</p>
+      {!after.is_marker && (
+        <Labeled label={t('agent.proposal.field.content')}>
+          <p className="whitespace-pre-wrap rounded-lg border border-border-light bg-surface px-2.5 py-2 leading-relaxed [overflow-wrap:anywhere]">
+            {after.content || '—'}
           </p>
         </Labeled>
       )}
-      {Array.isArray(after.edits) && after.edits.length > 0 && <PresetEdits edits={after.edits} />}
+    </div>
+  );
+}
+
+function PresetEntryDeletion({ before }: { before: PresetEntryDeletionBefore }) {
+  const { t } = useTranslation();
+  const { entry } = before;
+  const metaParts = [
+    `${t('agent.proposal.presetRole')}：${entry.role}`,
+    `${t('agent.proposal.presetEnabled')}：${entry.enabled ? t('agent.proposal.presetEnabledOn') : t('agent.proposal.presetEnabledOff')}`,
+    `${t('agent.proposal.presetSortOrder')}：#${entry.sort_order}`,
+    `${t('agent.proposal.presetInjectionPosition')}：${entry.injection_position === 1 ? t('agent.proposal.presetPosInChat') : t('agent.proposal.presetPosRelative')}`,
+  ];
+  if (entry.is_marker) {
+    metaParts.push(`${t('agent.proposal.presetMarkerKey')}：${entry.marker_key ?? '—'}`);
+  } else {
+    metaParts.push(formatTemplate(t('agent.proposal.presetContentLength'), { length: entry.content.length }));
+  }
+  const preview = entry.content.length > PRESET_DELETE_PREVIEW_LIMIT
+    ? `${entry.content.slice(0, PRESET_DELETE_PREVIEW_LIMIT)}…`
+    : entry.content;
+  return (
+    <div className="space-y-1.5" data-preset-entry-delete="">
+      <div className="space-y-1 rounded-lg border border-border-light bg-surface-2/40 px-2.5 py-2 text-text-secondary">
+        <p className="font-medium text-text-primary [overflow-wrap:anywhere]">
+          {formatTemplate(t('agent.proposal.preset'), { name: before.preset_name })}
+          {' · '}
+          {formatTemplate(t('agent.proposal.presetEntry'), { name: entry.name })}
+        </p>
+        <p className="text-[11px] leading-relaxed text-text-muted">{metaParts.join(' · ')}</p>
+        {!entry.is_marker && preview && (
+          <p className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">{preview}</p>
+        )}
+      </div>
+      <p className="text-[11px] text-text-muted">{t('agent.proposal.presetDeleteHint')}</p>
     </div>
   );
 }
@@ -484,6 +593,9 @@ function ItemChange({ item }: { item: ProposalItemView }) {
       if (item.before && 'character_creation' in item.before) {
         return <CharacterCreation fields={(item.after ?? {}) as ProposalCharacterFields} />;
       }
+      if (item.before && 'preset_entry_creation' in item.before) {
+        return <PresetEntryCreation before={item.before.preset_entry_creation} after={(item.after ?? {}) as PresetEntryCreateAfter} />;
+      }
       return <Labeled label={t('agent.proposal.new')}><MemoryBox memory={after} /></Labeled>;
     case 'update':
       if (item.before && 'character' in item.before) {
@@ -508,6 +620,9 @@ function ItemChange({ item }: { item: ProposalItemView }) {
       }
       return <UpdateDiff before={before[0] ?? {}} changes={after} />;
     case 'retire':
+      if (item.before && 'preset_entry_deletion' in item.before) {
+        return <PresetEntryDeletion before={item.before.preset_entry_deletion} />;
+      }
       return (
         <div className="space-y-1">
           <MemoryBox memory={before[0] ?? {}} muted />

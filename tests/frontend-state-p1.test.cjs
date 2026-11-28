@@ -533,6 +533,70 @@ test('memory task polling owns abort controllers per conversation and cleans the
   }
 });
 
+test('memory task polling keeps extract status per conversation so switching away never leaves it stuck', async () => {
+  const originalFetch = global.fetch;
+  const pending = new Map();
+  const activeConvIdRef = { current: 'conv-a' };
+
+  global.fetch = input => {
+    const url = new URL(String(input), 'http://test.local');
+    assert.equal(url.pathname, '/api/memory-tasks', `unexpected fetch: ${input}`);
+    const deferred = createDeferred();
+    pending.set(url.searchParams.get('conversation_id'), deferred);
+    return deferred.promise;
+  };
+
+  try {
+    const runtime = createHookRuntime(
+      reactMock => {
+        const { useMemoryTaskPolling } = requireFreshWithMocks('../src/hooks/chat/useMemoryTaskPolling.ts', {
+          react: reactMock,
+          '@/lib/chat-stream-client': { fetchMessagesPage: async () => ({ unextractedCount: 0, totalTokens: 0 }) },
+        });
+        return useMemoryTaskPolling;
+      },
+      () => ({
+        activeConvId: activeConvIdRef.current,
+        activeConvIdRef,
+        characterRef: { current: { id: 'char-a', name: 'Alice' } },
+        setMemories: () => {},
+        showToast: () => {},
+        t: key => key,
+        updateServerCounts: () => {},
+      }),
+    );
+
+    runtime.render();
+    const pollA = runtime.current.pollMemoryTask('conv-a');
+    assert.equal(runtime.current.memoryExtractStatus, 'extracting');
+
+    // 切到 B：A 的提取中状态不得带过来，否则 B 的手动提取按钮会被禁用
+    activeConvIdRef.current = 'conv-b';
+    runtime.render();
+    assert.equal(runtime.current.memoryExtractStatus, 'idle');
+
+    const pollB = runtime.current.pollMemoryTask('conv-b');
+    assert.equal(runtime.current.memoryExtractStatus, 'extracting');
+
+    // A 在后台完成：B 仍显示自己的状态，切回 A 能看到 A 的完成结果
+    pending.get('conv-a').resolve(jsonResponse({ status: 'done', mergeCount: 0, updatedAt: '2026-11-29T00:00:00.000Z' }));
+    await pollA;
+    assert.equal(runtime.current.memoryExtractStatus, 'extracting');
+    activeConvIdRef.current = 'conv-a';
+    runtime.render();
+    assert.equal(runtime.current.memoryExtractStatus, 'done');
+
+    pending.get('conv-b').resolve(jsonResponse({ status: 'done', mergeCount: 0, updatedAt: '2026-11-29T00:00:01.000Z' }));
+    await pollB;
+    activeConvIdRef.current = 'conv-b';
+    runtime.render();
+    assert.equal(runtime.current.memoryExtractStatus, 'done');
+    runtime.unmount();
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('memory task polling consumes non-abort failures and exposes an error toast', async () => {
   const originalFetch = global.fetch;
   const toasts = [];

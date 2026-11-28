@@ -245,7 +245,7 @@ test('ChatView rechecks the active conversation before applying memory task coun
 
   const pollBlock = source.slice(pollStart);
   assert.match(pollBlock, /refreshCounts\(convId\);/);
-  assert.match(pollBlock, /scheduleStatusReset\(\);/);
+  assert.match(pollBlock, /scheduleStatusReset\(convId\);/);
 });
 
 test('ChatView delegates message paging and cache-aware updates to useMessagePaging', () => {

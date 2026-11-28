@@ -17,6 +17,7 @@ type MemoryTaskStatusResponse = {
 };
 
 type UseMemoryTaskPollingOptions = {
+  activeConvId: string | null;
   activeConvIdRef: MutableRefObject<string | null>;
   characterRef: MutableRefObject<Character | null>;
   setMemories: Dispatch<SetStateAction<MemoryListItem[]>>;
@@ -28,6 +29,7 @@ type UseMemoryTaskPollingOptions = {
 const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 
 export function useMemoryTaskPolling({
+  activeConvId,
   activeConvIdRef,
   characterRef,
   setMemories,
@@ -35,17 +37,37 @@ export function useMemoryTaskPolling({
   t,
   updateServerCounts,
 }: UseMemoryTaskPollingOptions) {
-  const [memoryExtractStatus, setMemoryExtractStatus] = useState<MemoryExtractStatus>('idle');
+  // 状态按对话分开存：ChatView 切换对话/角色时不重新挂载，若只存一份，
+  // 提取中途切走后旧对话的完成结果不会回写，新对话会一直卡在 'extracting'（并禁用手动提取）。
+  const [statusByConv, setStatusByConv] = useState<Record<string, MemoryExtractStatus>>({});
+  const memoryExtractStatus: MemoryExtractStatus = (activeConvId && statusByConv[activeConvId]) || 'idle';
   const seenMemoryTaskRef = useRef<Record<string, string>>({});
   const pollAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
-  const extractStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const extractStatusTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => () => {
     for (const controller of pollAbortControllersRef.current.values()) {
       controller.abort();
     }
     pollAbortControllersRef.current.clear();
-    if (extractStatusTimerRef.current) clearTimeout(extractStatusTimerRef.current);
+    for (const timer of extractStatusTimersRef.current.values()) clearTimeout(timer);
+    extractStatusTimersRef.current.clear();
+  }, []);
+
+  const setConvStatus = useCallback((convId: string, status: MemoryExtractStatus) => {
+    setStatusByConv(prev => {
+      if ((prev[convId] ?? 'idle') === status) return prev;
+      const next = { ...prev };
+      if (status === 'idle') delete next[convId];
+      else next[convId] = status;
+      return next;
+    });
+  }, []);
+
+  const clearStatusTimer = useCallback((convId: string) => {
+    const timer = extractStatusTimersRef.current.get(convId);
+    if (timer) clearTimeout(timer);
+    extractStatusTimersRef.current.delete(convId);
   }, []);
 
   // 只要整对话的两个计数：服务端首页请求不论 limit 多少都算它们，limit: 1 免得为两个数字拉整页消息
@@ -58,10 +80,13 @@ export function useMemoryTaskPolling({
       .catch(() => {});
   }, [activeConvIdRef, updateServerCounts]);
 
-  const scheduleStatusReset = useCallback(() => {
-    if (extractStatusTimerRef.current) clearTimeout(extractStatusTimerRef.current);
-    extractStatusTimerRef.current = setTimeout(() => setMemoryExtractStatus('idle'), 3000);
-  }, []);
+  const scheduleStatusReset = useCallback((convId: string) => {
+    clearStatusTimer(convId);
+    extractStatusTimersRef.current.set(convId, setTimeout(() => {
+      extractStatusTimersRef.current.delete(convId);
+      setConvStatus(convId, 'idle');
+    }, 3000));
+  }, [clearStatusTimer, setConvStatus]);
 
   const pollMemoryTask = useCallback(async (convId: string) => {
     pollAbortControllersRef.current.get(convId)?.abort();
@@ -69,13 +94,8 @@ export function useMemoryTaskPolling({
     pollAbortControllersRef.current.set(convId, controller);
 
     try {
-      if (activeConvIdRef.current === convId) {
-        setMemoryExtractStatus('extracting');
-      }
-      if (extractStatusTimerRef.current) {
-        clearTimeout(extractStatusTimerRef.current);
-        extractStatusTimerRef.current = null;
-      }
+      setConvStatus(convId, 'extracting');
+      clearStatusTimer(convId);
 
       const pollOnce = async (): Promise<{
         finished: boolean;
@@ -116,18 +136,17 @@ export function useMemoryTaskPolling({
         } catch (error) {
           if (isAbortError(error)) return;
           showToast(`${t('common.loadFailed')}: ${getErrorMessage(error)}`, 'error');
-          if (activeConvIdRef.current === convId) {
-            setMemoryExtractStatus('failed');
-            scheduleStatusReset();
-          }
+          setConvStatus(convId, 'failed');
+          scheduleStatusReset(convId);
           return;
         }
 
         const { finished, status, retryCount, errorMessage, updatedAt } = result;
         if (finished) {
+          // 状态始终按 convId 回写（不受当前对话限制）；记忆列表与提示只对当前对话生效
+          setConvStatus(convId, status === 'done' ? 'done' : status === 'failed' ? 'failed' : 'idle');
           if (activeConvIdRef.current === convId) {
             if (status === 'done') {
-              setMemoryExtractStatus('done');
               const charId = characterRef.current?.id;
               if (charId) {
                 try {
@@ -143,7 +162,6 @@ export function useMemoryTaskPolling({
                 }
               }
             } else if (status === 'failed') {
-              setMemoryExtractStatus('failed');
               const taskKey = updatedAt ? `${status}:${updatedAt}` : status;
               if (seenMemoryTaskRef.current[convId] !== taskKey) {
                 seenMemoryTaskRef.current[convId] = taskKey;
@@ -153,13 +171,11 @@ export function useMemoryTaskPolling({
                   retryCount: retryCount > 0 ? retryCount : 0,
                 }), 'error');
               }
-            } else {
-              setMemoryExtractStatus('idle');
             }
 
             refreshCounts(convId);
-            scheduleStatusReset();
           }
+          scheduleStatusReset(convId);
           return;
         }
 
@@ -167,17 +183,15 @@ export function useMemoryTaskPolling({
         if (controller.signal.aborted) return;
       }
 
-      if (activeConvIdRef.current === convId) {
-        setMemoryExtractStatus('failed');
-        refreshCounts(convId);
-        scheduleStatusReset();
-      }
+      setConvStatus(convId, 'failed');
+      refreshCounts(convId);
+      scheduleStatusReset(convId);
     } finally {
       if (pollAbortControllersRef.current.get(convId) === controller) {
         pollAbortControllersRef.current.delete(convId);
       }
     }
-  }, [activeConvIdRef, characterRef, refreshCounts, scheduleStatusReset, setMemories, showToast, t]);
+  }, [activeConvIdRef, characterRef, clearStatusTimer, refreshCounts, scheduleStatusReset, setConvStatus, setMemories, showToast, t]);
 
   return {
     memoryExtractStatus,

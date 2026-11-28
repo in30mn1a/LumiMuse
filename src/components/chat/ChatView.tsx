@@ -312,6 +312,7 @@ export default function ChatView({
   );
 
   const { memoryExtractStatus, pollMemoryTask } = useMemoryTaskPolling({
+    activeConvId,
     activeConvIdRef,
     characterRef,
     setMemories,

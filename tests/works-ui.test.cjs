@@ -168,12 +168,23 @@ function installFakeServer({ works = fixtureWorks(), characters = [{ id: 'char-a
   return { state, calls };
 }
 
-function renderPanel() {
-  return render(React.createElement(WorksCatalogPanel, { characterId: 'char-a', characterName: '小光' }));
+function renderPanel(props = {}) {
+  return render(React.createElement(WorksCatalogPanel, { characterId: 'char-a', characterName: '小光', ...props }));
 }
 
 function textOf(element) {
   return element ? element.textContent : '';
+}
+
+function groupToggle(view, typeName) {
+  const region = view.getByRole('region', { name: typeName });
+  return within(region).getByRole('button', { name: new RegExp(`^${typeName}`) });
+}
+
+function expandGroup(view, typeName) {
+  const toggle = groupToggle(view, typeName);
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+  return view.getByRole('region', { name: typeName });
 }
 
 test.afterEach(async () => {
@@ -219,6 +230,7 @@ test('each row has a short, distinct name for its edit and evidence buttons', as
   installFakeServer();
   const view = renderPanel();
   await view.findByRole('region', { name: '电影' });
+  for (const typeName of ['电影', '书', '游戏']) expandGroup(view, typeName);
   const labels = pattern => view.getAllByRole('button', { name: pattern }).map(button => button.getAttribute('aria-label'));
   assert.deepEqual(labels(/^编辑《/), ['编辑《她》', '编辑《三体》', '编辑《塞尔达传说》']);
   assert.deepEqual(labels(/的依据$/), ['《她》的依据', '《三体》的依据', '《塞尔达传说》的依据']);
@@ -252,24 +264,107 @@ test('opening /memories?view=works shows the works catalog directly', async () =
   assert.equal(server.calls.some(call => call.url === '/api/works?character_id=char-a&include_dismissed=1'), true);
 });
 
-test('the panel shows loading first, then groups entries by type with per-type status wording', async () => {
+test('the panel shows loading first, collapses category groups by default, and expands with per-type status wording', async () => {
   let open;
   installFakeServer({ gate: new Promise(resolve => { open = resolve; }) });
   const view = renderPanel();
   assert.equal(view.queryByRole('status', { name: '加载中...' }) !== null, true);
   open();
 
-  const movies = await view.findByRole('region', { name: '电影' });
+  await view.findByRole('region', { name: '电影' });
+  for (const typeName of ['电影', '书', '游戏']) {
+    assert.equal(groupToggle(view, typeName).getAttribute('aria-expanded'), 'false', `${typeName} starts collapsed`);
+  }
+  assert.equal(view.queryByText('《她》') === null, true, 'collapsed movie entries stay hidden');
+  assert.equal(view.queryByText('《三体》') === null, true, 'collapsed book entries stay hidden');
+  assert.equal(view.queryByText('《塞尔达传说》') === null, true, 'collapsed game entries stay hidden');
+  assert.equal(view.queryByRole('region', { name: '剧集/动画' }) === null, true, 'a dismissed-only type has no group');
+  assert.equal(view.queryByText('3 部') !== null, true, 'count excludes dismissed entries');
+  assert.equal(view.queryByText('《黑镜》') === null, true, 'dismissed entries stay folded');
+
+  const movies = expandGroup(view, '电影');
+  assert.equal(groupToggle(view, '电影').getAttribute('aria-expanded'), 'true');
+  assert.equal(groupToggle(view, '书').getAttribute('aria-expanded'), 'false', 'other groups remain collapsed');
   const movieText = textOf(movies);
   for (const snippet of ['看过', '《她》', '评分 9.5', '又名 Her', '最爱之一']) {
     assert.equal(movieText.includes(snippet), true, `movie row missing ${snippet}`);
   }
-  assert.equal(textOf(view.getByRole('region', { name: '书' })).includes('在读'), true, 'books say 在读');
-  assert.equal(textOf(view.getByRole('region', { name: '书' })).includes('进度 第二部'), true);
-  assert.equal(textOf(view.getByRole('region', { name: '游戏' })).includes('想玩'), true, 'games say 想玩');
-  assert.equal(view.queryByRole('region', { name: '剧集/动画' }) === null, true, 'a dismissed-only type has no group');
-  assert.equal(view.queryByText('3 部') !== null, true, 'count excludes dismissed entries');
-  assert.equal(view.queryByText('《黑镜》') === null, true, 'dismissed entries stay folded');
+  // 再次点击可折回
+  fireEvent.click(groupToggle(view, '电影'));
+  assert.equal(groupToggle(view, '电影').getAttribute('aria-expanded'), 'false');
+  assert.equal(view.queryByText('《她》') === null, true);
+
+  const books = expandGroup(view, '书');
+  assert.equal(textOf(books).includes('在读'), true, 'books say 在读');
+  assert.equal(textOf(books).includes('进度 第二部'), true);
+  const games = expandGroup(view, '游戏');
+  assert.equal(textOf(games).includes('想玩'), true, 'games say 想玩');
+});
+
+test('the search box filters across fields, auto-expands matching groups, filters removed works, and resets cleanly', async () => {
+  installFakeServer();
+  const view = renderPanel();
+  await view.findByRole('region', { name: '电影' });
+
+  const searchInput = view.getByRole('textbox', { name: '搜索片单' });
+  // 按别名（忽略大小写）搜索：自动展开命中大类，隐藏未命中大类与未命中已移除区域
+  fireEvent.change(searchInput, { target: { value: 'her' } });
+  assert.equal(groupToggle(view, '电影').getAttribute('aria-expanded'), 'true');
+  assert.equal(view.queryByText('《她》') !== null, true);
+  assert.equal(view.queryByRole('region', { name: '书' }) === null, true);
+  assert.equal(view.queryByRole('region', { name: '游戏' }) === null, true);
+  assert.equal(view.queryByText('1 / 3 部') !== null, true);
+  assert.equal(view.queryByRole('button', { name: /^已移除/ }) === null, true);
+
+  // 搜索状态下仍允许手动收起命中的大类
+  fireEvent.click(groupToggle(view, '电影'));
+  assert.equal(groupToggle(view, '电影').getAttribute('aria-expanded'), 'false');
+  assert.equal(view.queryByText('《她》') === null, true);
+
+  // 多词组合 + 状态词 / 类型词搜索：更换关键词后命中的大类重新自动展开
+  fireEvent.change(searchInput, { target: { value: '书 在读' } });
+  assert.equal(groupToggle(view, '书').getAttribute('aria-expanded'), 'true');
+  assert.equal(view.queryByText('《三体》') !== null, true);
+  assert.equal(view.queryByText('1 / 3 部') !== null, true);
+
+  // 搜索已移除的作品：活跃区显示搜索空态（而非片单为空），下方保留匹配的已移除区域且保持折叠
+  fireEvent.change(searchInput, { target: { value: '黑镜' } });
+  assert.equal(view.queryByText('没有找到匹配的作品') !== null, true);
+  assert.equal(view.queryByText('片单还是空的') === null, true);
+  assert.equal(view.queryByText('0 / 3 部') !== null, true);
+  const dismissedToggle = view.getByRole('button', { name: '已移除（1）' });
+  assert.equal(dismissedToggle.getAttribute('aria-expanded'), 'false');
+
+  // 点击清除搜索按钮：恢复默认折叠状态与完整计数
+  fireEvent.click(view.getAllByRole('button', { name: '清除搜索' })[0]);
+  assert.equal(searchInput.value, '');
+  assert.equal(view.queryByText('3 部') !== null, true);
+  assert.equal(groupToggle(view, '电影').getAttribute('aria-expanded'), 'false');
+  assert.equal(groupToggle(view, '书').getAttribute('aria-expanded'), 'false');
+  assert.equal(groupToggle(view, '游戏').getAttribute('aria-expanded'), 'false');
+
+  // Escape 快捷键也能清空搜索
+  fireEvent.change(searchInput, { target: { value: '《她》' } });
+  assert.equal(view.queryByText('《她》') !== null, true);
+  fireEvent.keyDown(searchInput, { key: 'Escape' });
+  assert.equal(searchInput.value, '');
+  assert.equal(groupToggle(view, '电影').getAttribute('aria-expanded'), 'false');
+});
+
+test('switching character resets search query and expanded categories', async () => {
+  installFakeServer();
+  const view = renderPanel();
+  await view.findByRole('region', { name: '电影' });
+
+  const searchInput = view.getByRole('textbox', { name: '搜索片单' });
+  expandGroup(view, '电影');
+  fireEvent.change(searchInput, { target: { value: '她' } });
+  assert.equal(searchInput.value, '她');
+
+  view.rerender(React.createElement(WorksCatalogPanel, { characterId: 'char-b', characterName: '小红' }));
+  await view.findByRole('region', { name: '电影' });
+  assert.equal(view.getByRole('textbox', { name: '搜索片单' }).value, '');
+  assert.equal(groupToggle(view, '电影').getAttribute('aria-expanded'), 'false');
 });
 
 test('the agent button links to /agent with a draft naming the character, without sending anything', async () => {
@@ -288,7 +383,9 @@ test('the agent button links to /agent with a draft naming the character, withou
 test('the evidence expander lists source memories and message excerpts, or says there is none', async () => {
   const server = installFakeServer();
   const view = renderPanel();
-  const movieRow = (await view.findByRole('button', { name: '编辑《她》' })).closest('li');
+  await view.findByRole('region', { name: '电影' });
+  expandGroup(view, '电影');
+  const movieRow = view.getByRole('button', { name: '编辑《她》' }).closest('li');
   fireEvent.click(within(movieRow).getByRole('button', { name: '《她》的依据' }));
   await within(movieRow).findByText('用户说《她》是最爱之一，配乐很好');
   assert.equal(within(movieRow).queryByText('已归档') !== null, true, 'non-active memories show their status');
@@ -298,6 +395,7 @@ test('the evidence expander lists source memories and message excerpts, or says 
     true,
   );
 
+  expandGroup(view, '书');
   const bookRow = view.getByRole('button', { name: '编辑《三体》' }).closest('li');
   fireEvent.click(within(bookRow).getByRole('button', { name: '《三体》的依据' }));
   await within(bookRow).findByText('无依据');
@@ -306,7 +404,9 @@ test('the evidence expander lists source memories and message excerpts, or says 
 test('editing a row saves the changed fields and updates the list', async () => {
   const server = installFakeServer();
   const view = renderPanel();
-  fireEvent.click(await view.findByRole('button', { name: '编辑《她》' }));
+  await view.findByRole('region', { name: '电影' });
+  expandGroup(view, '电影');
+  fireEvent.click(view.getByRole('button', { name: '编辑《她》' }));
   const dialog = await view.findByRole('dialog', { name: '编辑作品' });
   assert.equal(within(dialog).getByLabelText('名称').value, '她');
   assert.equal(within(dialog).getByLabelText('别名').value, 'Her');
@@ -334,7 +434,9 @@ test('editing a row saves the changed fields and updates the list', async () => 
 test('a stale editor does not revert fields written while it was open', async () => {
   const server = installFakeServer();
   const view = renderPanel();
-  fireEvent.click(await view.findByRole('button', { name: '编辑《三体》' }));
+  await view.findByRole('region', { name: '书' });
+  expandGroup(view, '书');
+  fireEvent.click(view.getByRole('button', { name: '编辑《三体》' }));
   const dialog = await view.findByRole('dialog', { name: '编辑作品' });
 
   // 弹窗开着时，自动更新（或批准的提案）推进了进度、加了别名
@@ -355,7 +457,9 @@ test('a stale editor does not revert fields written while it was open', async ()
 test('an edit that clashes with another entry names that entry and keeps the dialog open', async () => {
   const server = installFakeServer();
   const view = renderPanel();
-  fireEvent.click(await view.findByRole('button', { name: '编辑《塞尔达传说》' }));
+  await view.findByRole('region', { name: '游戏' });
+  expandGroup(view, '游戏');
+  fireEvent.click(view.getByRole('button', { name: '编辑《塞尔达传说》' }));
   const dialog = await view.findByRole('dialog', { name: '编辑作品' });
   fireEvent.change(within(dialog).getByLabelText('类型'), { target: { value: 'movie' } });
   fireEvent.change(within(dialog).getByLabelText('名称'), { target: { value: 'Her' } });
@@ -447,7 +551,9 @@ test('adding a work posts it, and a duplicate shows why instead of closing', asy
 test('removing moves an entry to the removed section, and restore brings it back', async () => {
   const server = installFakeServer();
   const view = renderPanel();
-  fireEvent.click(await view.findByRole('button', { name: '编辑《三体》' }));
+  await view.findByRole('region', { name: '书' });
+  expandGroup(view, '书');
+  fireEvent.click(view.getByRole('button', { name: '编辑《三体》' }));
   const dialog = await view.findByRole('dialog', { name: '编辑作品' });
   fireEvent.click(within(dialog).getByRole('button', { name: '移除' }));
   await waitFor(() => assert.equal(view.queryByRole('dialog') === null, true));

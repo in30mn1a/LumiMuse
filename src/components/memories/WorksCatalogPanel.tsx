@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { WORK_TYPES, type WorkEntry } from '@/types';
+import { WORK_TYPES, type WorkEntry, type WorkType } from '@/types';
 import type { WorkSources, WorkWithSources } from '@/app/api/works/works-route-helpers';
 import { useTranslation } from '@/lib/i18n-context';
 import { formatTemplate } from '@/lib/i18n';
 import { getErrorMessage, HttpResponseError, parseJsonArrayResponse, parseJsonResponse } from '@/lib/http';
-import { ChevronDownIcon, ListIcon, PencilIcon, PlusIcon, SparkIcon } from '@/components/ui/icons';
+import { ChevronDownIcon, ListIcon, PencilIcon, PlusIcon, SearchIcon, SparkIcon, XIcon } from '@/components/ui/icons';
 import ContentState from '@/components/ui/ContentState';
 import WorksEntryEditor, { changedWorkFields, workStatusLabelKey, type WorkEditorValues } from './WorksEntryEditor';
 
@@ -240,12 +240,34 @@ function WorkRow({ entry, characterId, onEdit, onRestore, restoring = false }: R
   );
 }
 
-/** 记忆管理页的片单视图：按类型分组列出条目，可新增、编辑、移除、恢复，并能查看依据。 */
+function parseSearchTerms(query: string): string[] {
+  return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function matchesWorkTerms(entry: WorkEntry, terms: readonly string[], t: (key: string) => string): boolean {
+  if (terms.length === 0) return true;
+  const haystack = [
+    `《${entry.title}》`,
+    ...entry.aliases,
+    entry.note,
+    entry.progress,
+    entry.rating,
+    t(workStatusLabelKey(entry.work_type, entry.status)),
+    t(`works.type.${entry.work_type}`),
+  ].join('\n').toLowerCase();
+  return terms.every(term => haystack.includes(term));
+}
+
+/** 记忆管理页的片单视图：按类型分组列出条目，可搜索、展开折叠、新增、编辑、移除、恢复，并能查看依据。 */
 export default function WorksCatalogPanel({ characterId, characterName }: Props) {
   const { t } = useTranslation();
   const [list, setList] = useState<ListState>({ characterId, works: null, error: '', loading: true });
   const [reloadNonce, setReloadNonce] = useState(0);
   const [editor, setEditor] = useState<{ entry: WorkEntry | null; key: number } | null>(null);
+  // 各大类默认折叠；有搜索词时命中的大类默认展开，仍允许用户在该搜索词下手动折起
+  const [expandedTypes, setExpandedTypes] = useState<Partial<Record<WorkType, boolean>>>({});
+  const [searchCollapsedTypes, setSearchCollapsedTypes] = useState<Partial<Record<WorkType, boolean>>>({});
+  const [query, setQuery] = useState('');
   const [dismissedOpen, setDismissedOpen] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   // 带角色 id：切到别的角色后，上一个角色迟到的失败不显示在这里
@@ -254,6 +276,9 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
   if (list.characterId !== characterId) {
     setList({ characterId, works: null, error: '', loading: true });
     setEditor(null);
+    setExpandedTypes({});
+    setSearchCollapsedTypes({});
+    setQuery('');
     setDismissedOpen(false);
   }
 
@@ -289,6 +314,11 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
     setReloadNonce(value => value + 1);
   }, []);
 
+  const ensureGroupOpen = useCallback((type: WorkType) => {
+    setExpandedTypes(prev => (prev[type] ? prev : { ...prev, [type]: true }));
+    setSearchCollapsedTypes(prev => (prev[type] ? { ...prev, [type]: false } : prev));
+  }, []);
+
   const openEditor = (entry: WorkEntry | null) => {
     setMutationError(null);
     setEditor(prev => ({ entry, key: (prev?.key ?? 0) + 1 }));
@@ -309,6 +339,7 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
         saved = await parseJsonResponse<WorkEntry>(response);
       }
       applySaved(saved);
+      if (saved.dismissed_at === null) ensureGroupOpen(saved.work_type);
       setEditor(null);
       return null;
     } catch (error) {
@@ -340,7 +371,9 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
     setRestoringId(entry.id);
     setMutationError(null);
     try {
-      applySaved(await putWork(entry.id, characterId, { dismissed: false }));
+      const saved = await putWork(entry.id, characterId, { dismissed: false });
+      applySaved(saved);
+      ensureGroupOpen(saved.work_type);
     } catch (error) {
       const conflict = conflictOf(error);
       setMutationError({
@@ -357,9 +390,25 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
   const works = list.works ?? [];
   const active = works.filter(work => work.dismissed_at === null);
   const dismissed = works.filter(work => work.dismissed_at !== null);
+  const searchTerms = parseSearchTerms(query);
+  const hasSearch = searchTerms.length > 0;
+  const matchedActive = hasSearch ? active.filter(work => matchesWorkTerms(work, searchTerms, t)) : active;
+  const matchedDismissed = hasSearch ? dismissed.filter(work => matchesWorkTerms(work, searchTerms, t)) : dismissed;
   const groups = WORK_TYPES
-    .map(type => ({ type, entries: active.filter(work => work.work_type === type) }))
+    .map(type => ({ type, entries: matchedActive.filter(work => work.work_type === type) }))
     .filter(group => group.entries.length > 0);
+  const isGroupOpen = (type: WorkType) => (hasSearch ? !searchCollapsedTypes[type] : Boolean(expandedTypes[type]));
+  const toggleGroup = (type: WorkType) => {
+    if (hasSearch) {
+      setSearchCollapsedTypes(prev => ({ ...prev, [type]: !prev[type] }));
+    } else {
+      setExpandedTypes(prev => ({ ...prev, [type]: !prev[type] }));
+    }
+  };
+  const clearSearch = () => {
+    setQuery('');
+    setSearchCollapsedTypes({});
+  };
   const agentDraft = formatTemplate(t('works.agentDraft'), { name: characterName, id: characterId });
   const visibleMutationError = mutationError?.characterId === characterId ? mutationError.message : '';
   const editingEntry = editor?.entry ?? null;
@@ -393,13 +442,49 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
             </button>
           </div>
         </div>
+        <div className="mt-3 flex min-h-10 items-center gap-2 rounded-full border border-transparent bg-surface-2 px-3.5 text-sm text-text-secondary transition-colors focus-within:border-accent/40">
+          <SearchIcon className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+          <input
+            type="text"
+            value={query}
+            onChange={event => {
+              setQuery(event.target.value);
+              setSearchCollapsedTypes({});
+            }}
+            onKeyDown={event => {
+              if (event.key === 'Escape' && query) {
+                event.preventDefault();
+                clearSearch();
+              }
+            }}
+            placeholder={t('works.searchPlaceholder')}
+            aria-label={t('works.searchLabel')}
+            className="w-full min-w-0 border-none bg-transparent py-1.5 text-sm text-text-primary outline-none placeholder:text-text-muted"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={clearSearch}
+              aria-label={t('works.clearSearch')}
+              className="-mr-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+            >
+              <XIcon className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
         {visibleMutationError && <p role="alert" className="mt-3 text-xs text-danger">{visibleMutationError}</p>}
       </div>
 
       <div className="surface-panel overflow-hidden" aria-busy={list.loading}>
         <div className="flex items-center justify-between border-b border-border-light px-4 py-3 text-xs text-text-muted">
           <span>{t('works.title')}</span>
-          {list.works && <span>{formatTemplate(t('works.count'), { count: active.length })}</span>}
+          {list.works && (
+            <span>
+              {hasSearch
+                ? formatTemplate(t('works.searchCount'), { matched: matchedActive.length, total: active.length })
+                : formatTemplate(t('works.count'), { count: active.length })}
+            </span>
+          )}
         </div>
 
         {list.works === null ? (
@@ -410,30 +495,55 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
               <p role="status" aria-label={t('common.loading')} className="px-4 py-3 text-sm text-text-muted">{t('common.loading')}</p>
             )}
             {list.error && errorState}
-            {groups.length === 0 ? (
+            {active.length === 0 ? (
               <ContentState
                 mode="empty"
                 title={t('works.empty')}
                 description={t('works.emptyHint')}
                 icon={<ListIcon className="h-5 w-5" />}
               />
-            ) : groups.map(group => (
-              <section key={group.type} aria-label={t(`works.type.${group.type}`)}>
-                <h3 className="border-b border-border-light bg-surface-2/60 px-4 py-2 text-xs font-medium text-text-secondary">
-                  {t(`works.type.${group.type}`)} · {group.entries.length}
-                </h3>
-                <ul>
-                  {group.entries.map(entry => (
-                    <WorkRow key={entry.id} entry={entry} characterId={characterId} onEdit={() => openEditor(entry)} />
-                  ))}
-                </ul>
-              </section>
-            ))}
+            ) : groups.length === 0 ? (
+              <ContentState
+                mode="empty"
+                title={t('works.searchEmpty')}
+                description={t('works.searchEmptyHint')}
+                icon={<SearchIcon className="h-5 w-5" />}
+                action={(
+                  <button type="button" onClick={clearSearch} className="soft-button soft-button-secondary">
+                    {t('works.clearSearch')}
+                  </button>
+                )}
+              />
+            ) : groups.map(group => {
+              const open = isGroupOpen(group.type);
+              return (
+                <section key={group.type} aria-label={t(`works.type.${group.type}`)} className="border-b border-border-light last:border-b-0">
+                  <h3>
+                    <button
+                      type="button"
+                      aria-expanded={open}
+                      onClick={() => toggleGroup(group.type)}
+                      className="flex min-h-11 w-full items-center justify-between gap-2 bg-surface-2/60 px-4 py-2.5 text-left text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2"
+                    >
+                      <span>{t(`works.type.${group.type}`)} · {group.entries.length}</span>
+                      <ChevronDownIcon className={`h-4 w-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+                    </button>
+                  </h3>
+                  {open && (
+                    <ul className="border-t border-border-light">
+                      {group.entries.map(entry => (
+                        <WorkRow key={entry.id} entry={entry} characterId={characterId} onEdit={() => openEditor(entry)} />
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              );
+            })}
           </>
         )}
       </div>
 
-      {dismissed.length > 0 && (
+      {matchedDismissed.length > 0 && (
         <div className="surface-panel overflow-hidden">
           <button
             type="button"
@@ -441,14 +551,14 @@ export default function WorksCatalogPanel({ characterId, characterName }: Props)
             onClick={() => setDismissedOpen(open => !open)}
             className="flex min-h-11 w-full items-center justify-between gap-2 px-4 py-3 text-left text-sm text-text-secondary transition-colors hover:bg-surface-2"
           >
-            <span>{formatTemplate(t('works.dismissedSection'), { count: dismissed.length })}</span>
+            <span>{formatTemplate(t('works.dismissedSection'), { count: matchedDismissed.length })}</span>
             <ChevronDownIcon className={`h-4 w-4 shrink-0 transition-transform ${dismissedOpen ? 'rotate-180' : ''}`} />
           </button>
           {dismissedOpen && (
             <div className="border-t border-border-light">
               <p className="px-4 pt-3 text-xs leading-relaxed text-text-muted">{t('works.dismissedHint')}</p>
               <ul>
-                {dismissed.map(entry => (
+                {matchedDismissed.map(entry => (
                   <WorkRow
                     key={entry.id}
                     entry={entry}
